@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.0-pg17
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: solesonic-llm-api
+      POSTGRES_PASSWORD: docker_pw
+      POSTGRES_DB: solesonic-llm-api
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+
+volumes:
+  postgres_data:

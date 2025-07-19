@@ -1,0 +1,18 @@
+#!/bin/bash
+set -e
+
+psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+    CREATE SCHEMA IF NOT EXISTS public;
+    
+    -- Enable required extensions
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS vector;
+    CREATE EXTENSION IF NOT EXISTS hstore;
+    
+    -- Create role with password from environment variable
+    CREATE ROLE "$POSTGRES_USER" WITH LOGIN PASSWORD '$DB_PASSWORD';
+    ALTER ROLE "$POSTGRES_USER" CREATEDB CREATEROLE;
+    
+    GRANT ALL PRIVILEGES ON DATABASE "$POSTGRES_DB" TO "$POSTGRES_USER";
+    GRANT ALL PRIVILEGES ON SCHEMA public TO "$POSTGRES_USER";
+EOSQL

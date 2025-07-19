@@ -1,0 +1,34 @@
+<configuration>
+    <springProfile name="prod">
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <!-- Path to the current log file -->
+            <file>/var/log/izzybot/izzybot.log</file>
+
+            <!-- Rolling policy for log rotation -->
+            <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+                <fileNamePattern>/var/log/izzybot/izzybot-%d{yyyy-MM-dd}.log</fileNamePattern>
+                <maxHistory>7</maxHistory>
+            </rollingPolicy>
+
+            <!-- Encoder for formatting log entries -->
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="info">
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+</configuration>

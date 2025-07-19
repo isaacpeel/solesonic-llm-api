@@ -1,0 +1,1 @@
+ALTER TABLE public.status_history DROP CONSTRAINT status_history_document_status_check;

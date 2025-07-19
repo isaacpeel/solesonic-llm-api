@@ -1,0 +1,53 @@
+{
+  "properties": [
+    {
+      "name": "jira.api.email",
+      "type": "java.lang.String",
+      "description": "Email for the account that will use the Jira API."
+    },
+    {
+      "name": "jira.api.token",
+      "type": "java.lang.String",
+      "description": "API token to access the jira API."
+    },
+    {
+      "name": "jira.api.uri",
+      "type": "java.lang.String",
+      "description": "The base URI for the JIRA api."
+    },
+    {
+      "name": "training.task.enabled",
+      "type": "java.lang.String",
+      "description": "Description for training.task.enabled."
+    },
+    {
+      "name": "jira.api.auth.callback.uri",
+      "type": "java.lang.String",
+      "description": "Description for jira.api.auth.callback.uri."
+    },
+    {
+      "name": "jira.api.auth.uri",
+      "type": "java.lang.String",
+      "description": "Description for jira.api.auth.uri."
+    },
+    {
+      "name": "jira.api.client.id",
+      "type": "java.lang.String",
+      "description": "Description for jira.api.client.id."
+    },
+    {
+      "name": "jira.api.client.secret",
+      "type": "java.lang.String",
+      "description": "Description for jira.api.client.secret."
+    },
+    {
+      "name": "local.dev.user.id",
+      "type": "java.lang.String",
+      "description": "Description for local.dev.user.id."
+    },
+    {
+      "name": "confluence.training.task.enabled",
+      "type": "java.lang.String",
+      "description": "Description for confluence.training.task.enabled."
+    }
+  ] }

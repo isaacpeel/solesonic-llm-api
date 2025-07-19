@@ -1,0 +1,1 @@
+ALTER TABLE jira_access_token RENAME TO atlassian_access_token;
