@@ -23,7 +23,7 @@
     </appender>
 
     <!-- Set specific loggers to DEBUG level for more detailed information -->
-    <logger name="com.solesonic.izzybot" level="DEBUG" />
+    <logger name="com.solesonic" level="DEBUG" />
     <logger name="org.springframework.boot" level="DEBUG" />
     <logger name="org.springframework.boot.autoconfigure" level="DEBUG" />
     <logger name="org.springframework.web" level="DEBUG" />
