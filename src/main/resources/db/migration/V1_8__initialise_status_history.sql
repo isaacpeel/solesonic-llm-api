@@ -16,4 +16,4 @@ create table public.status_history
     timestamp       timestamp(6) with time zone
 );
 
-alter table public.status_history owner to "solesonic-llm-api";
+alter table public.status_history owner to "${DB_OWNER}";
