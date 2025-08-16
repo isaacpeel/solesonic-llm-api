@@ -5,7 +5,7 @@ WORKDIR /app
 RUN mkdir -p /var/log/solesonic-llm-api
 VOLUME /var/log/solesonic-llm-api
 
-COPY ../target/*.jar app.jar
+COPY target/*.jar app.jar
 
 EXPOSE 8443
 
