@@ -16,7 +16,7 @@ import java.net.URI;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/izzybot/users")
+@RequestMapping("/users")
 public class UserController {
     private final UserPreferencesService userPreferencesService;
 

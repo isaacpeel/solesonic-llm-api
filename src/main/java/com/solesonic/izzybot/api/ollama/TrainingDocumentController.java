@@ -12,7 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 
 @RestController
-@RequestMapping("/izzybot")
+@RequestMapping("")
 public class TrainingDocumentController {
     private static final Logger log = LoggerFactory.getLogger(TrainingDocumentController.class);
 

@@ -14,7 +14,7 @@ import java.net.URI;
 import java.util.List;
 
 @RestController
-@RequestMapping("/izzybot/documents")
+@RequestMapping("/documents")
 public class DocumentController {
 
     private final VectorStoreService vectorStoreService;

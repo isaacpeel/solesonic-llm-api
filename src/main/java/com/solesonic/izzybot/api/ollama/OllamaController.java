@@ -9,7 +9,7 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/izzybot/ollama")
+@RequestMapping("/ollama")
 public class OllamaController {
     private final OllamaService ollamaService;
 
