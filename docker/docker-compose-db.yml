@@ -5,7 +5,7 @@ services:
     image: pgvector/pgvector:0.8.0-pg17
     container_name: solesonic-llm-api-db
     ports:
-      - "5445:5432"
+      - "5432:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_DB: ${POSTGRES_DB}
