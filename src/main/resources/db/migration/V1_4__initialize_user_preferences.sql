@@ -6,4 +6,4 @@ create table public.user_preferences
     updated timestamp(6) with time zone
 );
 
-alter table public.user_preferences owner to "solesonic-llm-api";
+alter table public.user_preferences owner to "${DB_OWNER}";

@@ -8,4 +8,4 @@ create table public.training_document
     updated      timestamp(6) with time zone
 );
 
-alter table public.training_document owner to "solesonic-llm-api";
+alter table public.training_document owner to "${DB_OWNER}";

@@ -9,4 +9,4 @@ create table public.jira_access_token
     updated       timestamp(6) with time zone
 );
 
-alter table public.jira_access_token owner to "solesonic-llm-api";
+alter table public.jira_access_token owner to "${DB_OWNER}";
