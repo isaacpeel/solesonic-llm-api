@@ -1,0 +1,15 @@
+CREATE SCHEMA IF NOT EXISTS public;
+
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS hstore;
+
+-- Note: In production, replace 'your_secure_password' with a secure password
+-- or use environment variables to inject the password
+CREATE ROLE "izzy-bot" WITH LOGIN PASSWORD 'your_secure_password';
+ALTER ROLE "izzy-bot" CREATEDB CREATEROLE;
+
+CREATE DATABASE "izzy-bot";
+GRANT ALL PRIVILEGES ON DATABASE "izzy-bot" TO "izzy-bot";
+GRANT ALL PRIVILEGES ON SCHEMA public TO "izzy-bot";
