@@ -7,8 +7,8 @@ services:
     ports:
       - "5445:5432"
     environment:
-      POSTGRES_USER: solesonic-llm-api
-      POSTGRES_DB: solesonic-llm-api
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     restart: unless-stopped
     volumes:
