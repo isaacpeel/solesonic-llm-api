@@ -16,7 +16,7 @@ services:
       - ./init_schema.sh:/docker-entrypoint-initdb.d/init_schema.sh
       - ./postgresql.conf:/etc/postgresql/postgresql.conf
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U solesonic-llm-api"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
