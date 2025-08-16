@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/izzybot/atlassian")
+@RequestMapping("/atlassian")
 public class JiraAuthController {
     private final JiraAuthService jiraAuthService;
 

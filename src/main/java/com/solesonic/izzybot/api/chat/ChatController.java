@@ -19,7 +19,7 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/izzybot/chats")
+@RequestMapping("/chats")
 public class ChatController {
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
