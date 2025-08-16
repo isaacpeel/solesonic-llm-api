@@ -2,11 +2,11 @@
     <springProfile name="prod">
         <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
             <!-- Path to the current log file -->
-            <file>/var/log/izzybot/izzybot.log</file>
+            <file>/var/log/solesonic-llm-api/solesonic-llm-api.log</file>
 
             <!-- Rolling policy for log rotation -->
             <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-                <fileNamePattern>/var/log/izzybot/izzybot-%d{yyyy-MM-dd}.log</fileNamePattern>
+                <fileNamePattern>/var/log/solesonic-llm-api/solesonic-llm-api-%d{yyyy-MM-dd}.log</fileNamePattern>
                 <maxHistory>7</maxHistory>
             </rollingPolicy>
 
