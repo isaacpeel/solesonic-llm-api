@@ -72,7 +72,7 @@ public class OllamaControllerTest {
         when(ollamaService.models()).thenReturn(ollamaModels);
 
         // Act & Assert
-        mockMvc.perform(get("/izzybot/ollama/models"))
+        mockMvc.perform(get("/ollama/models"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$[0].id").value(modelId.toString()))
@@ -89,7 +89,7 @@ public class OllamaControllerTest {
         when(ollamaService.get(modelId)).thenReturn(ollamaModel);
 
         // Act & Assert
-        mockMvc.perform(get("/izzybot/ollama/models/{id}", modelId))
+        mockMvc.perform(get("/ollama/models/{id}", modelId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
@@ -106,7 +106,7 @@ public class OllamaControllerTest {
         when(ollamaService.save(any(OllamaModel.class))).thenReturn(ollamaModel);
 
         // Act & Assert
-        mockMvc.perform(post("/izzybot/ollama/models")
+        mockMvc.perform(post("/ollama/models")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(ollamaModel)))
                 .andExpect(status().isOk())
@@ -125,7 +125,7 @@ public class OllamaControllerTest {
         when(ollamaService.update(eq(modelId), any(OllamaModel.class))).thenReturn(ollamaModel);
 
         // Act & Assert
-        mockMvc.perform(put("/izzybot/ollama/models/{id}", modelId)
+        mockMvc.perform(put("/ollama/models/{id}", modelId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(ollamaModel)))
                 .andExpect(status().isOk())

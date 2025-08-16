@@ -62,7 +62,7 @@ public class UserControllerTest {
         when(userPreferencesService.get(userId)).thenReturn(userPreferences);
 
         // Act & Assert
-        mockMvc.perform(get("/izzybot/users/{userId}/preferences", userId))
+        mockMvc.perform(get("/users/{userId}/preferences", userId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))
@@ -76,7 +76,7 @@ public class UserControllerTest {
         when(userPreferencesService.save(eq(userId), any(UserPreferences.class))).thenReturn(userPreferences);
 
         // Act & Assert
-        mockMvc.perform(post("/izzybot/users/{userId}/preferences", userId)
+        mockMvc.perform(post("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isCreated())
@@ -91,7 +91,7 @@ public class UserControllerTest {
         when(userPreferencesService.update(eq(userId), any(UserPreferences.class))).thenReturn(userPreferences);
 
         // Act & Assert
-        mockMvc.perform(put("/izzybot/users/{userId}/preferences", userId)
+        mockMvc.perform(put("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isOk())

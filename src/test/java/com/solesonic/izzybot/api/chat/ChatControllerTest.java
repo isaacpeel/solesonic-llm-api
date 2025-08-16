@@ -87,7 +87,7 @@ public class ChatControllerTest {
         when(chatService.create(eq(userId), any(ChatRequest.class))).thenReturn(izzyBotResponse);
 
         // Act & Assert
-        mockMvc.perform(post("/izzybot/chats/users/{userId}", userId)
+        mockMvc.perform(post("/chats/users/{userId}", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(chatRequest)))
                 .andExpect(status().isOk())
@@ -102,7 +102,7 @@ public class ChatControllerTest {
         when(chatService.update(eq(chatId), any(ChatRequest.class))).thenReturn(izzyBotResponse);
 
         // Act & Assert
-        mockMvc.perform(put("/izzybot/chats/{chatId}", chatId)
+        mockMvc.perform(put("/chats/{chatId}", chatId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(chatRequest)))
                 .andExpect(status().isOk())
@@ -123,7 +123,7 @@ public class ChatControllerTest {
         when(chatService.getByUserId(userId)).thenReturn(chats);
 
         // Act & Assert
-        mockMvc.perform(get("/izzybot/chats/users/{userId}", userId))
+        mockMvc.perform(get("/chats/users/{userId}", userId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$[0].id").value(chatId.toString()))
@@ -141,7 +141,7 @@ public class ChatControllerTest {
         when(chatService.get(chatId)).thenReturn(chat);
 
         // Act & Assert
-        mockMvc.perform(get("/izzybot/chats/{chatId}", chatId))
+        mockMvc.perform(get("/chats/{chatId}", chatId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(chatId.toString()))
@@ -160,7 +160,7 @@ public class ChatControllerTest {
         String requestJson = objectMapper.writeValueAsString(testRequest);
 
         // Act
-        MvcResult result = mockMvc.perform(post("/izzybot/chats/users/{userId}", userId)
+        MvcResult result = mockMvc.perform(post("/chats/users/{userId}", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(requestJson))
                 .andExpect(status().isOk())
@@ -192,7 +192,7 @@ public class ChatControllerTest {
         String requestJson = objectMapper.writeValueAsString(testRequest);
 
         // Act
-        MvcResult result = mockMvc.perform(put("/izzybot/chats/{chatId}", chatId)
+        MvcResult result = mockMvc.perform(put("/chats/{chatId}", chatId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(requestJson))
                 .andExpect(status().isOk())
