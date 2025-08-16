@@ -4,7 +4,7 @@ services:
       - .env
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     image: solesonic-llm-api:latest
     container_name: solesonic-llm-api
     network_mode: "host"
