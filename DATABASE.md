@@ -28,7 +28,7 @@ services:
     # ... other configuration ...
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_schema.sql:/docker-entrypoint-initdb.d/init_schema.sql
+      - ./init_schema.sh:/docker-entrypoint-initdb.d/init_schema.sh
       - ./postgresql.conf:/etc/postgresql/postgresql.conf
 ```
 
