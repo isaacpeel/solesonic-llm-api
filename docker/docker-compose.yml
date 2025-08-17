@@ -9,7 +9,7 @@ services:
     container_name: solesonic-llm-api
     network_mode: "host"
     ports:
-      - "8443:8443"
+      - "443:8443"
     restart: no
     environment:
       - DB_PASSWORD=${DB_PASSWORD}
