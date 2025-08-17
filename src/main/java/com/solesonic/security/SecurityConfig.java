@@ -25,7 +25,7 @@ import java.util.List;
 
 import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 import static jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
-import static org.springframework.http.HttpMethod.OPTIONS;
+import static org.springframework.http.HttpMethod.*;
 import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
 
 @Configuration
@@ -79,7 +79,7 @@ public class SecurityConfig {
         CorsConfiguration configuration = new CorsConfiguration();
 
         configuration.setAllowedOrigins(List.of(allowedOrigins));
-        configuration.setAllowedMethods(List.of(OPTIONS.name()));
+        configuration.setAllowedMethods(List.of(GET.name(), POST.name(), PUT.name(), DELETE.name(), OPTIONS.name()));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setAllowCredentials(true);
 
