@@ -29,14 +29,9 @@ public class CorsGlobalConfig {
         List<String> rawOrigins = List.of(allowedOrigins);
 
         CorsConfiguration corsConfiguration = new CorsConfiguration();
+        corsConfiguration.setAllowedOriginPatterns(List.of("*"));
         corsConfiguration.setAllowedMethods(List.of(GET.name(), POST.name(), PUT.name(), DELETE.name(), OPTIONS.name()));
         corsConfiguration.setAllowedHeaders(List.of("*"));
-        corsConfiguration.setAllowedOriginPatterns(List.of(
-                "https://izzy-bot.com",
-                "https://www.izzy-bot.com"
-                // or: "https://*.izzy-bot.com" if you want to allow subdomains
-        ));
-
         corsConfiguration.setAllowCredentials(false);
         corsConfiguration.setMaxAge(3600L);
 
@@ -45,8 +40,7 @@ public class CorsGlobalConfig {
 
         CorsFilter corsFilter = new CorsFilter(source);
         corsFilter.setCorsProcessor(new LoggingCorsProcessor());
-
-        log.info("[CORS] Global CorsFilter configured with allowed origins: {}", String.join(", ", allowedOrigins));
         return corsFilter;
+
     }
 }
