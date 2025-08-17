@@ -17,9 +17,18 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+
+import java.util.List;
 
 import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 import static jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
+import static org.springframework.http.HttpMethod.GET;
+import static org.springframework.http.HttpMethod.PUT;
+import static org.springframework.http.HttpMethod.POST;
+import static org.springframework.http.HttpMethod.DELETE;
 import static org.springframework.http.HttpMethod.OPTIONS;
 import static org.springframework.http.MediaType.APPLICATION_JSON_VALUE;
 import static org.springframework.security.config.Customizer.withDefaults;
@@ -32,6 +41,10 @@ public class SecurityConfig {
 
     @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}")
     private String jwkSetUri;
+
+    @Value("${cors.allowed.origins}")
+    private String[] allowedOrigins;
+
 
     private final JwtUserRequestFilter jwtUserRequestFilter;
     private final RequestLoggingFilter requestLoggingFilter;
@@ -66,6 +79,22 @@ public class SecurityConfig {
         http.addFilterAfter(jwtUserRequestFilter, BearerTokenAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+
+        configuration.setAllowedOrigins(List.of(allowedOrigins));
+        configuration.setAllowedMethods(List.of(GET.name(), POST.name(), PUT.name(), DELETE.name(), OPTIONS.name()));
+        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowCredentials(false);
+        configuration.setMaxAge(3600L);
+
+        UrlBasedCorsConfigurationSource urlBasedCorsConfigurationSource = new UrlBasedCorsConfigurationSource();
+        urlBasedCorsConfigurationSource.registerCorsConfiguration("/**", configuration);
+
+        return urlBasedCorsConfigurationSource;
     }
 
     private AuthenticationEntryPoint authenticationEntryPoint() {
