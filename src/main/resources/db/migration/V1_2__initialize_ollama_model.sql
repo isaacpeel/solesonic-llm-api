@@ -10,7 +10,7 @@ create table public.ollama_model
     vision    boolean not null
 );
 
-alter table public.ollama_model owner to "solesonic-llm-api";
+alter table public.ollama_model owner to "${DB_OWNER}";
 
 INSERT INTO public.ollama_model (censored,
                                  created,

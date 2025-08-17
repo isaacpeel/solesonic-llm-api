@@ -1,4 +1,5 @@
-/docker-db/.env
+/docker/.env
 /.env
 /target/
 /.idea/
+/.junie/

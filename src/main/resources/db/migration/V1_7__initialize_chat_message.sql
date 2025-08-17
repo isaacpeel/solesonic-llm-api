@@ -15,4 +15,4 @@ create table public.chat_message
     model        varchar(255)
 );
 
-alter table public.chat_message owner to "solesonic-llm-api";
+alter table public.chat_message owner to "${DB_OWNER}";

@@ -1,0 +1,27 @@
+services:
+  solesonic-llm-api:
+    env_file:
+      - .env
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: solesonic-llm-api:latest
+    container_name: solesonic-llm-api
+    network_mode: "host"
+    ports:
+      - "8443:8443"
+    restart: no
+    environment:
+      - DB_PASSWORD=${DB_PASSWORD}
+      - TRAINING_ENABLED=${TRAINING_ENABLED}
+      - JWK_SET_URI=${JWK_SET_URI}
+      - ISSUER_URI=${ISSUER_URI}
+      - JIRA_CLIENT_ID=${JIRA_CLIENT_ID}
+      - JIRA_CLIENT_SECRET=${JIRA_CLIENT_SECRET}
+      - CONFLUENCE_TRAINING_ENABLED=${CONFLUENCE_TRAINING_ENABLED}
+      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
+      - SSL_CERT_LOCATION=/run/secrets/${SSL_CERT_FILE}
+    volumes:
+      - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
+      - ${SYSTEM_SSL_CERT_LOCATION}/${SSL_CERT_FILE}:/run/secrets/${SSL_CERT_FILE}:ro
+

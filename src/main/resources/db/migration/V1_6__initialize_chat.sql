@@ -5,4 +5,4 @@ create table public.chat
     user_id     uuid
 );
 
-alter table public.chat owner to "solesonic-llm-api";
+alter table public.chat owner to "${DB_OWNER}";
