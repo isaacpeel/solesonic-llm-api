@@ -104,7 +104,7 @@ public class PromptService {
 
         return chatClient.prompt(contextPrompt)
                 .user(chatMessage)
-                .toolCallbacks(tools)
+//                .toolCallbacks(tools)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
@@ -173,7 +173,7 @@ public class PromptService {
         boolean useTools = modelSupportsTools && userNeedsTools;
 
         if (useTools) {
-            return ToolCallbacks.from(createJiraTools, assigneeJiraTools, createConfluenceTools);
+            return ToolCallbacks.from(createConfluenceTools);
         }
 
         return new ToolCallback[]{};
