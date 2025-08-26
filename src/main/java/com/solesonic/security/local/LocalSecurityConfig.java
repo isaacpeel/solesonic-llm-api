@@ -1,24 +1,20 @@
 package com.solesonic.security.local;
 
 import com.solesonic.config.RequestLoggingFilter;
-import com.solesonic.mcp.client.McpSyncClientExchangeFilterFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
-import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configurers.CsrfConfigurer;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 
@@ -52,17 +48,7 @@ public class LocalSecurityConfig {
 
         http.addFilterBefore(requestLoggingFilter, UsernamePasswordAuthenticationFilter.class);
         http.addFilterAfter(jwtUserRequestFilter, BearerTokenAuthenticationFilter.class);
-
-        http.authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
-                .oauth2Client(Customizer.withDefaults())
-                .csrf(CsrfConfigurer::disable);
-
         return http.build();
-    }
-
-    @Bean
-    public WebClient.Builder webClientBuilder(McpSyncClientExchangeFilterFunction filterFunction) {
-        return WebClient.builder().apply(filterFunction.configuration());
     }
 
     @SuppressWarnings("unused")

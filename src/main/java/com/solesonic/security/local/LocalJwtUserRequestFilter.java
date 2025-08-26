@@ -57,14 +57,14 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
             String issuer = jwt.getClaimAsString(ISS);
 
-//            if(issuerUri.equalsIgnoreCase(issuer)) {
-//                //This is direct from Oauth2
-//                userId = defaultUserId();
-//            } else {
+            if(issuerUri.equalsIgnoreCase(issuer)) {
+                //This is direct from Oauth2
+                userId = defaultUserId();
+            } else {
                 //This is from UI
                 String jwtClaim = jwt.getClaimAsString(SUB);
                 userId = UUID.fromString(jwtClaim);
-//            }
+            }
         } else {
             userId = defaultUserId();
         }
