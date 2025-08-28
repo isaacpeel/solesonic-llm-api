@@ -95,12 +95,10 @@ public class PromptService {
         return userPreferencesService.get(userId);
     }
 
-    public String prompt(UUID chatId,
-                         String chatMessage) {
-
+    public String prompt(UUID chatId, String chatMessage) {
         String model = model();
 
-        IntentType intent = userIntentService.determineIntent(chatMessage);
+        IntentType intent = userIntentService.determineIntent(chatMessage, chatId);
 
         Resource promptTemplate = promptResource(intent);
 

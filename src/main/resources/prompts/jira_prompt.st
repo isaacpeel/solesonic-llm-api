@@ -51,4 +51,7 @@ You are specialized in creating Jira issues. Follow these instructions carefully
 
 4. Call `create_jira_issue` with all prepared details
 
-5. Provide confirmation of the created issue to the user
+5. Provide confirmation of the created issue to the user, including:
+   - Issue summary/title
+   - Issue ID
+   - Direct link to the issue (use the issueUri from the function response)
