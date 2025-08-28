@@ -8,7 +8,6 @@ import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.repository.ollama.ChatRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.stereotype.Service;
 
 import java.time.ZonedDateTime;
@@ -103,16 +102,10 @@ public class ChatService {
     public SolesonicChatResponse update(UUID chatId, ChatRequest chatRequest) {
         String chatMessage = chatRequest.chatMessage();
 
-        // Build prompt using PromptService
-        Prompt contextPrompt = promptService.buildTemplatePrompt(chatMessage);
+        String responseContent = promptService.prompt(chatId, chatMessage);
 
-        // Get response from PromptService
-        String responseContent = promptService.prompt(chatId, chatMessage, contextPrompt);
+        String chatModel = promptService.model();
 
-        // Get model from PromptService
-        String chatModel = promptService.getModel();
-
-        // Create response message
         ChatMessage responseMessage = new ChatMessage();
         responseMessage.setChatId(chatId);
         responseMessage.setMessageType(ASSISTANT);
