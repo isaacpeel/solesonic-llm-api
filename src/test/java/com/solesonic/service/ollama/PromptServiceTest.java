@@ -4,6 +4,8 @@ import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.intent.IntentType;
+import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import com.solesonic.tools.jira.AssigneeJiraTools;
@@ -43,7 +45,13 @@ public class PromptServiceTest {
     private OllamaModelRepository ollamaModelRepository;
 
     @Mock
-    private Resource toolsPrompt;
+    private UserIntentService userIntentService;
+
+    @Mock
+    private Resource jiraPrompt;
+
+    @Mock
+    private Resource confluencePrompt;
 
     @Mock
     private Resource basicPrompt;
@@ -121,10 +129,15 @@ public class PromptServiceTest {
                 new java.io.ByteArrayInputStream(BASIC_PROMPT_CONTENT.getBytes()));
         lenient().when(basicPrompt.getContentAsString(any())).thenReturn(BASIC_PROMPT_CONTENT);
 
-        // For toolsPrompt
-        lenient().when(toolsPrompt.getInputStream()).thenReturn(
+        // For jiraPrompt
+        lenient().when(jiraPrompt.getInputStream()).thenReturn(
                 new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
-        lenient().when(toolsPrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
+        lenient().when(jiraPrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
+
+        // For confluencePrompt
+        lenient().when(confluencePrompt.getInputStream()).thenReturn(
+                new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
+        lenient().when(confluencePrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
 
         // Set up other mocks
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
@@ -149,92 +162,98 @@ public class PromptServiceTest {
         // Arrange
         String chatMessage = "Hello, how are you?";
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return false
-        doReturn(false).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        // Mock UserIntentService to return GENERAL intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.GENERAL);
 
         // Mock PromptTemplate behavior
-        ReflectionTestUtils.setField(spyPromptService, "basicPrompt", basicPrompt);
+        ReflectionTestUtils.setField(promptService, "basicPrompt", basicPrompt);
 
         // Act
-        Prompt result = spyPromptService.buildTemplatePrompt(chatMessage);
+        Prompt result = promptService.buildTemplatePrompt(chatMessage);
 
         // Assert
         assertThat(result).isNotNull();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
-    void testBuildTemplatePrompt_ToolsPrompt() {
+    void testBuildTemplatePrompt_JiraPrompt() {
         // Arrange
         String chatMessage = "Create a Jira issue for this bug";
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        // Mock UserIntentService to return CREATING_JIRA_ISSUE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_JIRA_ISSUE);
 
         // Mock PromptTemplate behavior
-        ReflectionTestUtils.setField(spyPromptService, "toolsPrompt", toolsPrompt);
+        ReflectionTestUtils.setField(promptService, "jiraPrompt", jiraPrompt);
 
         // Act
-        Prompt result = spyPromptService.buildTemplatePrompt(chatMessage);
+        Prompt result = promptService.buildTemplatePrompt(chatMessage);
 
         // Assert
         assertThat(result).isNotNull();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
-    void testShouldUseToolsPrompt_WithJiraKeywords() {
-        // Test with Jira-related keywords
-        String[] jiraInputs = {
-                "Create a Jira issue for this bug",
-                "I need to assign this task to John",
-                "Can you make a ticket for this feature?",
-                "Please create a bug report",
-                "I want to track this project in Jira"
-        };
+    void testBuildTemplatePrompt_ConfluencePrompt() {
+        // Arrange
+        String chatMessage = "Create a Confluence page about this topic";
 
-        for (String input : jiraInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should indicate tools are needed", input).isTrue();
-        }
+        // Mock UserIntentService to return CREATING_CONFLUENCE_PAGE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_CONFLUENCE_PAGE);
+
+        // Mock PromptTemplate behavior
+        ReflectionTestUtils.setField(promptService, "confluencePrompt", confluencePrompt);
+
+        // Act
+        Prompt result = promptService.buildTemplatePrompt(chatMessage);
+
+        // Assert
+        assertThat(result).isNotNull();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
-    void testShouldUseToolsPrompt_WithConfluenceKeywords() {
-        // Test with Confluence-related keywords
-        String[] confluenceInputs = {
-                "Create a Confluence page about this topic",
-                "I need to document this in the wiki",
-                "Can you make a documentation page?",
-                "Please add this to our knowledge base",
-                "I want to create a page in Confluence"
-        };
+    void testShouldUseToolsPrompt_WithJiraIntent() {
+        // Test with Jira intent
+        String chatMessage = "Create a Jira issue for this bug";
+        
+        // Mock UserIntentService to return CREATING_JIRA_ISSUE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_JIRA_ISSUE);
 
-        for (String input : confluenceInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should indicate tools are needed", input).isTrue();
-        }
+        boolean result = promptService.shouldUseToolsPrompt(chatMessage);
+        
+        assertThat(result).isTrue();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
-    void testShouldUseToolsPrompt_WithoutToolKeywords() {
-        // Test with inputs that don't indicate tools are needed
-        String[] regularInputs = {
-                "What is the weather today?",
-                "Tell me a joke",
-                "How do I cook pasta?",
-                "What's the capital of France?",
-                "Explain quantum physics"
-        };
+    void testShouldUseToolsPrompt_WithConfluenceIntent() {
+        // Test with Confluence intent
+        String chatMessage = "Create a Confluence page about this topic";
+        
+        // Mock UserIntentService to return CREATING_CONFLUENCE_PAGE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_CONFLUENCE_PAGE);
 
-        for (String input : regularInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should not indicate tools are needed", input).isFalse();
-        }
+        boolean result = promptService.shouldUseToolsPrompt(chatMessage);
+        
+        assertThat(result).isTrue();
+        verify(userIntentService).determineIntent(chatMessage);
+    }
+
+    @Test
+    void testShouldUseToolsPrompt_WithGeneralIntent() {
+        // Test with general intent (no tools needed)
+        String chatMessage = "What is the weather today?";
+        
+        // Mock UserIntentService to return GENERAL intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.GENERAL);
+
+        boolean result = promptService.shouldUseToolsPrompt(chatMessage);
+        
+        assertThat(result).isFalse();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
@@ -256,18 +275,16 @@ public class PromptServiceTest {
         // Set up model to support tools
         ollamaModel.setTools(true);
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        // Mock UserIntentService to return CREATING_JIRA_ISSUE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_JIRA_ISSUE);
 
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(chatMessage, model);
 
         // Assert
         assertThat(tools).isNotEmpty();
         verify(ollamaModelRepository).findByName(model);
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
@@ -279,18 +296,16 @@ public class PromptServiceTest {
         // Set up model to not support tools
         ollamaModel.setTools(false);
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        // Mock UserIntentService to return CREATING_JIRA_ISSUE intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.CREATING_JIRA_ISSUE);
 
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(chatMessage, model);
 
         // Assert
         assertThat(tools).isEmpty();
         verify(ollamaModelRepository).findByName(model);
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     @Test
@@ -299,17 +314,15 @@ public class PromptServiceTest {
         String chatMessage = "What is the weather today?";
         String model = "llama3";
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return false
-        doReturn(false).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        // Mock UserIntentService to return GENERAL intent
+        when(userIntentService.determineIntent(chatMessage)).thenReturn(IntentType.GENERAL);
 
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(chatMessage, model);
 
         // Assert
         assertThat(tools).isEmpty();
+        verify(userIntentService).determineIntent(chatMessage);
     }
 
     // Note: Testing the prompt method is complex due to the ChatClient's fluent API

@@ -1,13 +1,10 @@
 package com.solesonic.service.ollama;
 
-import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.intent.IntentType;
+import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
-import com.solesonic.tools.confluence.CreateConfluenceTools;
-import com.solesonic.tools.jira.AssigneeJiraTools;
-import com.solesonic.tools.jira.CreateJiraTools;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,8 +16,6 @@ import org.springframework.ai.ollama.api.OllamaOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
-import org.springframework.ai.support.ToolCallbacks;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -40,14 +35,14 @@ public class PromptService {
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
     private final UserRequestContext userRequestContext;
-    private final OllamaModelRepository ollamaModelRepository;
     private final VectorStore vectorStore;
-    private final CreateJiraTools createJiraTools;
-    private final AssigneeJiraTools assigneeJiraTools;
-    private final CreateConfluenceTools createConfluenceTools;
+    private final UserIntentService userIntentService;
 
-    @Value("classpath:prompts/tools_prompt.st")
-    private Resource toolsPrompt;
+    @Value("classpath:prompts/jira_prompt.st")
+    private Resource jiraPrompt;
+
+    @Value("classpath:prompts/confluence_prompt.st")
+    private Resource confluencePrompt;
 
     @Value("classpath:prompts/basic_prompt.st")
     private Resource basicPrompt;
@@ -59,19 +54,13 @@ public class PromptService {
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
             UserRequestContext userRequestContext,
-            OllamaModelRepository ollamaModelRepository,
             VectorStore vectorStore,
-            CreateJiraTools createJiraTools,
-            AssigneeJiraTools assigneeJiraTools,
-            CreateConfluenceTools createConfluenceTools) {
+            UserIntentService userIntentService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
-        this.ollamaModelRepository = ollamaModelRepository;
         this.vectorStore = vectorStore;
-        this.createJiraTools = createJiraTools;
-        this.assigneeJiraTools = assigneeJiraTools;
-        this.createConfluenceTools = createConfluenceTools;
+        this.userIntentService = userIntentService;
     }
 
     public String getModel() {
@@ -98,17 +87,14 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        ToolCallback[] tools = tools(chatMessage, model);
-
-        log.info("Using tools prompt for chat id {} as user input indicates tools are needed", chatId);
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
         return chatClient.prompt(contextPrompt)
                 .user(chatMessage)
-                .toolCallbacks(tools)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
-                .advisors(retrievalAugmentationAdvisor())
+                .advisors(retrievalAugmentationAdvisor)
                 .options(ollamaOptions)
                 .call()
                 .content();
@@ -116,7 +102,7 @@ public class PromptService {
 
     public Prompt buildTemplatePrompt(String chatMessage) {
         // Determine which prompt to use based on user input
-        Resource promptToUse = shouldUseToolsPrompt(chatMessage) ? toolsPrompt : basicPrompt;
+        Resource promptToUse = determinePromptToUse(chatMessage);
 
         PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
 
@@ -126,56 +112,25 @@ public class PromptService {
     }
 
     /**
-     * Determines if the tool prompt should be used based on the user input.
-     * Checks for keywords related to Jira or Confluence.
-     *
+     * Determines which prompt template to use based on user intent detection.
+     * 
      * @param userInput the user's input message
-     * @return true if tools prompt should be used, false otherwise
+     * @return the appropriate prompt resource
      */
-    public boolean shouldUseToolsPrompt(String userInput) {
+    private Resource determinePromptToUse(String userInput) {
         if (StringUtils.isEmpty(userInput)) {
-            return false;
+            return basicPrompt;
         }
 
-        String input = userInput.toLowerCase();
+        IntentType intent = userIntentService.determineIntent(userInput);
+        
+        log.debug("Determined intent '{}' for user input: '{}'", intent, userInput);
 
-        // Jira-related keywords
-        boolean containsJiraKeywords = input.contains("jira") ||
-                input.contains("issue") ||
-                input.contains("ticket") ||
-                input.contains("bug") ||
-                input.contains("task") ||
-                input.contains("assign") ||
-                input.contains("project");
-
-        // Confluence-related keywords
-        boolean containsConfluenceKeywords = input.contains("confluence") ||
-                input.contains("page") ||
-                input.contains("wiki") ||
-                input.contains("document") ||
-                input.contains("documentation") ||
-                input.contains("knowledge base");
-
-        return containsJiraKeywords || containsConfluenceKeywords;
-    }
-
-    public ToolCallback[] tools(String chatMessage, String model) {
-        // Check if the model supports tools
-        boolean modelSupportsTools = ollamaModelRepository.findByName(model)
-                .map(OllamaModel::isTools)
-                .orElse(false);
-
-        // Check if user input indicates tools should be used
-        boolean userNeedsTools = shouldUseToolsPrompt(chatMessage);
-
-        // Only use tools if both conditions are met
-        boolean useTools = modelSupportsTools && userNeedsTools;
-
-        if (useTools) {
-            return ToolCallbacks.from(createJiraTools, assigneeJiraTools, createConfluenceTools);
-        }
-
-        return new ToolCallback[]{};
+        return switch (intent) {
+            case CREATING_JIRA_ISSUE -> jiraPrompt;
+            case CREATING_CONFLUENCE_PAGE -> confluencePrompt;
+            case GENERAL -> basicPrompt;
+        };
     }
 
     private Advisor retrievalAugmentationAdvisor() {
