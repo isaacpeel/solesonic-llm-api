@@ -26,7 +26,7 @@ public class JiraService {
     public static final String PROJECT_ID = "10000";
     public static final String ISSUE_TYPE_ID = "10001";
 
-    @Value("${solesonic.llm.jira.cloud.id.path")
+    @Value("${solesonic.llm.jira.cloud.id.path}")
     private String cloudIdPath;
 
     public static final String EX = "ex";
