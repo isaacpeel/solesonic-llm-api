@@ -37,6 +37,7 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String INPUT = "input";
+    public static final String BOT_NAME = "botName";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -56,6 +57,9 @@ public class PromptService {
 
     @Value("classpath:prompts/basic_prompt.st")
     private Resource basicPrompt;
+
+    @Value("${solesonic.llm.bot.name}")
+    private String botName;
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
@@ -128,7 +132,9 @@ public class PromptService {
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
         PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
 
-        Map<String, Object> promptContext = Map.of(INPUT, chatMessage);
+        Map<String, Object> promptContext = Map.of(
+                INPUT, chatMessage,
+                BOT_NAME, botName);
 
         return promptTemplate.create(promptContext);
     }
