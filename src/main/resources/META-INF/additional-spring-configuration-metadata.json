@@ -59,6 +59,16 @@
       "name": "solesonic.llm.bot.name",
       "type": "java.lang.String",
       "description": "The name of the bot."
+    },
+    {
+      "name": "solesonic.llm.jira.url.template",
+      "type": "java.lang.String",
+      "description": "URL template for linking jira issues."
+    },
+    {
+      "name": "solesonic.llm.jira.cloud.id.path",
+      "type": "java.lang.String",
+      "description": "The path to the Jira Cloud ID."
     }
   ]
 }

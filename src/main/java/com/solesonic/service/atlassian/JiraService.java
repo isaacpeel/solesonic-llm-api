@@ -6,6 +6,7 @@ import com.solesonic.model.atlassian.jira.issue.User;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -25,7 +26,9 @@ public class JiraService {
     public static final String PROJECT_ID = "10000";
     public static final String ISSUE_TYPE_ID = "10001";
 
-    public static final String CLOUD_ID_PATH = "c89568e3-77f7-425f-918a-32e3b30734fd";
+    @Value("${solesonic.llm.jira.cloud.id.path")
+    private String cloudIdPath;
+
     public static final String EX = "ex";
     public static final String JIRA = "jira";
 
@@ -35,7 +38,8 @@ public class JiraService {
     public static final String API_PATH = "api";
     public static final String VERSION_PATH = "3";
 
-    public static final String[] basePathSegments = {EX, JIRA, CLOUD_ID_PATH, REST_PATH, API_PATH, VERSION_PATH};
+    public final String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+
     public static final String ISSUE_PATH = "issue";
     private final WebClient webClient;
 

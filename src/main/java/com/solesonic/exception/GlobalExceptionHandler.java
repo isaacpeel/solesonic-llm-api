@@ -7,6 +7,7 @@ import com.solesonic.scope.UserRequestContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
@@ -17,11 +18,12 @@ import javax.validation.constraints.NotNull;
 import java.net.URI;
 import java.util.UUID;
 
-import static com.solesonic.tools.jira.CreateJiraTools.JIRA_URL_TEMPLATE;
-
 @ControllerAdvice
 public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @Value("${JIRA_URL_TEMPLATE}")
+    private String jiraUrlTemplate;
 
     private static final String DUPLICATE_JIRA_MESSAGE_TEMPLATE = """
             I've gone into an error state but still managed managed to create your Jira issue.
@@ -78,7 +80,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DuplicateJiraCreationException.class)
     public ResponseEntity<SolesonicChatResponse> handleDuplicateJiraException(DuplicateJiraCreationException duplicateJiraCreationException) {
         JiraIssue jiraIssue = duplicateJiraCreationException.getJiraIssue();
-        String jiraUri = JIRA_URL_TEMPLATE.replace(ISSUE_ID, jiraIssue.key());
+        String jiraUri = jiraUrlTemplate.replace(ISSUE_ID, jiraIssue.key());
 
         String responseMessage = DUPLICATE_JIRA_MESSAGE_TEMPLATE.replace(ISSUE_LINK, jiraUri);
 
