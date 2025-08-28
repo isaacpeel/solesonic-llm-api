@@ -4,7 +4,7 @@ This document describes how the database schema is managed in the Solesonic LLM 
 
 ## Overview
 
-The Solesonic LLM API uses PostgreSQL with the pgvector extension for efficient vector embeddings storage. The database schema is managed through a combination of:
+The Solesonic LLM API uses PostgresSQL with the pgvector extension for efficient vector embeddings storage. The database schema is managed through a combination of:
 
 1. Initial setup using Docker and initialization scripts
 2. Schema evolution using Flyway migrations
@@ -13,13 +13,13 @@ The Solesonic LLM API uses PostgreSQL with the pgvector extension for efficient 
 
 The initial database setup is handled through Docker Compose, which creates a PostgreSQL container with the pgvector extension. The setup is defined in the following files:
 
-- `docker-db/docker-compose-db.yml`: Defines the PostgreSQL container with pgvector
+- `docker-db/docker-compose-db.yml`: Defines the PostgresSQL container with pgvector
 - `docker-db/init_schema.sql`: Initializes the database with required extensions
-- `docker-db/postgresql.conf`: Custom PostgreSQL configuration
+- `docker-db/postgresql.conf`: Custom PostgresSQL configuration
 
 ### Docker Compose Configuration
 
-The `docker-compose-db.yml` file sets up a PostgreSQL container with the pgvector extension:
+The `docker-compose-db.yml` file sets up a PostgresSQL container with the pgvector extension:
 
 ```yaml
 services:

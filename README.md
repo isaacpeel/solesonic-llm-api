@@ -5,6 +5,8 @@ A Spring Boot application that provides an API for interacting with Large Langua
 ## Features
 
 - **LLM Integration**: Uses Ollama for chat and embedding models
+- **Intent-Based Prompts**: Automatically classifies user messages and selects appropriate prompts and tools
+- **MCP Server Integration**: Connects to Model Context Protocol (MCP) servers with OAuth2 authentication
 - **Document Processing**: Supports PDF and other document formats
 - **Vector Storage**: Uses pgvector for efficient vector embeddings storage
 - **RAG (Retrieval Augmented Generation)**: Enhances LLM responses with relevant context
@@ -46,6 +48,11 @@ ISSUER_URI=https://your-issuer-uri
 JIRA_CLIENT_ID=your_jira_client_id
 JIRA_CLIENT_SECRET=your_jira_client_secret
 
+# MCP Server Configuration (optional)
+MCP_ENABLED=false
+MCP_CLIENT_ID=your_mcp_client_id
+MCP_CLIENT_SECRET=your_mcp_client_secret
+
 # CORS Configuration
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 
@@ -71,8 +78,7 @@ The application uses different property files for different environments:
 ### 1. Start the Database
 
 ```bash
-cd docker-db
-docker-compose -f docker-compose-db.yml up -d
+docker compose -f docker/docker-compose-db.yml up -d
 ```
 
 This will start a PostgreSQL database with the pgvector extension on port 5445.
@@ -116,6 +122,100 @@ The application should be running at `http://localhost:8080`.
 The application uses OAuth2 with JWT for authentication. In production, all requests require authentication with a valid JWT token.
 
 For local development, authentication is more relaxed but still uses the JWT mechanism.
+
+## Intent-Based Prompts
+
+The Solesonic LLM API uses an intelligent intent classification system to automatically select the most appropriate prompts and tools based on user messages.
+
+### How It Works
+
+1. **Intent Classification**: Every user message is automatically classified into one of three intent types:
+   - `GENERAL`: Regular chat conversations (no specialized tools needed)
+   - `CREATING_JIRA_ISSUE`: Creating or managing Jira issues
+   - `CREATING_CONFLUENCE_PAGE`: Creating or editing Confluence pages
+
+2. **Automatic Tool Selection**: Based on the detected intent, the system automatically provides the appropriate tools:
+   - **Jira Intent**: Includes Jira creation and assignee tools
+   - **Confluence Intent**: Includes Confluence page creation tools
+   - **General Intent**: No specialized tools attached
+
+3. **Prompt Template Selection**: Each intent type uses a specialized prompt template optimized for that type of interaction.
+
+### Configuration
+
+The intent classification uses a separate LLM model configured via:
+
+```properties
+soleonic.llm.intent.model=qwen2.5:7b
+```
+
+The system uses a specialized prompt template (`intent_prompt.st`) to classify user messages with high accuracy.
+
+### Benefits
+
+- **Efficiency**: Users don't need to specify which tools they want to use
+- **Context-Aware**: Responses are optimized for the specific type of task
+- **Resource Optimization**: Only necessary tools are loaded for each conversation
+- **Consistent Experience**: Similar requests always get the same type of specialized handling
+
+## MCP Server Integration
+
+The application supports integration with Model Context Protocol (MCP) servers, enabling connection to external tools and services with secure authentication.
+
+### Authentication Setup
+
+The MCP integration supports OAuth2 client credentials flow, designed to work with AWS Cognito but compatible with any OAuth2 identity provider.
+
+#### Required Environment Variables
+
+Add the following to your `.env` file:
+
+```bash
+# MCP Configuration
+MCP_ENABLED=true
+MCP_CLIENT_ID=your_mcp_client_id
+MCP_CLIENT_SECRET=your_mcp_client_secret
+
+# OAuth2 Provider (AWS Cognito or other)
+ISSUER_URI=https://cognito-idp.region.amazonaws.com/user_pool_id
+JWK_SET_URI=https://cognito-idp.region.amazonaws.com/user_pool_id/.well-known/jwks.json
+```
+
+#### AWS Cognito Setup
+
+For AWS Cognito integration:
+
+1. **Create App Client**: In your Cognito User Pool, create an app client with:
+   - Client credentials grant type enabled
+   - Appropriate OAuth scopes (e.g., `solesonic-mcp.read`)
+
+2. **Configure Domain**: Set up a Cognito domain for token endpoint access
+
+3. **Update Environment Variables**: Use your Cognito User Pool details:
+   ```bash
+   ISSUER_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_YourPoolId
+   JWK_SET_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_YourPoolId/.well-known/jwks.json
+   MCP_CLIENT_ID=your_cognito_app_client_id
+   MCP_CLIENT_SECRET=your_cognito_app_client_secret
+   ```
+
+### How It Works
+
+1. **Authentication Flow**: The system uses OAuth2 client credentials to obtain access tokens
+2. **Token Management**: Access tokens are automatically refreshed and managed
+3. **Request Authentication**: All MCP server requests include proper Authorization headers
+4. **User Context**: When available, user JWT tokens are forwarded; otherwise, client credentials are used
+
+### MCP Server Configuration
+
+Configure your MCP server connection:
+
+```properties
+# MCP server URL (default: http://localhost:8081)
+spring.ai.mcp.client.sse.connections.solesonic.url=http://your-mcp-server:port
+```
+
+The MCP integration automatically provides tools from connected MCP servers to the chat interface, extending the capabilities of the LLM with external services and data sources.
 
 ## Development
 
