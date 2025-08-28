@@ -25,6 +25,8 @@ public class AssigneeJiraTools {
     public record AssigneeResponse(String assigneeId) {}
     public record AssigneeRequest(String assignee) {}
 
+    @SuppressWarnings("unused")
+    @Tool(name = ASSIGN_JIRA, description = "Looks up the assignee ID prior to "+CREATE_JIRA_ISSUE+" if needed.")
     public AssigneeResponse assigneeLookup(@ToolParam(description = "Assignee to look up.") AssigneeRequest assigneeRequest) {
         log.debug("Invoking user search for: {}", assigneeRequest);
 

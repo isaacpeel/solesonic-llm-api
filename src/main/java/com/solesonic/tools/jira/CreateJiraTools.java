@@ -32,6 +32,9 @@ public class CreateJiraTools {
     public record CreateJiraResponse(String issueId, String issueUri) {}
     public record CreateJiraRequest(String summary, String description, List<String> acceptanceCriteria, String assigneeId) {}
 
+    @SuppressWarnings("unused")
+    @Tool(name = CREATE_JIRA_ISSUE,
+            description = "Creates a jira issue.  Use responsibly and ensure no repeated calls for the same request.  If an assignee is needed always call '"+ASSIGN_JIRA+"' first.")
     public CreateJiraResponse createJiraIssue(@ToolParam(description = "Request to create a jira issue.") CreateJiraRequest createJiraRequest) {
         log.debug("Invoking create jira function");
         log.debug("Summary: {}", createJiraRequest.summary);

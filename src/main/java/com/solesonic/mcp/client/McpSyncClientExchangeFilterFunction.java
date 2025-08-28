@@ -25,14 +25,12 @@ import java.util.function.Consumer;
 public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFunction {
 
     private static final Logger log = LoggerFactory.getLogger(McpSyncClientExchangeFilterFunction.class);
+    public static final String CLIENT_CREDENTIALS_CLIENT = "client-credentials-client";
+    public static final String SOLESONIC_MCP_READ = "solesonic-mcp.read";
+    private static final String CLIENT_CREDENTIALS_CLIENT_REGISTRATION_ID = "mcp-client";
 
     private final ClientCredentialsOAuth2AuthorizedClientProvider clientCredentialTokenProvider = new ClientCredentialsOAuth2AuthorizedClientProvider();
-
     private final ClientRegistrationRepository clientRegistrationRepository;
-
-    // Must match registration id in property
-    // spring.security.oauth2.client.registration.<REGISTRATION-ID>.authorization-grant-type=client_credentials
-    private static final String CLIENT_CREDENTIALS_CLIENT_REGISTRATION_ID = "mcp-client";
 
     public McpSyncClientExchangeFilterFunction(ClientRegistrationRepository clientRegistrationRepository) {
         this.clientRegistrationRepository = clientRegistrationRepository;
@@ -83,8 +81,7 @@ public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFuncti
                 .findByRegistrationId(CLIENT_CREDENTIALS_CLIENT_REGISTRATION_ID);
 
         var authRequest = OAuth2AuthorizationContext.withClientRegistration(clientRegistration)
-                .principal(new AnonymousAuthenticationToken("client-credentials-client", "client-credentials-client",
-                        AuthorityUtils.createAuthorityList("solesonic-mcp.read")))
+                .principal(new AnonymousAuthenticationToken(CLIENT_CREDENTIALS_CLIENT, CLIENT_CREDENTIALS_CLIENT, AuthorityUtils.createAuthorityList(SOLESONIC_MCP_READ)))
                 .build();
 
         OAuth2AuthorizedClient oAuth2AuthorizedClient = clientCredentialTokenProvider.authorize(authRequest);
