@@ -98,7 +98,7 @@ public class PromptService {
     public String prompt(UUID chatId, String chatMessage) {
         String model = model();
 
-        IntentType intent = userIntentService.determineIntent(chatMessage, chatId);
+        IntentType intent = userIntentService.determineIntent(chatMessage);
 
         Resource promptTemplate = promptResource(intent);
 

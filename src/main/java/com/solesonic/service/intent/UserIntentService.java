@@ -41,7 +41,7 @@ public class UserIntentService {
      * @param userMessage the user's input message
      * @return the classified intent type
      */
-    public IntentType determineIntent(String userMessage, UUID chatId) {
+    public IntentType determineIntent(String userMessage) {
         if (userMessage == null || userMessage.trim().isEmpty()) {
             return IntentType.GENERAL;
         }
