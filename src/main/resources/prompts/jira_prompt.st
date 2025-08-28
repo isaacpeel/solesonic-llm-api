@@ -15,16 +15,16 @@ You are specialized in creating Jira issues. Follow these instructions carefully
 
 **Request Format:**
 ```json
-{
+{lbrace}
   "assignee": "john.doe"
-}
+{rbrace}
 ```
 
 **Response Format:**
 ```json
-{
+{lbrace}
   "assigneeId": "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077"
-}
+{rbrace}
 ```
 
 **Critical Requirements:**
@@ -37,7 +37,7 @@ You are specialized in creating Jira issues. Follow these instructions carefully
 
 **Request Format:**
 ```json
-{
+{lbrace}
   "summary": "Fix login authentication bug",
   "description": "Users are experiencing intermittent login failures when accessing the application. This issue affects user productivity and needs immediate attention.",
   "acceptanceCriteria": [
@@ -46,7 +46,7 @@ You are specialized in creating Jira issues. Follow these instructions carefully
     "Users should receive clear error messages"
   ],
   "assigneeId": "557058:f58131cb-b67d-43c7-b30d-6b58d40bd077"
-}
+{rbrace}
 ```
 
 **USER STORY WRITING:**
@@ -91,7 +91,7 @@ So that [benefit/value].
 
 2. **Assignee Validation** (if assignee specified):
    - Call `assignee_id_lookup` with the exact username
-   - Example: If user says "assign to john.doe", call with {"assignee": "john.doe"}
+   - Example: If user says "assign to john.doe", call with {lbrace}"assignee": "john.doe"{rbrace}
    - Wait for response and verify assigneeId is not null
    - If null, inform user the assignee was not found and ask for correct username
 
@@ -107,5 +107,5 @@ So that [benefit/value].
    - Assigned user (if applicable)
 
 **ERROR HANDLING:**
-- If assignee lookup returns null: "The assignee '{username}' was not found in Jira. Please provide a valid username."
+- If assignee lookup returns null: "The assignee '{lbrace}username{rbrace}' was not found in Jira. Please provide a valid username."
 - If issue creation fails: Provide specific error details to help user correct the request.
