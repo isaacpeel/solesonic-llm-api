@@ -46,13 +46,11 @@ public class JiraService {
     }
 
     public JiraIssue get(String jiraId) {
-        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH, ISSUE_PATH, jiraId};
 
         return webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
-                        .pathSegment(ISSUE_PATH)
-                        .pathSegment(jiraId)
                         .build())
                 .exchangeToMono(response -> response.bodyToMono(JiraIssue.class))
                 .block();
@@ -65,12 +63,11 @@ public class JiraService {
             throw new DuplicateJiraCreationException(jiraIssueHolder.get());
         }
 
-        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH, ISSUE_PATH};
 
         jiraIssue = webClient.post()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
-                        .pathSegment(ISSUE_PATH)
                         .build())
                 .bodyValue(jiraIssue)
                 .exchangeToMono(response -> response.bodyToMono(JiraIssue.class))
@@ -83,12 +80,11 @@ public class JiraService {
 
     public List<User> userSearch(String userName) {
         log.info("Searching for user: {}", userName);
-        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH, USER_PATH, ASSIGNABLE_PATH, SEARCH_PATH};
 
         return webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
-                        .pathSegment(USER_PATH, ASSIGNABLE_PATH, SEARCH_PATH)
                         .queryParam(QUERY_PARAM, userName)
                         .queryParam(PROJECT_PARAM, PROJECT_ID)
                         .build())
