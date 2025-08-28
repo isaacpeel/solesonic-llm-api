@@ -1,12 +1,12 @@
 package com.solesonic.tools.jira;
 
 import com.solesonic.model.atlassian.jira.issue.*;
-import com.solesonic.model.atlassian.jira.issue.*;
 import com.solesonic.service.atlassian.JiraService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -21,7 +21,9 @@ public class CreateJiraTools {
     private static final Logger log = LoggerFactory.getLogger(CreateJiraTools.class);
 
     public static final String CREATE_JIRA_ISSUE = "create_jira_issue";
-    public static final String JIRA_URL_TEMPLATE = "https://solesonic-llm-api.atlassian.net/browse/{issueId}";
+
+    @Value("${JIRA_URL_TEMPLATE}")
+    private String jiraUrlTemplate;
 
     private final JiraService jiraService;
 
@@ -106,7 +108,7 @@ public class CreateJiraTools {
 
         log.debug("Created jira issue: {}", created);
 
-        String jiraUri = JIRA_URL_TEMPLATE.replace("{issueId}", created.key());
+        String jiraUri = jiraUrlTemplate.replace("{issueId}", created.key());
 
         log.debug("Using jira uri: {}", jiraUri);
 
