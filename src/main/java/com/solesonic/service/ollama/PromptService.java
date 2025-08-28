@@ -120,8 +120,7 @@ public class PromptService {
 
         PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
 
-        Map<String, Object> promptContext = Map.of(
-                INPUT, chatMessage);
+        Map<String, Object> promptContext = Map.of(INPUT, chatMessage);
 
         return promptTemplate.create(promptContext);
     }

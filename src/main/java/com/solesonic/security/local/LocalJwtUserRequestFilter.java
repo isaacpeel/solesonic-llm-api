@@ -11,7 +11,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.core.Authentication;
@@ -29,14 +28,10 @@ import java.util.UUID;
 @Profile({"test", "local"})
 public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(LocalJwtUserRequestFilter.class);
-    public static final String ISS = "iss";
-
-    @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
-    private String issuerUri;
 
     public static final String SUB = "sub";
-    private final UserRequestContext userRequestContext;
 
+    private final UserRequestContext userRequestContext;
     private final UserPreferencesService userPreferencesService;
 
     public LocalJwtUserRequestFilter(UserRequestContext userRequestContext,
@@ -53,18 +48,10 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         UUID userId;
 
-        //If running the UI locally there will be an authentication
+        //If running the UI locally, there will be an authentication
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
-            String issuer = jwt.getClaimAsString(ISS);
-
-            if(issuerUri.equalsIgnoreCase(issuer)) {
-                //This is direct from Oauth2
-                userId = defaultUserId();
-            } else {
-                //This is from UI
                 String jwtClaim = jwt.getClaimAsString(SUB);
                 userId = UUID.fromString(jwtClaim);
-            }
         } else {
             userId = defaultUserId();
         }
