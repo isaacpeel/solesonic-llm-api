@@ -12,7 +12,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.chat.prompt.Prompt;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -64,9 +63,8 @@ public class ChatServiceTest {
         chatMessage.setModel("llama3");
 
         // Set up mocks for PromptService
-        lenient().when(promptService.getModel()).thenReturn("llama3");
-        lenient().when(promptService.buildTemplatePrompt(any())).thenReturn(mock(Prompt.class));
-        lenient().when(promptService.prompt(any(), any(), any())).thenReturn("Hello, how can I help you?");
+        lenient().when(promptService.model()).thenReturn("llama3");
+        lenient().when(promptService.prompt(any(), any())).thenReturn("Hello, how can I help you?");
     }
 
     @Test
@@ -142,9 +140,8 @@ public class ChatServiceTest {
         assertThat(response.id()).isEqualTo(chatId);
         assertThat(response.message().getMessage()).isEqualTo("Hello, how can I help you?");
         verify(chatRepository).save(any(Chat.class));
-        verify(promptService).buildTemplatePrompt("Hello");
-        verify(promptService).prompt(eq(chatId), eq("Hello"), any(Prompt.class));
-        verify(promptService).getModel();
+        verify(promptService).prompt(eq(chatId), eq("Hello"));
+        verify(promptService).model();
     }
 
     @Test
@@ -159,16 +156,15 @@ public class ChatServiceTest {
         assertThat(response).isNotNull();
         assertThat(response.id()).isEqualTo(chatId);
         assertThat(response.message().getMessage()).isEqualTo("Hello, how can I help you?");
-        verify(promptService).buildTemplatePrompt("How are you?");
-        verify(promptService).prompt(eq(chatId), eq("How are you?"), any(Prompt.class));
-        verify(promptService).getModel();
+        verify(promptService).prompt(eq(chatId), eq("How are you?"));
+        verify(promptService).model();
     }
 
     @Test
     void testUpdate_RemovesThinkTags() {
         // Arrange
         ChatRequest chatRequest = new ChatRequest("Tell me something with think tags");
-        when(promptService.prompt(any(), any(), any())).thenReturn("Hello, <think>this should be removed</think> world!");
+        when(promptService.prompt(any(), any())).thenReturn("Hello, <think>this should be removed</think> world!");
 
         // Act
         SolesonicChatResponse response = chatService.update(chatId, chatRequest);
@@ -176,6 +172,6 @@ public class ChatServiceTest {
         // Assert
         assertThat(response).isNotNull();
         assertThat(response.message().getMessage()).isEqualTo("Hello,  world!");
-        verify(promptService).prompt(eq(chatId), eq("Tell me something with think tags"), any(Prompt.class));
+        verify(promptService).prompt(eq(chatId), eq("Tell me something with think tags"));
     }
 }

@@ -4,11 +4,12 @@ import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.intent.IntentType;
+import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import com.solesonic.tools.jira.AssigneeJiraTools;
 import com.solesonic.tools.jira.CreateJiraTools;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -36,21 +37,29 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String INPUT = "input";
+    public static final String BOT_NAME = "botName";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
     private final UserRequestContext userRequestContext;
-    private final OllamaModelRepository ollamaModelRepository;
     private final VectorStore vectorStore;
+    private final UserIntentService userIntentService;
     private final CreateJiraTools createJiraTools;
     private final AssigneeJiraTools assigneeJiraTools;
     private final CreateConfluenceTools createConfluenceTools;
+    private final OllamaModelRepository ollamaModelRepository;
 
-    @Value("classpath:prompts/tools_prompt.st")
-    private Resource toolsPrompt;
+    @Value("classpath:prompts/jira_prompt.st")
+    private Resource jiraPrompt;
+
+    @Value("classpath:prompts/confluence_prompt.st")
+    private Resource confluencePrompt;
 
     @Value("classpath:prompts/basic_prompt.st")
     private Resource basicPrompt;
+
+    @Value("${solesonic.llm.bot.name}")
+    private String botName;
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
@@ -59,22 +68,24 @@ public class PromptService {
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
             UserRequestContext userRequestContext,
-            OllamaModelRepository ollamaModelRepository,
             VectorStore vectorStore,
+            UserIntentService userIntentService,
             CreateJiraTools createJiraTools,
             AssigneeJiraTools assigneeJiraTools,
-            CreateConfluenceTools createConfluenceTools) {
+            CreateConfluenceTools createConfluenceTools,
+            OllamaModelRepository ollamaModelRepository) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
-        this.ollamaModelRepository = ollamaModelRepository;
         this.vectorStore = vectorStore;
+        this.userIntentService = userIntentService;
         this.createJiraTools = createJiraTools;
         this.assigneeJiraTools = assigneeJiraTools;
         this.createConfluenceTools = createConfluenceTools;
+        this.ollamaModelRepository = ollamaModelRepository;
     }
 
-    public String getModel() {
+    public String model() {
         UUID userId = userRequestContext.getUserId();
         UserPreferences userPreferences = userPreferencesService.get(userId);
         String model = userPreferences.getModel();
@@ -83,103 +94,98 @@ public class PromptService {
         return model;
     }
 
-    private UserPreferences getUserPreferences() {
+    private UserPreferences userPreferences() {
         UUID userId = userRequestContext.getUserId();
         return userPreferencesService.get(userId);
     }
 
-    public String prompt(UUID chatId,
-                      String chatMessage,
-                      Prompt contextPrompt) {
+    public String prompt(UUID chatId, String chatMessage) {
+        String model = model();
 
-        String model = getModel();
+        IntentType intent = userIntentService.determineIntent(chatMessage);
+
+        Resource promptTemplate = promptResource(intent);
+
+        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+
+        ToolCallback[] toolCallbacks = tools(intent, model);
 
         OllamaOptions ollamaOptions = OllamaOptions.builder()
                 .model(model)
                 .build();
 
-        ToolCallback[] tools = tools(chatMessage, model);
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
-        log.info("Using tools prompt for chat id {} as user input indicates tools are needed", chatId);
-
-        return chatClient.prompt(contextPrompt)
+        // Build the chat client call
+        var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
-                .toolCallbacks(tools)
+                .toolCallbacks(toolCallbacks)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
-                .advisors(retrievalAugmentationAdvisor())
-                .options(ollamaOptions)
-                .call()
-                .content();
+                .advisors(retrievalAugmentationAdvisor)
+                .options(ollamaOptions);
+
+        return chatClientBuilder.call().content();
     }
 
-    public Prompt buildTemplatePrompt(String chatMessage) {
-        // Determine which prompt to use based on user input
-        Resource promptToUse = shouldUseToolsPrompt(chatMessage) ? toolsPrompt : basicPrompt;
-
+    public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
         PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
 
-        Map<String, Object> promptContext = Map.of(INPUT, chatMessage);
+        Map<String, Object> promptContext = Map.of(
+                INPUT, chatMessage,
+                BOT_NAME, botName);
 
         return promptTemplate.create(promptContext);
     }
 
     /**
-     * Determines if the tool prompt should be used based on the user input.
-     * Checks for keywords related to Jira or Confluence.
+     * Determines which prompt template to use based on resolved intent.
      *
-     * @param userInput the user's input message
-     * @return true if tools prompt should be used, false otherwise
+     * @param intent the resolved user intent
+     * @return the appropriate prompt resource
      */
-    public boolean shouldUseToolsPrompt(String userInput) {
-        if (StringUtils.isEmpty(userInput)) {
-            return false;
-        }
-
-        String input = userInput.toLowerCase();
-
-        // Jira-related keywords
-        boolean containsJiraKeywords = input.contains("jira") ||
-                input.contains("issue") ||
-                input.contains("ticket") ||
-                input.contains("bug") ||
-                input.contains("task") ||
-                input.contains("assign") ||
-                input.contains("project");
-
-        // Confluence-related keywords
-        boolean containsConfluenceKeywords = input.contains("confluence") ||
-                input.contains("page") ||
-                input.contains("wiki") ||
-                input.contains("document") ||
-                input.contains("documentation") ||
-                input.contains("knowledge base");
-
-        return containsJiraKeywords || containsConfluenceKeywords;
+    private Resource promptResource(IntentType intent) {
+        return switch (intent) {
+            case CREATING_JIRA_ISSUE -> jiraPrompt;
+            case CREATING_CONFLUENCE_PAGE -> confluencePrompt;
+            case GENERAL -> basicPrompt;
+        };
     }
 
-    public ToolCallback[] tools(String chatMessage, String model) {
-        // Check if the model supports tools
-        boolean modelSupportsTools = ollamaModelRepository.findByName(model)
-                .map(OllamaModel::isTools)
-                .orElse(false);
+    /**
+     * Determines which tools to provide based on resolved intent and model capabilities.
+     *
+     * @param intent the resolved user intent
+     * @param model  the model name to check for tool support
+     * @return array of tool callbacks, empty if the model doesn't support tools or intent doesn't require tools
+     */
+    public ToolCallback[] tools(IntentType intent, String model) {
+        try {
+            Optional<OllamaModel> modelOpt = ollamaModelRepository.findByName(model);
 
-        // Check if user input indicates tools should be used
-        boolean userNeedsTools = shouldUseToolsPrompt(chatMessage);
+            if (modelOpt.isEmpty() || !modelOpt.get().isTools()) {
+                log.debug("Model '{}' does not support tools or not found", model);
+                return new ToolCallback[0];
+            }
 
-        // Only use tools if both conditions are met
-        boolean useTools = modelSupportsTools && userNeedsTools;
+            ToolCallback[] toolCallbacks = switch (intent) {
+                case CREATING_JIRA_ISSUE -> ToolCallbacks.from(createJiraTools, assigneeJiraTools);
+                case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
+                case GENERAL -> new ToolCallback[0];
+            };
 
-        if (useTools) {
-            return ToolCallbacks.from(createJiraTools, assigneeJiraTools, createConfluenceTools);
+            log.debug("Selected {} tools for intent '{}' and model '{}'", toolCallbacks.length, intent, model);
+            return toolCallbacks;
+
+        } catch (Exception e) {
+            log.error("Error selecting tools for intent '{}' and model '{}': {}", intent, model, e.getMessage(), e);
+            return new ToolCallback[0];
         }
-
-        return new ToolCallback[]{};
     }
 
     private Advisor retrievalAugmentationAdvisor() {
-        Double similarityThreshold = Optional.ofNullable(getUserPreferences().getSimilarityThreshold())
+        Double similarityThreshold = Optional.ofNullable(userPreferences().getSimilarityThreshold())
                 .orElse(defaultSimilarityThreshold);
 
         return RetrievalAugmentationAdvisor.builder()

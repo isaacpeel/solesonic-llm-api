@@ -22,7 +22,9 @@ public class ChatConfig {
     }
 
     @Bean
-    public ChatClient chatClient(ChatMemory chatMemory, OllamaChatModel chatModel, List<McpSyncClient> mcpClients) {
+    public ChatClient chatClient(ChatMemory chatMemory,
+                                 OllamaChatModel chatModel,
+                                 List<McpSyncClient> mcpClients) {
         SyncMcpToolCallbackProvider syncMcpToolCallbackProvider = new SyncMcpToolCallbackProvider(mcpClients);
 
         return ChatClient.builder(chatModel)

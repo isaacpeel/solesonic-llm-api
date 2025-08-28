@@ -4,6 +4,7 @@ import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import com.solesonic.tools.jira.AssigneeJiraTools;
@@ -20,6 +21,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
+import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.core.io.Resource;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -28,7 +30,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 public class PromptServiceTest {
@@ -43,7 +46,10 @@ public class PromptServiceTest {
     private OllamaModelRepository ollamaModelRepository;
 
     @Mock
-    private Resource toolsPrompt;
+    private Resource jiraPrompt;
+
+    @Mock
+    private Resource confluencePrompt;
 
     @Mock
     private Resource basicPrompt;
@@ -59,6 +65,10 @@ public class PromptServiceTest {
     @Mock
     @SuppressWarnings("unused")
     private CreateConfluenceTools createConfluenceTools;
+
+    @Mock
+    @SuppressWarnings("unused")
+    private VectorStore vectorStore;
 
     @Mock
     @SuppressWarnings("unused")
@@ -121,10 +131,15 @@ public class PromptServiceTest {
                 new java.io.ByteArrayInputStream(BASIC_PROMPT_CONTENT.getBytes()));
         lenient().when(basicPrompt.getContentAsString(any())).thenReturn(BASIC_PROMPT_CONTENT);
 
-        // For toolsPrompt
-        lenient().when(toolsPrompt.getInputStream()).thenReturn(
+        // For jiraPrompt
+        lenient().when(jiraPrompt.getInputStream()).thenReturn(
                 new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
-        lenient().when(toolsPrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
+        lenient().when(jiraPrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
+
+        // For confluencePrompt
+        lenient().when(confluencePrompt.getInputStream()).thenReturn(
+                new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
+        lenient().when(confluencePrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
 
         // Set up other mocks
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
@@ -133,9 +148,9 @@ public class PromptServiceTest {
     }
 
     @Test
-    void testGetModel() {
+    void testModel() {
         // Act
-        String model = promptService.getModel();
+        String model = promptService.model();
 
         // Assert
         assertThat(model).isEqualTo("llama3");
@@ -149,121 +164,58 @@ public class PromptServiceTest {
         // Arrange
         String chatMessage = "Hello, how are you?";
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return false
-        doReturn(false).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
-
         // Mock PromptTemplate behavior
-        ReflectionTestUtils.setField(spyPromptService, "basicPrompt", basicPrompt);
+        ReflectionTestUtils.setField(promptService, "basicPrompt", basicPrompt);
 
         // Act
-        Prompt result = spyPromptService.buildTemplatePrompt(chatMessage);
+        Prompt result = promptService.buildTemplatePrompt(chatMessage, basicPrompt);
 
         // Assert
         assertThat(result).isNotNull();
     }
 
     @Test
-    void testBuildTemplatePrompt_ToolsPrompt() {
+    void testBuildTemplatePrompt_JiraPrompt() {
         // Arrange
         String chatMessage = "Create a Jira issue for this bug";
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
-
         // Mock PromptTemplate behavior
-        ReflectionTestUtils.setField(spyPromptService, "toolsPrompt", toolsPrompt);
+        ReflectionTestUtils.setField(promptService, "jiraPrompt", jiraPrompt);
 
         // Act
-        Prompt result = spyPromptService.buildTemplatePrompt(chatMessage);
+        Prompt result = promptService.buildTemplatePrompt(chatMessage, jiraPrompt);
 
         // Assert
         assertThat(result).isNotNull();
     }
 
     @Test
-    void testShouldUseToolsPrompt_WithJiraKeywords() {
-        // Test with Jira-related keywords
-        String[] jiraInputs = {
-                "Create a Jira issue for this bug",
-                "I need to assign this task to John",
-                "Can you make a ticket for this feature?",
-                "Please create a bug report",
-                "I want to track this project in Jira"
-        };
+    void testBuildTemplatePrompt_ConfluencePrompt() {
+        // Arrange
+        String chatMessage = "Create a Confluence page about this topic";
 
-        for (String input : jiraInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should indicate tools are needed", input).isTrue();
-        }
+        // Mock PromptTemplate behavior
+        ReflectionTestUtils.setField(promptService, "confluencePrompt", confluencePrompt);
+
+        // Act
+        Prompt result = promptService.buildTemplatePrompt(chatMessage, confluencePrompt);
+
+        // Assert
+        assertThat(result).isNotNull();
     }
 
-    @Test
-    void testShouldUseToolsPrompt_WithConfluenceKeywords() {
-        // Test with Confluence-related keywords
-        String[] confluenceInputs = {
-                "Create a Confluence page about this topic",
-                "I need to document this in the wiki",
-                "Can you make a documentation page?",
-                "Please add this to our knowledge base",
-                "I want to create a page in Confluence"
-        };
-
-        for (String input : confluenceInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should indicate tools are needed", input).isTrue();
-        }
-    }
-
-    @Test
-    void testShouldUseToolsPrompt_WithoutToolKeywords() {
-        // Test with inputs that don't indicate tools are needed
-        String[] regularInputs = {
-                "What is the weather today?",
-                "Tell me a joke",
-                "How do I cook pasta?",
-                "What's the capital of France?",
-                "Explain quantum physics"
-        };
-
-        for (String input : regularInputs) {
-            boolean result = promptService.shouldUseToolsPrompt(input);
-            assertThat(result).as("Input '%s' should not indicate tools are needed", input).isFalse();
-        }
-    }
-
-    @Test
-    void testShouldUseToolsPrompt_WithNullOrEmptyInput() {
-        // Test with null or empty input
-        boolean resultNull = promptService.shouldUseToolsPrompt(null);
-        assertThat(resultNull).as("Null input should not indicate tools are needed").isFalse();
-
-        boolean resultEmpty = promptService.shouldUseToolsPrompt("");
-        assertThat(resultEmpty).as("Empty input should not indicate tools are needed").isFalse();
-    }
 
     @Test
     void testTools_WithToolsNeededAndModelSupportsTools() {
         // Arrange
-        String chatMessage = "Create a Jira issue for this bug";
         String model = "llama3";
+        IntentType intent = IntentType.CREATING_JIRA_ISSUE;
 
         // Set up model to support tools
         ollamaModel.setTools(true);
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
-
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(intent, model);
 
         // Assert
         assertThat(tools).isNotEmpty();
@@ -273,20 +225,14 @@ public class PromptServiceTest {
     @Test
     void testTools_WithToolsNeededButModelDoesNotSupportTools() {
         // Arrange
-        String chatMessage = "Create a Jira issue for this bug";
         String model = "llama3";
+        IntentType intent = IntentType.CREATING_JIRA_ISSUE;
 
         // Set up model to not support tools
         ollamaModel.setTools(false);
 
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return true
-        doReturn(true).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
-
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(intent, model);
 
         // Assert
         assertThat(tools).isEmpty();
@@ -296,17 +242,11 @@ public class PromptServiceTest {
     @Test
     void testTools_WithoutToolsNeeded() {
         // Arrange
-        String chatMessage = "What is the weather today?";
         String model = "llama3";
-
-        // Create a spy of the promptService to allow partial mocking
-        PromptService spyPromptService = spy(promptService);
-
-        // Mock shouldUseToolsPrompt to return false
-        doReturn(false).when(spyPromptService).shouldUseToolsPrompt(chatMessage);
+        IntentType intent = IntentType.GENERAL;
 
         // Act
-        ToolCallback[] tools = spyPromptService.tools(chatMessage, model);
+        ToolCallback[] tools = promptService.tools(intent, model);
 
         // Assert
         assertThat(tools).isEmpty();
