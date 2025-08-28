@@ -38,8 +38,6 @@ public class JiraService {
     public static final String API_PATH = "api";
     public static final String VERSION_PATH = "3";
 
-    public final String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
-
     public static final String ISSUE_PATH = "issue";
     private final WebClient webClient;
 
@@ -48,6 +46,8 @@ public class JiraService {
     }
 
     public JiraIssue get(String jiraId) {
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+
         return webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
@@ -65,6 +65,8 @@ public class JiraService {
             throw new DuplicateJiraCreationException(jiraIssueHolder.get());
         }
 
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+
         jiraIssue = webClient.post()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
@@ -81,6 +83,8 @@ public class JiraService {
 
     public List<User> userSearch(String userName) {
         log.info("Searching for user: {}", userName);
+        String[] basePathSegments = {EX, JIRA, cloudIdPath, REST_PATH, API_PATH, VERSION_PATH};
+
         return webClient.get()
                 .uri(uriBuilder -> uriBuilder
                         .pathSegment(basePathSegments)
