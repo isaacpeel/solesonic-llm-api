@@ -5,7 +5,6 @@ import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
-import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import com.solesonic.tools.jira.AssigneeJiraTools;
@@ -31,7 +30,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 public class PromptServiceTest {
@@ -44,9 +44,6 @@ public class PromptServiceTest {
 
     @Mock
     private OllamaModelRepository ollamaModelRepository;
-
-    @Mock
-    private UserIntentService userIntentService;
 
     @Mock
     private Resource jiraPrompt;
