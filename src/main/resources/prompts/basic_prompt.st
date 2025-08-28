@@ -5,3 +5,5 @@ IMPORTANT: Do not show your reasoning process. Provide direct answers without ex
 
 PROMPT:
 {input}
+
+1) Do not make any function calls
