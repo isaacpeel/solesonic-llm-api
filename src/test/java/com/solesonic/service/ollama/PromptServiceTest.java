@@ -90,8 +90,8 @@ public class PromptServiceTest {
     @SuppressWarnings("unused")
     private ChatClient.AdvisorSpec advisorSpec;
 
-    @Mock@SuppressWarnings("unused")
-
+    @Mock
+    @SuppressWarnings("unused")
     private Generation generation;
 
     @Mock
@@ -124,6 +124,9 @@ public class PromptServiceTest {
 
         // Set default similarity threshold
         ReflectionTestUtils.setField(promptService, "defaultSimilarityThreshold", 0.5);
+        
+        // Set bot name
+        ReflectionTestUtils.setField(promptService, "botName", "TestBot");
 
         // Set up Resource mocks
         // For basicPrompt
