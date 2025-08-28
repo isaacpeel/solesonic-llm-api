@@ -38,6 +38,8 @@ public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String INPUT = "input";
     public static final String BOT_NAME = "botName";
+    public static final String LBRACE = "lbrace";
+    public static final String RBRACE = "rbrace";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -134,7 +136,9 @@ public class PromptService {
 
         Map<String, Object> promptContext = Map.of(
                 INPUT, chatMessage,
-                BOT_NAME, botName);
+                BOT_NAME, botName,
+                LBRACE, "{",
+                RBRACE, "}");
 
         return promptTemplate.create(promptContext);
     }
