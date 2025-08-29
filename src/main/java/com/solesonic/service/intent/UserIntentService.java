@@ -26,7 +26,7 @@ public class UserIntentService {
     @Value("classpath:prompts/intent_prompt.st")
     private Resource intentPrompt;
 
-    @Value("${soleonic.llm.intent.model}")
+    @Value("${solesonic.llm.intent.model}")
     private String intentModel;
 
     public UserIntentService(OllamaApi ollamaApi) {
