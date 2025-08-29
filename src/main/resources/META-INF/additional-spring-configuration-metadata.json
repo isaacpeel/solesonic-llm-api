@@ -51,7 +51,7 @@
       "description": "Description for confluence.training.task.enabled."
     },
     {
-      "name": "soleonic.llm.intent.model",
+      "name": "solesonic.llm.intent.model",
       "type": "java.lang.String",
       "description": "Model to use for intent recognition."
     },

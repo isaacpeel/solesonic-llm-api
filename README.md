@@ -146,7 +146,7 @@ The Solesonic LLM API uses an intelligent intent classification system to automa
 The intent classification uses a separate LLM model configured via:
 
 ```properties
-soleonic.llm.intent.model=qwen2.5:7b
+solesonic.llm.intent.model=qwen2.5:7b
 ```
 
 The system uses a specialized prompt template (`intent_prompt.st`) to classify user messages with high accuracy.
@@ -157,6 +157,31 @@ The system uses a specialized prompt template (`intent_prompt.st`) to classify u
 - **Context-Aware**: Responses are optimized for the specific type of task
 - **Resource Optimization**: Only necessary tools are loaded for each conversation
 - **Consistent Experience**: Similar requests always get the same type of specialized handling
+
+## Example Usage
+
+### Jira Integration Showcase
+
+The following example demonstrates how the Solesonic LLM API can automatically create Jira issues based on natural language requests:
+
+### **User Prompt:**
+
+![Jira Creation Prompt](screenshot/create_jira_prompt.png)
+
+### **Resulting Jira Issue:**
+
+![Jira Creation Result](screenshot/create_jira_result.png)
+
+In this example:
+1. The user describes a need to deploy an MCP server using natural language
+2. The system automatically detects the `CREATING_JIRA_ISSUE` intent
+3. It creates a properly formatted Jira issue (IB-34) with:
+   - User story format following best practices
+   - Detailed description and acceptance criteria
+   - Proper assignment to the specified user (Isaac)
+   - Direct link to the created issue
+
+This showcases the power of intent-based prompting and seamless Atlassian integration without requiring users to know specific Jira API calls or formatting.
 
 ## MCP Server Integration
 
