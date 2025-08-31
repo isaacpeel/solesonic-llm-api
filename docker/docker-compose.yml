@@ -21,6 +21,8 @@ services:
       - CONFLUENCE_TRAINING_ENABLED=${CONFLUENCE_TRAINING_ENABLED}
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
       - SSL_CERT_LOCATION=/run/secrets/${SSL_CERT_FILE}
+      - MCP_CLIENT_ID=${MCP_CLIENT_ID}
+      - MCP_CLIENT_SECRET=${MCP_CLIENT_SECRET}
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
       - ${SYSTEM_SSL_CERT_LOCATION}/${SSL_CERT_FILE}:/run/secrets/${SSL_CERT_FILE}:ro
