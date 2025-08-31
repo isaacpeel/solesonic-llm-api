@@ -1,7 +1,6 @@
 package com.solesonic.security.local;
 
 import com.solesonic.config.RequestLoggingFilter;
-import com.solesonic.mcp.client.McpSyncClientExchangeFilterFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,7 +17,6 @@ import org.springframework.security.oauth2.server.resource.web.authentication.Be
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 
@@ -58,11 +56,6 @@ public class LocalSecurityConfig {
                 .csrf(CsrfConfigurer::disable);
 
         return http.build();
-    }
-
-    @Bean
-    public WebClient.Builder webClientBuilder(McpSyncClientExchangeFilterFunction filterFunction) {
-        return WebClient.builder().apply(filterFunction.configuration());
     }
 
     @SuppressWarnings("unused")
