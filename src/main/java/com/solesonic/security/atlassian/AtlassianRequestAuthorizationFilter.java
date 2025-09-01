@@ -57,8 +57,7 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
 
     public AtlassianAccessToken atlassianAccessToken() {
         UUID userId = userRequestContext.getUserId();
-        AtlassianAccessToken atlassianAccessToken = atlassianTokenStore.load(userId)
-                .orElseThrow(() -> new JiraException("Can't find access token."));
+        AtlassianAccessToken atlassianAccessToken = atlassianTokenStore.load(userId).orElseThrow(() -> new JiraException("Can't find access token."));
 
         if(!atlassianAccessToken.isExpired()) {
             log.info("Reusing non expired access token for user: {}", userId);
