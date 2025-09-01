@@ -3,7 +3,7 @@ package com.solesonic.security.atlassian;
 import com.solesonic.exception.JiraException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
-import com.solesonic.repository.atlassian.AtlassianAccessTokenRepository;
+import com.solesonic.service.atlassian.AtlassianTokenStore;
 import jakarta.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,7 +20,7 @@ import static org.springframework.http.HttpHeaders.AUTHORIZATION;
 @Component
 public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunction {
     private static final Logger log = LoggerFactory.getLogger(AtlassianInternalAuthorizationFilter.class);
-    private final AtlassianAccessTokenRepository atlassianAccessTokenRepository;
+    private final AtlassianTokenStore atlassianTokenStore;
 
     @Value("${jira.api.auth.uri}")
     private String atlassianAuthUri;
@@ -31,8 +31,8 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     @Value("${jira.api.client.secret}")
     private String authClientSecret;
 
-    public AtlassianInternalAuthorizationFilter(AtlassianAccessTokenRepository atlassianAccessTokenRepository) {
-        this.atlassianAccessTokenRepository = atlassianAccessTokenRepository;
+    public AtlassianInternalAuthorizationFilter(AtlassianTokenStore atlassianTokenStore) {
+        this.atlassianTokenStore = atlassianTokenStore;
     }
 
     @Override
@@ -51,10 +51,10 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     }
 
     public AtlassianAccessToken atlassianAccessToken() {
-        AtlassianAccessToken adminUserToken = atlassianAccessTokenRepository.findAdminUser()
+        AtlassianAccessToken adminUserToken = atlassianTokenStore.loadAdmin()
                 .orElseThrow(() -> new JiraException("Can't find access admin token."));
 
-        if(adminUserToken.isExpired()) {
+        if(!adminUserToken.isExpired()) {
             log.debug("Reusing non expired access token for admin user.");
             return adminUserToken;
         }
@@ -64,7 +64,8 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
         log.debug("Updating access token for admin user.");
         log.debug("Admin token expiresIn: {}", adminUserToken.getExpiresIn());
 
-        return atlassianAccessTokenRepository.saveAndFlush(adminUserToken);
+        atlassianTokenStore.saveAdmin(adminUserToken);
+        return adminUserToken;
     }
 
     static void refreshToken(AtlassianAccessToken adminUserToken, String authClientId, String authClientSecret, String atlassianAuthUri) {

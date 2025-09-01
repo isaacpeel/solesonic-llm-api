@@ -2,6 +2,7 @@ package com.solesonic.service.user;
 
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.UserPreferencesRepository;
+import com.solesonic.service.atlassian.AtlassianTokenStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +16,7 @@ import java.util.UUID;
 public class UserPreferencesService {
     private static final Logger log = LoggerFactory.getLogger(UserPreferencesService.class);
     private final UserPreferencesRepository userPreferencesRepository;
+    private final AtlassianTokenStore atlassianTokenStore;
 
     @Value("${spring.ai.ollama.chat.model}")
     private String chatModel;
@@ -22,20 +24,27 @@ public class UserPreferencesService {
     @Value("${spring.ai.similarity-threshold}")
     private Double similarityThreshold;
 
-    public UserPreferencesService(UserPreferencesRepository userPreferencesRepository) {
+    public UserPreferencesService(UserPreferencesRepository userPreferencesRepository, AtlassianTokenStore atlassianTokenStore) {
         this.userPreferencesRepository = userPreferencesRepository;
+        this.atlassianTokenStore = atlassianTokenStore;
     }
 
     public UserPreferences get(UUID userId) {
         log.info("Getting user preferences for user ID: {}", userId);
-        return userPreferencesRepository.findByUserId(userId)
+        UserPreferences userPreferences = userPreferencesRepository.findByUserId(userId)
                 .orElseGet(() -> {
                     //Save new preferences if the current user doesn't have any.
-                    UserPreferences userPreferences = new UserPreferences();
-                    userPreferences.setModel(chatModel);
-                    userPreferences.setSimilarityThreshold(similarityThreshold);
-                    return save(userId, userPreferences);
+                    UserPreferences newPreferences = new UserPreferences();
+                    newPreferences.setModel(chatModel);
+                    newPreferences.setSimilarityThreshold(similarityThreshold);
+                    return save(userId, newPreferences);
                 });
+        
+        // Check if Atlassian token exists in AWS Secrets Manager
+        boolean hasAtlassianToken = atlassianTokenStore.exists(userId).orElse(false);
+        userPreferences.setAtlassianAuthentication(hasAtlassianToken);
+        
+        return userPreferences;
     }
 
     public List<UserPreferences> findAll() {

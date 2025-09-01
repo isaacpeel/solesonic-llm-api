@@ -7,7 +7,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -59,7 +58,7 @@ public class JiraService {
     public JiraIssue create(JiraIssue jiraIssue) {
         log.info("Creating jira issue.");
 
-        if(jiraIssueHolder.get() != null) {
+        if (jiraIssueHolder.get() != null) {
             throw new DuplicateJiraCreationException(jiraIssueHolder.get());
         }
 
@@ -73,6 +72,8 @@ public class JiraService {
                 .exchangeToMono(response -> response.bodyToMono(JiraIssue.class))
                 .block();
 
+        assert jiraIssue != null;
+        log.info("Created jira issue with key: {}", jiraIssue.key());
         jiraIssueHolder.set(jiraIssue);
 
         return jiraIssue;
@@ -88,7 +89,10 @@ public class JiraService {
                         .queryParam(QUERY_PARAM, userName)
                         .queryParam(PROJECT_PARAM, PROJECT_ID)
                         .build())
-                .exchangeToMono(response -> response.bodyToMono(new ParameterizedTypeReference<List<User>>() {}))
+                .retrieve()
+                .bodyToFlux(User.class)
+                .collectList()
                 .block();
+
     }
 }

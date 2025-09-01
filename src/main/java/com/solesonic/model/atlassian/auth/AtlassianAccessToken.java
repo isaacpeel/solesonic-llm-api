@@ -1,29 +1,21 @@
 package com.solesonic.model.atlassian.auth;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
-@Entity
 public class AtlassianAccessToken {
 
-    @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private UUID userId;
 
     @JsonProperty("access_token")
-    @Column(columnDefinition = "TEXT")
     private String accessToken;
 
     @JsonProperty("refresh_token")
-    @Column(columnDefinition = "TEXT")
     private String refreshToken;
 
-    @Column(columnDefinition = "TEXT")
     private String scope;
 
     @JsonProperty("expires_in")
@@ -44,7 +36,7 @@ public class AtlassianAccessToken {
         ZonedDateTime expirationTime = created.plusSeconds(expiresIn).minusSeconds(10);
 
         // Check if the current time is after the expiration time
-        return !ZonedDateTime.now().isAfter(expirationTime);
+        return ZonedDateTime.now().isAfter(expirationTime);
     }
 
     public String getAccessToken() {

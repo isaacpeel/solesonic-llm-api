@@ -3,7 +3,7 @@ package com.solesonic.model.user;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
-import org.hibernate.annotations.Formula;
+import jakarta.persistence.Transient;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -22,7 +22,7 @@ public class UserPreferences {
 
     private Double similarityThreshold;
 
-    @Formula("(select count(1) > 0 from atlassian_access_token act where act.user_id = user_id)")
+    @Transient
     private boolean atlassianAuthentication;
 
     public UUID getUserId() {
