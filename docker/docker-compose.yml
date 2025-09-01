@@ -21,7 +21,16 @@ services:
       - CONFLUENCE_TRAINING_ENABLED=${CONFLUENCE_TRAINING_ENABLED}
       - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
       - SSL_CERT_LOCATION=/run/secrets/${SSL_CERT_FILE}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
       - ${SYSTEM_SSL_CERT_LOCATION}/${SSL_CERT_FILE}:/run/secrets/${SSL_CERT_FILE}:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
 
