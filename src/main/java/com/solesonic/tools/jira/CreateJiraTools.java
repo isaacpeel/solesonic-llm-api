@@ -108,7 +108,7 @@ public class CreateJiraTools {
 
         log.debug("Created jira issue: {}", created);
 
-        String jiraUri = jiraUrlTemplate.replace("{issueId}", created.key());
+        String jiraUri = jiraUrlTemplate.replace("{key}", created.key());
 
         log.debug("Using jira uri: {}", jiraUri);
 

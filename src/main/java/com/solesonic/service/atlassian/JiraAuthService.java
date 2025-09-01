@@ -2,7 +2,6 @@ package com.solesonic.service.atlassian;
 
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
-import com.solesonic.repository.atlassian.AtlassianAccessTokenRepository;
 import com.solesonic.scope.UserRequestContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,15 +99,15 @@ public class JiraAuthService {
     private String clientId;
 
     private final UserRequestContext userRequestContext;
-    private final AtlassianAccessTokenRepository atlassianAccessTokenRepository;
+    private final AtlassianTokenStore atlassianTokenStore;
     private final WebClient webClient;
     private final WebClient apiWebClient;
 
-    public JiraAuthService(UserRequestContext userRequestContext, AtlassianAccessTokenRepository atlassianAccessTokenRepository,
+    public JiraAuthService(UserRequestContext userRequestContext, AtlassianTokenStore atlassianTokenStore,
                            @Qualifier(ATLASSIAN_AUTH_WEB_CLIENT) WebClient webClient,
                            @Qualifier(ATLASSIAN_API_WEB_CLIENT) WebClient apiWebClient) {
         this.userRequestContext = userRequestContext;
-        this.atlassianAccessTokenRepository = atlassianAccessTokenRepository;
+        this.atlassianTokenStore = atlassianTokenStore;
         this.webClient = webClient;
         this.apiWebClient = apiWebClient;
     }
@@ -166,7 +165,7 @@ public class JiraAuthService {
         log.info("Saving a new access Access Token for user: {}", userId);
         log.info("Token has expiresIn: {}", atlassianAccessToken.getExpiresIn() != null);
 
-        atlassianAccessTokenRepository.saveAndFlush(atlassianAccessToken);
+        atlassianTokenStore.save(atlassianAccessToken);
     }
 
     public String accessibleResources() {

@@ -102,7 +102,7 @@ So that [benefit/value].
 
 4. **Confirmation** to user:
    - Issue summary
-   - Issue ID
+   - Issue Key
    - Direct link (use issueUri from response)
    - Assigned user (if applicable)
 

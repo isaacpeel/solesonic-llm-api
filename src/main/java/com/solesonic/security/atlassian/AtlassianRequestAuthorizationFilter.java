@@ -2,7 +2,7 @@ package com.solesonic.security.atlassian;
 
 import com.solesonic.exception.JiraException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
-import com.solesonic.repository.atlassian.AtlassianAccessTokenRepository;
+import com.solesonic.service.atlassian.AtlassianTokenStore;
 import com.solesonic.scope.UserRequestContext;
 import jakarta.annotation.Nonnull;
 import org.slf4j.Logger;
@@ -23,7 +23,7 @@ import static org.springframework.http.HttpHeaders.AUTHORIZATION;
 public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFunction {
     private static final Logger log = LoggerFactory.getLogger(AtlassianRequestAuthorizationFilter.class);
     private final UserRequestContext userRequestContext;
-    private final AtlassianAccessTokenRepository atlassianAccessTokenRepository;
+    private final AtlassianTokenStore atlassianTokenStore;
 
     @Value("${jira.api.auth.uri}")
     private String atlassianAuthUri;
@@ -35,9 +35,9 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
     private String authClientSecret;
 
     public AtlassianRequestAuthorizationFilter(UserRequestContext userRequestContext,
-                                               AtlassianAccessTokenRepository atlassianAccessTokenRepository) {
+                                               AtlassianTokenStore atlassianTokenStore) {
         this.userRequestContext = userRequestContext;
-        this.atlassianAccessTokenRepository = atlassianAccessTokenRepository;
+        this.atlassianTokenStore = atlassianTokenStore;
     }
 
     @Override
@@ -57,10 +57,10 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
 
     public AtlassianAccessToken atlassianAccessToken() {
         UUID userId = userRequestContext.getUserId();
-        AtlassianAccessToken atlassianAccessToken = atlassianAccessTokenRepository.findById(userId)
+        AtlassianAccessToken atlassianAccessToken = atlassianTokenStore.load(userId)
                 .orElseThrow(() -> new JiraException("Can't find access token."));
 
-        if(atlassianAccessToken.isExpired()) {
+        if(!atlassianAccessToken.isExpired()) {
             log.info("Reusing non expired access token for user: {}", userId);
             return atlassianAccessToken;
         }
@@ -70,6 +70,7 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
         log.info("Updating access token for user: {}", userId);
         log.info("Token has expiresIn: {}", atlassianAccessToken.getExpiresIn() != null);
 
-        return atlassianAccessTokenRepository.saveAndFlush(atlassianAccessToken);
+        atlassianTokenStore.save(atlassianAccessToken);
+        return atlassianAccessToken;
     }
 }
