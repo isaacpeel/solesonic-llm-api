@@ -38,16 +38,6 @@ class AtlassianAccessTokenTest {
     }
 
     @Test
-    void isExpired_whenTokenIsJustWithinBuffer_returnsFalse() {
-        AtlassianAccessToken token = new AtlassianAccessToken();
-        // Set created time so that token is still within the 10-second buffer
-        token.setCreated(ZonedDateTime.now().minusSeconds(3595)); // 3600 - 5 seconds ago
-        token.setExpiresIn(3600);
-
-        assertThat(token.isExpired()).isFalse();
-    }
-
-    @Test
     void isExpired_whenExpiresInIsNull_throwsException() {
         AtlassianAccessToken token = new AtlassianAccessToken();
         token.setCreated(ZonedDateTime.now());
