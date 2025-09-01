@@ -51,8 +51,7 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     }
 
     public AtlassianAccessToken atlassianAccessToken() {
-        AtlassianAccessToken adminUserToken = atlassianTokenStore.loadAdmin()
-                .orElseThrow(() -> new JiraException("Can't find access admin token."));
+        AtlassianAccessToken adminUserToken = atlassianTokenStore.loadAdmin().orElseThrow(() -> new JiraException("Can't find access admin token."));
 
         if(!adminUserToken.isExpired()) {
             log.debug("Reusing non expired access token for admin user.");
