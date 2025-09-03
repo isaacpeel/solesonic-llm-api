@@ -104,6 +104,11 @@
       "name": "spring.flyway.placeholders.DB_OWNER",
       "type": "java.lang.String",
       "description": "Description for spring.flyway.placeholders.DB_OWNER."
+    },
+    {
+      "name": "aws.kms.key-id",
+      "type": "java.lang.String",
+      "description": "AWS KMS key identifier (ID, ARN, or alias) for encryption."
     }
   ]
 }

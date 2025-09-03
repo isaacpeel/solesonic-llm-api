@@ -100,15 +100,15 @@ public class JiraAuthService {
 
     private final UserRequestContext userRequestContext;
     private final AtlassianTokenStore atlassianTokenStore;
-    private final WebClient webClient;
+    private final WebClient authWebClient;
     private final WebClient apiWebClient;
 
     public JiraAuthService(UserRequestContext userRequestContext, AtlassianTokenStore atlassianTokenStore,
-                           @Qualifier(ATLASSIAN_AUTH_WEB_CLIENT) WebClient webClient,
+                           @Qualifier(ATLASSIAN_AUTH_WEB_CLIENT) WebClient authWebClient,
                            @Qualifier(ATLASSIAN_API_WEB_CLIENT) WebClient apiWebClient) {
         this.userRequestContext = userRequestContext;
         this.atlassianTokenStore = atlassianTokenStore;
-        this.webClient = webClient;
+        this.authWebClient = authWebClient;
         this.apiWebClient = apiWebClient;
     }
 
@@ -141,7 +141,7 @@ public class JiraAuthService {
                 .redirectUri(authCallbackUri)
                 .build();
 
-        AtlassianAccessToken atlassianAccessToken = webClient.post()
+        AtlassianAccessToken atlassianAccessToken = authWebClient.post()
                 .uri(uriBuilder ->
                         uriBuilder
                                 .pathSegment(OAUTH_PATH)
