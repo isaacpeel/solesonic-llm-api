@@ -1,6 +1,6 @@
 package com.solesonic.service.atlassian;
 
-import com.solesonic.exception.DuplicateJiraCreationException;
+import com.solesonic.exception.atlassian.DuplicateJiraCreationException;
 import com.solesonic.model.atlassian.jira.issue.JiraIssue;
 import com.solesonic.model.atlassian.jira.issue.User;
 import org.slf4j.Logger;

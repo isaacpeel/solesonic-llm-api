@@ -25,8 +25,6 @@ public class AccessTokenCache {
         this.tokenBrokerProperties = tokenBrokerProperties;
     }
 
-
-
     public Optional<CachedAccessToken> get(UUID userId, String siteId) {
         if (!tokenBrokerProperties.getCache().isEnabled()) {
             log.debug("Cache is disabled, returning empty");
@@ -100,17 +98,17 @@ public class AccessTokenCache {
         
         cache.entrySet().removeIf(entry -> {
             CachedAccessToken token = entry.getValue();
+
             if (token.isExpired(skewSeconds)) {
                 log.debug("Removing expired token from cache for key {}", entry.getKey());
                 return true;
             }
+
             return false;
         });
         
-        int finalSize = cache.size();
-        if (initialSize != finalSize) {
-            log.debug("Cleanup removed {} expired tokens from cache ({} -> {})", 
-                    initialSize - finalSize, initialSize, finalSize);
+        if (initialSize != cache.size()) {
+            log.debug("Cleanup removed {} expired tokens from cache ({} -> {})", initialSize - cache.size(), initialSize, cache.size());
         }
     }
 }

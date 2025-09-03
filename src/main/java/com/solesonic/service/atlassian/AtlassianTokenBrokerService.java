@@ -1,7 +1,7 @@
 package com.solesonic.service.atlassian;
 
-import com.solesonic.exception.AtlassianTokenException;
-import com.solesonic.exception.RefreshTokenConflictException;
+import com.solesonic.exception.atlassian.AtlassianTokenException;
+import com.solesonic.exception.atlassian.RefreshTokenConflictException;
 import com.solesonic.model.atlassian.auth.CachedAccessToken;
 import com.solesonic.model.atlassian.broker.AtlassianTokenRefreshResponse;
 import com.solesonic.model.atlassian.broker.TokenExchange;
@@ -22,6 +22,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static com.solesonic.config.atlassian.AtlassianConstants.ATLASSIAN_AUTH_WEB_CLIENT;
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 
 @Service
 public class AtlassianTokenBrokerService {
@@ -85,7 +87,7 @@ public class AtlassianTokenBrokerService {
 
         if (refreshTokenPayload.isEmpty()) {
             log.warn("No refresh token found for user {} - RECONNECT_REQUIRED", userId);
-            throw new AtlassianTokenException("No refresh token found for user " + userId, "RECONNECT_REQUIRED", false);
+            throw new AtlassianTokenException("No refresh token found for user " + userId, BAD_REQUEST, false);
         }
 
         // Use rotation guard to prevent concurrent refreshes
@@ -101,11 +103,11 @@ public class AtlassianTokenBrokerService {
                 }
             } else {
                 log.warn("Failed to acquire rotation guard for user {} within timeout", userId);
-                throw new AtlassianTokenException("Rotation timeout for user " + userId, "ROTATION_TIMEOUT", true);
+                throw new AtlassianTokenException("Rotation timeout for user " + userId, SERVICE_UNAVAILABLE, true);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new AtlassianTokenException("Rotation interrupted for user " + userId, "ROTATION_INTERRUPTED", true, e);
+            throw new AtlassianTokenException("Rotation interrupted for user " + userId, SERVICE_UNAVAILABLE, true, e);
         }
     }
 

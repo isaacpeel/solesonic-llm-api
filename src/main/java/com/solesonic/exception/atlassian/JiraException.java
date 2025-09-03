@@ -1,4 +1,4 @@
-package com.solesonic.exception;
+package com.solesonic.exception.atlassian;
 
 import org.springframework.web.reactive.function.client.ClientResponse;
 

@@ -1,4 +1,4 @@
-package com.solesonic.exception;
+package com.solesonic.exception.atlassian;
 
 import com.solesonic.model.atlassian.jira.issue.JiraIssue;
 

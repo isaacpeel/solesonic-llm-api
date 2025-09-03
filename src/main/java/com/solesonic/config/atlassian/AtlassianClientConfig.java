@@ -1,7 +1,7 @@
 package com.solesonic.config.atlassian;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.solesonic.exception.JiraException;
+import com.solesonic.exception.atlassian.JiraException;
 import com.solesonic.security.atlassian.AtlassianInternalAuthorizationFilter;
 import com.solesonic.security.atlassian.AtlassianRequestAuthorizationFilter;
 import org.springframework.beans.factory.annotation.Qualifier;

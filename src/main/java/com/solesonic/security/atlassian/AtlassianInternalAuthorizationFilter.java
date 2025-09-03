@@ -1,6 +1,6 @@
 package com.solesonic.security.atlassian;
 
-import com.solesonic.exception.JiraException;
+import com.solesonic.exception.atlassian.JiraException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
 import com.solesonic.service.atlassian.AtlassianTokenStore;

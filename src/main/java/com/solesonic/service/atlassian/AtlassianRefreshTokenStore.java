@@ -2,7 +2,7 @@ package com.solesonic.service.atlassian;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.solesonic.exception.RefreshTokenConflictException;
+import com.solesonic.exception.atlassian.RefreshTokenConflictException;
 import com.solesonic.model.atlassian.broker.AtlassianTokenRefreshResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
