@@ -1,4 +1,4 @@
-package com.solesonic.controller.atlassian;
+package com.solesonic.api.atlassian;
 
 import com.solesonic.model.atlassian.broker.TokenExchange;
 import com.solesonic.model.atlassian.broker.TokenResponse;
