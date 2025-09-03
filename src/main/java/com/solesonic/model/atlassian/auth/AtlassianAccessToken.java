@@ -32,10 +32,7 @@ public class AtlassianAccessToken {
             throw new IllegalStateException("Token must have both expiresIn and created fields initialized.");
         }
 
-        // Calculate the expiration time with a 10-second buffer
         ZonedDateTime expirationTime = created.plusSeconds(expiresIn).minusSeconds(10);
-
-        // Check if the current time is after the expiration time
         return ZonedDateTime.now().isAfter(expirationTime);
     }
 

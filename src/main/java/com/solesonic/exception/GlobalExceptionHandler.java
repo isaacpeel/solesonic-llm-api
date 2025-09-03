@@ -13,6 +13,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import javax.validation.constraints.NotNull;
 import java.net.URI;
@@ -84,6 +85,87 @@ public class GlobalExceptionHandler {
 
         String responseMessage = DUPLICATE_JIRA_MESSAGE_TEMPLATE.replace(ISSUE_LINK, jiraUri);
 
+        return buildResponse(responseMessage);
+    }
+
+    @ExceptionHandler(WebClientResponseException.class)
+    public ResponseEntity<?> handleWebClientResponseException(WebClientResponseException webClientResponseException) {
+        AtlassianTokenException atlassianTokenException;
+        
+        if (webClientResponseException.getStatusCode() == HttpStatus.BAD_REQUEST) {
+            log.warn("Atlassian token refresh failed with 400 - likely invalid refresh token");
+            atlassianTokenException = new AtlassianTokenException("Invalid refresh token", "RECONNECT_REQUIRED", false, webClientResponseException);
+        } else if (webClientResponseException.getStatusCode() == HttpStatus.TOO_MANY_REQUESTS ||
+                webClientResponseException.getStatusCode().is5xxServerError()) {
+            log.warn("Atlassian token refresh failed with retriable error: {}", webClientResponseException.getStatusCode());
+            atlassianTokenException = new AtlassianTokenException("Upstream error", "UPSTREAM_ERROR", true, webClientResponseException);
+        } else {
+            log.error("Atlassian token refresh failed with non-retriable error: {}", webClientResponseException.getStatusCode());
+            atlassianTokenException = new AtlassianTokenException("Atlassian API error", "API_ERROR", false, webClientResponseException);
+        }
+        
+        return handleAtlassianTokenException(atlassianTokenException);
+    }
+
+    @ExceptionHandler(AtlassianTokenException.class)
+    public ResponseEntity<?> handleAtlassianTokenException(AtlassianTokenException atlassianTokenException) {
+        String errorCode = atlassianTokenException.getErrorCode();
+        boolean retriable = atlassianTokenException.isRetriable();
+
+        return switch (errorCode) {
+            case "RECONNECT_REQUIRED" -> {
+                log.warn("RECONNECT_REQUIRED - {}", atlassianTokenException.getMessage());
+                yield ResponseEntity.status(HttpStatus.GONE)
+                        .body(java.util.Map.of("error", "RECONNECT_REQUIRED",
+                                "message", "User must re-consent to Atlassian access",
+                                "retriable", false));
+            }
+            case "UPSTREAM_ERROR", "NETWORK_ERROR" -> {
+                log.warn("Retriable error - {}", atlassianTokenException.getMessage());
+                yield ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(java.util.Map.of("error", "UPSTREAM_ERROR",
+                                "message", "Temporary upstream service issue",
+                                "retriable", true));
+            }
+            case "ROTATION_TIMEOUT", "ROTATION_INTERRUPTED" -> {
+                log.warn("Rotation issue - {}", atlassianTokenException.getMessage());
+                yield ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                        .body(java.util.Map.of("error", "SERVICE_UNAVAILABLE",
+                                "message", "Service temporarily unavailable",
+                                "retriable", true));
+            }
+            default -> {
+                log.error("API error - {}", atlassianTokenException.getMessage());
+                yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body(java.util.Map.of("error", "INTERNAL_ERROR",
+                                "message", "Internal service error",
+                                "retriable", retriable));
+            }
+        };
+    }
+
+    @ExceptionHandler(RuntimeException.class)
+    public ResponseEntity<?> handleRuntimeException(RuntimeException runtimeException) {
+        // Check if this is from Atlassian token operations by examining stack trace
+        StackTraceElement[] stackTrace = runtimeException.getStackTrace();
+        boolean isAtlassianTokenOperation = false;
+        for (StackTraceElement element : stackTrace) {
+            if (element.getClassName().contains("AtlassianTokenBrokerService") && 
+                element.getMethodName().equals("callAtlassianTokenEndpoint")) {
+                isAtlassianTokenOperation = true;
+                break;
+            }
+        }
+        
+        if (isAtlassianTokenOperation) {
+            log.error("Unexpected error calling Atlassian token endpoint", runtimeException);
+            AtlassianTokenException atlassianTokenException = new AtlassianTokenException("Network error", "NETWORK_ERROR", true, runtimeException);
+            return handleAtlassianTokenException(atlassianTokenException);
+        }
+        
+        // Fall back to generic handling
+        log.error(runtimeException.getMessage(), runtimeException);
+        String responseMessage = GENERIC_EXCEPTION_TEMPLATE.replace(EXCEPTION_MESSAGE, runtimeException.getMessage());
         return buildResponse(responseMessage);
     }
 
