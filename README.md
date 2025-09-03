@@ -12,6 +12,7 @@ A Spring Boot application that provides an API for interacting with Large Langua
 - **RAG (Retrieval Augmented Generation)**: Enhances LLM responses with relevant context
 - **User Management**: Supports user-specific chat history and preferences
 - **Atlassian Integration**: Connects with Jira and Confluence for product management (see [PRODUCT_MANAGEMENT.md](PRODUCT_MANAGEMENT.md))
+- **3-legged OAuth2 authentication Token Broker**: Secure OAuth2 token management service for third-party APIs with automatic refresh token rotation and caching (see [MCP Integration Guide](MCP_INTEGRATION.md) for integration from MCP servers)
 - **Security**: OAuth2 with JWT authentication
 
 ## Prerequisites
