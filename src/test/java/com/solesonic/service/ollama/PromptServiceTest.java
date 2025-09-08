@@ -7,8 +7,6 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
-import com.solesonic.tools.jira.AssigneeJiraTools;
-import com.solesonic.tools.jira.CreateJiraTools;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -53,14 +51,6 @@ public class PromptServiceTest {
 
     @Mock
     private Resource basicPrompt;
-
-    @Mock
-    @SuppressWarnings("unused")
-    private CreateJiraTools createJiraTools;
-
-    @Mock
-    @SuppressWarnings("unused")
-    private AssigneeJiraTools assigneeJiraTools;
 
     @Mock
     @SuppressWarnings("unused")
@@ -152,10 +142,8 @@ public class PromptServiceTest {
 
     @Test
     void testModel() {
-        // Act
         String model = promptService.model();
 
-        // Assert
         assertThat(model).isEqualTo("llama3");
         verify(userRequestContext).getUserId();
         verify(userPreferencesService).get(userId);
@@ -164,103 +152,76 @@ public class PromptServiceTest {
 
     @Test
     void testBuildTemplatePrompt_BasicPrompt() {
-        // Arrange
         String chatMessage = "Hello, how are you?";
 
         // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "basicPrompt", basicPrompt);
 
-        // Act
         Prompt result = promptService.buildTemplatePrompt(chatMessage, basicPrompt);
 
-        // Assert
         assertThat(result).isNotNull();
     }
 
     @Test
     void testBuildTemplatePrompt_JiraPrompt() {
-        // Arrange
         String chatMessage = "Create a Jira issue for this bug";
 
         // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "jiraPrompt", jiraPrompt);
 
-        // Act
         Prompt result = promptService.buildTemplatePrompt(chatMessage, jiraPrompt);
 
-        // Assert
         assertThat(result).isNotNull();
     }
 
     @Test
     void testBuildTemplatePrompt_ConfluencePrompt() {
-        // Arrange
         String chatMessage = "Create a Confluence page about this topic";
 
         // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "confluencePrompt", confluencePrompt);
 
-        // Act
         Prompt result = promptService.buildTemplatePrompt(chatMessage, confluencePrompt);
 
-        // Assert
         assertThat(result).isNotNull();
     }
 
 
     @Test
     void testTools_WithToolsNeededAndModelSupportsTools() {
-        // Arrange
         String model = "llama3";
-        IntentType intent = IntentType.CREATING_JIRA_ISSUE;
+        IntentType intent = IntentType.CREATING_CONFLUENCE_PAGE;
 
         // Set up model to support tools
         ollamaModel.setTools(true);
 
-        // Act
         ToolCallback[] tools = promptService.tools(intent, model);
 
-        // Assert
         assertThat(tools).isNotEmpty();
         verify(ollamaModelRepository).findByName(model);
     }
 
     @Test
     void testTools_WithToolsNeededButModelDoesNotSupportTools() {
-        // Arrange
         String model = "llama3";
         IntentType intent = IntentType.CREATING_JIRA_ISSUE;
 
         // Set up model to not support tools
         ollamaModel.setTools(false);
 
-        // Act
         ToolCallback[] tools = promptService.tools(intent, model);
 
-        // Assert
         assertThat(tools).isEmpty();
         verify(ollamaModelRepository).findByName(model);
     }
 
     @Test
     void testTools_WithoutToolsNeeded() {
-        // Arrange
         String model = "llama3";
         IntentType intent = IntentType.GENERAL;
 
-        // Act
         ToolCallback[] tools = promptService.tools(intent, model);
 
-        // Assert
         assertThat(tools).isEmpty();
-    }
-
-    // Note: Testing the prompt method is complex due to the ChatClient's fluent API
-    // In a real-world scenario, we would use integration tests for this method
-    // This test is simplified and focuses on the method being called with the right parameters
-    @Test
-    void testPrompt() {
-        // This test is simplified due to the complexity of mocking ChatClient's fluent API
-        // In a real implementation, we would use integration tests for this method
     }
 }
