@@ -83,19 +83,19 @@ public class JiraAuthService {
     public static final String RESPONSE_TYPE_PARAM = "response_type";
     public static final String PROMPT_PARAM = "prompt";
 
-    @Value("${jira.api.auth.uri}")
+    @Value("${atlassian.oauth.token-uri}")
     private String jiraAuthUri;
 
     @Value("${jira.api.auth.callback.uri}")
     private String authCallbackUri;
 
-    @Value("${jira.api.client.id}")
+    @Value("${atlassian.oauth.client-id}")
     private String authClientId;
 
-    @Value("${jira.api.client.secret}")
+    @Value("${atlassian.oauth.client-secret}")
     private String authClientSecret;
 
-    @Value("${jira.api.client.id}")
+    @Value("${atlassian.oauth.client-id}")
     private String clientId;
 
     private final UserRequestContext userRequestContext;
@@ -116,7 +116,7 @@ public class JiraAuthService {
         UUID userId = userRequestContext.getUserId();
         log.info("Building auth URI for user: {}", userId);
 
-        return UriComponentsBuilder.fromUriString(jiraAuthUri)
+        String jiraAuthUri = UriComponentsBuilder.fromUriString(this.jiraAuthUri)
                 .pathSegment(AUTHORIZE_PATH)
                 .queryParam(AUDIENCE_PARAM, AUDIENCE)
                 .queryParam(CLIENT_ID_PARAM, clientId)
@@ -127,6 +127,9 @@ public class JiraAuthService {
                 .queryParam(PROMPT_PARAM, PROMPT)
                 .build()
                 .toUriString();
+
+        log.info("Jira auth URI: {}", jiraAuthUri);
+        return jiraAuthUri;
     }
 
     public void callback(String code) {
@@ -154,18 +157,18 @@ public class JiraAuthService {
 
         assert atlassianAccessToken != null;
 
-        atlassianAccessToken.setUserId(userId);
-
         log.info("Saving Access Token for user: {}", userId);
 
-        atlassianAccessToken.setUserId(userId);
-        atlassianAccessToken.setCreated(ZonedDateTime.now());
-        atlassianAccessToken.setUpdated(ZonedDateTime.now());
+        AtlassianAccessToken tokenWithUserInfo = AtlassianAccessToken.from(atlassianAccessToken)
+                .userId(userId)
+                .created(ZonedDateTime.now())
+                .updated(ZonedDateTime.now())
+                .build();
 
         log.info("Saving a new access Access Token for user: {}", userId);
-        log.info("Token has expiresIn: {}", atlassianAccessToken.getExpiresIn() != null);
+        log.info("Token has expiresIn: {}", tokenWithUserInfo.expiresIn() != null);
 
-        atlassianTokenStore.save(atlassianAccessToken);
+        atlassianTokenStore.save(tokenWithUserInfo);
     }
 
     public String accessibleResources() {

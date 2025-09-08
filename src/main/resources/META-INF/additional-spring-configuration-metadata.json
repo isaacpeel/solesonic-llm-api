@@ -26,19 +26,19 @@
       "description": "Description for jira.api.auth.callback.uri."
     },
     {
-      "name": "jira.api.auth.uri",
+      "name": "atlassian.oauth.token-uri",
       "type": "java.lang.String",
-      "description": "Description for jira.api.auth.uri."
+      "description": "Description for atlassian.oauth.token-uri."
     },
     {
-      "name": "jira.api.client.id",
+      "name": "atlassian.oauth.client-id",
       "type": "java.lang.String",
-      "description": "Description for jira.api.client.id."
+      "description": "Description for atlassian.oauth.client-id."
     },
     {
-      "name": "jira.api.client.secret",
+      "name": "atlassian.oauth.client-secret",
       "type": "java.lang.String",
-      "description": "Description for jira.api.client.secret."
+      "description": "Description for atlassian.oauth.client-secret."
     },
     {
       "name": "local.dev.user.id",

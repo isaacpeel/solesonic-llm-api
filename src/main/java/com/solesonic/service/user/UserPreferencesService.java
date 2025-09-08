@@ -30,7 +30,8 @@ public class UserPreferencesService {
     }
 
     public UserPreferences get(UUID userId) {
-        log.info("Getting user preferences for user ID: {}", userId);
+        log.debug("Getting user preferences for user ID: {}", userId);
+
         UserPreferences userPreferences = userPreferencesRepository.findByUserId(userId)
                 .orElseGet(() -> {
                     //Save new preferences if the current user doesn't have any.
@@ -39,9 +40,9 @@ public class UserPreferencesService {
                     newPreferences.setSimilarityThreshold(similarityThreshold);
                     return save(userId, newPreferences);
                 });
-        
-        // Check if Atlassian token exists in AWS Secrets Manager
-        boolean hasAtlassianToken = atlassianTokenStore.exists(userId).orElse(false);
+
+        boolean hasAtlassianToken = atlassianTokenStore.exists(userId);
+
         userPreferences.setAtlassianAuthentication(hasAtlassianToken);
         
         return userPreferences;

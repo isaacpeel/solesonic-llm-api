@@ -33,7 +33,10 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         String method = request.getMethod();
         String requestURI = request.getRequestURI();
         String queryString = request.getQueryString();
-        String fullUrl = StringUtils.isEmpty(queryString) ? requestURI : requestURI + "?" + queryString;
+
+        String redactedQueryString = redact(queryString, "code");
+
+        String fullUrl = StringUtils.isEmpty(redactedQueryString) ? requestURI : requestURI + "?" + redactedQueryString;
 
         // Check authentication status
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
@@ -45,5 +48,17 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         log.info("Request: {} {} - Authenticated: {}", method, fullUrl, isAuthenticated);
 
         filterChain.doFilter(request, response);
+    }
+
+    private String redact(String queryString, String ... toRedact) {
+        if (StringUtils.isEmpty(queryString)) {
+            return queryString;
+        }
+
+        for (String key : toRedact) {
+            queryString = queryString.replaceFirst(key, "*****");
+        }
+
+        return queryString;
     }
 }

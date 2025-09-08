@@ -20,6 +20,7 @@ import org.springframework.web.reactive.function.client.WebClientResponseExcepti
 import java.net.URI;
 
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.FORBIDDEN;
 import static org.springframework.http.HttpStatus.TOO_MANY_REQUESTS;
 
 @ControllerAdvice
@@ -72,6 +73,10 @@ public class AtlassianExceptionHandler {
             case BAD_REQUEST -> {
                 log.warn("Atlassian token refresh failed with 400 - likely invalid refresh token");
                 atlassianTokenException = new AtlassianTokenException("Invalid refresh token", statusCode, false, webClientResponseException);
+            }
+            case FORBIDDEN -> {
+                log.warn("Atlassian token refresh failed with 403 - access forbidden, likely invalid client credentials or expired refresh token");
+                atlassianTokenException = new AtlassianTokenException("Access forbidden - invalid client credentials or expired refresh token", statusCode, false, webClientResponseException);
             }
             case TOO_MANY_REQUESTS -> {
                 log.warn("Atlassian token refresh failed with retriable error: {}", webClientResponseException.getStatusCode());

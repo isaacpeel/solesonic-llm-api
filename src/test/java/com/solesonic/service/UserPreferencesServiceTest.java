@@ -61,7 +61,7 @@ public class UserPreferencesServiceTest {
     void testGetExistingUserPreferences() {
         // Arrange
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
-        when(atlassianTokenStore.exists(userId)).thenReturn(Optional.of(true));
+        when(atlassianTokenStore.exists(userId)).thenReturn(true);
 
         // Act
         UserPreferences result = userPreferencesService.get(userId);
@@ -81,7 +81,7 @@ public class UserPreferencesServiceTest {
         // Arrange
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.empty());
         when(userPreferencesRepository.saveAndFlush(any(UserPreferences.class))).thenReturn(userPreferences);
-        when(atlassianTokenStore.exists(userId)).thenReturn(Optional.of(false));
+        when(atlassianTokenStore.exists(userId)).thenReturn(false);
 
         // Act
         UserPreferences result = userPreferencesService.get(userId);
