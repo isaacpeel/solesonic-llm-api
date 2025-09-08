@@ -45,10 +45,10 @@ public class DatabaseChatMemory implements ChatMemory {
     @Override
     @NonNull
     public List<Message> get(@NonNull String conversationId) {
-        log.info("Getting messages from history.");
+        log.debug("Getting messages from history.");
         List<Message> messages = chatMessageService.findByChatId(UUID.fromString(conversationId));
 
-        log.info("Messages Found: {}", messages.size());
+        log.debug("Messages Found: {}", messages.size());
         return messages;
     }
 

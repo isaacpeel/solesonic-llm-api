@@ -25,13 +25,13 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
     private final UserRequestContext userRequestContext;
     private final AtlassianTokenStore atlassianTokenStore;
 
-    @Value("${jira.api.auth.uri}")
+    @Value("${atlassian.oauth.token-uri}")
     private String atlassianAuthUri;
 
-    @Value("${jira.api.client.id}")
+    @Value("${atlassian.oauth.client-id}")
     private String authClientId;
 
-    @Value("${jira.api.client.secret}")
+    @Value("${atlassian.oauth.client-secret}")
     private String authClientSecret;
 
     public AtlassianRequestAuthorizationFilter(UserRequestContext userRequestContext,
@@ -46,7 +46,7 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
         log.info("Filtering {}: {}", request.method().name(), request.url());
 
         AtlassianAccessToken atlassianAccessToken = atlassianAccessToken();
-        String accessToken = atlassianAccessToken.getAccessToken();
+        String accessToken = atlassianAccessToken.accessToken();
 
         ClientRequest modifiedRequest = ClientRequest.from(request)
                 .header(AUTHORIZATION, "Bearer " + accessToken)
@@ -64,12 +64,12 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
             return atlassianAccessToken;
         }
 
-        AtlassianInternalAuthorizationFilter.refreshToken(atlassianAccessToken, authClientId, authClientSecret, atlassianAuthUri);
+        AtlassianAccessToken refreshedToken = AtlassianInternalAuthorizationFilter.refreshToken(atlassianAccessToken, authClientId, authClientSecret, atlassianAuthUri);
 
         log.info("Updating access token for user: {}", userId);
-        log.info("Token has expiresIn: {}", atlassianAccessToken.getExpiresIn() != null);
+        log.info("Token has expiresIn: {}", refreshedToken.expiresIn() != null);
 
-        atlassianTokenStore.save(atlassianAccessToken);
-        return atlassianAccessToken;
+        atlassianTokenStore.save(refreshedToken);
+        return refreshedToken;
     }
 }

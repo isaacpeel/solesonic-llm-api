@@ -25,7 +25,7 @@ public class AtlassianClientConfig {
     @Value("${jira.api.uri}")
     private String jiraApiUri;
 
-    @Value("${jira.api.auth.uri}")
+    @Value("${atlassian.oauth.token-uri}")
     private String jiraApiAuthUri;
 
     private final AtlassianRequestAuthorizationFilter atlassianRequestAuthorizationFilter;

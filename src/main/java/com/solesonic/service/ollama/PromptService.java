@@ -8,8 +8,6 @@ import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
-import com.solesonic.tools.jira.AssigneeJiraTools;
-import com.solesonic.tools.jira.CreateJiraTools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -46,8 +44,6 @@ public class PromptService {
     private final UserRequestContext userRequestContext;
     private final VectorStore vectorStore;
     private final UserIntentService userIntentService;
-    private final CreateJiraTools createJiraTools;
-    private final AssigneeJiraTools assigneeJiraTools;
     private final CreateConfluenceTools createConfluenceTools;
     private final OllamaModelRepository ollamaModelRepository;
 
@@ -72,8 +68,6 @@ public class PromptService {
             UserRequestContext userRequestContext,
             VectorStore vectorStore,
             UserIntentService userIntentService,
-            CreateJiraTools createJiraTools,
-            AssigneeJiraTools assigneeJiraTools,
             CreateConfluenceTools createConfluenceTools,
             OllamaModelRepository ollamaModelRepository) {
         this.chatClient = chatClient;
@@ -81,8 +75,6 @@ public class PromptService {
         this.userRequestContext = userRequestContext;
         this.vectorStore = vectorStore;
         this.userIntentService = userIntentService;
-        this.createJiraTools = createJiraTools;
-        this.assigneeJiraTools = assigneeJiraTools;
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
     }
@@ -174,9 +166,8 @@ public class PromptService {
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE -> ToolCallbacks.from(createJiraTools, assigneeJiraTools);
+                case CREATING_JIRA_ISSUE, GENERAL ->  new ToolCallback[0];
                 case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
-                case GENERAL -> new ToolCallback[0];
             };
 
             log.debug("Selected {} tools for intent '{}' and model '{}'", toolCallbacks.length, intent, model);

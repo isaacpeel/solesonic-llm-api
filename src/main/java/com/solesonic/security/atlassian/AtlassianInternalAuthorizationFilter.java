@@ -22,13 +22,13 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     private static final Logger log = LoggerFactory.getLogger(AtlassianInternalAuthorizationFilter.class);
     private final AtlassianTokenStore atlassianTokenStore;
 
-    @Value("${jira.api.auth.uri}")
+    @Value("${atlassian.oauth.token-uri}")
     private String atlassianAuthUri;
 
-    @Value("${jira.api.client.id}")
+    @Value("${atlassian.oauth.client-id}")
     private String authClientId;
 
-    @Value("${jira.api.client.secret}")
+    @Value("${atlassian.oauth.client-secret}")
     private String authClientSecret;
 
     public AtlassianInternalAuthorizationFilter(AtlassianTokenStore atlassianTokenStore) {
@@ -41,7 +41,7 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
         log.debug("Filtering request to: {}", request.url());
 
         AtlassianAccessToken atlassianAccessToken = atlassianAccessToken();
-        String accessToken = atlassianAccessToken.getAccessToken();
+        String accessToken = atlassianAccessToken.accessToken();
 
         ClientRequest modifiedRequest = ClientRequest.from(request)
                 .header(AUTHORIZATION, "Bearer " + accessToken)
@@ -58,17 +58,18 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
             return adminUserToken;
         }
 
-        refreshToken(adminUserToken, authClientId, authClientSecret, atlassianAuthUri);
+        AtlassianAccessToken refreshedToken = refreshToken(adminUserToken, authClientId, authClientSecret, atlassianAuthUri);
 
         log.debug("Updating access token for admin user.");
-        log.debug("Admin token expiresIn: {}", adminUserToken.getExpiresIn());
+        log.debug("Admin token expiresIn: {}", refreshedToken.expiresIn());
 
-        atlassianTokenStore.saveAdmin(adminUserToken);
-        return adminUserToken;
+        atlassianTokenStore.saveAdmin(refreshedToken);
+
+        return refreshedToken;
     }
 
-    static void refreshToken(AtlassianAccessToken adminUserToken, String authClientId, String authClientSecret, String atlassianAuthUri) {
-        String jiraRefreshToken = adminUserToken.getRefreshToken();
+    static AtlassianAccessToken refreshToken(AtlassianAccessToken adminUserToken, String authClientId, String authClientSecret, String atlassianAuthUri) {
+        String jiraRefreshToken = adminUserToken.refreshToken();
 
         AtlassianAuthRequest atlassianAuthRequest = AtlassianAuthRequest.builder()
                 .grantType(REFRESH_TOKEN)
@@ -91,9 +92,9 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
                 .block();
 
         assert newAccessToken != null;
-        adminUserToken.setAccessToken(newAccessToken.getAccessToken());
-        adminUserToken.setRefreshToken(newAccessToken.getRefreshToken());
-        adminUserToken.setUpdated(ZonedDateTime.now());
-        adminUserToken.setExpiresIn(newAccessToken.getExpiresIn());
+
+        return AtlassianAccessToken.from(newAccessToken)
+                .updated(ZonedDateTime.now())
+                .build();
     }
 }

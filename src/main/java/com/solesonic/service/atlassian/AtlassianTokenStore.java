@@ -8,12 +8,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
-import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
-import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
-import software.amazon.awssdk.services.secretsmanager.model.PutSecretValueRequest;
+import software.amazon.awssdk.services.secretsmanager.model.*;
 
 import java.util.Optional;
 import java.util.UUID;
+
+import static com.solesonic.service.atlassian.AtlassianRefreshTokenStore.buildSecretName;
 
 @Service
 public class AtlassianTokenStore {
@@ -24,6 +24,7 @@ public class AtlassianTokenStore {
     private final ObjectMapper objectMapper;
     private final String secretPrefix;
     private final String adminKey;
+
 
     public AtlassianTokenStore(SecretsManagerClient secretsManagerClient,
                                ObjectMapper objectMapper,
@@ -41,7 +42,7 @@ public class AtlassianTokenStore {
     }
 
     public void save(AtlassianAccessToken token) {
-        String secretName = secretPrefix + "/" + token.getUserId().toString();
+        String secretName = buildSecretName(secretPrefix, token.userId(), "atlassian");
         saveSecret(secretName, token);
     }
 
@@ -51,19 +52,26 @@ public class AtlassianTokenStore {
     }
 
     public void saveAdmin(AtlassianAccessToken token) {
+
         String secretName = secretPrefix + "/" + adminKey;
         saveSecret(secretName, token);
     }
 
-    public Optional<Boolean> exists(UUID userId) {
-        String secretName = secretPrefix + "/" + userId.toString();
+    public boolean exists(UUID userId) {
+        log.debug("Checking if token exists for userId: {}", userId);
+
+        String secretName = buildSecretName(secretPrefix, userId, "atlassian");
 
         GetSecretValueRequest request = GetSecretValueRequest.builder()
                 .secretId(secretName)
                 .build();
 
-        secretsManagerClient.getSecretValue(request);
-        return Optional.of(true);
+        try {
+            secretsManagerClient.getSecretValue(request);
+            return true;
+        } catch (ResourceNotFoundException e) {
+            return false;
+        }
     }
 
     private Optional<AtlassianAccessToken> loadSecret(String secretName) {
@@ -81,8 +89,8 @@ public class AtlassianTokenStore {
         } catch (JsonProcessingException jsonProcessingException) {
             throw new RuntimeException(jsonProcessingException);
         }
-        log.debug("Successfully loaded token from secret: " +
-                "{}", secretName);
+
+        log.debug("Successfully loaded token from secret: {}", secretName);
         return Optional.of(token);
 
     }
@@ -101,7 +109,15 @@ public class AtlassianTokenStore {
                 .secretString(secretValue)
                 .build();
 
-        secretsManagerClient.putSecretValue(putRequest);
-        log.debug("Successfully updated existing secret: {}", secretName);
+        try {
+            secretsManagerClient.putSecretValue(putRequest);
+        } catch (ResourceNotFoundException e) {
+            CreateSecretRequest createSecretRequest = CreateSecretRequest.builder()
+                    .name(secretName)
+                    .secretString(secretValue)
+                    .build();
+
+            secretsManagerClient.createSecret(createSecretRequest);
+        }
     }
 }
