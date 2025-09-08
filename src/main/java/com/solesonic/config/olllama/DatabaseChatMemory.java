@@ -26,7 +26,7 @@ public class DatabaseChatMemory implements ChatMemory {
 
     @Override
     public void add(@NonNull String conversationId, List<Message> messages) {
-        log.info("Adding messages to history.");
+        log.debug("Adding messages to history.");
 
         UUID chatId = UUID.fromString(conversationId);
         String chatModel = userRequestContext.getChatModel();
