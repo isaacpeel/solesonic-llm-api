@@ -50,6 +50,7 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
                 log.info("Authorities: {}", authentication.getAuthorities());
                 if (authentication.getPrincipal() instanceof Jwt jwt) {
                     log.info("JWT claims: {}", jwt.getClaims());
+                    log.info("JWT scope claim: {}", jwt.getClaimAsString("scope"));
                 }
             } else {
                 log.warn("No authentication found!");

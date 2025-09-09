@@ -28,7 +28,7 @@ import static org.springframework.security.config.Customizer.withDefaults;
 @Profile({"prod"})
 public class SecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
-    public static final String SCOPE_TOKEN_MINT_JIRA = "SCOPE_izzy-bot-token-broker\\/token:mint:jira";
+    public static final String SCOPE_TOKEN_MINT_JIRA = "SCOPE_izzy-bot-token-broker/token:mint:jira";
     public static final String BROKER_ATLASSIAN_TOKEN = "/broker/atlassian/token";
 
     @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}")
@@ -51,6 +51,8 @@ public class SecurityConfig {
     @Bean
     @Profile({"prod"})
     public SecurityFilterChain prodSecurityFilterChain(HttpSecurity http) throws Exception {
+        log.info("Expected authority for token broker: {}", SCOPE_TOKEN_MINT_JIRA);
+
         http.exceptionHandling(config -> config.accessDeniedHandler(accessDeniedHandler()));
         http.exceptionHandling(config -> config.authenticationEntryPoint(authenticationEntryPoint()));
 
