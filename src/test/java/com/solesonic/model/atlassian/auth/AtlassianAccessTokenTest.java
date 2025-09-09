@@ -5,7 +5,6 @@ import org.junit.jupiter.api.Test;
 import java.time.ZonedDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class AtlassianAccessTokenTest {
 
@@ -37,25 +36,21 @@ class AtlassianAccessTokenTest {
     }
 
     @Test
-    void isExpired_whenExpiresInIsNull_throwsException() {
+    void isExpired_whenExpiresInIsNull_isExpired() {
         AtlassianAccessToken token = new AtlassianAccessToken(
                 null, null, null, null, null, null, false, 
                 ZonedDateTime.now(), null, null, null);
 
-        assertThatThrownBy(token::isExpired)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Token must have both expiresIn and created fields initialized.");
+        assertThat(token.isExpired()).isTrue();
     }
 
     @Test
-    void isExpired_whenCreatedIsNull_throwsException() {
+    void isExpired_whenCreatedIsNull_isExpired() {
         AtlassianAccessToken token = new AtlassianAccessToken(
                 null, null, null, null, null, 3600, false, 
                 null, null, null, null);
 
-        assertThatThrownBy(token::isExpired)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Token must have both expiresIn and created fields initialized.");
+        assertThat(token.isExpired()).isTrue();
     }
 
     @Test
@@ -64,9 +59,7 @@ class AtlassianAccessTokenTest {
                 null, null, null, null, null, null, false, 
                 null, null, null, null);
 
-        assertThatThrownBy(token::isExpired)
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("Token must have both expiresIn and created fields initialized.");
+        assertThat(token.isExpired()).isTrue();
     }
 
     @Test
