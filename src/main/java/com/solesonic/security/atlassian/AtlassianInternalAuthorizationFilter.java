@@ -95,6 +95,7 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
 
         return AtlassianAccessToken.from(newAccessToken)
                 .updated(ZonedDateTime.now())
+                .created(ZonedDateTime.now())
                 .build();
     }
 }
