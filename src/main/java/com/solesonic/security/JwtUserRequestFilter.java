@@ -17,6 +17,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.UUID;
 
+import static com.solesonic.security.SecurityConfig.BROKER_ATLASSIAN_TOKEN;
+
 @Component
 @Order(1)
 @Profile({"prod"})
@@ -34,6 +36,12 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
                                     @Nonnull HttpServletResponse response,
                                     @Nonnull FilterChain filterChain) throws ServletException, IOException {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        String requestPath = request.getRequestURI();
+
+        if(requestPath.endsWith(BROKER_ATLASSIAN_TOKEN)) {
+            logger.info("Request for token broker, no user to log.");
+        }
 
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
             String userId = jwt.getClaimAsString(SUB);
