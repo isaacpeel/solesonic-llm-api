@@ -44,6 +44,18 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
 
         if(requestPath.endsWith(BROKER_ATLASSIAN_TOKEN)) {
             log.info("Request for token broker, no user to log.");
+
+            if (authentication != null) {
+                log.info("Authentication present: {}", authentication.getClass().getSimpleName());
+                log.info("Authorities: {}", authentication.getAuthorities());
+                if (authentication.getPrincipal() instanceof Jwt jwt) {
+                    log.info("JWT claims: {}", jwt.getClaims());
+                }
+            } else {
+                log.warn("No authentication found!");
+            }
+
+
             filterChain.doFilter(request, response);
             return;
         }
