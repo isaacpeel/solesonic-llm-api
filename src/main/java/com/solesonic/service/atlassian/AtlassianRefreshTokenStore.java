@@ -37,6 +37,7 @@ public class AtlassianRefreshTokenStore {
     }
 
     public Optional<AtlassianTokenRefreshResponse> loadRefreshToken(UUID userId, String siteId) {
+        log.info("Loading refresh token for atlassian atlassian tokens for user id {} and site id {}", userId, siteId);
         String secretName = buildSecretName(secretPrefix, userId, siteId);
 
         log.info("Loading refresh token from secret {}",  secretName);
