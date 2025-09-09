@@ -37,7 +37,7 @@ public class AtlassianTokenStore {
     }
 
     public Optional<AtlassianAccessToken> load(UUID userId) {
-        String secretName = secretPrefix + "/" + userId.toString();
+        String secretName = buildSecretName(secretPrefix, userId, "atlassian");
         return loadSecret(secretName);
     }
 
@@ -47,13 +47,12 @@ public class AtlassianTokenStore {
     }
 
     public Optional<AtlassianAccessToken> loadAdmin() {
-        String secretName = secretPrefix + "/" + adminKey;
+        String secretName = buildSecretName(secretPrefix, UUID.fromString(adminKey), "atlassian");
         return loadSecret(secretName);
     }
 
     public void saveAdmin(AtlassianAccessToken token) {
-
-        String secretName = secretPrefix + "/" + adminKey;
+        String secretName = buildSecretName(secretPrefix, UUID.fromString(adminKey), "atlassian");
         saveSecret(secretName, token);
     }
 
