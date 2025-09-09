@@ -15,24 +15,27 @@ public record AtlassianAccessToken(
         @JsonProperty("refresh_token")
         String refreshToken,
 
-        @JsonProperty("token_type")
+        @JsonProperty(value = "token_type")
         String tokenType,
         String scope,
 
-        @JsonProperty("expires_in")
+        @JsonProperty(value = "expires_in")
         Integer expiresIn,
 
         boolean administrator,
+
+        @JsonProperty(defaultValue = "0")
         ZonedDateTime created,
         ZonedDateTime updated,
         String error,
+
         @JsonProperty("error_description")
         String errorDescription
 ) {
 
     public boolean isExpired() {
         if (expiresIn == null || created == null) {
-            throw new IllegalStateException("Token must have both expiresIn and created fields initialized.");
+            return true;
         }
 
         ZonedDateTime expirationTime = created.plusSeconds(expiresIn).minusSeconds(10);
