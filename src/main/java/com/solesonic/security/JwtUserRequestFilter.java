@@ -48,6 +48,8 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
             return;
         }
 
+
+        log.info("Checking for user to log");
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
             String userId = jwt.getClaimAsString(SUB);
 
