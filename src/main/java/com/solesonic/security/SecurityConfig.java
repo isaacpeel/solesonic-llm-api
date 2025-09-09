@@ -51,8 +51,6 @@ public class SecurityConfig {
     @Bean
     @Profile({"prod"})
     public SecurityFilterChain prodSecurityFilterChain(HttpSecurity http) throws Exception {
-        log.info("Expected authority for token broker: {}", SCOPE_TOKEN_MINT_JIRA);
-
         http.exceptionHandling(config -> config.accessDeniedHandler(accessDeniedHandler()));
         http.exceptionHandling(config -> config.authenticationEntryPoint(authenticationEntryPoint()));
 
