@@ -42,10 +42,9 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
 
         String requestPath = request.getRequestURI();
 
-        log.info("Request path: {}", requestPath);
-
         if(requestPath.endsWith(BROKER_ATLASSIAN_TOKEN)) {
             log.info("Request for token broker, no user to log.");
+            filterChain.doFilter(request, response);
         }
 
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
