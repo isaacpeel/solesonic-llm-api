@@ -8,7 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import software.amazon.awssdk.services.secretsmanager.model.*;
 
 import java.util.Optional;
 import java.util.UUID;
@@ -28,9 +27,9 @@ public class AtlassianTokenStore {
     private String secretPrefix;
             
 
-    public AtlassianTokenStore(ObjectMapper objectMapper, AwsSecretsManagerService awsSecretsManagerService, AwsSecretsManagerService awsSecretsManagerService1) {
+    public AtlassianTokenStore(ObjectMapper objectMapper, AwsSecretsManagerService awsSecretsManagerService) {
         this.objectMapper = objectMapper;
-        this.awsSecretsManagerService = awsSecretsManagerService1;
+        this.awsSecretsManagerService = awsSecretsManagerService;
     }
 
     public Optional<AtlassianAccessToken> load(UUID userId) {
@@ -62,11 +61,7 @@ public class AtlassianTokenStore {
     }
 
     private Optional<AtlassianAccessToken> loadSecret(String secretName) {
-        GetSecretValueRequest request = GetSecretValueRequest.builder()
-                .secretId(secretName)
-                .build();
-
-        String secretValue = awsSecretsManagerService.secretJson(secretName);
+        String secretValue = awsSecretsManagerService.findSecret(secretName);
 
         AtlassianAccessToken token;
 

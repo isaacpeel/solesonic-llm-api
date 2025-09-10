@@ -8,10 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import software.amazon.awssdk.services.secretsmanager.SecretsManagerClient;
-import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueRequest;
-import software.amazon.awssdk.services.secretsmanager.model.GetSecretValueResponse;
-import software.amazon.awssdk.services.secretsmanager.model.PutSecretValueRequest;
 
 import java.time.ZonedDateTime;
 import java.util.Optional;
@@ -22,26 +18,22 @@ public class AtlassianRefreshTokenStore {
 
     private static final Logger log = LoggerFactory.getLogger(AtlassianRefreshTokenStore.class);
 
-    private final SecretsManagerClient secretsManagerClient;
     private final ObjectMapper objectMapper;
-    private final String secretPrefix;
 
-    ///prefix/site/tokens/userId
-    public static String secretTemplate = "/%s/%s/tokens/%s";
+    @Value("${atlassian.tokens.secrets.prefix:/solesonic/atlassian/tokens}")
+    private String secretPrefix;
+
     private final AwsSecretsManagerService awsSecretsManagerService;
 
-    public AtlassianRefreshTokenStore(SecretsManagerClient secretsManagerClient,
-                                      ObjectMapper objectMapper,
-                                      @Value("${atlassian.tokens.secrets.prefix:/solesonic/atlassian/tokens}") String secretPrefix, AwsSecretsManagerService awsSecretsManagerService) {
-        this.secretsManagerClient = secretsManagerClient;
+    public AtlassianRefreshTokenStore(ObjectMapper objectMapper,
+                                      AwsSecretsManagerService awsSecretsManagerService) {
         this.objectMapper = objectMapper;
-        this.secretPrefix = secretPrefix;
         this.awsSecretsManagerService = awsSecretsManagerService;
     }
 
     public Optional<AtlassianTokenRefreshResponse> loadRefreshToken(UUID userId, String siteId) {
         String secretName = awsSecretsManagerService.buildSecretName(secretPrefix, userId, siteId);
-        String secretValue = awsSecretsManagerService.secretJson(secretName);
+        String secretValue = awsSecretsManagerService.findSecret(secretName);
 
         AtlassianTokenRefreshResponse payload;
 

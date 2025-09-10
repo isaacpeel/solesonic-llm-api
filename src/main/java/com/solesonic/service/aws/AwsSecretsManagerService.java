@@ -39,7 +39,7 @@ public class AwsSecretsManagerService {
         }
     }
 
-    public String secretJson(String secretName) {
+    public String findSecret(String secretName) {
         log.debug("Getting secret json for secret name: {}", secretName);
 
         GetSecretValueRequest request = GetSecretValueRequest.builder()
