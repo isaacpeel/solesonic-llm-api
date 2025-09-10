@@ -13,9 +13,9 @@ The Solesonic LLM API uses PostgresSQL with the pgvector extension for efficient
 
 The initial database setup is handled through Docker Compose, which creates a PostgreSQL container with the pgvector extension. The setup is defined in the following files:
 
-- `docker-db/docker-compose-db.yml`: Defines the PostgresSQL container with pgvector
-- `docker-db/init_schema.sql`: Initializes the database with required extensions
-- `docker-db/postgresql.conf`: Custom PostgresSQL configuration
+- `docker/docker-compose-db.yml`: Defines the PostgresSQL container with pgvector
+- `docker/init_schema.sh`: Initializes the database with required extensions
+- `docker/postgresql.conf`: Custom PostgresSQL configuration
 
 ### Docker Compose Configuration
 
@@ -99,17 +99,10 @@ To make changes to the database schema:
 
 ## Database Configuration
 
-The database connection is configured through environment variables in the `.env` file:
-
-```
-SPRING_DATASOURCE_URI=jdbc:postgresql://localhost:5445/solesonic-llm-api
-SPRING_DATASOURCE_USERNAME=solesonic-llm-api
-SPRING_DATASOURCE_PASSWORD=docker_pw
-DB_PASSWORD=docker_pw
-```
+The database connection is configured through environment variables in the `.env` file. For a complete list of all environment variables and their configuration, see [docs/configuration.md](configuration.md).
 
 **Important Notes:**
-- The database password **must** be defined in the `.env` file as shown above
-- The database runs on port 5445 as configured in the docker-compose-db.yml file
+- The database password **must** be defined in the `.env` file
+- The database runs on port 5445 as configured in the docker/docker-compose-db.yml file
 
 These variables are used by both the Docker Compose setup and the Spring Boot application.

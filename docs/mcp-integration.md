@@ -251,25 +251,8 @@ Common error responses:
 
 ## Environment Configuration
 
-Required environment variables for the Solesonic API:
+For a complete list of all required environment variables including MCP, Atlassian OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).
 
-```bash
-# Atlassian OAuth2 Configuration
-ATLASSIAN_OAUTH_CLIENT_ID=your-atlassian-client-id
-ATLASSIAN_OAUTH_CLIENT_SECRET=your-atlassian-client-secret
-ATLASSIAN_OAUTH_TOKEN_URI=https://auth.atlassian.com/oauth/token
+For detailed AWS Cognito setup instructions, see [docs/cognito-setup.md](cognito-setup.md).
 
-# Database Configuration
-DB_URL=postgresql://localhost:5432/solesonic
-POSTGRES_USER=your-db-user
-POSTGRES_PASSWORD=your-db-password
-
-# Security Configuration
-JWK_SET_URI=your-jwk-set-uri
-ISSUER_URI=your-issuer-uri
-
-# CORS Configuration
-CORS_ALLOWED_ORIGINS=https://your-mcp-server.com
-```
-
-For detailed setup instructions, see the main [README.md](README.md).
+For getting started with the Solesonic LLM API, see [docs/getting-started.md](getting-started.md).

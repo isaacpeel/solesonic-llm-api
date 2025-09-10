@@ -91,9 +91,9 @@ The integration of Jira and Confluence through RAG creates a powerful workflow f
 
 To use these product management features:
 
-1. Configure your Jira and Confluence integration in the `.env` file (see main README)
+1. Configure your Jira and Confluence integration following the environment variables in [docs/configuration.md](configuration.md)
 2. Ensure the `CONFLUENCE_TRAINING_ENABLED` environment variable is set to `true` to enable Confluence scanning
 3. Use the chat interface to create and manage user stories
 4. Reference your Confluence documentation in conversations to leverage the RAG capabilities
 
-For more detailed information on the API and configuration, refer to the main [README](README.md).
+For more detailed information on the API endpoints, refer to [docs/api.md](api.md) and for configuration details, see [docs/configuration.md](configuration.md).
