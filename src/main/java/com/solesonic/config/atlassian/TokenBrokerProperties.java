@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 @ConfigurationProperties(prefix = "atlassian.token.broker")
 public class TokenBrokerProperties {
 
-    public static final String TOKEN_MINT_JIRA = "token:mint:jira";
+    public static final String TOKEN_MINT_JIRA = "izzy-bot-token-broker/token:mint:jira";
     public static final String TOKEN_BROKER = "token-broker";
 
     private Cache cache = new Cache();

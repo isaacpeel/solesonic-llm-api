@@ -29,7 +29,7 @@ public class AtlassianExceptionHandler {
 
     private final ExceptionService exceptionService;
 
-    @Value("${JIRA_URL_TEMPLATE}")
+    @Value("${solesonic.llm.jira.url.template}")
     private String jiraUrlTemplate;
 
     private static final String DUPLICATE_JIRA_MESSAGE_TEMPLATE = """

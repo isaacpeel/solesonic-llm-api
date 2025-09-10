@@ -6,6 +6,8 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.core.Authentication;
@@ -17,10 +19,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.UUID;
 
+import static com.solesonic.security.SecurityConfig.BROKER_ATLASSIAN_TOKEN;
+
 @Component
 @Order(1)
 @Profile({"prod"})
 public class JwtUserRequestFilter extends OncePerRequestFilter {
+    private static final Logger log = LoggerFactory.getLogger(JwtUserRequestFilter.class);
 
     public static final String SUB = "sub";
     private final UserRequestContext userRequestContext;
@@ -35,6 +40,15 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
                                     @Nonnull FilterChain filterChain) throws ServletException, IOException {
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
+        String requestPath = request.getRequestURI();
+
+        if(requestPath.endsWith(BROKER_ATLASSIAN_TOKEN)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+
+        log.info("Checking for user to log");
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
             String userId = jwt.getClaimAsString(SUB);
 

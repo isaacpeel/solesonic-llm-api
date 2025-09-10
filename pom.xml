@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.solesonic</groupId>
     <artifactId>solesonic-llm-api</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.0.1</version>
     <name>solesonic-llm</name>
     <description>solesonic-llm</description>
 

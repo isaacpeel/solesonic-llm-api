@@ -28,6 +28,8 @@ import static org.springframework.security.config.Customizer.withDefaults;
 @Profile({"prod"})
 public class SecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
+    public static final String SCOPE_TOKEN_MINT_JIRA = "SCOPE_izzy-bot-token-broker/token:mint:jira";
+    public static final String BROKER_ATLASSIAN_TOKEN = "/broker/atlassian/token";
 
     @Value("${spring.security.oauth2.resourceserver.jwt.jwk-set-uri}")
     private String jwkSetUri;
@@ -56,6 +58,7 @@ public class SecurityConfig {
                 .cors(withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
                 .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers(BROKER_ATLASSIAN_TOKEN).hasAuthority(SCOPE_TOKEN_MINT_JIRA)
                         .anyRequest().authenticated()
                 )
                 .oauth2ResourceServer(oauth2 -> oauth2
