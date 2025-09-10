@@ -1,6 +1,8 @@
-# AWS Cognito User Pool Setup Guide for Solesonic LLM API
+# AWS Cognito User Pool Setup Guide
 
 This guide explains how to create and configure an AWS Cognito User Pool for the Solesonic LLM API application, based on the exported configuration from the existing `solesonic-llm-api` user pool.
+
+For information about how this integrates with MCP servers, see [docs/mcp-integration.md](mcp-integration.md). For environment variable configuration, see [docs/configuration.md](configuration.md).
 
 ## Overview
 
