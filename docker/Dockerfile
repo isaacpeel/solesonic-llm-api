@@ -22,4 +22,4 @@ COPY target/*.jar app.jar
 EXPOSE 8443
 
 # Keep existing runtime flags
-ENTRYPOINT ["java", "-Dspring.profiles.active=prod", "-Djava.net.preferIPv4Stack=true", "-jar", "/app/app.jar"]
+ENTRYPOINT ["java", "-Dspring.profiles.active=prod,ssl", "-Djava.net.preferIPv4Stack=true", "-jar", "/app/app.jar"]
