@@ -3,6 +3,8 @@ package com.solesonic.service.ollama;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.repository.ollama.OllamaModelRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.stereotype.Service;
 
@@ -12,6 +14,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class OllamaService {
+    private static final Logger log = LoggerFactory.getLogger(OllamaService.class);
+
     private final OllamaApi ollamaApi;
     private final OllamaModelRepository modelRepository;
 
@@ -27,6 +31,8 @@ public class OllamaService {
 
         assert nativeOllamaModels != null;
 
+
+
         Map<String, OllamaApi.Model> nativeModelMap = nativeOllamaModels.models()
                 .stream()
                 .collect(Collectors.toMap(OllamaApi.Model::name, model -> model));
@@ -39,6 +45,21 @@ public class OllamaService {
                     ollamaModel.setModel(nativeModel.model());
                     ollamaModel.setSize(nativeModel.size());
 
+                    String name = ollamaModel.getName();
+
+                    OllamaApi.ShowModelRequest showModelRequest = new OllamaApi.ShowModelRequest(name);
+                    OllamaApi.ShowModelResponse showModelResponse = ollamaApi.showModel(showModelRequest);
+
+                    List<String> capabilities = showModelResponse.capabilities();
+
+                    for(String capability : capabilities) {
+                        switch (capability) {
+                            case "tools" -> ollamaModel.setTools(true);
+                            case "vision" -> ollamaModel.setVision(true);
+                            case "thinking" -> ollamaModel.setThinking(true);
+                            case "embedding" -> ollamaModel.setEmbedding(true);
+                        }
+                    }
                 })
                 .collect(Collectors.toList());
     }

@@ -16,13 +16,23 @@ public class OllamaModel {
 
     @Column(unique = true)
     private String name;
+
     private boolean censored;
+
+    @Transient
     private boolean embedding;
+
+    @Transient
     private boolean tools;
+
+    @Transient
     private boolean vision;
 
     @Transient
     private String model;
+
+    @Transient
+    private boolean thinking;
 
     @Transient
     private Long size;
@@ -121,5 +131,13 @@ public class OllamaModel {
 
     public void setDetails(OllamaApi.Model.Details details) {
         this.details = details;
+    }
+
+    public boolean isThinking() {
+        return thinking;
+    }
+
+    public void setThinking(boolean thinking) {
+        this.thinking = thinking;
     }
 }
