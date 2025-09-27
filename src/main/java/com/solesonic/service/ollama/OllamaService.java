@@ -1,5 +1,7 @@
 package com.solesonic.service.ollama;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.repository.ollama.OllamaModelRepository;
@@ -18,10 +20,12 @@ public class OllamaService {
 
     private final OllamaApi ollamaApi;
     private final OllamaModelRepository modelRepository;
+    private final ObjectMapper objectMapper;
 
-    public OllamaService(OllamaApi ollamaApi, OllamaModelRepository modelRepository) {
+    public OllamaService(OllamaApi ollamaApi, OllamaModelRepository modelRepository, ObjectMapper objectMapper) {
         this.ollamaApi = ollamaApi;
         this.modelRepository = modelRepository;
+        this.objectMapper = objectMapper;
     }
 
     public List<OllamaModel> models() {
@@ -30,8 +34,6 @@ public class OllamaService {
         OllamaApi.ListModelResponse nativeOllamaModels = ollamaApi.listModels();
 
         assert nativeOllamaModels != null;
-
-
 
         Map<String, OllamaApi.Model> nativeModelMap = nativeOllamaModels.models()
                 .stream()
@@ -45,30 +47,20 @@ public class OllamaService {
                     ollamaModel.setModel(nativeModel.model());
                     ollamaModel.setSize(nativeModel.size());
 
-                    String name = ollamaModel.getName();
+                    // Persist raw model metadata as JSONB
+                    Map<String, Object> modelMap = objectMapper.convertValue(nativeModel, new TypeReference<>() {
+                    });
+                    ollamaModel.setOllamaModel(modelMap);
 
-                    OllamaApi.ShowModelRequest showModelRequest = new OllamaApi.ShowModelRequest(name);
-                    OllamaApi.ShowModelResponse showModelResponse = ollamaApi.showModel(showModelRequest);
-
-                    List<String> capabilities = showModelResponse.capabilities();
-
-                    for(String capability : capabilities) {
-                        switch (capability) {
-                            case "tools" -> ollamaModel.setTools(true);
-                            case "vision" -> ollamaModel.setVision(true);
-                            case "thinking" -> ollamaModel.setThinking(true);
-                            case "embedding" -> ollamaModel.setEmbedding(true);
-                        }
-                    }
                 })
                 .collect(Collectors.toList());
     }
 
     public OllamaModel get(UUID id) {
         OllamaModel ollamaModel = modelRepository.findById(id)
-                .orElseThrow(()->new ChatException("OLLAMA MODEL NOT FOUND"));
+                .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
 
-        ollamaModel =  modelRepository.save(ollamaModel);
+        ollamaModel = modelRepository.save(ollamaModel);
         return nativeModel(ollamaModel);
     }
 
@@ -76,7 +68,7 @@ public class OllamaService {
         model.setCreated(ZonedDateTime.now());
         model.setUpdated(ZonedDateTime.now());
 
-        model =  modelRepository.save(model);
+        model = modelRepository.save(model);
         return nativeModel(model);
     }
 
@@ -84,7 +76,7 @@ public class OllamaService {
         model.setId(id);
         model.setUpdated(ZonedDateTime.now());
 
-        model =  modelRepository.save(model);
+        model = modelRepository.save(model);
         return nativeModel(model);
     }
 
@@ -92,7 +84,7 @@ public class OllamaService {
         OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
         List<OllamaModel> ollamaModels = new ArrayList<>();
 
-        for( OllamaApi.Model model : listModelResponse.models() ) {
+        for (OllamaApi.Model model : listModelResponse.models()) {
             OllamaModel ollamaModel = new OllamaModel();
             ollamaModel.setName(model.name());
             ollamaModel.setSize(model.size());
@@ -111,7 +103,7 @@ public class OllamaService {
             OllamaApi.Model nativeModel = nativeOllamaModels.models().stream()
                     .filter(model -> model.name().equals(ollamaModel.getName()))
                     .findFirst()
-                    .orElseThrow(()->new ChatException("OLLAMA MODEL NOT FOUND"));
+                    .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
 
             ollamaModel.setDetails(nativeModel.details());
             ollamaModel.setModel(nativeModel.model());
