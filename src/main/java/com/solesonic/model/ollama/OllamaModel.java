@@ -14,7 +14,6 @@ import java.util.UUID;
 
 @Entity
 public class OllamaModel {
-    public static final String CAPABILITIES = "capabilities";
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @GeneratedValue(strategy = GenerationType.UUID)
