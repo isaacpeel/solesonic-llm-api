@@ -11,7 +11,6 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.ollama.api.OllamaApi;
-import org.testcontainers.shaded.com.fasterxml.jackson.core.type.TypeReference;
 
 import java.time.ZonedDateTime;
 import java.util.Arrays;
@@ -33,6 +32,7 @@ public class OllamaServiceTest {
     @Mock
     private OllamaModelRepository modelRepository;
 
+    @SuppressWarnings("unused")
     @Mock
     private ObjectMapper objectMapper;
 
@@ -60,7 +60,7 @@ public class OllamaServiceTest {
         when(modelRepository.save(any(OllamaModel.class))).thenReturn(ollamaModel);
 
         OllamaApi.Model nativeModel = mock(OllamaApi.Model.class);
-        when(nativeModel.name()).thenReturn("llama3");
+        when(nativeModel.model()).thenReturn("llama3");
 
         OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
         when(listModelResponse.models()).thenReturn(List.of(nativeModel));
@@ -81,7 +81,7 @@ public class OllamaServiceTest {
 
     @Test
     void testGetNotFound() {
-        
+
         when(modelRepository.findById(modelId)).thenReturn(Optional.empty());
 
          
@@ -98,7 +98,7 @@ public class OllamaServiceTest {
 
         // Mock OllamaApi.Model
         OllamaApi.Model nativeModel = mock(OllamaApi.Model.class);
-        when(nativeModel.name()).thenReturn("llama3");
+        when(nativeModel.model()).thenReturn("llama3");
 
         // Mock OllamaApi.ListModelResponse
         OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
@@ -121,7 +121,7 @@ public class OllamaServiceTest {
         when(modelRepository.save(any(OllamaModel.class))).thenReturn(ollamaModel);
 
         OllamaApi.Model nativeModel = mock(OllamaApi.Model.class);
-        when(nativeModel.name()).thenReturn("llama3");
+        when(nativeModel.model()).thenReturn("llama3");
 
         OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
         when(listModelResponse.models()).thenReturn(List.of(nativeModel));
@@ -149,10 +149,10 @@ public class OllamaServiceTest {
         List<OllamaModel> dbModels = Arrays.asList(model1, model2);
 
         OllamaApi.Model nativeModel1 = mock(OllamaApi.Model.class);
-        when(nativeModel1.name()).thenReturn("llama3");
+        when(nativeModel1.model()).thenReturn("llama3");
 
         OllamaApi.Model nativeModel2 = mock(OllamaApi.Model.class);
-        when(nativeModel2.name()).thenReturn("mistral");
+        when(nativeModel2.model()).thenReturn("mistral");
 
         OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
         when(listModelResponse.models()).thenReturn(Arrays.asList(nativeModel1, nativeModel2));

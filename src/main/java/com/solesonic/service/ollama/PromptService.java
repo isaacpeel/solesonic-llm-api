@@ -25,7 +25,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -49,6 +48,7 @@ public class PromptService {
     private final UserIntentService userIntentService;
     private final CreateConfluenceTools createConfluenceTools;
     private final OllamaModelRepository ollamaModelRepository;
+    private final OllamaModelService ollamaModelService;
 
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
@@ -72,7 +72,7 @@ public class PromptService {
             VectorStore vectorStore,
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository) {
+            OllamaModelRepository ollamaModelRepository, OllamaModelService ollamaModelService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -80,6 +80,7 @@ public class PromptService {
         this.userIntentService = userIntentService;
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
+        this.ollamaModelService = ollamaModelService;
     }
 
     public String model() {
@@ -171,19 +172,15 @@ public class PromptService {
 
                 Map<String, Object> ollamaShow = ollamaModel.getOllamaShow();
 
-                if(ollamaShow != null && ollamaShow.containsKey(CAPABILITIES)) {
-                    @SuppressWarnings("unchecked")
-                    List<String> capabilities = (List<String>) ollamaShow.get(CAPABILITIES);
+                boolean hasTools = ollamaModelService.hasNode(ollamaShow, CAPABILITIES, TOOLS);
 
-                    if(!capabilities.contains(TOOLS)) {
-                        log.debug("Model '{}' does not support tools", model);
-                        return new ToolCallback[0];
-                    }
+                if (!hasTools) {
+                    return new ToolCallback[0];
                 }
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, GENERAL ->  new ToolCallback[0];
+                case CREATING_JIRA_ISSUE, GENERAL -> new ToolCallback[0];
                 case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
             };
 

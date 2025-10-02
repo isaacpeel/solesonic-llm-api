@@ -11,15 +11,20 @@ import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.stereotype.Service;
 
 import java.time.ZonedDateTime;
-import java.util.*;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class OllamaService {
     private static final Logger log = LoggerFactory.getLogger(OllamaService.class);
+    @SuppressWarnings("unused")
     public static final String EMBEDDING = "embedding";
     public static final String TOOLS = "tools";
+    @SuppressWarnings("unused")
     public static final String VISION = "vision";
+    @SuppressWarnings("unused")
     public static final String THINKING = "thinking";
     public static final String CAPABILITIES = "capabilities";
 
@@ -78,7 +83,7 @@ public class OllamaService {
         List<OllamaModel> ollamaModels = new ArrayList<>();
 
         for (OllamaApi.Model model : listModelResponse.models()) {
-            String modelName = model.name();
+            String modelName = model.model();
 
             OllamaModel ollamaModel = nativeModel(modelName);
 
@@ -100,8 +105,9 @@ public class OllamaService {
 
         if (nativeOllamaModels != null) {
             String modelName = ollamaModel.getName();
+
             OllamaApi.Model nativeModel = nativeOllamaModels.models().stream()
-                    .filter(model -> model.name().equals(modelName))
+                    .filter(model -> model.model().equals(modelName))
                     .findFirst()
                     .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
 

@@ -1,16 +1,17 @@
 package com.solesonic.service.ollama;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
+import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
@@ -64,6 +65,9 @@ public class PromptServiceTest {
     private VectorStore vectorStore;
 
     @Mock
+    private UserIntentService userIntentService;
+
+    @Mock
     @SuppressWarnings("unused")
     private ChatClient chatClient;
 
@@ -94,7 +98,6 @@ public class PromptServiceTest {
     private static final String BASIC_PROMPT_CONTENT = "This is a basic prompt template with {input}";
     private static final String TOOLS_PROMPT_CONTENT = "This is a tools prompt template with {input}";
 
-    @InjectMocks
     private PromptService promptService;
 
     private UUID userId;
@@ -102,6 +105,17 @@ public class PromptServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        OllamaModelService ollamaModelService = new OllamaModelService(new ObjectMapper());
+
+        promptService = new PromptService(chatClient,
+                userPreferencesService,
+                userRequestContext,
+                vectorStore,
+                userIntentService,
+                createConfluenceTools,
+                ollamaModelRepository,
+                ollamaModelService);
+
         userId = UUID.randomUUID();
 
         // Set up UserPreferences
@@ -184,6 +198,7 @@ public class PromptServiceTest {
         Map<String, Object> ollamaShowWithTools = Map.of(
                 "capabilities", List.of("tools")
         );
+
         ollamaModel.setOllamaShow(ollamaShowWithTools);
 
         ToolCallback[] tools = promptService.tools(intent, model);
