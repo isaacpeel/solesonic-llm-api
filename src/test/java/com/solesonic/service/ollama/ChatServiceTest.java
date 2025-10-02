@@ -69,13 +69,13 @@ public class ChatServiceTest {
 
     @Test
     void testSave() {
-        // Arrange
+        
         when(chatRepository.save(any(Chat.class))).thenReturn(chat);
 
-        // Act
+        
         Chat savedChat = chatService.save(chat);
 
-        // Assert
+        
         assertThat(savedChat).isNotNull();
         assertThat(savedChat.getId()).isEqualTo(chatId);
         assertThat(savedChat.getUserId()).isEqualTo(userId);
@@ -84,7 +84,7 @@ public class ChatServiceTest {
 
     @Test
     void testGetByUserId() {
-        // Arrange
+        
         List<Chat> chats = new ArrayList<>();
         chats.add(chat);
         List<ChatMessage> chatMessages = new ArrayList<>();
@@ -93,10 +93,10 @@ public class ChatServiceTest {
         when(chatRepository.findByUserId(userId)).thenReturn(chats);
         when(chatMessageRepository.findByChatId(chatId)).thenReturn(chatMessages);
 
-        // Act
+        
         List<Chat> result = chatService.getByUserId(userId);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result).hasSize(1);
         assertThat(result.getFirst().getId()).isEqualTo(chatId);
@@ -107,17 +107,17 @@ public class ChatServiceTest {
 
     @Test
     void testGet() {
-        // Arrange
+        
         List<ChatMessage> chatMessages = new ArrayList<>();
         chatMessages.add(chatMessage);
 
         when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
         when(chatMessageRepository.findByChatId(chatId)).thenReturn(chatMessages);
 
-        // Act
+        
         Chat result = chatService.get(chatId);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result.getId()).isEqualTo(chatId);
         assertThat(result.getChatMessages()).hasSize(1);
@@ -127,15 +127,15 @@ public class ChatServiceTest {
 
     @Test
     void testCreate() {
-        // Arrange
+        
         ChatRequest chatRequest = new ChatRequest("Hello");
 
         when(chatRepository.save(any(Chat.class))).thenReturn(chat);
 
-        // Act
+        
         SolesonicChatResponse response = chatService.create(userId, chatRequest);
 
-        // Assert
+        
         assertThat(response).isNotNull();
         assertThat(response.id()).isEqualTo(chatId);
         assertThat(response.message().getMessage()).isEqualTo("Hello, how can I help you?");
@@ -146,13 +146,13 @@ public class ChatServiceTest {
 
     @Test
     void testUpdate() {
-        // Arrange
+        
         ChatRequest chatRequest = new ChatRequest("How are you?");
 
-        // Act
+        
         SolesonicChatResponse response = chatService.update(chatId, chatRequest);
 
-        // Assert
+        
         assertThat(response).isNotNull();
         assertThat(response.id()).isEqualTo(chatId);
         assertThat(response.message().getMessage()).isEqualTo("Hello, how can I help you?");
@@ -162,14 +162,14 @@ public class ChatServiceTest {
 
     @Test
     void testUpdate_RemovesThinkTags() {
-        // Arrange
+        
         ChatRequest chatRequest = new ChatRequest("Tell me something with think tags");
         when(promptService.prompt(any(), any())).thenReturn("Hello, <think>this should be removed</think> world!");
 
-        // Act
+        
         SolesonicChatResponse response = chatService.update(chatId, chatRequest);
 
-        // Assert
+        
         assertThat(response).isNotNull();
         assertThat(response.message().getMessage()).isEqualTo("Hello,  world!");
         verify(promptService).prompt(eq(chatId), eq("Tell me something with think tags"));

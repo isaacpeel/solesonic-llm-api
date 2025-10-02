@@ -58,10 +58,10 @@ public class UserControllerTest {
 
     @Test
     void testGetUserPreferences() throws Exception {
-        // Arrange
+        
         when(userPreferencesService.get(userId)).thenReturn(userPreferences);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/users/{userId}/preferences", userId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -72,10 +72,10 @@ public class UserControllerTest {
 
     @Test
     void testSaveUserPreferences() throws Exception {
-        // Arrange
+        
         when(userPreferencesService.save(eq(userId), any(UserPreferences.class))).thenReturn(userPreferences);
 
-        // Act & Assert
+         
         mockMvc.perform(post("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(userPreferences)))
@@ -87,10 +87,10 @@ public class UserControllerTest {
 
     @Test
     void testUpdateUserPreferences() throws Exception {
-        // Arrange
+        
         when(userPreferencesService.update(eq(userId), any(UserPreferences.class))).thenReturn(userPreferences);
 
-        // Act & Assert
+         
         mockMvc.perform(put("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(userPreferences)))

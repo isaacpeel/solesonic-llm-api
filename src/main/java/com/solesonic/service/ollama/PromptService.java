@@ -25,10 +25,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
+import static com.solesonic.service.ollama.OllamaService.TOOLS;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -160,9 +163,23 @@ public class PromptService {
         try {
             Optional<OllamaModel> modelOpt = ollamaModelRepository.findByName(model);
 
-            if (modelOpt.isEmpty() || !modelOpt.get().isTools()) {
-                log.debug("Model '{}' does not support tools or not found", model);
+            if (modelOpt.isEmpty()) {
+                log.debug("Model not found");
                 return new ToolCallback[0];
+            } else {
+                OllamaModel ollamaModel = modelOpt.get();
+
+                Map<String, Object> ollamaShow = ollamaModel.getOllamaShow();
+
+                if(ollamaShow != null && ollamaShow.containsKey(CAPABILITIES)) {
+                    @SuppressWarnings("unchecked")
+                    List<String> capabilities = (List<String>) ollamaShow.get(CAPABILITIES);
+
+                    if(!capabilities.contains(TOOLS)) {
+                        log.debug("Model '{}' does not support tools", model);
+                        return new ToolCallback[0];
+                    }
+                }
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {

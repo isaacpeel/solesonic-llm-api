@@ -52,9 +52,6 @@ public class OllamaControllerTest {
         ollamaModel.setId(modelId);
         ollamaModel.setName("llama3");
         ollamaModel.setCensored(false);
-        ollamaModel.setEmbedding(true);
-        ollamaModel.setTools(true);
-        ollamaModel.setVision(false);
         ollamaModel.setCreated(ZonedDateTime.now());
         ollamaModel.setUpdated(ZonedDateTime.now());
 
@@ -68,44 +65,38 @@ public class OllamaControllerTest {
 
     @Test
     void testModels() throws Exception {
-        // Arrange
+        
         when(ollamaService.models()).thenReturn(ollamaModels);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/ollama/models"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$[0].id").value(modelId.toString()))
                 .andExpect(jsonPath("$[0].name").value("llama3"))
-                .andExpect(jsonPath("$[0].censored").value(false))
-                .andExpect(jsonPath("$[0].embedding").value(true))
-                .andExpect(jsonPath("$[0].tools").value(true))
-                .andExpect(jsonPath("$[0].vision").value(false));
+                .andExpect(jsonPath("$[0].censored").value(false));
     }
 
     @Test
     void testModel() throws Exception {
-        // Arrange
+        
         when(ollamaService.get(modelId)).thenReturn(ollamaModel);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/ollama/models/{id}", modelId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
                 .andExpect(jsonPath("$.name").value("llama3"))
-                .andExpect(jsonPath("$.censored").value(false))
-                .andExpect(jsonPath("$.embedding").value(true))
-                .andExpect(jsonPath("$.tools").value(true))
-                .andExpect(jsonPath("$.vision").value(false));
+                .andExpect(jsonPath("$.censored").value(false));
     }
 
     @Test
     void testSave() throws Exception {
-        // Arrange
+        
         when(ollamaService.save(any(OllamaModel.class))).thenReturn(ollamaModel);
 
-        // Act & Assert
+         
         mockMvc.perform(post("/ollama/models")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(ollamaModel)))
@@ -113,18 +104,15 @@ public class OllamaControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
                 .andExpect(jsonPath("$.name").value("llama3"))
-                .andExpect(jsonPath("$.censored").value(false))
-                .andExpect(jsonPath("$.embedding").value(true))
-                .andExpect(jsonPath("$.tools").value(true))
-                .andExpect(jsonPath("$.vision").value(false));
+                .andExpect(jsonPath("$.censored").value(false));
     }
 
     @Test
     void testUpdate() throws Exception {
-        // Arrange
+        
         when(ollamaService.update(eq(modelId), any(OllamaModel.class))).thenReturn(ollamaModel);
 
-        // Act & Assert
+         
         mockMvc.perform(put("/ollama/models/{id}", modelId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(ollamaModel)))
@@ -132,9 +120,6 @@ public class OllamaControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
                 .andExpect(jsonPath("$.name").value("llama3"))
-                .andExpect(jsonPath("$.censored").value(false))
-                .andExpect(jsonPath("$.embedding").value(true))
-                .andExpect(jsonPath("$.tools").value(true))
-                .andExpect(jsonPath("$.vision").value(false));
+                .andExpect(jsonPath("$.censored").value(false));
     }
 }
