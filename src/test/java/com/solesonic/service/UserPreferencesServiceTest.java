@@ -59,14 +59,14 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testGetExistingUserPreferences() {
-        // Arrange
+        
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
         when(atlassianTokenStore.exists(userId)).thenReturn(true);
 
-        // Act
+        
         UserPreferences result = userPreferencesService.get(userId);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
         assertThat(result.getModel()).isEqualTo(defaultChatModel);
@@ -78,15 +78,15 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testGetNonExistingUserPreferences() {
-        // Arrange
+        
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.empty());
         when(userPreferencesRepository.saveAndFlush(any(UserPreferences.class))).thenReturn(userPreferences);
         when(atlassianTokenStore.exists(userId)).thenReturn(false);
 
-        // Act
+        
         UserPreferences result = userPreferencesService.get(userId);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
         assertThat(result.getModel()).isEqualTo(defaultChatModel);
@@ -99,17 +99,17 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testFindAll() {
-        // Arrange
+        
         UserPreferences anotherUserPreferences = new UserPreferences();
         anotherUserPreferences.setUserId(UUID.randomUUID());
         List<UserPreferences> allPreferences = Arrays.asList(userPreferences, anotherUserPreferences);
         
         when(userPreferencesRepository.findAll()).thenReturn(allPreferences);
 
-        // Act
+        
         List<UserPreferences> result = userPreferencesService.findAll();
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result).hasSize(2);
         assertThat(result).contains(userPreferences, anotherUserPreferences);
@@ -118,13 +118,13 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testSave() {
-        // Arrange
+        
         when(userPreferencesRepository.saveAndFlush(any(UserPreferences.class))).thenReturn(userPreferences);
 
-        // Act
+        
         UserPreferences result = userPreferencesService.save(userId, userPreferences);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
         verify(userPreferencesRepository).saveAndFlush(any(UserPreferences.class));
@@ -132,13 +132,13 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testUpdate() {
-        // Arrange
+        
         when(userPreferencesRepository.save(any(UserPreferences.class))).thenReturn(userPreferences);
 
-        // Act
+        
         UserPreferences result = userPreferencesService.update(userId, userPreferences);
 
-        // Assert
+        
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
         verify(userPreferencesRepository).save(any(UserPreferences.class));

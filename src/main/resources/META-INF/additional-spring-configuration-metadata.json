@@ -17,7 +17,7 @@
     },
     {
       "name": "training.task.enabled",
-      "type": "java.lang.String",
+      "type": "java.lang.Boolean",
       "description": "Description for training.task.enabled."
     },
     {
@@ -47,7 +47,7 @@
     },
     {
       "name": "confluence.training.task.enabled",
-      "type": "java.lang.String",
+      "type": "java.lang.Boolean",
       "description": "Description for confluence.training.task.enabled."
     },
     {

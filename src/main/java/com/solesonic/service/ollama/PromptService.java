@@ -29,6 +29,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
+import static com.solesonic.service.ollama.OllamaService.TOOLS;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -46,6 +48,7 @@ public class PromptService {
     private final UserIntentService userIntentService;
     private final CreateConfluenceTools createConfluenceTools;
     private final OllamaModelRepository ollamaModelRepository;
+    private final OllamaModelService ollamaModelService;
 
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
@@ -69,7 +72,7 @@ public class PromptService {
             VectorStore vectorStore,
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository) {
+            OllamaModelRepository ollamaModelRepository, OllamaModelService ollamaModelService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -77,6 +80,7 @@ public class PromptService {
         this.userIntentService = userIntentService;
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
+        this.ollamaModelService = ollamaModelService;
     }
 
     public String model() {
@@ -160,13 +164,23 @@ public class PromptService {
         try {
             Optional<OllamaModel> modelOpt = ollamaModelRepository.findByName(model);
 
-            if (modelOpt.isEmpty() || !modelOpt.get().isTools()) {
-                log.debug("Model '{}' does not support tools or not found", model);
+            if (modelOpt.isEmpty()) {
+                log.debug("Model not found");
                 return new ToolCallback[0];
+            } else {
+                OllamaModel ollamaModel = modelOpt.get();
+
+                Map<String, Object> ollamaShow = ollamaModel.getOllamaShow();
+
+                boolean hasTools = ollamaModelService.hasNode(ollamaShow, CAPABILITIES, TOOLS);
+
+                if (!hasTools) {
+                    return new ToolCallback[0];
+                }
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, GENERAL ->  new ToolCallback[0];
+                case CREATING_JIRA_ISSUE, GENERAL -> new ToolCallback[0];
                 case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
             };
 

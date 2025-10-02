@@ -83,10 +83,10 @@ public class ChatControllerTest {
 
     @Test
     void testCreate() throws Exception {
-        // Arrange
+        
         when(chatService.create(eq(userId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
-        // Act & Assert
+         
         mockMvc.perform(post("/chats/users/{userId}", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(chatRequest)))
@@ -98,10 +98,10 @@ public class ChatControllerTest {
 
     @Test
     void testUpdate() throws Exception {
-        // Arrange
+        
         when(chatService.update(eq(chatId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
-        // Act & Assert
+         
         mockMvc.perform(put("/chats/{chatId}", chatId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(objectMapper.writeValueAsString(chatRequest)))
@@ -113,7 +113,7 @@ public class ChatControllerTest {
 
     @Test
     void testGetUserChats() throws Exception {
-        // Arrange
+        
         List<Chat> chats = new ArrayList<>();
         List<ChatMessage> chatMessages = new ArrayList<>();
         chatMessages.add(chatMessage);
@@ -122,7 +122,7 @@ public class ChatControllerTest {
 
         when(chatService.getByUserId(userId)).thenReturn(chats);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/chats/users/{userId}", userId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -133,14 +133,14 @@ public class ChatControllerTest {
 
     @Test
     void testGet() throws Exception {
-        // Arrange
+        
         List<ChatMessage> chatMessages = new ArrayList<>();
         chatMessages.add(chatMessage);
         chat.setChatMessages(chatMessages);
 
         when(chatService.get(chatId)).thenReturn(chat);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/chats/{chatId}", chatId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -151,7 +151,7 @@ public class ChatControllerTest {
 
     @Test
     void testCreateJsonSerialization() throws Exception {
-        // Arrange
+        
         when(chatService.create(eq(userId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
         // Create a ChatRequest with a specific message
@@ -159,7 +159,7 @@ public class ChatControllerTest {
         ChatRequest testRequest = new ChatRequest(requestMessage);
         String requestJson = objectMapper.writeValueAsString(testRequest);
 
-        // Act
+        
         MvcResult result = mockMvc.perform(post("/chats/users/{userId}", userId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(requestJson))
@@ -167,7 +167,7 @@ public class ChatControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andReturn();
 
-        // Assert
+        
         String responseJson = result.getResponse().getContentAsString();
         assertNotNull(responseJson, "Response JSON should not be null");
 
@@ -183,7 +183,7 @@ public class ChatControllerTest {
 
     @Test
     void testUpdateJsonSerialization() throws Exception {
-        // Arrange
+        
         when(chatService.update(eq(chatId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
         // Create a ChatRequest with a specific message
@@ -191,7 +191,7 @@ public class ChatControllerTest {
         ChatRequest testRequest = new ChatRequest(requestMessage);
         String requestJson = objectMapper.writeValueAsString(testRequest);
 
-        // Act
+        
         MvcResult result = mockMvc.perform(put("/chats/{chatId}", chatId)
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(requestJson))
@@ -199,7 +199,7 @@ public class ChatControllerTest {
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andReturn();
 
-        // Assert
+        
         String responseJson = result.getResponse().getContentAsString();
         assertNotNull(responseJson, "Response JSON should not be null");
 

@@ -55,10 +55,10 @@ public class ConfluenceSpaceControllerTest {
 
     @Test
     void testGetSpaces() throws Exception {
-        // Arrange
+        
         when(confluenceSpaceService.getSpaces()).thenReturn(spacesResponse);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/confluence/spaces"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
@@ -69,10 +69,10 @@ public class ConfluenceSpaceControllerTest {
 
     @Test
     void testGetSpace() throws Exception {
-        // Arrange
+        
         when(confluenceSpaceService.getSpace("space-id-1")).thenReturn(space);
 
-        // Act & Assert
+         
         mockMvc.perform(get("/confluence/spaces/space-id-1"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))

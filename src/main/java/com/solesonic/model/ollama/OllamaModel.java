@@ -2,9 +2,14 @@ package com.solesonic.model.ollama;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
+import org.hibernate.annotations.Formula;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.springframework.ai.ollama.api.OllamaApi;
 
 import java.time.ZonedDateTime;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Entity
@@ -16,19 +21,14 @@ public class OllamaModel {
 
     @Column(unique = true)
     private String name;
+
     private boolean censored;
-    private boolean embedding;
-    private boolean tools;
-    private boolean vision;
 
     @Transient
-    private String model;
+    private Map<String, Object> ollamaModel;
 
     @Transient
-    private Long size;
-
-    @Transient
-    private OllamaApi.Model.Details details;
+    private Map<String, Object> ollamaShow;
 
     private ZonedDateTime created;
 
@@ -59,30 +59,6 @@ public class OllamaModel {
         this.censored = censored;
     }
 
-    public boolean isEmbedding() {
-        return embedding;
-    }
-
-    public void setEmbedding(boolean embedding) {
-        this.embedding = embedding;
-    }
-
-    public boolean isTools() {
-        return tools;
-    }
-
-    public void setTools(boolean tools) {
-        this.tools = tools;
-    }
-
-    public boolean isVision() {
-        return vision;
-    }
-
-    public void setVision(boolean vision) {
-        this.vision = vision;
-    }
-
     public ZonedDateTime getUpdated() {
         return updated;
     }
@@ -99,27 +75,19 @@ public class OllamaModel {
         this.created = created;
     }
 
-    public String getModel() {
-        return model;
+    public Map<String, Object> getOllamaModel() {
+        return ollamaModel;
     }
 
-    public void setModel(String model) {
-        this.model = model;
+    public void setOllamaModel(Map<String, Object> ollamaModel) {
+        this.ollamaModel = ollamaModel;
     }
 
-    public Long getSize() {
-        return size;
+    public Map<String, Object> getOllamaShow() {
+        return ollamaShow;
     }
 
-    public void setSize(Long size) {
-        this.size = size;
-    }
-
-    public OllamaApi.Model.Details getDetails() {
-        return details;
-    }
-
-    public void setDetails(OllamaApi.Model.Details details) {
-        this.details = details;
+    public void setOllamaShow(Map<String, Object> ollamaShow) {
+        this.ollamaShow = ollamaShow;
     }
 }

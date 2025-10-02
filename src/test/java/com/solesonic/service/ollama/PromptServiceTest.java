@@ -1,16 +1,17 @@
 package com.solesonic.service.ollama;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
+import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
@@ -23,6 +24,9 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.core.io.Resource;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.io.ByteArrayInputStream;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -61,6 +65,9 @@ public class PromptServiceTest {
     private VectorStore vectorStore;
 
     @Mock
+    private UserIntentService userIntentService;
+
+    @Mock
     @SuppressWarnings("unused")
     private ChatClient chatClient;
 
@@ -91,7 +98,6 @@ public class PromptServiceTest {
     private static final String BASIC_PROMPT_CONTENT = "This is a basic prompt template with {input}";
     private static final String TOOLS_PROMPT_CONTENT = "This is a tools prompt template with {input}";
 
-    @InjectMocks
     private PromptService promptService;
 
     private UUID userId;
@@ -99,6 +105,17 @@ public class PromptServiceTest {
 
     @BeforeEach
     void setUp() throws Exception {
+        OllamaModelService ollamaModelService = new OllamaModelService(new ObjectMapper());
+
+        promptService = new PromptService(chatClient,
+                userPreferencesService,
+                userRequestContext,
+                vectorStore,
+                userIntentService,
+                createConfluenceTools,
+                ollamaModelRepository,
+                ollamaModelService);
+
         userId = UUID.randomUUID();
 
         // Set up UserPreferences
@@ -110,31 +127,20 @@ public class PromptServiceTest {
         // Set up OllamaModel
         ollamaModel = new OllamaModel();
         ollamaModel.setName("llama3");
-        ollamaModel.setTools(false);
 
-        // Set default similarity threshold
         ReflectionTestUtils.setField(promptService, "defaultSimilarityThreshold", 0.5);
-        
-        // Set bot name
+
         ReflectionTestUtils.setField(promptService, "botName", "TestBot");
 
-        // Set up Resource mocks
-        // For basicPrompt
-        lenient().when(basicPrompt.getInputStream()).thenReturn(
-                new java.io.ByteArrayInputStream(BASIC_PROMPT_CONTENT.getBytes()));
+        lenient().when(basicPrompt.getInputStream()).thenReturn(new ByteArrayInputStream(BASIC_PROMPT_CONTENT.getBytes()));
         lenient().when(basicPrompt.getContentAsString(any())).thenReturn(BASIC_PROMPT_CONTENT);
 
-        // For jiraPrompt
-        lenient().when(jiraPrompt.getInputStream()).thenReturn(
-                new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
+        lenient().when(jiraPrompt.getInputStream()).thenReturn(new ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
         lenient().when(jiraPrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
 
-        // For confluencePrompt
-        lenient().when(confluencePrompt.getInputStream()).thenReturn(
-                new java.io.ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
+        lenient().when(confluencePrompt.getInputStream()).thenReturn(new ByteArrayInputStream(TOOLS_PROMPT_CONTENT.getBytes()));
         lenient().when(confluencePrompt.getContentAsString(any())).thenReturn(TOOLS_PROMPT_CONTENT);
 
-        // Set up other mocks
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
         lenient().when(userPreferencesService.get(userId)).thenReturn(userPreferences);
         lenient().when(ollamaModelRepository.findByName("llama3")).thenReturn(Optional.of(ollamaModel));
@@ -154,7 +160,6 @@ public class PromptServiceTest {
     void testBuildTemplatePrompt_BasicPrompt() {
         String chatMessage = "Hello, how are you?";
 
-        // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "basicPrompt", basicPrompt);
 
         Prompt result = promptService.buildTemplatePrompt(chatMessage, basicPrompt);
@@ -166,7 +171,6 @@ public class PromptServiceTest {
     void testBuildTemplatePrompt_JiraPrompt() {
         String chatMessage = "Create a Jira issue for this bug";
 
-        // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "jiraPrompt", jiraPrompt);
 
         Prompt result = promptService.buildTemplatePrompt(chatMessage, jiraPrompt);
@@ -178,7 +182,6 @@ public class PromptServiceTest {
     void testBuildTemplatePrompt_ConfluencePrompt() {
         String chatMessage = "Create a Confluence page about this topic";
 
-        // Mock PromptTemplate behavior
         ReflectionTestUtils.setField(promptService, "confluencePrompt", confluencePrompt);
 
         Prompt result = promptService.buildTemplatePrompt(chatMessage, confluencePrompt);
@@ -192,8 +195,11 @@ public class PromptServiceTest {
         String model = "llama3";
         IntentType intent = IntentType.CREATING_CONFLUENCE_PAGE;
 
-        // Set up model to support tools
-        ollamaModel.setTools(true);
+        Map<String, Object> ollamaShowWithTools = Map.of(
+                "capabilities", List.of("tools")
+        );
+
+        ollamaModel.setOllamaShow(ollamaShowWithTools);
 
         ToolCallback[] tools = promptService.tools(intent, model);
 
@@ -205,9 +211,6 @@ public class PromptServiceTest {
     void testTools_WithToolsNeededButModelDoesNotSupportTools() {
         String model = "llama3";
         IntentType intent = IntentType.CREATING_JIRA_ISSUE;
-
-        // Set up model to not support tools
-        ollamaModel.setTools(false);
 
         ToolCallback[] tools = promptService.tools(intent, model);
 
