@@ -54,7 +54,6 @@ public class AtlassianTokenBrokerService {
         this.userPreferencesService = userPreferencesService;
     }
 
-
     public TokenResponse mintToken(TokenExchange tokenExchange) {
         UUID userId = tokenExchange.subjectToken();
         String siteId = tokenExchange.audience();
