@@ -170,7 +170,6 @@ public class AtlassianTokenBrokerService {
             log.debug("Token refresh successful");
 
             return atlassianAccessToken;
-
         } catch (JsonProcessingException e) {
             throw new AtlassianTokenException("Failed to parse token refresh response", BAD_REQUEST, false, e);
         }
