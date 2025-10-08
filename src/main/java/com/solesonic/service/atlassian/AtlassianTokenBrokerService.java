@@ -3,13 +3,12 @@ package com.solesonic.service.atlassian;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.atlassian.AtlassianTokenException;
-import com.solesonic.exception.atlassian.RefreshTokenConflictException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
-import com.solesonic.model.atlassian.auth.CachedAccessToken;
-import com.solesonic.model.atlassian.broker.AtlassianTokenRefreshResponse;
 import com.solesonic.model.atlassian.broker.TokenExchange;
 import com.solesonic.model.atlassian.broker.TokenResponse;
+import com.solesonic.model.user.UserPreferences;
+import com.solesonic.service.user.UserPreferencesService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +18,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.ZonedDateTime;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -36,30 +34,25 @@ public class AtlassianTokenBrokerService {
     private static final Logger log = LoggerFactory.getLogger(AtlassianTokenBrokerService.class);
     private static final String GRANT_TYPE_REFRESH_TOKEN = "refresh_token";
 
-    private final AtlassianRefreshTokenStore refreshTokenStore;
-    private final AccessTokenCache accessTokenCache;
     private final String atlassianTokenUri;
     private final String clientId;
     private final String clientSecret;
     private final ObjectMapper objectMapper;
+    private final UserPreferencesService userPreferencesService;
 
     // Per-user rotation guards to prevent concurrent refreshes within the same instance
     private final Map<String, ReentrantLock> rotationGuards = new ConcurrentHashMap<>();
     private static final long ROTATION_GUARD_TIMEOUT_MS = 30000; // 30 seconds max hold time
 
-    public AtlassianTokenBrokerService(AtlassianRefreshTokenStore refreshTokenStore,
-                                       AccessTokenCache accessTokenCache,
-                                       @Value("${atlassian.oauth.token-uri:https://auth.atlassian.com/oauth/token}") String atlassianTokenUri,
+    public AtlassianTokenBrokerService(@Value("${atlassian.oauth.token-uri:https://auth.atlassian.com/oauth/token}") String atlassianTokenUri,
                                        @Value("${atlassian.oauth.client-id}") String clientId,
-                                       @Value("${atlassian.oauth.client-secret}") String clientSecret, ObjectMapper objectMapper) {
-        this.refreshTokenStore = refreshTokenStore;
-        this.accessTokenCache = accessTokenCache;
+                                       @Value("${atlassian.oauth.client-secret}") String clientSecret, ObjectMapper objectMapper, UserPreferencesService userPreferencesService) {
         this.atlassianTokenUri = atlassianTokenUri;
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.objectMapper = objectMapper;
+        this.userPreferencesService = userPreferencesService;
     }
-
 
     public TokenResponse mintToken(TokenExchange tokenExchange) {
         UUID userId = tokenExchange.subjectToken();
@@ -67,25 +60,10 @@ public class AtlassianTokenBrokerService {
 
         log.debug("Minting token for user {} siteId {}", userId, siteId);
 
-        // First check cache for existing valid access token
-        Optional<CachedAccessToken> cachedToken = accessTokenCache.get(userId, siteId);
+        UserPreferences userPreferences = userPreferencesService.get(userId);
+        AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
 
-        if (cachedToken.isPresent()) {
-            CachedAccessToken cachedAccessToken = cachedToken.get();
-            log.debug("Returning cached access token for user {}", userId);
-
-            return new TokenResponse(
-                    cachedAccessToken.accessToken(),
-                    cachedAccessToken.expiresInSeconds(),
-                    cachedAccessToken.issuedAt(),
-                    userId,
-                    siteId);
-        }
-
-        // Load refresh token from Secrets Manager
-        Optional<AtlassianTokenRefreshResponse> refreshTokenPayload = refreshTokenStore.loadRefreshToken(userId, siteId);
-
-        if (refreshTokenPayload.isEmpty()) {
+        if (atlassianAccessToken == null) {
             log.warn("No refresh token found for user {} - RECONNECT_REQUIRED", userId);
             throw new AtlassianTokenException("No refresh token found for user " + userId, BAD_REQUEST, false);
         }
@@ -97,7 +75,7 @@ public class AtlassianTokenBrokerService {
         try {
             if (guard.tryLock(ROTATION_GUARD_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 try {
-                    return refreshTokenWithRotation(userId, siteId, refreshTokenPayload.get());
+                    return refreshTokenWithRotation(userId, atlassianAccessToken);
                 } finally {
                     guard.unlock();
                 }
@@ -112,20 +90,19 @@ public class AtlassianTokenBrokerService {
     }
 
     private TokenResponse refreshTokenWithRotation(UUID userId,
-                                                   String siteId,
-                                                   AtlassianTokenRefreshResponse payload) {
+                                                   AtlassianAccessToken atlassianAccessToken) {
 
-        String oldRefreshToken = payload.refreshToken();
+        String oldRefreshToken = atlassianAccessToken.refreshToken();
 
         log.debug("Refreshing access token for user {} using refresh token", userId);
 
-        AtlassianAccessToken atlassianAccessToken = refreshAtlassianToken(oldRefreshToken);
+        AtlassianAccessToken refreshedAtlassianToken = refreshAtlassianToken(oldRefreshToken);
 
-        if(StringUtils.isNotEmpty(atlassianAccessToken.error())) {
-            String error = atlassianAccessToken.error();
-            String errorDescription = atlassianAccessToken.errorDescription();
+        if (StringUtils.isNotEmpty(refreshedAtlassianToken.error())) {
+            String error = refreshedAtlassianToken.error();
+            String errorDescription = refreshedAtlassianToken.errorDescription();
 
-            String exceptionMessage = error+": "+errorDescription;
+            String exceptionMessage = error + ": " + errorDescription;
 
             throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
         }
@@ -133,83 +110,25 @@ public class AtlassianTokenBrokerService {
         ZonedDateTime issuedAt = ZonedDateTime.now();
 
         // If Atlassian returned a new refresh token, we need to rotate it
-        if (atlassianAccessToken.hasNewRefreshToken(oldRefreshToken)) {
-
+        if (refreshedAtlassianToken.hasNewRefreshToken(oldRefreshToken)) {
             log.debug("Atlassian returned new refresh token, performing rotation for user {}", userId);
 
-            try {
-                // Create new token response with the NEW refresh token from Atlassian
-                AtlassianTokenRefreshResponse newTokenResponse = new AtlassianTokenRefreshResponse(
-                        atlassianAccessToken.accessToken(),
-                        atlassianAccessToken.refreshToken(), // NEW refresh token from Atlassian
-                        atlassianAccessToken.expiresIn(),
-                        payload.scope(),
-                        payload.created(),
-                        ZonedDateTime.now(),
-                        (payload.rotationCounter() != null ? payload.rotationCounter() : 0) + 1
-                );
-                
-                refreshTokenStore.saveRefreshToken(userId, siteId, newTokenResponse);
+            UserPreferences userPreferences = userPreferencesService.get(userId);
+            userPreferences.setAtlassianAccessToken(refreshedAtlassianToken);
 
-                log.debug("Successfully saved new refresh token for user {}", userId);
+            userPreferencesService.save(userId, userPreferences);
 
-            } catch (RefreshTokenConflictException refreshTokenConflictException) {
-                log.warn("Refresh token conflict detected for user {} - attempting single retry", userId);
+            log.debug("Successfully saved new refresh token for user {}", userId);
 
-                Optional<AtlassianTokenRefreshResponse> latestPayload = refreshTokenStore.loadRefreshToken(userId, siteId);
-
-                if (latestPayload.isPresent() && !latestPayload.get().hasNewRefreshToken(oldRefreshToken)) {
-                    AtlassianAccessToken retriedToken = refreshAtlassianToken(latestPayload.get().refreshToken());
-
-                    if(StringUtils.isEmpty(retriedToken.error())) {
-                        String error = retriedToken.error();
-                        String errorDescription = retriedToken.errorDescription();
-                        String exceptionMessage = error+": "+errorDescription;
-
-                        throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
-                    }
-
-                    log.debug("Retry refresh successful for user {} after conflict", userId);
-
-                    // Update response with retry result
-                    atlassianAccessToken = retriedToken;
-
-                    // Try to update with new token if it changed again
-                    if (retriedToken.refreshToken() != null && !retriedToken.refreshToken().equals(latestPayload.get().refreshToken())) {
-                        try {
-                            // Create new token response with the NEW refresh token from retry
-                            AtlassianTokenRefreshResponse retryTokenResponse = new AtlassianTokenRefreshResponse(
-                                    retriedToken.accessToken(),
-                                    retriedToken.refreshToken(), // NEW refresh token from retry
-                                    retriedToken.expiresIn(),
-                                    latestPayload.get().scope(),
-                                    latestPayload.get().created(),
-                                    ZonedDateTime.now(),
-                                    (latestPayload.get().rotationCounter() != null ? latestPayload.get().rotationCounter() : 0) + 1
-                            );
-                            
-                            refreshTokenStore.saveRefreshToken(userId, siteId, retryTokenResponse);
-                        } catch (RefreshTokenConflictException retryConflict) {
-                            log.warn("Second conflict detected for user {} - proceeding with current token", userId);
-                        }
-                    }
-                }
-            }
         }
-
-        accessTokenCache.put(
-                userId,
-                siteId,
-                atlassianAccessToken.accessToken(),
-                issuedAt,
-                atlassianAccessToken.expiresIn());
 
         log.debug("Successfully minted and cached access token for user {}", userId);
 
         return new TokenResponse(
-                atlassianAccessToken.accessToken(),
-                atlassianAccessToken.expiresIn(),
-                issuedAt, userId, siteId);
+                refreshedAtlassianToken.accessToken(),
+                refreshedAtlassianToken.expiresIn(),
+                issuedAt,
+                userId);
     }
 
     private AtlassianAccessToken refreshAtlassianToken(String refreshToken) {
@@ -243,10 +162,10 @@ public class AtlassianTokenBrokerService {
         try {
             AtlassianAccessToken atlassianAccessToken = objectMapper.readValue(responseJson, AtlassianAccessToken.class);
 
-            if(StringUtils.isNotEmpty(atlassianAccessToken.error())) {
+            if (StringUtils.isNotEmpty(atlassianAccessToken.error())) {
                 String error = atlassianAccessToken.error();
                 String errorDescription = atlassianAccessToken.errorDescription();
-                String exceptionMessage = error+": "+errorDescription;
+                String exceptionMessage = error + ": " + errorDescription;
 
                 throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
             }
@@ -254,7 +173,6 @@ public class AtlassianTokenBrokerService {
             log.debug("Token refresh successful");
 
             return atlassianAccessToken;
-
         } catch (JsonProcessingException e) {
             throw new AtlassianTokenException("Failed to parse token refresh response", BAD_REQUEST, false, e);
         }

@@ -6,6 +6,7 @@ import com.solesonic.service.atlassian.AtlassianTokenBrokerService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,6 +26,7 @@ public class AtlassianTokenBrokerController {
     }
 
     @PostMapping("/token")
+    @PreAuthorize("hasRole('token-mint-jira')")
     public ResponseEntity<TokenResponse> token(@Validated @RequestBody TokenExchange request) {
         log.debug("Token mint request received for userId: {}, siteId: {}", request.subjectToken(), request.audience());
 
