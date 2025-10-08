@@ -1,9 +1,9 @@
 package com.solesonic.security.atlassian;
 
-import com.solesonic.exception.atlassian.JiraException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
-import com.solesonic.service.atlassian.AtlassianTokenStore;
+import com.solesonic.model.user.UserPreferences;
+import com.solesonic.service.user.UserPreferencesService;
 import jakarta.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,7 +20,7 @@ import static org.springframework.http.HttpHeaders.AUTHORIZATION;
 @Component
 public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunction {
     private static final Logger log = LoggerFactory.getLogger(AtlassianInternalAuthorizationFilter.class);
-    private final AtlassianTokenStore atlassianTokenStore;
+    private final UserPreferencesService userPreferencesService;
 
     @Value("${atlassian.oauth.token-uri}")
     private String atlassianAuthUri;
@@ -31,8 +31,8 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     @Value("${atlassian.oauth.client-secret}")
     private String authClientSecret;
 
-    public AtlassianInternalAuthorizationFilter(AtlassianTokenStore atlassianTokenStore) {
-        this.atlassianTokenStore = atlassianTokenStore;
+    public AtlassianInternalAuthorizationFilter(UserPreferencesService userPreferencesService) {
+        this.userPreferencesService = userPreferencesService;
     }
 
     @Override
@@ -51,19 +51,21 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
     }
 
     public AtlassianAccessToken atlassianAccessToken() {
-        AtlassianAccessToken adminUserToken = atlassianTokenStore.loadAdmin().orElseThrow(() -> new JiraException("Can't find access admin token."));
+        UserPreferences serviceAccountPreferences = userPreferencesService.serviceAccount();
+        AtlassianAccessToken serviceAccountToken = serviceAccountPreferences.getAtlassianAccessToken();
 
-        if(!adminUserToken.isExpired()) {
+        if(!serviceAccountToken.isExpired()) {
             log.debug("Reusing non expired access token for admin user.");
-            return adminUserToken;
+            return serviceAccountToken;
         }
 
-        AtlassianAccessToken refreshedToken = refreshToken(adminUserToken, authClientId, authClientSecret, atlassianAuthUri);
+        AtlassianAccessToken refreshedToken = refreshToken(serviceAccountToken, authClientId, authClientSecret, atlassianAuthUri);
 
         log.debug("Updating access token for admin user.");
         log.debug("Admin token expiresIn: {}", refreshedToken.expiresIn());
 
-        atlassianTokenStore.saveAdmin(refreshedToken);
+        serviceAccountPreferences.setAtlassianAccessToken(refreshedToken);
+        userPreferencesService.save(serviceAccountPreferences.getUserId(),  serviceAccountPreferences);
 
         return refreshedToken;
     }

@@ -7,6 +7,8 @@ import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
 import com.solesonic.model.atlassian.broker.TokenExchange;
 import com.solesonic.model.atlassian.broker.TokenResponse;
+import com.solesonic.model.user.UserPreferences;
+import com.solesonic.service.user.UserPreferencesService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +18,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.ZonedDateTime;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -33,25 +34,24 @@ public class AtlassianTokenBrokerService {
     private static final Logger log = LoggerFactory.getLogger(AtlassianTokenBrokerService.class);
     private static final String GRANT_TYPE_REFRESH_TOKEN = "refresh_token";
 
-    private final AtlassianRefreshTokenStore refreshTokenStore;
     private final String atlassianTokenUri;
     private final String clientId;
     private final String clientSecret;
     private final ObjectMapper objectMapper;
+    private final UserPreferencesService userPreferencesService;
 
     // Per-user rotation guards to prevent concurrent refreshes within the same instance
     private final Map<String, ReentrantLock> rotationGuards = new ConcurrentHashMap<>();
     private static final long ROTATION_GUARD_TIMEOUT_MS = 30000; // 30 seconds max hold time
 
-    public AtlassianTokenBrokerService(AtlassianRefreshTokenStore refreshTokenStore,
-                                       @Value("${atlassian.oauth.token-uri:https://auth.atlassian.com/oauth/token}") String atlassianTokenUri,
+    public AtlassianTokenBrokerService(@Value("${atlassian.oauth.token-uri:https://auth.atlassian.com/oauth/token}") String atlassianTokenUri,
                                        @Value("${atlassian.oauth.client-id}") String clientId,
-                                       @Value("${atlassian.oauth.client-secret}") String clientSecret, ObjectMapper objectMapper) {
-        this.refreshTokenStore = refreshTokenStore;
+                                       @Value("${atlassian.oauth.client-secret}") String clientSecret, ObjectMapper objectMapper, UserPreferencesService userPreferencesService) {
         this.atlassianTokenUri = atlassianTokenUri;
         this.clientId = clientId;
         this.clientSecret = clientSecret;
         this.objectMapper = objectMapper;
+        this.userPreferencesService = userPreferencesService;
     }
 
 
@@ -61,9 +61,10 @@ public class AtlassianTokenBrokerService {
 
         log.debug("Minting token for user {} siteId {}", userId, siteId);
 
-        Optional<AtlassianAccessToken> atlassianAccessToken = refreshTokenStore.loadRefreshToken(userId);
+        UserPreferences userPreferences = userPreferencesService.get(userId);
+        AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
 
-        if (atlassianAccessToken.isEmpty()) {
+        if (atlassianAccessToken == null) {
             log.warn("No refresh token found for user {} - RECONNECT_REQUIRED", userId);
             throw new AtlassianTokenException("No refresh token found for user " + userId, BAD_REQUEST, false);
         }
@@ -75,7 +76,7 @@ public class AtlassianTokenBrokerService {
         try {
             if (guard.tryLock(ROTATION_GUARD_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 try {
-                    return refreshTokenWithRotation(userId, atlassianAccessToken.get());
+                    return refreshTokenWithRotation(userId, atlassianAccessToken);
                 } finally {
                     guard.unlock();
                 }
@@ -113,7 +114,10 @@ public class AtlassianTokenBrokerService {
         if (refreshedAtlassianToken.hasNewRefreshToken(oldRefreshToken)) {
             log.debug("Atlassian returned new refresh token, performing rotation for user {}", userId);
 
-            refreshTokenStore.saveRefreshToken(userId, refreshedAtlassianToken);
+            UserPreferences userPreferences = userPreferencesService.get(userId);
+            userPreferences.setAtlassianAccessToken(refreshedAtlassianToken);
+
+            userPreferencesService.save(userId, userPreferences);
 
             log.debug("Successfully saved new refresh token for user {}", userId);
 

@@ -1,9 +1,9 @@
 package com.solesonic.security.atlassian;
 
-import com.solesonic.exception.atlassian.JiraException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
-import com.solesonic.service.atlassian.AtlassianTokenStore;
+import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.user.UserPreferencesService;
 import jakarta.annotation.Nonnull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +23,7 @@ import static org.springframework.http.HttpHeaders.AUTHORIZATION;
 public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFunction {
     private static final Logger log = LoggerFactory.getLogger(AtlassianRequestAuthorizationFilter.class);
     private final UserRequestContext userRequestContext;
-    private final AtlassianTokenStore atlassianTokenStore;
+    private final UserPreferencesService userPreferencesService;
 
     @Value("${atlassian.oauth.token-uri}")
     private String atlassianAuthUri;
@@ -35,9 +35,9 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
     private String authClientSecret;
 
     public AtlassianRequestAuthorizationFilter(UserRequestContext userRequestContext,
-                                               AtlassianTokenStore atlassianTokenStore) {
+                                               UserPreferencesService userPreferencesService) {
         this.userRequestContext = userRequestContext;
-        this.atlassianTokenStore = atlassianTokenStore;
+        this.userPreferencesService = userPreferencesService;
     }
 
     @Override
@@ -57,7 +57,9 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
 
     public AtlassianAccessToken atlassianAccessToken() {
         UUID userId = userRequestContext.getUserId();
-        AtlassianAccessToken atlassianAccessToken = atlassianTokenStore.load(userId).orElseThrow(() -> new JiraException("Can't find access token."));
+        UserPreferences userPreferences = userPreferencesService.get(userId);
+        AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
+
 
         if(!atlassianAccessToken.isExpired()) {
             log.info("Reusing non expired access token for user: {}", userId);
@@ -69,7 +71,9 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
         log.info("Updating access token for user: {}", userId);
         log.info("Token has expiresIn: {}", refreshedToken.expiresIn() != null);
 
-        atlassianTokenStore.save(refreshedToken);
+        userPreferences.setAtlassianAccessToken(refreshedToken);
+        userPreferencesService.save(userId, userPreferences);
+
         return refreshedToken;
     }
 }

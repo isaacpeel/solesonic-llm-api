@@ -2,7 +2,9 @@ package com.solesonic.service.atlassian;
 
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
+import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -99,15 +101,16 @@ public class JiraAuthService {
     private String clientId;
 
     private final UserRequestContext userRequestContext;
-    private final AtlassianTokenStore atlassianTokenStore;
+    private final UserPreferencesService userPreferencesService;
+
     private final WebClient authWebClient;
     private final WebClient apiWebClient;
 
-    public JiraAuthService(UserRequestContext userRequestContext, AtlassianTokenStore atlassianTokenStore,
+    public JiraAuthService(UserRequestContext userRequestContext, UserPreferencesService userPreferencesService,
                            @Qualifier(ATLASSIAN_AUTH_WEB_CLIENT) WebClient authWebClient,
                            @Qualifier(ATLASSIAN_API_WEB_CLIENT) WebClient apiWebClient) {
         this.userRequestContext = userRequestContext;
-        this.atlassianTokenStore = atlassianTokenStore;
+        this.userPreferencesService = userPreferencesService;
         this.authWebClient = authWebClient;
         this.apiWebClient = apiWebClient;
     }
@@ -168,7 +171,10 @@ public class JiraAuthService {
         log.info("Saving a new access Access Token for user: {}", userId);
         log.info("Token has expiresIn: {}", tokenWithUserInfo.expiresIn() != null);
 
-        atlassianTokenStore.save(tokenWithUserInfo);
+        UserPreferences userPreferences = userPreferencesService.get(userId);
+        userPreferences.setAtlassianAccessToken(tokenWithUserInfo);
+
+        userPreferencesService.update(userId, userPreferences);
     }
 
     public String accessibleResources() {

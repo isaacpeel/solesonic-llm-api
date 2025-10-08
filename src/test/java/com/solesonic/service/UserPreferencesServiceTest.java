@@ -1,8 +1,8 @@
 package com.solesonic.service;
 
+import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.UserPreferencesRepository;
-import com.solesonic.service.atlassian.AtlassianTokenStore;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,8 +29,6 @@ public class UserPreferencesServiceTest {
     @Mock
     private UserPreferencesRepository userPreferencesRepository;
 
-    @Mock
-    private AtlassianTokenStore atlassianTokenStore;
 
     @InjectMocks
     private UserPreferencesService userPreferencesService;
@@ -52,6 +50,20 @@ public class UserPreferencesServiceTest {
         userPreferences.setCreated(ZonedDateTime.now());
         userPreferences.setUpdated(ZonedDateTime.now());
 
+        userPreferences.setAtlassianAccessToken(new AtlassianAccessToken(
+                UUID.randomUUID(),
+                "accessToken",
+                "refreshToken",
+                "tokenType",
+                "scope",
+                1,
+                false,
+                null,
+                null,
+                null,
+                "error"
+        ));
+
         // Set default values using ReflectionTestUtils
         ReflectionTestUtils.setField(userPreferencesService, "chatModel", defaultChatModel);
         ReflectionTestUtils.setField(userPreferencesService, "similarityThreshold", defaultSimilarityThreshold);
@@ -59,31 +71,25 @@ public class UserPreferencesServiceTest {
 
     @Test
     void testGetExistingUserPreferences() {
-        
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
-        when(atlassianTokenStore.exists(userId)).thenReturn(true);
-
-        
         UserPreferences result = userPreferencesService.get(userId);
 
-        
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
         assertThat(result.getModel()).isEqualTo(defaultChatModel);
         assertThat(result.getSimilarityThreshold()).isEqualTo(defaultSimilarityThreshold);
         assertThat(result.isAtlassianAuthentication()).isTrue();
         verify(userPreferencesRepository).findByUserId(userId);
-        verify(atlassianTokenStore).exists(userId);
     }
 
     @Test
     void testGetNonExistingUserPreferences() {
         
         when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.empty());
-        when(userPreferencesRepository.saveAndFlush(any(UserPreferences.class))).thenReturn(userPreferences);
-        when(atlassianTokenStore.exists(userId)).thenReturn(false);
 
-        
+        userPreferences.setAtlassianAccessToken(null);
+        when(userPreferencesRepository.saveAndFlush(any(UserPreferences.class))).thenReturn(userPreferences);
+
         UserPreferences result = userPreferencesService.get(userId);
 
         
@@ -94,7 +100,6 @@ public class UserPreferencesServiceTest {
         assertThat(result.isAtlassianAuthentication()).isFalse();
         verify(userPreferencesRepository).findByUserId(userId);
         verify(userPreferencesRepository).saveAndFlush(any(UserPreferences.class));
-        verify(atlassianTokenStore).exists(userId);
     }
 
     @Test
