@@ -1,9 +1,9 @@
 package com.solesonic.model.user;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.persistence.Entity;
-import jakarta.persistence.Id;
-import jakarta.persistence.Transient;
+import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
+import com.solesonic.model.atlassian.auth.AtlassianAccessTokenConverter;
+import jakarta.persistence.*;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -24,6 +24,10 @@ public class UserPreferences {
 
     @Transient
     private boolean atlassianAuthentication;
+
+    @Convert(converter = AtlassianAccessTokenConverter.class)
+    @Column(name = "atlassian_access_token", columnDefinition = "bytea")
+    private AtlassianAccessToken atlassianAccessToken;
 
     public UUID getUserId() {
         return userId;
@@ -73,5 +77,13 @@ public class UserPreferences {
 
     public void setSimilarityThreshold(Double similarityThreshold) {
         this.similarityThreshold = similarityThreshold;
+    }
+
+    public AtlassianAccessToken getAtlassianAccessToken() {
+        return atlassianAccessToken;
+    }
+
+    public void setAtlassianAccessToken(AtlassianAccessToken atlassianAccessToken) {
+        this.atlassianAccessToken = atlassianAccessToken;
     }
 }
