@@ -28,7 +28,7 @@ public class AtlassianTokenBrokerController {
     @PostMapping("/token")
     @PreAuthorize("hasRole('token-mint-jira')")
     public ResponseEntity<TokenResponse> token(@Validated @RequestBody TokenExchange request) {
-        log.debug("Token mint request received for userId: {}, siteId: {}", request.subjectToken(), request.audience());
+        log.info("Token mint request received for userId: {}", request.subjectToken());
 
         TokenResponse response = tokenBrokerService.mintToken(request);
 
