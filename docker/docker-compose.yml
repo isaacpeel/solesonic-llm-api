@@ -18,7 +18,8 @@ services:
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
-      - ${SYSTEM_SSL_CERT_LOCATION}/${SSL_CERT_FILE}:/run/secrets/${SSL_CERT_FILE}:ro
+      - ${SSL_PUBLIC_CERT}:/run/secrets/fullchain.pem:ro
+      - ${SSL_PRIVATE_CERT}:/run/secrets/privkey.pem:ro
     deploy:
       resources:
         reservations:

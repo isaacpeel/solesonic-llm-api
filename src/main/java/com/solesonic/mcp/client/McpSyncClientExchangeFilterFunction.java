@@ -32,8 +32,12 @@ public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFuncti
     private final ClientCredentialsOAuth2AuthorizedClientProvider clientCredentialTokenProvider = new ClientCredentialsOAuth2AuthorizedClientProvider();
     private final ClientRegistrationRepository clientRegistrationRepository;
 
-    public McpSyncClientExchangeFilterFunction(ClientRegistrationRepository clientRegistrationRepository) {
+    private final TokenExchangeService tokenExchangeService;
+
+    public McpSyncClientExchangeFilterFunction(ClientRegistrationRepository clientRegistrationRepository,
+                                               TokenExchangeService tokenExchangeService) {
         this.clientRegistrationRepository = clientRegistrationRepository;
+        this.tokenExchangeService = tokenExchangeService;
     }
 
     /**
@@ -52,14 +56,18 @@ public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFuncti
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
             if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
+                //Exchange an OBO token for the user to pass to the MCP server.
                 String userToken = jwt.getTokenValue();
                 log.debug("Propagating user JWT to outbound request {}", request.url());
 
-                var requestWithUserToken = ClientRequest.from(request)
-                        .headers(headers -> headers.setBearerAuth(userToken))
-                        .build();
 
-                return next.exchange(requestWithUserToken);
+                return tokenExchangeService.exchangeToken(userToken)
+                        .flatMap(exchangedToken -> {
+                            var requestWithUserToken = ClientRequest.from(request)
+                                    .headers(headers -> headers.setBearerAuth(exchangedToken))
+                                    .build();
+                            return next.exchange(requestWithUserToken);
+                        });
             } else {
                 // In a user request without a JWT, fail fast instead of using client_credentials
                 log.warn("User HTTP request detected but no Jwt present in SecurityContext for outbound call to {}", request.url());
