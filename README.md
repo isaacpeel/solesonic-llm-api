@@ -110,7 +110,6 @@ The API supports secure integration with Model Context Protocol (MCP) servers, e
 
 **Key Features:**
 - **🔐 Secure Token Broker**: 3-legged OAuth2 with refresh token rotation
-- **☁️ AWS Integration**: Designed for AWS Cognito with Secrets Manager storage
 - **⚡ Automatic Management**: Transparent token refresh and user context propagation
 - **🔒 Security First**: Short-lived access tokens minimize exposure risk
 
@@ -136,7 +135,6 @@ The token broker acts as a secure intermediary, storing long-lived refresh token
 ### 🚀 **Deployment & Security**
 - **[Deployment Guide](docs/deployment.md)** - Production deployment strategies
 - **[Security Guide](docs/security.md)** - OAuth2, JWT, and security architecture
-- **[AWS Cognito Setup](docs/cognito-setup.md)** - Detailed Cognito configuration
 
 ### 🔧 **Operations**
 - **[Troubleshooting Guide](docs/troubleshooting.md)** - Common issues and solutions

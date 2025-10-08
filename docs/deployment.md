@@ -24,7 +24,7 @@ The application supports a `prod` profile optimized for production environments 
 ### External Dependencies
 - **PostgreSQL 12+** with pgvector extension
 - **Ollama service** (can be external)
-- **OAuth2 Provider** (AWS Cognito recommended)
+- **OAuth2 Provider**
 - **Load Balancer** (optional, recommended for HA)
 
 ## SSL/TLS Configuration

@@ -96,7 +96,7 @@ JWT signature validation failed
 1. **Check JWK Set URI**:
    ```bash
    # Test JWK Set accessibility
-   curl -v "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json"
+   curl -v "https://your-issuer/.well-known/jwks.json"
    ```
 
 2. **Verify issuer URI**:
@@ -124,8 +124,6 @@ echo "YOUR_JWT_TOKEN" | cut -d. -f2 | base64 -d | jq .
 - `exp`: Expiration time (must be in future)
 - `aud`: Audience (client ID)
 
-### AWS Cognito Issues
-
 #### User Pool Not Found
 ```
 ResourceNotFoundException: User pool not found
@@ -143,7 +141,6 @@ Invalid client credentials
 
 **Solutions:**
 1. Verify client ID in token matches your application
-2. Check client is enabled in Cognito User Pool
 3. Ensure client has required OAuth flows enabled
 
 ## MCP Integration Issues
@@ -170,7 +167,7 @@ Unauthorized: Invalid client credentials for MCP
 
 3. **Test token endpoint**:
    ```bash
-   curl -X POST https://your-cognito-domain/oauth2/token \
+   curl -X POST https://your-issuer/oauth2/token \
      -H "Content-Type: application/x-www-form-urlencoded" \
      -d "grant_type=client_credentials&client_id=YOUR_CLIENT_ID" \
      --user "YOUR_CLIENT_ID:YOUR_CLIENT_SECRET"

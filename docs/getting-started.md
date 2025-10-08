@@ -75,8 +75,8 @@ SPRING_DATASOURCE_PASSWORD=docker_pw
 DB_PASSWORD=docker_pw
 
 # Security (required for production, optional for local development)
-ISSUER_URI=https://your-cognito-domain/us-east-1_XXXXXXXXX
-JWK_SET_URI=https://your-cognito-domain/us-east-1_XXXXXXXXX/.well-known/jwks.json
+ISSUER_URI=https://your-issuer
+JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # Application
 APPLICATION_NAME=solesonic-llm-api

@@ -12,7 +12,7 @@ The Solesonic LLM API implements a comprehensive security model based on OAuth2 
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
 │   Frontend      │    │  Solesonic API   │    │  OAuth2         │
 │   Application   │◄──►│                  │◄──►│  Provider       │
-│                 │    │  - JWT Validation│    │  (AWS Cognito)  │
+│                 │    │  - JWT Validation│    │  (Keycloak)  │
 └─────────────────┘    │  - Token Broker  │    └─────────────────┘
                        └──────────────────┘
                                 │
@@ -42,8 +42,8 @@ The application uses OAuth2 with JSON Web Tokens (JWT) for stateless authenticat
 
 ```bash
 # OAuth2/JWT Configuration
-ISSUER_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX
-JWK_SET_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json
+ISSUER_URI=https://your-issuer
+JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 ```
 
 For complete configuration details, see [docs/configuration.md](configuration.md).
@@ -54,7 +54,7 @@ For complete configuration details, see [docs/configuration.md](configuration.md
 
 Used by web and mobile applications for user authentication:
 
-1. User redirects to OAuth2 provider (AWS Cognito)
+1. User redirects to OAuth2 provider
 2. User authenticates and consents to application access
 3. Provider returns authorization code to application
 4. Application exchanges code for access token
@@ -118,7 +118,6 @@ The Solesonic API includes a sophisticated token broker for secure 3-legged OAut
 
 #### Custom Claims
 
-- `cognito:username`: User's username
 - `email`: User's email address
 - `email_verified`: Email verification status
 - `token_use`: Token type (`access` or `id`)
@@ -129,10 +128,9 @@ The Solesonic API includes a sophisticated token broker for secure 3-legged OAut
 ```json
 {
   "sub": "550e8400-e29b-41d4-a716-446655440000",
-  "iss": "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX",
+  "iss": "https://your-issuer",
   "aud": "your-client-id",
   "token_use": "access",
-  "scope": "aws.cognito.signin.user.admin openid email",
   "auth_time": 1704067200,
   "iat": 1704067200,
   "exp": 1704070800,
@@ -238,12 +236,6 @@ While not implemented at the application level, rate limiting should be configur
 - Incident response procedures
 - Security update processes
 
-## AWS Cognito Integration
-
-### User Pool Configuration
-
-For detailed Cognito setup, see [docs/cognito-setup.md](cognito-setup.md).
-
 #### Security Settings
 - **Password Policy**: Strong password requirements
 - **MFA Support**: Multi-factor authentication available
@@ -256,11 +248,11 @@ For detailed Cognito setup, see [docs/cognito-setup.md](cognito-setup.md).
 
 ### JWK Set Validation
 
-The application validates JWT tokens against the Cognito JWK Set:
+The application validates JWT tokens against an issuer JWK Set:
 
 ```bash
 # JWK Set endpoint
-https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json
+https://your-issuer/.well-known/jwks.json
 ```
 
 ## Security Best Practices
@@ -340,7 +332,6 @@ Configure alerts for:
 ## Related Documentation
 
 - **Configuration**: [docs/configuration.md](configuration.md) - Security-related environment variables
-- **Cognito Setup**: [docs/cognito-setup.md](cognito-setup.md) - OAuth2 provider configuration
 - **MCP Integration**: [docs/mcp-integration.md](mcp-integration.md) - Token broker implementation
 - **Deployment**: [docs/deployment.md](deployment.md) - Production security considerations
 - **Troubleshooting**: [docs/troubleshooting.md](troubleshooting.md) - Security-related troubleshooting

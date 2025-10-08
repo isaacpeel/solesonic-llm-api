@@ -253,6 +253,4 @@ Common error responses:
 
 For a complete list of all required environment variables including MCP, Atlassian OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).
 
-For detailed AWS Cognito setup instructions, see [docs/cognito-setup.md](cognito-setup.md).
-
 For getting started with the Solesonic LLM API, see [docs/getting-started.md](getting-started.md).

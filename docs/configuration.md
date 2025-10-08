@@ -21,10 +21,10 @@ This document serves as the single source of truth for all environment variables
 
 ### Security/JWT Configuration
 
-| Variable | Description | Example | Required | Notes |
-|----------|-------------|---------|----------|--------|
-| `ISSUER_URI` | OAuth2/JWT token issuer URI | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX` | Yes | AWS Cognito or other OAuth2 provider |
-| `JWK_SET_URI` | JSON Web Key Set URI | `https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json` | Yes | For JWT token validation |
+| Variable | Description | Example                                     | Required | Notes |
+|----------|-------------|---------------------------------------------|----------|--------|
+| `ISSUER_URI` | OAuth2/JWT token issuer URI | `https://your-issuer`                       | Yes | OAuth2 provider |
+| `JWK_SET_URI` | JSON Web Key Set URI | `https://your-issuer/.well-known/jwks.json` | Yes | For JWT token validation |
 
 ### Atlassian Integration
 
@@ -77,8 +77,8 @@ POSTGRES_USER=solesonic-llm-api
 DB_PASSWORD=docker_pw
 
 # Security (required for production)
-ISSUER_URI=https://your-cognito-domain/us-east-1_XXXXXXXXX
-JWK_SET_URI=https://your-cognito-domain/us-east-1_XXXXXXXXX/.well-known/jwks.json
+ISSUER_URI=https://your-issuer
+JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # CORS (adjust for your frontend)
 CORS_ALLOWED_ORIGINS=http://localhost:3000
@@ -99,8 +99,8 @@ POSTGRES_USER=solesonic-llm-api
 DB_PASSWORD=docker_pw
 
 # Security/JWT Configuration
-ISSUER_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX
-JWK_SET_URI=https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json
+ISSUER_URI=https://your-issuer
+JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # Atlassian Integration
 ATLASSIAN_OAUTH_CLIENT_ID=your_atlassian_client_id
