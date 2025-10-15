@@ -12,8 +12,6 @@ services:
       - "8443:8443"
     restart: no
     environment:
-      - KEYSTORE_PASSWORD=${KEYSTORE_PASSWORD}
-      - SSL_CERT_LOCATION=/run/secrets/${SSL_CERT_FILE}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
