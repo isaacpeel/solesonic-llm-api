@@ -29,7 +29,8 @@ public class WebConfig {
                         .allowedOrigins(allowedOrigins)
                         .allowedMethods(GET.name(), POST.name(), PUT.name(), DELETE.name(), OPTIONS.name())
                         .allowedHeaders("*")
-                        .allowCredentials(false);
+                        .allowCredentials(true)
+                        .exposedHeaders("*");
             }
         };
     }

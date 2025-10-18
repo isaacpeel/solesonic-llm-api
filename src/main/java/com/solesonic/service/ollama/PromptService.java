@@ -3,6 +3,7 @@ package com.solesonic.service.ollama;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
+import com.solesonic.scope.StreamUserRequestContext;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
@@ -14,6 +15,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.ollama.api.OllamaOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
@@ -24,6 +26,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 import java.util.Map;
 import java.util.Optional;
@@ -108,7 +111,7 @@ public class PromptService {
 
         ToolCallback[] toolCallbacks = tools(intent, model);
 
-        OllamaOptions ollamaOptions = OllamaOptions.builder()
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
                 .build();
 
@@ -122,9 +125,59 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
-                .options(ollamaOptions);
+                .options(ollamaChatOptions);
 
         return chatClientBuilder.call().content();
+    }
+
+    public Flux<String> stream(UUID chatId, String chatMessage) {
+        String model = model();
+
+        IntentType intent = userIntentService.determineIntent(chatMessage);
+
+        Resource promptTemplate = promptResource(intent);
+
+        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+
+        ToolCallback[] toolCallbacks = tools(intent, model);
+
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                .model(model)
+                .build();
+
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+
+        UUID userId = userRequestContext.getUserId();
+        String chatModel = userRequestContext.getChatModel();
+
+        StreamUserRequestContext.setUserId(userId);
+        StreamUserRequestContext.setChatModel(chatModel);
+
+        var chatClientBuilder = chatClient.prompt(templatePrompt)
+                .user(chatMessage)
+                .toolCallbacks(toolCallbacks)
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                        .param("userId", userId)
+                        .param("chatModel", chatModel)
+                )
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                )
+                .advisors(retrievalAugmentationAdvisor)
+                .options(ollamaChatOptions);
+
+        return chatClientBuilder.stream().content()
+                .doOnSubscribe(subscription -> {
+                    // Set ThreadLocal when stream starts executing
+                    log.debug("Setting StreamContextHolder with chatModel: {}", chatModel);
+                    StreamUserRequestContext.setUserId(userId);
+                    StreamUserRequestContext.setChatModel(chatModel);
+                })
+                .doFinally(signalType -> {
+                    log.debug("Clearing StreamContextHolder");
+                    StreamUserRequestContext.clear();
+                });
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {

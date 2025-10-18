@@ -1,14 +1,17 @@
 package com.solesonic.config.olllama;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.scope.StreamUserRequestContext;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ollama.ChatMessageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
 
 import java.util.List;
 import java.util.UUID;
@@ -19,23 +22,59 @@ public class DatabaseChatMemory implements ChatMemory {
     private final ChatMessageService chatMessageService;
     private final UserRequestContext userRequestContext;
 
-    public DatabaseChatMemory(ChatMessageService chatMessageService, UserRequestContext userRequestContext) {
+
+    public DatabaseChatMemory(ChatMessageService chatMessageService,
+                              UserRequestContext userRequestContext) {
         this.chatMessageService = chatMessageService;
         this.userRequestContext = userRequestContext;
     }
 
+    private String sanitize(String text) {
+        if (text == null) {
+            return null;
+        }
+
+        String withoutThink = text.replaceAll("<think>.*?</think>", "");
+        String trimmed = withoutThink.trim();
+
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private boolean isRequestScopeActive() {
+        return RequestContextHolder.getRequestAttributes() != null;
+    }
+
     @Override
-    public void add(@NonNull String conversationId, List<Message> messages) {
+    public void add(@NonNull String conversationId, @NonNull List<Message> messages) {
         log.debug("Adding messages to history.");
 
         UUID chatId = UUID.fromString(conversationId);
-        String chatModel = userRequestContext.getChatModel();
 
-        for(Message message : messages) {
+        String chatModel;
+
+        if (isRequestScopeActive()) {
+            chatModel = userRequestContext.getChatModel();
+            log.info("Using chat model from request context: {}", chatModel);
+        } else {
+            chatModel = StreamUserRequestContext.getChatModel();
+            log.info("Using chat model from StreamContextHolder: {}", chatModel);
+        }
+
+        for (Message message : messages) {
+            String sanitizedText = sanitize(message.getText());
+
+            if (sanitizedText == null) {
+                continue;
+            }
+
             ChatMessage chatMessage = new ChatMessage();
             chatMessage.setChatId(chatId);
             chatMessage.setMessageType(message.getMessageType());
-            chatMessage.setMessage(message.getText());
+            chatMessage.setMessage(sanitizedText);
             chatMessage.setModel(chatModel);
 
             chatMessageService.save(chatMessage);
