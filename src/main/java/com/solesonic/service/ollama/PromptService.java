@@ -14,7 +14,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.ollama.api.OllamaOptions;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
@@ -24,6 +24,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 import java.util.Map;
 import java.util.Optional;
@@ -50,6 +51,7 @@ public class PromptService {
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
 
+
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
 
@@ -72,7 +74,8 @@ public class PromptService {
             VectorStore vectorStore,
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository, OllamaModelService ollamaModelService) {
+            OllamaModelRepository ollamaModelRepository,
+            OllamaModelService ollamaModelService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -108,7 +111,7 @@ public class PromptService {
 
         ToolCallback[] toolCallbacks = tools(intent, model);
 
-        OllamaOptions ollamaOptions = OllamaOptions.builder()
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
                 .build();
 
@@ -122,9 +125,38 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
-                .options(ollamaOptions);
+                .options(ollamaChatOptions);
 
         return chatClientBuilder.call().content();
+    }
+
+    public Flux<String> stream(UUID chatId, String chatMessage) {
+        String model = model();
+
+        IntentType intent = userIntentService.determineIntent(chatMessage);
+
+        Resource promptTemplate = promptResource(intent);
+
+        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+
+        ToolCallback[] toolCallbacks = tools(intent, model);
+
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                .model(model)
+                .build();
+
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+
+        var chatClientBuilder = chatClient.prompt(templatePrompt)
+                .user(chatMessage)
+                .toolCallbacks(toolCallbacks)
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                )
+                .advisors(retrievalAugmentationAdvisor)
+                .options(ollamaChatOptions);
+
+        return chatClientBuilder.stream().content();
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
