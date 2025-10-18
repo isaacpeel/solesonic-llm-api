@@ -3,7 +3,6 @@ package com.solesonic.service.ollama;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
-import com.solesonic.scope.StreamUserRequestContext;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
@@ -16,7 +15,6 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
-import org.springframework.ai.ollama.api.OllamaOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
@@ -53,6 +51,7 @@ public class PromptService {
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
 
+
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
 
@@ -75,7 +74,8 @@ public class PromptService {
             VectorStore vectorStore,
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository, OllamaModelService ollamaModelService) {
+            OllamaModelRepository ollamaModelRepository,
+            OllamaModelService ollamaModelService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -147,37 +147,16 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
-        UUID userId = userRequestContext.getUserId();
-        String chatModel = userRequestContext.getChatModel();
-
-        StreamUserRequestContext.setUserId(userId);
-        StreamUserRequestContext.setChatModel(chatModel);
-
         var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
                 .toolCallbacks(toolCallbacks)
-                .advisors(advisorSpec -> advisorSpec
-                        .param(CONVERSATION_ID, chatId)
-                        .param("userId", userId)
-                        .param("chatModel", chatModel)
-                )
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
                 .options(ollamaChatOptions);
 
-        return chatClientBuilder.stream().content()
-                .doOnSubscribe(subscription -> {
-                    // Set ThreadLocal when stream starts executing
-                    log.debug("Setting StreamContextHolder with chatModel: {}", chatModel);
-                    StreamUserRequestContext.setUserId(userId);
-                    StreamUserRequestContext.setChatModel(chatModel);
-                })
-                .doFinally(signalType -> {
-                    log.debug("Clearing StreamContextHolder");
-                    StreamUserRequestContext.clear();
-                });
+        return chatClientBuilder.stream().content();
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {

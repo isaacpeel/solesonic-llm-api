@@ -1,14 +1,12 @@
 package com.solesonic.config.olllama;
 
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.scope.StreamUserRequestContext;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ollama.ChatMessageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -20,13 +18,10 @@ import java.util.UUID;
 public class DatabaseChatMemory implements ChatMemory {
     private static final Logger log = LoggerFactory.getLogger(DatabaseChatMemory.class);
     private final ChatMessageService chatMessageService;
-    private final UserRequestContext userRequestContext;
 
 
-    public DatabaseChatMemory(ChatMessageService chatMessageService,
-                              UserRequestContext userRequestContext) {
+    public DatabaseChatMemory(ChatMessageService chatMessageService) {
         this.chatMessageService = chatMessageService;
-        this.userRequestContext = userRequestContext;
     }
 
     private String sanitize(String text) {
@@ -54,16 +49,6 @@ public class DatabaseChatMemory implements ChatMemory {
 
         UUID chatId = UUID.fromString(conversationId);
 
-        String chatModel;
-
-        if (isRequestScopeActive()) {
-            chatModel = userRequestContext.getChatModel();
-            log.info("Using chat model from request context: {}", chatModel);
-        } else {
-            chatModel = StreamUserRequestContext.getChatModel();
-            log.info("Using chat model from StreamContextHolder: {}", chatModel);
-        }
-
         for (Message message : messages) {
             String sanitizedText = sanitize(message.getText());
 
@@ -75,7 +60,6 @@ public class DatabaseChatMemory implements ChatMemory {
             chatMessage.setChatId(chatId);
             chatMessage.setMessageType(message.getMessageType());
             chatMessage.setMessage(sanitizedText);
-            chatMessage.setModel(chatModel);
 
             chatMessageService.save(chatMessage);
         }

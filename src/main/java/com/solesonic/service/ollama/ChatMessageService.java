@@ -1,8 +1,12 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.user.UserPreferences;
+import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import org.apache.commons.collections4.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -12,17 +16,32 @@ import org.springframework.stereotype.Service;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service()
 public class ChatMessageService {
+    private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
     private final ChatMessageRepository chatMessageRepository;
+    private final UserPreferencesRepository userPreferencesRepository;
 
-    public ChatMessageService(ChatMessageRepository chatMessageRepository) {
+    public ChatMessageService(ChatMessageRepository chatMessageRepository,
+                              UserPreferencesRepository userPreferencesRepository) {
         this.chatMessageRepository = chatMessageRepository;
+        this.userPreferencesRepository = userPreferencesRepository;
     }
 
     public void save(ChatMessage message) {
+        UUID chatId = message.getChatId();
+
+        log.info("Saving chat message with id {}", chatId);
+
+        UserPreferences userPreferences = userPreferencesRepository
+                .findByChatId(chatId)
+                .orElseThrow(() -> new IllegalStateException("User preferences not found for chatId: " + chatId));
+
+        String chatModel = userPreferences.getModel();
+        message.setModel(chatModel);
         message.setTimestamp(ZonedDateTime.now());
         chatMessageRepository.save(message);
     }

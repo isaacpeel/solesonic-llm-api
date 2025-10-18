@@ -1,6 +1,7 @@
 package com.solesonic.service.ollama;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.solesonic.config.olllama.DatabaseChatMemory;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
