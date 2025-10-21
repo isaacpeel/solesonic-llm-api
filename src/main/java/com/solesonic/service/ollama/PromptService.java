@@ -7,7 +7,6 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
-import com.solesonic.service.user.UserTokenCacheService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,9 +23,6 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -36,7 +32,6 @@ import java.util.UUID;
 
 import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
 import static com.solesonic.service.ollama.OllamaService.TOOLS;
-import static com.solesonic.service.user.UserTokenCacheService.USER_TOKEN_KEY;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -73,9 +68,6 @@ public class PromptService {
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
-
-    private final UserTokenCacheService userTokenCacheService;
-
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
@@ -84,8 +76,7 @@ public class PromptService {
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
             OllamaModelRepository ollamaModelRepository,
-            OllamaModelService ollamaModelService,
-            UserTokenCacheService userTokenCacheService) {
+            OllamaModelService ollamaModelService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -94,7 +85,6 @@ public class PromptService {
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
         this.ollamaModelService = ollamaModelService;
-        this.userTokenCacheService = userTokenCacheService;
     }
 
     public String model() {
@@ -156,26 +146,11 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
-
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String userToken;
-
-        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
-            log.info("User Token Found");
-            userToken = jwt.getTokenValue();
-        } else {
-            log.info("User Token Not Found");
-            userToken = "";
-        }
-
-        String cacheKey = UUID.randomUUID().toString();
-        userTokenCacheService.token(cacheKey, userToken);
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor ();
 
         var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
                 .toolCallbacks(toolCallbacks)
-                .toolContext(Map.of(USER_TOKEN_KEY, cacheKey))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
