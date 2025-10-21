@@ -114,7 +114,8 @@ public class PromptServiceTest {
                 userIntentService,
                 createConfluenceTools,
                 ollamaModelRepository,
-                ollamaModelService);
+                ollamaModelService,
+                null);
 
         userId = UUID.randomUUID();
 

@@ -1,21 +1,11 @@
 package com.solesonic.mcp.client;
 
+import com.solesonic.model.security.McpFilterService;
 import jakarta.annotation.Nonnull;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.security.authentication.AnonymousAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.authority.AuthorityUtils;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.client.ClientCredentialsOAuth2AuthorizedClientProvider;
-import org.springframework.security.oauth2.client.OAuth2AuthorizationContext;
-import org.springframework.security.oauth2.client.OAuth2AuthorizedClient;
-import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
-import org.springframework.security.oauth2.core.OAuth2AccessToken;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
-import org.springframework.web.context.request.RequestContextHolder;
-import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.reactive.function.client.*;
 import reactor.core.publisher.Mono;
 
@@ -23,21 +13,15 @@ import java.util.function.Consumer;
 
 @Component
 public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFunction {
-
     private static final Logger log = LoggerFactory.getLogger(McpSyncClientExchangeFilterFunction.class);
-    public static final String CLIENT_CREDENTIALS_CLIENT = "client-credentials-client";
-    public static final String SOLESONIC_MCP_READ = "solesonic-mcp.read";
-    private static final String CLIENT_CREDENTIALS_CLIENT_REGISTRATION_ID = "mcp-client";
-
-    private final ClientCredentialsOAuth2AuthorizedClientProvider clientCredentialTokenProvider = new ClientCredentialsOAuth2AuthorizedClientProvider();
-    private final ClientRegistrationRepository clientRegistrationRepository;
 
     private final TokenExchangeService tokenExchangeService;
+    private final McpFilterService mcpFilterService;
 
-    public McpSyncClientExchangeFilterFunction(ClientRegistrationRepository clientRegistrationRepository,
-                                               TokenExchangeService tokenExchangeService) {
-        this.clientRegistrationRepository = clientRegistrationRepository;
+    public McpSyncClientExchangeFilterFunction(TokenExchangeService tokenExchangeService,
+                                               McpFilterService mcpFilterService) {
         this.tokenExchangeService = tokenExchangeService;
+        this.mcpFilterService = mcpFilterService;
     }
 
     /**
@@ -50,55 +34,31 @@ public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFuncti
      * an application token. Never use client_credentials when a user JWT is available.
      */
     @Override
-    public @Nonnull Mono<ClientResponse> filter(@Nonnull ClientRequest request, @Nonnull ExchangeFunction next) {
-        boolean hasServletRequest = RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes;
-        if (hasServletRequest) {
-            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+    public @Nonnull Mono<ClientResponse> filter(@Nonnull ClientRequest request, @Nonnull ExchangeFunction exchangeFunction) {
+        String userToken = mcpFilterService.userToken(request);
 
-            if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
-                //Exchange an OBO token for the user to pass to the MCP server.
-                String userToken = jwt.getTokenValue();
-                log.debug("Propagating user JWT to outbound request {}", request.url());
+        if (StringUtils.isNotEmpty(userToken)) {
+            log.info("Propagating user JWT to outbound MCP client streaming request {}", request.url());
 
-
-                return tokenExchangeService.exchangeToken(userToken)
-                        .flatMap(exchangedToken -> {
-                            var requestWithUserToken = ClientRequest.from(request)
-                                    .headers(headers -> headers.setBearerAuth(exchangedToken))
-                                    .build();
-                            return next.exchange(requestWithUserToken);
-                        });
-            } else {
-                // In a user request without a JWT, fail fast instead of using client_credentials
-                log.warn("User HTTP request detected but no Jwt present in SecurityContext for outbound call to {}", request.url());
-                return Mono.error(new IllegalStateException("Missing user Jwt for outbound request"));
-            }
+            //Exchange the current user token for an OBO token
+            return tokenExchangeService.exchangeToken(userToken)
+                    .flatMap(exchangedToken -> {
+                        var requestWithUserToken = ClientRequest.from(request)
+                                .headers(headers -> headers.setBearerAuth(exchangedToken))
+                                .build();
+                        return exchangeFunction.exchange(requestWithUserToken);
+                    });
         } else {
-            var accessToken = getClientCredentialsAccessToken();
+            log.info("Standard client credentials MCP request.");
+
+            var accessToken = mcpFilterService.getClientCredentialsAccessToken();
 
             var requestWithToken = ClientRequest.from(request)
                     .headers(headers -> headers.setBearerAuth(accessToken))
                     .build();
 
-            return next.exchange(requestWithToken);
+            return exchangeFunction.exchange(requestWithToken);
         }
-    }
-
-    private String getClientCredentialsAccessToken() {
-        var clientRegistration = this.clientRegistrationRepository
-                .findByRegistrationId(CLIENT_CREDENTIALS_CLIENT_REGISTRATION_ID);
-
-        var authRequest = OAuth2AuthorizationContext.withClientRegistration(clientRegistration)
-                .principal(new AnonymousAuthenticationToken(CLIENT_CREDENTIALS_CLIENT, CLIENT_CREDENTIALS_CLIENT, AuthorityUtils.createAuthorityList(SOLESONIC_MCP_READ)))
-                .build();
-
-        OAuth2AuthorizedClient oAuth2AuthorizedClient = clientCredentialTokenProvider.authorize(authRequest);
-        assert oAuth2AuthorizedClient != null;
-
-        OAuth2AccessToken oAuth2AccessToken = oAuth2AuthorizedClient.getAccessToken();
-        assert oAuth2AccessToken != null;
-
-        return oAuth2AccessToken.getTokenValue();
     }
 
     /**
@@ -107,5 +67,4 @@ public class McpSyncClientExchangeFilterFunction implements ExchangeFilterFuncti
     public Consumer<WebClient.Builder> configuration() {
         return builder -> builder.filter(this);
     }
-
 }

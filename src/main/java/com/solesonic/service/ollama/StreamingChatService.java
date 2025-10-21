@@ -49,7 +49,7 @@ public class StreamingChatService {
         chat = save(chat);
         UUID chatId = chat.getId();
 
-        log.info("Starting streaming chat with new chat id {}", chatId);
+        log.debug("Starting streaming chat with new chat id {}", chatId);
 
         return update(chatId, chatRequest);
     }
@@ -60,7 +60,6 @@ public class StreamingChatService {
         StringBuilder assembled = new StringBuilder();
 
         Flux<ServerSentEvent<?>> chunks = promptService.stream(chatId, chatMessage)
-//                .map(this::removeThinkTags)
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
                 .doOnNext(assembled::append)
                 .map(chunk -> ServerSentEvent.builder(chunk)
@@ -75,6 +74,7 @@ public class StreamingChatService {
             responseMessage.setModel(chatModel);
 
             SolesonicChatResponse resp = new SolesonicChatResponse(chatId, responseMessage);
+
             return ServerSentEvent.builder(resp)
                     .event("done")
                     .build();

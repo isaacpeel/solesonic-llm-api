@@ -44,7 +44,7 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
     protected void doFilterInternal(@Nonnull HttpServletRequest request,
                                     @Nonnull HttpServletResponse response,
                                     @Nonnull FilterChain filterChain) throws ServletException, IOException {
-        log.info("Filtering request for local dev.");
+        log.debug("Filtering request for local dev.");
         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         UUID userId;
 

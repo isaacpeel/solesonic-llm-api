@@ -33,7 +33,7 @@ public class ChatMessageService {
     public void save(ChatMessage message) {
         UUID chatId = message.getChatId();
 
-        log.info("Saving chat message with id {}", chatId);
+        log.debug("Saving chat message with id {}", chatId);
 
         UserPreferences userPreferences = userPreferencesRepository
                 .findByChatId(chatId)

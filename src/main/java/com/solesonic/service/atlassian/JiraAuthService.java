@@ -68,7 +68,11 @@ public class JiraAuthService {
             URLEncoder.encode("read:servicedesk-request", UTF_8),
             URLEncoder.encode("manage:servicedesk-customer", UTF_8),
             URLEncoder.encode("write:servicedesk-request", UTF_8),
-            URLEncoder.encode("read:servicemanagement-insight-objects", UTF_8)
+            URLEncoder.encode("read:servicemanagement-insight-objects", UTF_8),
+            URLEncoder.encode("delete:jira:issue", UTF_8),
+            URLEncoder.encode("delete:jira-work", UTF_8),
+            URLEncoder.encode("read:board-scope:jira-software", UTF_8),
+            URLEncoder.encode("read:issue-details:jira", UTF_8),
     };
 
     public static final String RESPONSE_TYPE = "code";
