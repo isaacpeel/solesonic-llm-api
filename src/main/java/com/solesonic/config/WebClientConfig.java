@@ -67,7 +67,7 @@ public class WebClientConfig {
                     }
 
                     // Strategy 3: Check reactive context (works for streaming endpoints)
-                    if (StringUtils.isEmpty(userToken) && contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
+                    if (contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
                         log.info("Security context in ThreadLocal");
 
                         Object securityAttributes = contextView.get(SECURITY_CONTEXT_ATTRIBUTES);
