@@ -1,3 +1,4 @@
+
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.ollama.OllamaModel;
@@ -8,6 +9,7 @@ import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
+import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -36,7 +38,6 @@ import java.util.UUID;
 
 import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
 import static com.solesonic.service.ollama.OllamaService.TOOLS;
-import static io.modelcontextprotocol.common.McpTransportContext.KEY;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -57,6 +58,7 @@ public class PromptService {
     private final CreateConfluenceTools createConfluenceTools;
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
+    private final SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider;
 
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
@@ -84,7 +86,8 @@ public class PromptService {
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
             OllamaModelRepository ollamaModelRepository,
-            OllamaModelService ollamaModelService) {
+            OllamaModelService ollamaModelService,
+            SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -93,6 +96,7 @@ public class PromptService {
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
         this.ollamaModelService = ollamaModelService;
+        this.mcpToolCallbackProvider = mcpToolCallbackProvider;
     }
 
     public String model() {
@@ -238,8 +242,18 @@ public class PromptService {
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, JIRA_AGILE, GENERAL -> new ToolCallback[0];
-                case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
+                case CREATING_JIRA_ISSUE, JIRA_AGILE, GENERAL -> mcpToolCallbackProvider.getToolCallbacks();
+                case CREATING_CONFLUENCE_PAGE -> {
+                    // Combine MCP tools with Confluence tools
+                    ToolCallback[] mcpTools = mcpToolCallbackProvider.getToolCallbacks();
+                    ToolCallback[] confluenceTools = ToolCallbacks.from(createConfluenceTools);
+
+                    ToolCallback[] combined = new ToolCallback[mcpTools.length + confluenceTools.length];
+                    System.arraycopy(mcpTools, 0, combined, 0, mcpTools.length);
+                    System.arraycopy(confluenceTools, 0, combined, mcpTools.length, confluenceTools.length);
+
+                    yield combined;
+                }
             };
 
             log.debug("Selected {} tools for intent '{}' and model '{}'", toolCallbacks.length, intent, model);
