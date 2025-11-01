@@ -30,7 +30,7 @@ public class WebClientConfig {
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
-                    log.debug("WebClient filter executing - checking for security context");
+                    log.info("WebClient filter executing - checking for security context");
 
                     String userToken = null;
 
@@ -41,18 +41,18 @@ public class WebClientConfig {
                             Map<String, Object> securityMap = toolContext.get(
                                     SecurityContextPropagatingMcpToolCallback.SECURITY_CONTEXT_KEY);
 
-                            log.debug("Found security context in ThreadLocal from MCP tool");
+                            log.info("Found security context in ThreadLocal from MCP tool");
 
                             if (securityMap.get("jwtAuthenticationToken") instanceof JwtAuthenticationToken jwt) {
                                 userToken = jwt.getToken().getTokenValue();
-                                log.debug("Extracted token from JwtAuthenticationToken in ThreadLocal");
+                                log.info("Extracted token from JwtAuthenticationToken in ThreadLocal");
                             } else if (securityMap.get("jwt") instanceof Jwt jwt) {
                                 userToken = jwt.getTokenValue();
-                                log.debug("Extracted token from Jwt in ThreadLocal");
+                                log.info("Extracted token from Jwt in ThreadLocal");
                             } else if (securityMap.get("authentication") instanceof Authentication auth
                                     && auth.getPrincipal() instanceof Jwt jwt) {
                                 userToken = jwt.getTokenValue();
-                                log.debug("Extracted token from Authentication principal in ThreadLocal");
+                                log.info("Extracted token from Authentication principal in ThreadLocal");
                             }
                         }
                     }
@@ -62,14 +62,16 @@ public class WebClientConfig {
                         Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
                         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
                             userToken = jwt.getTokenValue();
-                            log.debug("Token found via SecurityContextHolder");
+                            log.info("Token found via SecurityContextHolder");
                         }
                     }
 
                     // Strategy 3: Check reactive context (works for streaming endpoints)
                     if (StringUtils.isEmpty(userToken) && contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
+                        log.info("Security context in ThreadLocal");
+
                         Object securityAttributes = contextView.get(SECURITY_CONTEXT_ATTRIBUTES);
-                        log.debug("Security attributes found in reactive context: {}", securityAttributes);
+                        log.info("Security attributes found in reactive context: {}", securityAttributes);
 
                         if (securityAttributes instanceof Map attributesMap) {
                             Set keySet = attributesMap.keySet();
@@ -79,7 +81,7 @@ public class WebClientConfig {
 
                                 if (attributeValue instanceof JwtAuthenticationToken jwt) {
                                     userToken = jwt.getToken().getTokenValue();
-                                    log.debug("Token found via reactive context");
+                                    log.info("Token found via reactive context");
                                     break;
                                 }
                             }
@@ -87,8 +89,7 @@ public class WebClientConfig {
                     }
 
                     if (StringUtils.isEmpty(userToken)) {
-                        log.info("User token for streaming is not found, using client credentials. " +
-                                        "ThreadLocal context: {}, Reactive context keys: {}",
+                        log.info("User token for streaming is not found, using client credentials. ThreadLocal context: {}, Reactive context keys: {}",
                                 SecurityContextPropagatingMcpToolCallback.hasReactiveContext(),
                                 contextView);
 
