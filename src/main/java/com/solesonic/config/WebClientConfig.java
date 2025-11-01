@@ -93,6 +93,8 @@ public class WebClientConfig {
                                 SecurityContextPropagatingMcpToolCallback.hasReactiveContext(),
                                 contextView);
 
+                        contextView.stream().forEach(contextEntry -> log.info("entry: {}", contextEntry.getKey()));
+
                         // No user token — use client credentials token
                         String accessToken = mcpFilterService.getClientCredentialsAccessToken();
 
