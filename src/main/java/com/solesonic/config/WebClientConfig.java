@@ -26,6 +26,7 @@ public class WebClientConfig {
     public static final String SECURITY_CONTEXT_ATTRIBUTES = "org.springframework.security.SECURITY_CONTEXT_ATTRIBUTES";
 
     @Bean
+    @SuppressWarnings("rawtypes")
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
