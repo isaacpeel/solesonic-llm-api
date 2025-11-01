@@ -23,6 +23,10 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -32,6 +36,7 @@ import java.util.UUID;
 
 import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
 import static com.solesonic.service.ollama.OllamaService.TOOLS;
+import static io.modelcontextprotocol.common.McpTransportContext.KEY;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -53,7 +58,6 @@ public class PromptService {
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
 
-
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
 
@@ -63,11 +67,15 @@ public class PromptService {
     @Value("classpath:prompts/basic_prompt.st")
     private Resource basicPrompt;
 
+    @Value("classpath:prompts/agile_prompt.st")
+    private Resource agilePrompt;
+
     @Value("${solesonic.llm.bot.name}")
     private String botName;
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
+
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
@@ -146,7 +154,20 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor ();
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+
+        SecurityContext context = SecurityContextHolder.getContext();
+        Authentication authentication = context.getAuthentication();
+        Object principal = authentication.getPrincipal();
+
+        String authToken = null;
+
+        if(principal instanceof Jwt jwt) {
+            authToken = jwt.getTokenValue();
+        }
+
+        assert authToken != null;
+        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken);
 
         var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
@@ -157,8 +178,10 @@ public class PromptService {
                 .advisors(retrievalAugmentationAdvisor)
                 .options(ollamaChatOptions);
 
-        return chatClientBuilder.stream()
-                .content();
+        return Flux.deferContextual(upstreamView ->
+                chatClientBuilder.stream()
+                        .content()
+                        .contextWrite(contextView -> contextView.put(USER_TOKEN, contextMap)));
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
@@ -183,6 +206,7 @@ public class PromptService {
         return switch (intent) {
             case CREATING_JIRA_ISSUE -> jiraPrompt;
             case CREATING_CONFLUENCE_PAGE -> confluencePrompt;
+            case JIRA_AGILE -> agilePrompt;
             case GENERAL -> basicPrompt;
         };
     }
@@ -214,7 +238,7 @@ public class PromptService {
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, GENERAL -> new ToolCallback[0];
+                case CREATING_JIRA_ISSUE, JIRA_AGILE, GENERAL -> new ToolCallback[0];
                 case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
             };
 

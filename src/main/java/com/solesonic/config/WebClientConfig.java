@@ -10,25 +10,48 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.util.Map;
+import java.util.Set;
+
 @Configuration
 public class WebClientConfig {
     private static final Logger log = LoggerFactory.getLogger(WebClientConfig.class);
+    public static final String SECURITY_CONTEXT_ATTRIBUTES = "org.springframework.security.SECURITY_CONTEXT_ATTRIBUTES";
 
     @Bean
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
                 // 👇 add our custom filter first
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
+
                     Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 
                     String userToken = null;
 
                     if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
                         userToken = jwt.getTokenValue();
+                    }
+
+                    if(contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
+                        Object securityAttributes = contextView.get(SECURITY_CONTEXT_ATTRIBUTES);
+                        log.debug("Security attributes {}", securityAttributes);
+
+                        if (securityAttributes instanceof Map attributesMap) {
+                            Set keySet = attributesMap.keySet();
+
+                            for (Object key : keySet) {
+                                Object attributeValue = attributesMap.get(key);
+
+                                if(attributeValue instanceof JwtAuthenticationToken jwt) {
+                                    userToken = jwt.getToken().getTokenValue();
+                                }
+                            }
+                        }
                     }
 
                     if (StringUtils.isEmpty(userToken)) {
