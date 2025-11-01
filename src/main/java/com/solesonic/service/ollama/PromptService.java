@@ -1,6 +1,7 @@
 
 package com.solesonic.service.ollama;
 
+import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
@@ -9,7 +10,6 @@ import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
-import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -25,10 +25,6 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
@@ -47,8 +43,6 @@ public class PromptService {
     public static final String BOT_NAME = "botName";
     public static final String LBRACE = "lbrace";
     public static final String RBRACE = "rbrace";
-    public static final String USER_TOKEN = "userToken";
-
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -160,19 +154,6 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
-        SecurityContext context = SecurityContextHolder.getContext();
-        Authentication authentication = context.getAuthentication();
-        Object principal = authentication.getPrincipal();
-
-        String authToken = null;
-
-        if(principal instanceof Jwt jwt) {
-            authToken = jwt.getTokenValue();
-        }
-
-        assert authToken != null;
-        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken);
-
         var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
                 .toolCallbacks(toolCallbacks)
@@ -184,8 +165,7 @@ public class PromptService {
 
         return Flux.deferContextual(upstreamView ->
                 chatClientBuilder.stream()
-                        .content()
-                        .contextWrite(contextView -> contextView.put(USER_TOKEN, contextMap)));
+                        .content());
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
