@@ -8,6 +8,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
@@ -22,7 +23,7 @@ import java.util.Map;
 /**
  * A wrapper around SyncMcpToolCallback that captures the security context
  * and makes it available for reactive WebClient filters during MCP tool execution.
- *
+ * <p>
  * This class solves the context propagation issue where the user's JWT token
  * is not available in WebClient filters when MCP tools are invoked during
  * streaming chat responses.
@@ -43,17 +44,20 @@ public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
     }
 
     @Override
+    @NonNull
     public ToolDefinition getToolDefinition() {
         return delegate.getToolDefinition();
     }
 
     @Override
-    public String call(String toolCallInput) {
+    @NonNull
+    public String call(@NonNull String toolCallInput) {
         return call(toolCallInput, null);
     }
 
     @Override
-    public String call(String toolCallInput, @Nullable ToolContext toolContext) {
+    @NonNull
+    public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
         // Capture the current security context
         SecurityContext securityContext = SecurityContextHolder.getContext();
         Authentication authentication = securityContext.getAuthentication();

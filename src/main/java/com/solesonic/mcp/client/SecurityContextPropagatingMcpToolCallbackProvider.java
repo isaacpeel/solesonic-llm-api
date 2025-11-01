@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.lang.NonNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -44,6 +45,7 @@ public class SecurityContextPropagatingMcpToolCallbackProvider implements ToolCa
     }
 
     @Override
+    @NonNull
     public ToolCallback[] getToolCallbacks() {
         return toolCallbacks.toArray(new ToolCallback[0]);
     }

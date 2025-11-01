@@ -32,7 +32,7 @@ public class McpClientConfig {
         }
 
         // Use the first MCP client (or you can create multiple providers if needed)
-        McpSyncClient mcpClient = mcpSyncClients.get(0);
+        McpSyncClient mcpClient = mcpSyncClients.getFirst();
         log.info("Creating SecurityContextPropagatingMcpToolCallbackProvider with MCP client: {}",
                 mcpClient.getClientInfo().name());
 
