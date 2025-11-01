@@ -81,6 +81,10 @@ public class WebClientConfig {
 
                                 Object attributeValue = attributesMap.get(key);
 
+                                if(attributeValue == null) {
+                                    continue;
+                                }
+
                                 String classname = attributeValue.getClass().getName();
                                 log.info("classname: {}", classname);
 
