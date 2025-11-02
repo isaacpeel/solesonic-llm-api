@@ -49,8 +49,7 @@ public class WebClientConfig {
                             } else if (securityMap.get("jwt") instanceof Jwt jwt) {
                                 userToken = jwt.getTokenValue();
                                 log.info("Extracted token from Jwt in ThreadLocal");
-                            } else if (securityMap.get("authentication") instanceof Authentication auth
-                                    && auth.getPrincipal() instanceof Jwt jwt) {
+                            } else if (securityMap.get("authentication") instanceof Authentication auth && auth.getPrincipal() instanceof Jwt jwt) {
                                 userToken = jwt.getTokenValue();
                                 log.info("Extracted token from Authentication principal in ThreadLocal");
                             }
@@ -82,6 +81,7 @@ public class WebClientConfig {
                                 Object attributeValue = attributesMap.get(key);
 
                                 if(attributeValue == null) {
+                                    log.info("attribute value is null");
                                     continue;
                                 }
 
