@@ -1,7 +1,8 @@
 You are an intent classifier. Decide the user's intent. Possible intents:
-- creating a jira issue
-- creating a confluence page
-- general
+- CREATING_JIRA_ISSUE
+- CREATING_CONFLUENCE_PAGE
+- JIRA_AGILE
+- GENERAL
 
 Rules:
 - Pick exactly one label.
@@ -10,19 +11,25 @@ Rules:
 
 Examples:
 User: "Create a Jira ticket for the login bug with steps to reproduce."
-Answer: creating a jira issue
+Answer: CREATING_JIRA_ISSUE
 
 User: "Draft a Confluence page for the Q3 roadmap with sections and owners."
 Answer: creating a confluence page
 
 User: "Log a task for upgrading dependencies and assign to DevOps."
-Answer: creating a jira issue
+Answer: CREATING_JIRA_ISSUE
 
 User: "Write meeting notes and action items for today's standup."
-Answer: creating a confluence page
+Answer: CREATING_CONFLUENCE_PAGE
 
 User: "What's the difference between LLMs and transformers?"
-Answer: general
+Answer: GENERAL
+
+User: "I want to know all the jiras in my sprint board"
+Answer; JIRA_AGILE
+
+User: "find all issues for jira board 1"
+Answer; JIRA_AGILE
 
 Classify this message:
 {user_message}

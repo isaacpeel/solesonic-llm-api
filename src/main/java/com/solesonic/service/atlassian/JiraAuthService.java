@@ -19,6 +19,7 @@ import java.util.UUID;
 
 import static com.solesonic.config.atlassian.AtlassianConstants.ATLASSIAN_API_WEB_CLIENT;
 import static com.solesonic.config.atlassian.AtlassianConstants.ATLASSIAN_AUTH_WEB_CLIENT;
+import static com.solesonic.service.atlassian.AtlassianScope.urlEncodedScopes;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 @Service
@@ -27,49 +28,6 @@ public class JiraAuthService {
     public static final String AUTHORIZATION_CODE = "authorization_code";
     public static final String AUDIENCE = "api.atlassian.com";
     public static final String REFRESH_TOKEN = "refresh_token";
-
-    public static final String[] SCOPES = {
-            //Granular scopes
-            URLEncoder.encode("read:issue:jira", UTF_8),
-            URLEncoder.encode("write:issue:jira", UTF_8),
-            URLEncoder.encode("read:issue:jira-software", UTF_8),
-            URLEncoder.encode("delete:issue:jira", UTF_8),
-            URLEncoder.encode("read:avatar:jira", UTF_8),
-            URLEncoder.encode("write:issue:jira-software", UTF_8),
-            URLEncoder.encode("read:issue-meta:jira", UTF_8),
-            URLEncoder.encode("read:field-configuration:jira", UTF_8),
-            URLEncoder.encode("read:issue-security-level:jira", UTF_8),
-            URLEncoder.encode("read:issue.changelog:jira", UTF_8),
-            URLEncoder.encode("read:issue.vote:jira", UTF_8),
-            URLEncoder.encode("read:user:jira", UTF_8),
-            URLEncoder.encode("read:status:jira", UTF_8),
-            URLEncoder.encode("read:application-role:jira", UTF_8),
-            URLEncoder.encode("read:group:jira", UTF_8),
-            URLEncoder.encode("write:page:confluence", UTF_8),
-            URLEncoder.encode("read:page:confluence", UTF_8),
-            URLEncoder.encode("delete:page:confluence", UTF_8),
-            URLEncoder.encode("read:space:confluence", UTF_8),
-            URLEncoder.encode("write:space:confluence", UTF_8),
-            URLEncoder.encode("read:space-details:confluence", UTF_8),
-
-            //Special
-            URLEncoder.encode("READ", UTF_8),
-            URLEncoder.encode("WRITE", UTF_8),
-            URLEncoder.encode("offline_access", UTF_8),
-
-            //Classic Scopes
-            URLEncoder.encode("read:jira-work", UTF_8),
-            URLEncoder.encode("manage:jira-project", UTF_8),
-            URLEncoder.encode("manage:jira-configuration", UTF_8),
-            URLEncoder.encode("read:jira-user", UTF_8),
-            URLEncoder.encode("write:jira-work", UTF_8),
-            URLEncoder.encode("manage:jira-webhook", UTF_8),
-            URLEncoder.encode("manage:jira-data-provider", UTF_8),
-            URLEncoder.encode("read:servicedesk-request", UTF_8),
-            URLEncoder.encode("manage:servicedesk-customer", UTF_8),
-            URLEncoder.encode("write:servicedesk-request", UTF_8),
-            URLEncoder.encode("read:servicemanagement-insight-objects", UTF_8)
-    };
 
     public static final String RESPONSE_TYPE = "code";
     public static final String PROMPT = "consent";
@@ -119,11 +77,13 @@ public class JiraAuthService {
         UUID userId = userRequestContext.getUserId();
         log.info("Building auth URI for user: {}", userId);
 
+        String[] scopes = urlEncodedScopes();
+
         String jiraAuthUri = UriComponentsBuilder.fromUriString(this.jiraAuthUri)
                 .pathSegment(AUTHORIZE_PATH)
                 .queryParam(AUDIENCE_PARAM, AUDIENCE)
                 .queryParam(CLIENT_ID_PARAM, clientId)
-                .queryParam(SCOPE_PARAM, String.join(" ", SCOPES))
+                .queryParam(SCOPE_PARAM, String.join(" ", scopes))
                 .queryParam(REDIRECT_URI_PARAM, URLEncoder.encode(authCallbackUri, UTF_8))
                 .queryParam(STATE_PARAM, userId)
                 .queryParam(RESPONSE_TYPE_PARAM, RESPONSE_TYPE)

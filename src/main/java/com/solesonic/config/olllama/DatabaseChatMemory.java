@@ -9,6 +9,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
 
 import java.util.List;
 import java.util.UUID;
@@ -17,26 +18,48 @@ import java.util.UUID;
 public class DatabaseChatMemory implements ChatMemory {
     private static final Logger log = LoggerFactory.getLogger(DatabaseChatMemory.class);
     private final ChatMessageService chatMessageService;
-    private final UserRequestContext userRequestContext;
 
-    public DatabaseChatMemory(ChatMessageService chatMessageService, UserRequestContext userRequestContext) {
+
+    public DatabaseChatMemory(ChatMessageService chatMessageService) {
         this.chatMessageService = chatMessageService;
-        this.userRequestContext = userRequestContext;
+    }
+
+    private String sanitize(String text) {
+        if (text == null) {
+            return null;
+        }
+
+        String withoutThink = text.replaceAll("<think>.*?</think>", "");
+        String trimmed = withoutThink.trim();
+
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    private boolean isRequestScopeActive() {
+        return RequestContextHolder.getRequestAttributes() != null;
     }
 
     @Override
-    public void add(@NonNull String conversationId, List<Message> messages) {
+    public void add(@NonNull String conversationId, @NonNull List<Message> messages) {
         log.debug("Adding messages to history.");
 
         UUID chatId = UUID.fromString(conversationId);
-        String chatModel = userRequestContext.getChatModel();
 
-        for(Message message : messages) {
+        for (Message message : messages) {
+            String sanitizedText = sanitize(message.getText());
+
+            if (sanitizedText == null) {
+                continue;
+            }
+
             ChatMessage chatMessage = new ChatMessage();
             chatMessage.setChatId(chatId);
             chatMessage.setMessageType(message.getMessageType());
-            chatMessage.setMessage(message.getText());
-            chatMessage.setModel(chatModel);
+            chatMessage.setMessage(sanitizedText);
 
             chatMessageService.save(chatMessage);
         }

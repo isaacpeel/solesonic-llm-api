@@ -5,6 +5,7 @@ import org.apache.commons.lang3.StringUtils;
 public enum IntentType {
     CREATING_JIRA_ISSUE("creating a jira issue"),
     CREATING_CONFLUENCE_PAGE("creating a confluence page"),
+    JIRA_AGILE("jira agile"),
     GENERAL("general");
 
     private final String label;
@@ -31,13 +32,15 @@ public enum IntentType {
         return switch (trimmedValue) {
             case "creating a jira issue",
                  "jira", "jira issue",
-                 "create jira issue"
+                 "creating_jira_issue"
                     -> CREATING_JIRA_ISSUE;
             case "creating a confluence page",
                  "confluence",
                  "confluence page",
-                 "create confluence page" ->
+                 "create_confluence_page" ->
                     CREATING_CONFLUENCE_PAGE;
+            case "jira agile requests",
+                 "jira_agile"-> JIRA_AGILE;
             default -> GENERAL;
         };
     }

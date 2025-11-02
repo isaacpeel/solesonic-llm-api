@@ -7,7 +7,7 @@ import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.ollama.api.OllamaOptions;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.ollama.management.ModelManagementOptions;
 import org.springframework.ai.ollama.management.PullModelStrategy;
 import org.springframework.beans.factory.annotation.Value;
@@ -50,7 +50,7 @@ public class UserIntentService {
             Map<String, Object> promptContext = Map.of(USER_MESSAGE, userMessage);
             Prompt prompt = promptTemplate.create(promptContext);
 
-            OllamaOptions ollamaOptions = OllamaOptions.builder()
+            OllamaChatOptions ollamaOptions = OllamaChatOptions.builder()
                     .model(intentModel)
                     .build();
 

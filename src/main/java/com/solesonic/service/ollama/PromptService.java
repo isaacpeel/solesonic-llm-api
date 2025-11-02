@@ -1,5 +1,7 @@
+
 package com.solesonic.service.ollama;
 
+import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.OllamaModelRepository;
@@ -14,7 +16,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.ollama.api.OllamaOptions;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
@@ -24,6 +26,7 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 
 import java.util.Map;
 import java.util.Optional;
@@ -49,6 +52,7 @@ public class PromptService {
     private final CreateConfluenceTools createConfluenceTools;
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
+    private final SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider;
 
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
@@ -58,6 +62,9 @@ public class PromptService {
 
     @Value("classpath:prompts/basic_prompt.st")
     private Resource basicPrompt;
+
+    @Value("classpath:prompts/agile_prompt.st")
+    private Resource agilePrompt;
 
     @Value("${solesonic.llm.bot.name}")
     private String botName;
@@ -72,7 +79,9 @@ public class PromptService {
             VectorStore vectorStore,
             UserIntentService userIntentService,
             CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository, OllamaModelService ollamaModelService) {
+            OllamaModelRepository ollamaModelRepository,
+            OllamaModelService ollamaModelService,
+            SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -81,6 +90,7 @@ public class PromptService {
         this.createConfluenceTools = createConfluenceTools;
         this.ollamaModelRepository = ollamaModelRepository;
         this.ollamaModelService = ollamaModelService;
+        this.mcpToolCallbackProvider = mcpToolCallbackProvider;
     }
 
     public String model() {
@@ -108,7 +118,7 @@ public class PromptService {
 
         ToolCallback[] toolCallbacks = tools(intent, model);
 
-        OllamaOptions ollamaOptions = OllamaOptions.builder()
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
                 .build();
 
@@ -122,9 +132,40 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
-                .options(ollamaOptions);
+                .options(ollamaChatOptions);
 
         return chatClientBuilder.call().content();
+    }
+
+    public Flux<String> stream(UUID chatId, String chatMessage) {
+        String model = model();
+
+        IntentType intent = userIntentService.determineIntent(chatMessage);
+
+        Resource promptTemplate = promptResource(intent);
+
+        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+
+        ToolCallback[] toolCallbacks = tools(intent, model);
+
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                .model(model)
+                .build();
+
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+
+        var chatClientBuilder = chatClient.prompt(templatePrompt)
+                .user(chatMessage)
+                .toolCallbacks(toolCallbacks)
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                )
+                .advisors(retrievalAugmentationAdvisor)
+                .options(ollamaChatOptions);
+
+        return Flux.deferContextual(upstreamView ->
+                chatClientBuilder.stream()
+                        .content());
     }
 
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
@@ -149,6 +190,7 @@ public class PromptService {
         return switch (intent) {
             case CREATING_JIRA_ISSUE -> jiraPrompt;
             case CREATING_CONFLUENCE_PAGE -> confluencePrompt;
+            case JIRA_AGILE -> agilePrompt;
             case GENERAL -> basicPrompt;
         };
     }
@@ -180,8 +222,18 @@ public class PromptService {
             }
 
             ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, GENERAL -> new ToolCallback[0];
-                case CREATING_CONFLUENCE_PAGE -> ToolCallbacks.from(createConfluenceTools);
+                case CREATING_JIRA_ISSUE, JIRA_AGILE, GENERAL -> mcpToolCallbackProvider.getToolCallbacks();
+                case CREATING_CONFLUENCE_PAGE -> {
+                    // Combine MCP tools with Confluence tools
+                    ToolCallback[] mcpTools = mcpToolCallbackProvider.getToolCallbacks();
+                    ToolCallback[] confluenceTools = ToolCallbacks.from(createConfluenceTools);
+
+                    ToolCallback[] combined = new ToolCallback[mcpTools.length + confluenceTools.length];
+                    System.arraycopy(mcpTools, 0, combined, 0, mcpTools.length);
+                    System.arraycopy(confluenceTools, 0, combined, mcpTools.length, confluenceTools.length);
+
+                    yield combined;
+                }
             };
 
             log.debug("Selected {} tools for intent '{}' and model '{}'", toolCallbacks.length, intent, model);
