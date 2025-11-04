@@ -8,9 +8,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
@@ -28,7 +25,7 @@ public class WebClientConfig {
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
                     log.info("WebClient filter executing - checking for security context");
 
-                    String userToken = userToken();
+                    String userToken = threadLocalUserToken();
 
                     if (StringUtils.isEmpty(userToken)) {
                         log.info("User token for streaming is not found, using client credentials. ThreadLocal context: {}", contextView);
@@ -58,36 +55,6 @@ public class WebClientConfig {
                                 return next.exchange(newRequest);
                             });
                 }));
-    }
-
-    private String userToken() {
-        String userToken = threadLocalUserToken();
-
-        if (StringUtils.isNotEmpty(userToken)) {
-            return userToken;
-        }
-
-        userToken = securityContextUserToken();
-
-        if (StringUtils.isNotEmpty(userToken)) {
-            return userToken;
-        }
-
-        return null;
-    }
-
-    private String securityContextUserToken() {
-        log.info("Looking for user token in security context.");
-
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-
-        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
-            log.info("Token found via SecurityContextHolder");
-            return jwt.getTokenValue();
-        }
-
-        log.info("No Token found via SecurityContextHolder");
-        return null;
     }
 
     private String threadLocalUserToken() {
