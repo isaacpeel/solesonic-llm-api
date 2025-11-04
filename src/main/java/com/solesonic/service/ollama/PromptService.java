@@ -1,15 +1,11 @@
 
 package com.solesonic.service.ollama;
 
-import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
-import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.repository.ollama.OllamaModelRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
-import com.solesonic.tools.confluence.CreateConfluenceTools;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
@@ -23,18 +19,22 @@ import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
-import org.springframework.ai.support.ToolCallbacks;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 
-import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
-import static com.solesonic.service.ollama.OllamaService.TOOLS;
+import static com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallback.USER_TOKEN;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -50,10 +50,6 @@ public class PromptService {
     private final UserRequestContext userRequestContext;
     private final VectorStore vectorStore;
     private final UserIntentService userIntentService;
-    private final CreateConfluenceTools createConfluenceTools;
-    private final OllamaModelRepository ollamaModelRepository;
-    private final OllamaModelService ollamaModelService;
-    private final SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider;
     private final List<McpSyncClient> mcpSyncClients;
 
     @Value("classpath:prompts/jira_prompt.st")
@@ -80,20 +76,12 @@ public class PromptService {
             UserRequestContext userRequestContext,
             VectorStore vectorStore,
             UserIntentService userIntentService,
-            CreateConfluenceTools createConfluenceTools,
-            OllamaModelRepository ollamaModelRepository,
-            OllamaModelService ollamaModelService,
-            SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider,
             List<McpSyncClient> mcpSyncClients) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
         this.vectorStore = vectorStore;
         this.userIntentService = userIntentService;
-        this.createConfluenceTools = createConfluenceTools;
-        this.ollamaModelRepository = ollamaModelRepository;
-        this.ollamaModelService = ollamaModelService;
-        this.mcpToolCallbackProvider = mcpToolCallbackProvider;
         this.mcpSyncClients = mcpSyncClients;
     }
 
@@ -120,8 +108,6 @@ public class PromptService {
 
         Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
 
-        ToolCallback[] toolCallbacks = tools(intent, model);
-
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
                 .build();
@@ -131,7 +117,6 @@ public class PromptService {
         // Build the chat client call
         var chatClientBuilder = chatClient.prompt(templatePrompt)
                 .user(chatMessage)
-                .toolCallbacks(toolCallbacks)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
@@ -142,6 +127,7 @@ public class PromptService {
     }
 
     public Flux<String> stream(UUID chatId, String chatMessage) {
+        log.info("Streaming prompt for chat id {}", chatId);
         String model = model();
 
         McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
@@ -173,6 +159,18 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
+        SecurityContext securityContext = SecurityContextHolder.getContext();
+        Authentication authentication = securityContext.getAuthentication();
+        Object principal = authentication.getPrincipal();
+
+        String authToken = null;
+
+        if(principal instanceof Jwt jwt) {
+            authToken = jwt.getTokenValue();
+        }
+
+        assert authToken != null;
+        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken);
 
         var chatClientBuilder = chatClient.prompt(mcpPrompt)
                 .user(chatMessage)
@@ -180,6 +178,7 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
+                .toolContext(contextMap)
                 .options(ollamaChatOptions);
 
         return Flux.deferContextual(upstreamView ->
@@ -236,56 +235,6 @@ public class PromptService {
             case JIRA_AGILE -> agilePrompt;
             case GENERAL -> basicPrompt;
         };
-    }
-
-    /**
-     * Determines which tools to provide based on resolved intent and model capabilities.
-     *
-     * @param intent the resolved user intent
-     * @param model  the model name to check for tool support
-     * @return array of tool callbacks, empty if the model doesn't support tools or intent doesn't require tools
-     */
-    public ToolCallback[] tools(IntentType intent, String model) {
-        try {
-            Optional<OllamaModel> modelOpt = ollamaModelRepository.findByName(model);
-
-            if (modelOpt.isEmpty()) {
-                log.debug("Model not found");
-                return new ToolCallback[0];
-            } else {
-                OllamaModel ollamaModel = modelOpt.get();
-
-                Map<String, Object> ollamaShow = ollamaModel.getOllamaShow();
-
-                boolean hasTools = ollamaModelService.hasNode(ollamaShow, CAPABILITIES, TOOLS);
-
-                if (!hasTools) {
-                    return new ToolCallback[0];
-                }
-            }
-
-            ToolCallback[] toolCallbacks = switch (intent) {
-                case CREATING_JIRA_ISSUE, JIRA_AGILE, GENERAL -> mcpToolCallbackProvider.getToolCallbacks();
-                case CREATING_CONFLUENCE_PAGE -> {
-                    // Combine MCP tools with Confluence tools
-                    ToolCallback[] mcpTools = mcpToolCallbackProvider.getToolCallbacks();
-                    ToolCallback[] confluenceTools = ToolCallbacks.from(createConfluenceTools);
-
-                    ToolCallback[] combined = new ToolCallback[mcpTools.length + confluenceTools.length];
-                    System.arraycopy(mcpTools, 0, combined, 0, mcpTools.length);
-                    System.arraycopy(confluenceTools, 0, combined, mcpTools.length, confluenceTools.length);
-
-                    yield combined;
-                }
-            };
-
-            log.debug("Selected {} tools for intent '{}' and model '{}'", toolCallbacks.length, intent, model);
-            return toolCallbacks;
-
-        } catch (Exception e) {
-            log.error("Error selecting tools for intent '{}' and model '{}': {}", intent, model, e.getMessage(), e);
-            return new ToolCallback[0];
-        }
     }
 
     private Advisor retrievalAugmentationAdvisor() {

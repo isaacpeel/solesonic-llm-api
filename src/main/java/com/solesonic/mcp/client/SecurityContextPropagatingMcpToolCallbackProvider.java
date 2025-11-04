@@ -34,10 +34,9 @@ public class SecurityContextPropagatingMcpToolCallbackProvider implements ToolCa
             log.info("Initializing {} MCP tools with security context propagation", tools.size());
 
             for (Tool tool : tools) {
-                SecurityContextPropagatingMcpToolCallback callback =
-                        new SecurityContextPropagatingMcpToolCallback(mcpClient, tool);
+                SecurityContextPropagatingMcpToolCallback callback = new SecurityContextPropagatingMcpToolCallback(mcpClient, tool);
                 toolCallbacks.add(callback);
-                log.debug("Wrapped MCP tool: {} with security context propagation", tool.name());
+                log.info("Wrapped MCP tool: {} with security context propagation", tool.name());
             }
         } catch (Exception e) {
             log.error("Failed to initialize MCP tools", e);

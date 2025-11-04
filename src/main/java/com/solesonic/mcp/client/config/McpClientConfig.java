@@ -23,8 +23,7 @@ public class McpClientConfig {
      * Spring AI auto-configuration will provide the McpSyncClient beans.
      */
     @Bean
-    public SecurityContextPropagatingMcpToolCallbackProvider securityContextPropagatingMcpToolCallbackProvider(
-            List<McpSyncClient> mcpSyncClients) {
+    public SecurityContextPropagatingMcpToolCallbackProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients) {
 
         if (mcpSyncClients.isEmpty()) {
             log.warn("No MCP clients configured. MCP tools will not be available.");

@@ -2,6 +2,7 @@ package com.solesonic.mcp.client;
 
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
@@ -10,11 +11,6 @@ import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.lang.NonNull;
 import org.springframework.lang.Nullable;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.oauth2.jwt.Jwt;
-import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import reactor.util.context.Context;
 
 import java.util.HashMap;
@@ -31,8 +27,9 @@ import java.util.Map;
 public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
     private static final Logger log = LoggerFactory.getLogger(SecurityContextPropagatingMcpToolCallback.class);
 
+    public static final String USER_TOKEN = "userToken";
     public static final String SECURITY_CONTEXT_KEY = "SECURITY_CONTEXT";
-    private static final ThreadLocal<Context> REACTIVE_CONTEXT = new ThreadLocal<>();
+    private static final ThreadLocal<Context> TOOL_CALL_CONTEXT = new ThreadLocal<>();
 
     private final SyncMcpToolCallback delegate;
 
@@ -59,37 +56,29 @@ public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
         // Capture the current security context
-        SecurityContext securityContext = SecurityContextHolder.getContext();
-        Authentication authentication = securityContext.getAuthentication();
+        assert toolContext != null;
+        Map<String, Object> toolContextMap = toolContext.getContext();
+        String userToken = toolContextMap.get(USER_TOKEN).toString();
 
-        if (authentication != null) {
-            log.debug("Captured security context for tool execution: {}",
-                    authentication.getName());
+        if (StringUtils.isBlank(userToken)) {
+            throw new RuntimeException("No user token provided for tool call.");
+        }
 
-            // Store security context in ThreadLocal so WebClient filter can access it
-            Map<String, Object> contextMap = new HashMap<>();
-            contextMap.put("authentication", authentication);
+        log.info("User token added to reactive context.");
+        Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
+        filteredContextMap.remove(USER_TOKEN);
+        ToolContext filteredToolContext = new  ToolContext(filteredContextMap);
 
-            if (authentication instanceof JwtAuthenticationToken jwtAuth) {
-                contextMap.put("jwtAuthenticationToken", jwtAuth);
-            } else if (authentication.getPrincipal() instanceof Jwt jwt) {
-                contextMap.put("jwt", jwt);
-            }
+        Map<String, Object> contextMap = new HashMap<>();
+        contextMap.put(USER_TOKEN, userToken);
 
-            // Create a reactive context with the security information
-            Context reactiveContext = Context.of(SECURITY_CONTEXT_KEY, contextMap);
-            REACTIVE_CONTEXT.set(reactiveContext);
+        Context reactiveContext = Context.of(SECURITY_CONTEXT_KEY, contextMap);
+        TOOL_CALL_CONTEXT.set(reactiveContext);
 
-            try {
-                // Execute the delegate with context available in ThreadLocal
-                return delegate.call(toolCallInput, toolContext);
-            } finally {
-                // Clean up ThreadLocal
-                REACTIVE_CONTEXT.remove();
-            }
-        } else {
-            log.warn("No security context available for tool execution");
-            return delegate.call(toolCallInput, toolContext);
+        try {
+            return delegate.call(toolCallInput, filteredToolContext);
+        } finally {
+            TOOL_CALL_CONTEXT.remove();
         }
     }
 
@@ -97,15 +86,15 @@ public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
      * Gets the reactive context stored in ThreadLocal.
      * This is called by the WebClient filter to access the security context.
      */
-    public static Context getReactiveContext() {
-        Context context = REACTIVE_CONTEXT.get();
+    public static Context toolCallContext() {
+        Context context = TOOL_CALL_CONTEXT.get();
         return context != null ? context : Context.empty();
     }
 
     /**
      * Checks if a reactive context is available in ThreadLocal.
      */
-    public static boolean hasReactiveContext() {
-        return REACTIVE_CONTEXT.get() != null;
+    public static boolean hasContext() {
+        return TOOL_CALL_CONTEXT.get() != null;
     }
 }
