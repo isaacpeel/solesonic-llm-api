@@ -16,6 +16,7 @@ import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 
 import java.util.Map;
 import java.util.Set;
@@ -26,76 +27,12 @@ public class WebClientConfig {
     public static final String SECURITY_CONTEXT_ATTRIBUTES = "org.springframework.security.SECURITY_CONTEXT_ATTRIBUTES";
 
     @Bean
-    @SuppressWarnings("rawtypes")
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
                     log.info("WebClient filter executing - checking for security context");
 
-                    String userToken = null;
-
-                    // Strategy 1: Check ThreadLocal from MCP tool execution
-                    if (SecurityContextPropagatingMcpToolCallback.hasReactiveContext()) {
-                        Context toolContext = SecurityContextPropagatingMcpToolCallback.getReactiveContext();
-                        if (toolContext.hasKey(SecurityContextPropagatingMcpToolCallback.SECURITY_CONTEXT_KEY)) {
-                            Map<String, Object> securityMap = toolContext.get(
-                                    SecurityContextPropagatingMcpToolCallback.SECURITY_CONTEXT_KEY);
-
-                            log.info("Found security context in ThreadLocal from MCP tool");
-
-                            if (securityMap.get("jwtAuthenticationToken") instanceof JwtAuthenticationToken jwt) {
-                                userToken = jwt.getToken().getTokenValue();
-                                log.info("Extracted token from JwtAuthenticationToken in ThreadLocal");
-                            } else if (securityMap.get("jwt") instanceof Jwt jwt) {
-                                userToken = jwt.getTokenValue();
-                                log.info("Extracted token from Jwt in ThreadLocal");
-                            } else if (securityMap.get("authentication") instanceof Authentication auth && auth.getPrincipal() instanceof Jwt jwt) {
-                                userToken = jwt.getTokenValue();
-                                log.info("Extracted token from Authentication principal in ThreadLocal");
-                            }
-                        }
-                    }
-
-                    // Strategy 2: Check SecurityContextHolder (works for non-reactive contexts)
-                    if (StringUtils.isEmpty(userToken)) {
-                        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-                        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
-                            userToken = jwt.getTokenValue();
-                            log.info("Token found via SecurityContextHolder");
-                        }
-                    }
-
-                    // Strategy 3: Check reactive context (works for streaming endpoints)
-                    if (StringUtils.isEmpty(userToken) && contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
-                        log.info("Security context in ThreadLocal");
-
-                        Object securityAttributes = contextView.get(SECURITY_CONTEXT_ATTRIBUTES);
-                        log.info("Security attributes found in reactive context: {}", securityAttributes);
-
-                        if (securityAttributes instanceof Map attributesMap) {
-                            Set keySet = attributesMap.keySet();
-
-                            for (Object key : keySet) {
-                                log.info("key: {}", key);
-
-                                Object attributeValue = attributesMap.get(key);
-
-                                if(attributeValue == null) {
-                                    log.info("attribute value is null");
-                                    continue;
-                                }
-
-                                String classname = attributeValue.getClass().getName();
-                                log.info("classname: {}", classname);
-
-                                if (attributeValue instanceof JwtAuthenticationToken jwt) {
-                                    userToken = jwt.getToken().getTokenValue();
-                                    log.info("Token found via reactive context");
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    String userToken = userToken(contextView);
 
                     if (StringUtils.isEmpty(userToken)) {
                         log.info("User token for streaming is not found, using client credentials. ThreadLocal context: {}, Reactive context keys: {}",
@@ -122,9 +59,118 @@ public class WebClientConfig {
                                 ClientRequest newRequest = ClientRequest.from(request)
                                         .headers(headers -> headers.setBearerAuth(exchangedToken))
                                         .build();
+                                log.info("OBO exchange success.");
 
                                 return next.exchange(newRequest);
                             });
                 }));
+    }
+    
+    private String userToken(ContextView contextView) {
+        String userToken = reactiveUserToken(contextView);
+
+        if(StringUtils.isNotEmpty(userToken)) {
+            return userToken;
+        }
+
+        userToken = securityContextUserToken();
+
+        if(StringUtils.isNotEmpty(userToken)) {
+            return userToken;
+        }
+
+        userToken = threadLocalUserToken();
+
+        if(StringUtils.isNotEmpty(userToken)) {
+            return userToken;
+        }
+
+        return null;
+    }
+
+    @SuppressWarnings("rawtypes")
+    private String reactiveUserToken(ContextView contextView) {
+        log.info("Getting Reactive User Token");
+
+        String userToken = null;
+
+        if (contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
+            log.info("Security context attributes found in context view.");
+
+            Object securityAttributes = contextView.get(SECURITY_CONTEXT_ATTRIBUTES);
+            log.info("Security attributes found in reactive context: {}", securityAttributes);
+
+            if (securityAttributes instanceof Map attributesMap) {
+                Set keySet = attributesMap.keySet();
+
+                for (Object key : keySet) {
+                    log.info("security context attribute key: {}", key);
+
+                    Object attributeValue = attributesMap.get(key);
+
+                    if(attributeValue == null) {
+                        log.info("attribute value is `null` for key: {}", key);
+                    } else {
+
+                        String classname = attributeValue.getClass().getName();
+                        log.info("security context attribute classname: {}", classname);
+
+                        if (attributeValue instanceof JwtAuthenticationToken jwt) {
+                            userToken = jwt.getToken().getTokenValue();
+                            log.info("Token found via reactive context with key: {}", key);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        return userToken;
+    }
+
+    private String securityContextUserToken() {
+        log.info("Looking for user token in security context.");
+
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
+            log.info("Token found via SecurityContextHolder");
+            return jwt.getTokenValue();
+        }
+
+        log.info("No Token found via SecurityContextHolder");
+        return null;
+    }
+    private String threadLocalUserToken() {
+        log.info("Looking for users token in thread local context");
+
+        if (SecurityContextPropagatingMcpToolCallback.hasReactiveContext()) {
+            String userToken = null;
+
+            Context toolContext = SecurityContextPropagatingMcpToolCallback.getReactiveContext();
+
+            if (toolContext.hasKey(SecurityContextPropagatingMcpToolCallback.SECURITY_CONTEXT_KEY)) {
+                Map<String, Object> securityMap = toolContext.get(
+                        SecurityContextPropagatingMcpToolCallback.SECURITY_CONTEXT_KEY);
+
+                log.info("Found security context in ThreadLocal from MCP tool");
+
+                if (securityMap.get("jwtAuthenticationToken") instanceof JwtAuthenticationToken jwt) {
+                    userToken = jwt.getToken().getTokenValue();
+                    log.info("Extracted token from JwtAuthenticationToken in ThreadLocal");
+                } else if (securityMap.get("jwt") instanceof Jwt jwt) {
+                    userToken = jwt.getTokenValue();
+                    log.info("Extracted token from Jwt in ThreadLocal");
+                } else if (securityMap.get("authentication") instanceof Authentication auth && auth.getPrincipal() instanceof Jwt jwt) {
+                    userToken = jwt.getTokenValue();
+                    log.info("Extracted token from Authentication principal in ThreadLocal");
+                }
+            }
+            
+            return userToken;
+        }
+
+        log.info("No users token in thread local context");
+        return null;
     }
 }

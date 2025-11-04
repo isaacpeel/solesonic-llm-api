@@ -10,10 +10,13 @@ import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.confluence.CreateConfluenceTools;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
@@ -28,9 +31,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 import static com.solesonic.service.ollama.OllamaService.CAPABILITIES;
 import static com.solesonic.service.ollama.OllamaService.TOOLS;
@@ -53,6 +54,7 @@ public class PromptService {
     private final OllamaModelRepository ollamaModelRepository;
     private final OllamaModelService ollamaModelService;
     private final SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider;
+    private final List<McpSyncClient> mcpSyncClients;
 
     @Value("classpath:prompts/jira_prompt.st")
     private Resource jiraPrompt;
@@ -67,7 +69,7 @@ public class PromptService {
     private Resource agilePrompt;
 
     @Value("${solesonic.llm.bot.name}")
-    private String botName;
+    private String agentName;
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
@@ -81,7 +83,8 @@ public class PromptService {
             CreateConfluenceTools createConfluenceTools,
             OllamaModelRepository ollamaModelRepository,
             OllamaModelService ollamaModelService,
-            SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider) {
+            SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider,
+            List<McpSyncClient> mcpSyncClients) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.userRequestContext = userRequestContext;
@@ -91,6 +94,7 @@ public class PromptService {
         this.ollamaModelRepository = ollamaModelRepository;
         this.ollamaModelService = ollamaModelService;
         this.mcpToolCallbackProvider = mcpToolCallbackProvider;
+        this.mcpSyncClients = mcpSyncClients;
     }
 
     public String model() {
@@ -140,13 +144,28 @@ public class PromptService {
     public Flux<String> stream(UUID chatId, String chatMessage) {
         String model = model();
 
-        IntentType intent = userIntentService.determineIntent(chatMessage);
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
 
-        Resource promptTemplate = promptResource(intent);
+        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest("basic-prompt", Map.of("agentName", agentName, "userMessage", chatMessage));
 
-        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
 
-        ToolCallback[] toolCallbacks = tools(intent, model);
+        List<Message> messages = getPromptResult.messages().stream()
+                .map(mcpMessage -> {
+                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
+                        String textContent = extractTextContent(content);
+
+                        return (Message) switch (role) {
+                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
+                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
+                        };
+
+                        }
+                    throw new IllegalArgumentException("Unexpected message type.");
+                })
+                .toList();
+
+        Prompt mcpPrompt = new Prompt(messages);
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
@@ -154,9 +173,9 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
-        var chatClientBuilder = chatClient.prompt(templatePrompt)
+
+        var chatClientBuilder = chatClient.prompt(mcpPrompt)
                 .user(chatMessage)
-                .toolCallbacks(toolCallbacks)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
@@ -168,12 +187,36 @@ public class PromptService {
                         .content());
     }
 
+    private String extractTextContent(Object content) {
+        if (content instanceof String) {
+            return (String) content;
+        } else if (content instanceof McpSchema.TextContent textContent) {
+            return textContent.text();
+        } else if (content instanceof McpSchema.ImageContent) {
+            return "[Image content not supported]";
+        } else if (content instanceof List<?> contentList) {
+            // Handle list of content items
+            return contentList.stream()
+                    .map(item -> {
+                        if (item instanceof McpSchema.TextContent textContent) {
+                            return textContent.text();
+                        } else if (item instanceof String) {
+                            return (String) item;
+                        }
+                        return "";
+                    })
+                    .filter(s -> !s.isEmpty())
+                    .reduce("", (a, b) -> a + "\n" + b);
+        }
+        return "";
+    }
+
     public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
         PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
 
         Map<String, Object> promptContext = Map.of(
                 INPUT, chatMessage,
-                BOT_NAME, botName,
+                BOT_NAME, agentName,
                 LBRACE, "{",
                 RBRACE, "}");
 
