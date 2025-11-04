@@ -56,11 +56,13 @@ public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
         // Capture the current security context
+        log.info("Tool callback wrapper invoked.");
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
         String userToken = toolContextMap.get(USER_TOKEN).toString();
 
         if (StringUtils.isBlank(userToken)) {
+            log.error("No user token found in context");
             throw new RuntimeException("No user token provided for tool call.");
         }
 
