@@ -92,8 +92,6 @@ public class WebClientConfig {
     private String reactiveUserToken(ContextView contextView) {
         log.info("Getting Reactive User Token");
 
-        String userToken = null;
-
         if (contextView.hasKey(SECURITY_CONTEXT_ATTRIBUTES)) {
             log.info("Security context attributes found in context view.");
 
@@ -116,16 +114,16 @@ public class WebClientConfig {
                         log.info("security context attribute classname: {}", classname);
 
                         if (attributeValue instanceof JwtAuthenticationToken jwt) {
-                            userToken = jwt.getToken().getTokenValue();
                             log.info("Token found via reactive context with key: {}", key);
-                            break;
+                            return jwt.getToken().getTokenValue();
                         }
                     }
                 }
             }
         }
 
-        return userToken;
+        log.info("No Reactive User Token found.");
+        return null;
     }
 
     private String securityContextUserToken() {

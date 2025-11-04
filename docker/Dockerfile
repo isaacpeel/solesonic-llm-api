@@ -1,5 +1,5 @@
 # Stage 1: Java 21 JRE
-FROM eclipse-temurin:21-jre AS jre
+FROM amazoncorretto:25-jdk AS jre
 
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
