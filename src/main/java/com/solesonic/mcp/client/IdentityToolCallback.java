@@ -56,7 +56,7 @@ public class IdentityToolCallback implements ToolCallback {
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
         // Capture the current security context
-        log.info("Tool callback wrapper invoked.");
+        log.info("Tool callback wrapper invoked for: {}", delegate.getOriginalToolName());
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
         String userToken = toolContextMap.get(USER_TOKEN).toString();

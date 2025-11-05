@@ -36,7 +36,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             for (Tool tool : tools) {
                 IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
                 toolCallbacks.add(callback);
-                log.info("Wrapped MCP tool: {} with security context propagation", tool.name());
+                log.info("Wrapped MCP tool: {} ", tool.name());
             }
         } catch (Exception e) {
             log.error("Failed to initialize MCP tools", e);
