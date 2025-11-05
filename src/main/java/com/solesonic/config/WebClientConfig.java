@@ -1,6 +1,6 @@
 package com.solesonic.config;
 
-import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallback;
+import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.security.McpFilterService;
 import org.apache.commons.lang3.StringUtils;
@@ -13,7 +13,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import reactor.util.context.Context;
 
-import static com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallback.USER_TOKEN;
+import java.util.Map;
+
+import static com.solesonic.mcp.client.IdentityToolCallback.SECURITY_CONTEXT_KEY;
+import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 
 @Configuration
 public class WebClientConfig {
@@ -23,14 +26,15 @@ public class WebClientConfig {
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
+
+                    log.info("Filtering mcp request: {}", request.url().getPath());
+                    log.info("User info in request: {}", request.url().getUserInfo());
                     log.info("WebClient filter executing - checking for security context");
 
                     String userToken = threadLocalUserToken();
 
                     if (StringUtils.isEmpty(userToken)) {
-                        log.info("User token for streaming is not found, using client credentials. ThreadLocal context: {}", contextView);
-
-                        contextView.stream().forEach(contextEntry -> log.info("entry: {}", contextEntry.getKey()));
+                        log.info("User token for streaming is not found, using client credentials.");
 
                         // No user token — use client credentials token
                         String accessToken = mcpFilterService.getClientCredentialsAccessToken();
@@ -42,7 +46,7 @@ public class WebClientConfig {
                         return next.exchange(newRequest);
                     }
 
-                    log.info("User token for streaming found, exchanging for an OBO token.");
+                    log.info("User identity found, exchanging for an OBO token.");
 
                     // Otherwise, use OBO token exchange
                     return tokenExchangeService.exchangeToken(userToken)
@@ -58,21 +62,22 @@ public class WebClientConfig {
     }
 
     private String threadLocalUserToken() {
-        log.info("Looking for users token in thread local context");
+        log.info("Looking for users token in identity context");
 
-        if(!SecurityContextPropagatingMcpToolCallback.hasContext()) {
-            log.info("No Reactive context found.");
+        if(!IdentityToolCallback.hasContext()) {
+            log.info("No identity context found.");
             return null;
         }
 
-        Context reactiveContext = SecurityContextPropagatingMcpToolCallback.toolCallContext();
+        Context reactiveContext = IdentityToolCallback.toolCallContext();
+        Map<String, Object> securityContext = reactiveContext.get(SECURITY_CONTEXT_KEY);
 
-        if (reactiveContext.hasKey(USER_TOKEN)) {
-            log.info("User Token found in ReactiveContext");
-            return reactiveContext.get(USER_TOKEN);
+        if (securityContext.containsKey(USER_TOKEN)) {
+            log.info("User Token found.");
+            return securityContext.get(USER_TOKEN).toString();
         }
 
-        log.info("No users token in thread local context");
+        log.info("No user token found.");
         return null;
     }
 }

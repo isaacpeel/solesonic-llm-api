@@ -34,7 +34,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallback.USER_TOKEN;
+import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service

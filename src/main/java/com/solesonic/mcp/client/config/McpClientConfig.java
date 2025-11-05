@@ -1,7 +1,7 @@
 
 package com.solesonic.mcp.client.config;
 
-import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
+import com.solesonic.mcp.client.McpIdentityProvider;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +23,7 @@ public class McpClientConfig {
      * Spring AI auto-configuration will provide the McpSyncClient beans.
      */
     @Bean
-    public SecurityContextPropagatingMcpToolCallbackProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients) {
+    public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients) {
 
         if (mcpSyncClients.isEmpty()) {
             log.warn("No MCP clients configured. MCP tools will not be available.");
@@ -35,6 +35,6 @@ public class McpClientConfig {
         log.info("Creating SecurityContextPropagatingMcpToolCallbackProvider with MCP client: {}",
                 mcpClient.getClientInfo().name());
 
-        return new SecurityContextPropagatingMcpToolCallbackProvider(mcpClient);
+        return new McpIdentityProvider(mcpClient);
     }
 }

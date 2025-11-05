@@ -16,13 +16,13 @@ import java.util.List;
  * A ToolCallbackProvider that wraps MCP tools with security context propagation.
  * This ensures that user authentication information is available during tool execution.
  */
-public class SecurityContextPropagatingMcpToolCallbackProvider implements ToolCallbackProvider {
-    private static final Logger log = LoggerFactory.getLogger(SecurityContextPropagatingMcpToolCallbackProvider.class);
+public class McpIdentityProvider implements ToolCallbackProvider {
+    private static final Logger log = LoggerFactory.getLogger(McpIdentityProvider.class);
 
     private final McpSyncClient mcpClient;
     private final List<ToolCallback> toolCallbacks;
 
-    public SecurityContextPropagatingMcpToolCallbackProvider(McpSyncClient mcpClient) {
+    public McpIdentityProvider(McpSyncClient mcpClient) {
         this.mcpClient = mcpClient;
         this.toolCallbacks = new ArrayList<>();
         initializeTools();
@@ -34,7 +34,7 @@ public class SecurityContextPropagatingMcpToolCallbackProvider implements ToolCa
             log.info("Initializing {} MCP tools with security context propagation", tools.size());
 
             for (Tool tool : tools) {
-                SecurityContextPropagatingMcpToolCallback callback = new SecurityContextPropagatingMcpToolCallback(mcpClient, tool);
+                IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
                 toolCallbacks.add(callback);
                 log.info("Wrapped MCP tool: {} with security context propagation", tool.name());
             }

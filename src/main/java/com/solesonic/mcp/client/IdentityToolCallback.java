@@ -24,8 +24,8 @@ import java.util.Map;
  * is not available in WebClient filters when MCP tools are invoked during
  * streaming chat responses.
  */
-public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
-    private static final Logger log = LoggerFactory.getLogger(SecurityContextPropagatingMcpToolCallback.class);
+public class IdentityToolCallback implements ToolCallback {
+    private static final Logger log = LoggerFactory.getLogger(IdentityToolCallback.class);
 
     public static final String USER_TOKEN = "userToken";
     public static final String SECURITY_CONTEXT_KEY = "SECURITY_CONTEXT";
@@ -33,9 +33,9 @@ public class SecurityContextPropagatingMcpToolCallback implements ToolCallback {
 
     private final SyncMcpToolCallback delegate;
 
-    public SecurityContextPropagatingMcpToolCallback(McpSyncClient mcpClient, Tool tool) {
+    public IdentityToolCallback(McpSyncClient mcpSyncClient, Tool tool) {
         this.delegate = SyncMcpToolCallback.builder()
-                .mcpClient(mcpClient)
+                .mcpClient(mcpSyncClient)
                 .tool(tool)
                 .build();
     }

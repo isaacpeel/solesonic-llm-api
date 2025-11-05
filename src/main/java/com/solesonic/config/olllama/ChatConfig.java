@@ -1,6 +1,6 @@
 package com.solesonic.config.olllama;
 
-import com.solesonic.mcp.client.SecurityContextPropagatingMcpToolCallbackProvider;
+import com.solesonic.mcp.client.McpIdentityProvider;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.PromptChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
@@ -14,9 +14,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class ChatConfig {
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
-    private final SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider;
+    private final McpIdentityProvider mcpToolCallbackProvider;
 
-    public ChatConfig(SecurityContextPropagatingMcpToolCallbackProvider mcpToolCallbackProvider) {
+    public ChatConfig(McpIdentityProvider mcpToolCallbackProvider) {
         this.mcpToolCallbackProvider = mcpToolCallbackProvider;
     }
 
