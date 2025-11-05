@@ -17,11 +17,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.ZonedDateTime;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static com.solesonic.service.atlassian.JiraAuthService.OAUTH_PATH;
 import static com.solesonic.service.atlassian.JiraAuthService.TOKEN_PATH;
@@ -40,10 +36,6 @@ public class AtlassianTokenBrokerService {
     private final ObjectMapper objectMapper;
     private final UserPreferencesService userPreferencesService;
 
-    // Per-user rotation guards to prevent concurrent refreshes within the same instance
-    private final Map<String, ReentrantLock> rotationGuards = new ConcurrentHashMap<>();
-    private static final long ROTATION_GUARD_TIMEOUT_MS = 30000; // 30 seconds max hold time
-
     public AtlassianTokenBrokerService(@Value("${atlassian.oauth.token-uri:https://auth.atlassian.com/oauth/token}") String atlassianTokenUri,
                                        @Value("${atlassian.oauth.client-id}") String clientId,
                                        @Value("${atlassian.oauth.client-secret}") String clientSecret, ObjectMapper objectMapper, UserPreferencesService userPreferencesService) {
@@ -58,7 +50,7 @@ public class AtlassianTokenBrokerService {
         UUID userId = tokenExchange.subjectToken();
         String siteId = tokenExchange.audience();
 
-        log.debug("Minting token for user {} siteId {}", userId, siteId);
+        log.info("Minting token for user {} siteId {}", userId, siteId);
 
         UserPreferences userPreferences = userPreferencesService.get(userId);
         AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
@@ -68,65 +60,17 @@ public class AtlassianTokenBrokerService {
             throw new AtlassianTokenException("No refresh token found for user " + userId, BAD_REQUEST, false);
         }
 
-        // Use rotation guard to prevent concurrent refreshes
-        String guardKey = userId + ":" + (siteId != null ? siteId : "");
-        ReentrantLock guard = rotationGuards.computeIfAbsent(guardKey, k -> new ReentrantLock());
-
-        try {
-            if (guard.tryLock(ROTATION_GUARD_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                try {
-                    return refreshTokenWithRotation(userId, atlassianAccessToken);
-                } finally {
-                    guard.unlock();
-                }
-            } else {
-                log.warn("Failed to acquire rotation guard for user {} within timeout", userId);
-                throw new AtlassianTokenException("Rotation timeout for user " + userId, SERVICE_UNAVAILABLE, true);
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new AtlassianTokenException("Rotation interrupted for user " + userId, SERVICE_UNAVAILABLE, true, e);
-        }
-    }
-
-    private TokenResponse refreshTokenWithRotation(UUID userId,
-                                                   AtlassianAccessToken atlassianAccessToken) {
-
-        String oldRefreshToken = atlassianAccessToken.refreshToken();
-
-        log.debug("Refreshing access token for user {} using refresh token", userId);
-
-        AtlassianAccessToken refreshedAtlassianToken = refreshAtlassianToken(oldRefreshToken);
-
-        if (StringUtils.isNotEmpty(refreshedAtlassianToken.error())) {
-            String error = refreshedAtlassianToken.error();
-            String errorDescription = refreshedAtlassianToken.errorDescription();
-
-            String exceptionMessage = error + ": " + errorDescription;
-
-            throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
+        if(atlassianAccessToken.isExpired()) {
+            String refreshToken = atlassianAccessToken.refreshToken();
+            atlassianAccessToken = refreshAtlassianToken(refreshToken);
+            userPreferencesService.update(userId, atlassianAccessToken);
         }
 
         ZonedDateTime issuedAt = ZonedDateTime.now();
 
-        // If Atlassian returned a new refresh token, we need to rotate it
-        if (refreshedAtlassianToken.hasNewRefreshToken(oldRefreshToken)) {
-            log.debug("Atlassian returned new refresh token, performing rotation for user {}", userId);
-
-            UserPreferences userPreferences = userPreferencesService.get(userId);
-            userPreferences.setAtlassianAccessToken(refreshedAtlassianToken);
-
-            userPreferencesService.save(userId, userPreferences);
-
-            log.debug("Successfully saved new refresh token for user {}", userId);
-
-        }
-
-        log.debug("Successfully minted and cached access token for user {}", userId);
-
         return new TokenResponse(
-                refreshedAtlassianToken.accessToken(),
-                refreshedAtlassianToken.expiresIn(),
+                atlassianAccessToken.accessToken(),
+                atlassianAccessToken.expiresIn(),
                 issuedAt,
                 userId);
     }
@@ -170,7 +114,7 @@ public class AtlassianTokenBrokerService {
                 throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
             }
 
-            log.debug("Token refresh successful");
+            log.info("Token refresh successful");
 
             return atlassianAccessToken;
         } catch (JsonProcessingException e) {
