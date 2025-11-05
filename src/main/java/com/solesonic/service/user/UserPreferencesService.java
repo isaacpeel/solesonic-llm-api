@@ -67,6 +67,15 @@ public class UserPreferencesService {
         userPreferences.setUserId(userId);
         userPreferences.setUpdated(ZonedDateTime.now());
 
+        AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
+
+        //Ensure that when updating user preferences, the token is preserved
+        if (atlassianAccessToken == null) {
+            UserPreferences existingPreferences = get(userId);
+            AtlassianAccessToken existingToken = existingPreferences.getAtlassianAccessToken();
+            userPreferences.setAtlassianAccessToken(existingToken);
+        }
+
         return userPreferencesRepository.save(userPreferences);
     }
 
