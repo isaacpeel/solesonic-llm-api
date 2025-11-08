@@ -28,7 +28,6 @@ public class WebClientConfig {
                 .filter((request, next) -> Mono.deferContextual(contextView -> {
 
                     log.info("Filtering mcp request: {}", request.url().getPath());
-                    log.info("User info in request: {}", request.url().getUserInfo());
                     log.info("WebClient filter executing - checking for security context");
 
                     String userToken = threadLocalUserToken();
