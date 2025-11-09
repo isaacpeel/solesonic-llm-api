@@ -17,6 +17,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
+import static io.modelcontextprotocol.spec.McpSchema.ElicitResult.Action.*;
+
 @Service
 public class ElicitationService {
     private static final Logger log = LoggerFactory.getLogger(ElicitationService.class);
@@ -107,7 +109,6 @@ public class ElicitationService {
                     .build();
 
             sink.tryEmitNext(event);
-
         } catch (IllegalArgumentException ex) {
             log.error("Failed to serialize elicitation request for chat {}", chatId, ex);
         }
@@ -136,20 +137,23 @@ public class ElicitationService {
 
         log.info("Received elicitation fields: {}", fields);
 
-        Object confirmedRaw = fields.get("confirmed");
-        log.info("Elicitation confirmed: {}", confirmedRaw);
-
-        boolean confirmed = Boolean.parseBoolean(confirmedRaw.toString());
+        Object confirmed = fields.get("confirmed");
+        log.info("Elicitation confirmed: {}", confirmed);
 
         McpSchema.ElicitResult result;
 
-        if (confirmed) {
-            result = new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.ACCEPT, fields);
-            log.info("Completing elicitation for chat {} id {} with ACCEPT and fields {}", chatId, effectiveId, fields.keySet());
-        } else {
-            result = new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.DECLINE, null);
-            log.info("Completing elicitation for chat {} id {} with DECLINE", chatId, effectiveId);
+        if (!(confirmed instanceof String confirmedValue)) {
+            throw new IllegalStateException("Expected string value for 'confirmed', got: " + confirmed);
         }
+
+        McpSchema.ElicitResult.Action action = switch (confirmedValue.toLowerCase()) {
+            case "accept" -> ACCEPT;
+            case "decline" -> DECLINE;
+            case "cancel" -> CANCEL;
+            default -> throw new IllegalStateException("Unexpected value: " + confirmedValue);
+        };
+
+        result = new McpSchema.ElicitResult(action, fields);
 
         return future.complete(result);
     }
@@ -160,21 +164,21 @@ public class ElicitationService {
 
         if (future == null) {
             log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
-            return new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.DECLINE, null);
+            return new McpSchema.ElicitResult(DECLINE, null);
         }
 
         try {
             McpSchema.ElicitResult result = future.get(timeoutSeconds, TimeUnit.SECONDS);
 
             return Optional.ofNullable(result)
-                    .orElseGet(() -> new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.DECLINE, null));
+                    .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));
 
         } catch (Exception ex) {
             log.warn("Timeout or interruption while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, ex.getMessage());
 
             pendingById.remove(idKey);
 
-            return new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.DECLINE, null);
+            return new McpSchema.ElicitResult(DECLINE, null);
         }
     }
 

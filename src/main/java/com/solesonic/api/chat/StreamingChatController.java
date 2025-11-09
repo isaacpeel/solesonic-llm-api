@@ -56,7 +56,6 @@ public class StreamingChatController {
     public Mono<ResponseEntity<Void>> submitElicitationResponse(@PathVariable UUID chatId,
                                                                 @PathVariable UUID elicitationId,
                                                                 @RequestBody Map<String, Object> payload) {
-        
         log.info("Received elicitation response for chat {}", chatId);
         
         Object responseObj = payload.get("elicitationResponse");

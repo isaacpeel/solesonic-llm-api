@@ -7,7 +7,6 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.mcp.annotation.McpElicitation;
-import org.springaicommunity.mcp.annotation.McpProgress;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
@@ -56,29 +55,6 @@ public class ElicitationProvider {
 
         elicitationService.emitElicitation(chatId, handle.getElicitationId(), request);
 
-        McpSchema.ElicitResult result = elicitationService.awaitResult(chatId, handle.getElicitationId());
-
-        @SuppressWarnings("unchecked")
-        Map<String, Object> resultMap = objectMapper.convertValue(result, Map.class);
-        Object dataObj = resultMap != null ? resultMap.get("data") : null;
-        Map<String, Object> fields = dataObj instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-
-        if (result != null && result.action() == McpSchema.ElicitResult.Action.ACCEPT) {
-            log.info("Elicitation accepted: {} with fields {}", name, fields != null ? fields.keySet() : null);
-            return result;
-        }
-
-        log.info("Elicitation declined: {}", name);
-        
-        return result != null ? result : new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.DECLINE, null);
-    }
-
-    @McpProgress(clients = {"solesonic", "mcp-client - solesonic"})
-    public void handleProgressNotification(McpSchema.ProgressNotification notification) {
-        double percentage = notification.progress() * 100;
-
-        
-        log.info("Progress: {}% - {}", String.format("%.2f", percentage), notification.message());
-        
+        return elicitationService.awaitResult(chatId, handle.getElicitationId());
     }
 }
