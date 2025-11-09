@@ -8,8 +8,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -43,7 +46,7 @@ public class ElicitationService {
 
     private final ObjectMapper objectMapper;
 
-    @Value("${solesonic.elicitation.timeout-seconds:120}")
+    @Value("${solesonic.elicitation.timeout-seconds:600}")
     private long timeoutSeconds;
 
     private final ConcurrentHashMap<UUID, Sinks.Many<ServerSentEvent<?>>> chatSinks = new ConcurrentHashMap<>();
@@ -90,6 +93,7 @@ public class ElicitationService {
     }
 
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
+        log.debug("Emitting elicitation for chat id {}", chatId);
         Sinks.Many<ServerSentEvent<?>> sink = chatSinks.get(chatId);
 
         if (sink == null) {
@@ -112,9 +116,12 @@ public class ElicitationService {
         } catch (IllegalArgumentException ex) {
             log.error("Failed to serialize elicitation request for chat {}", chatId, ex);
         }
+
+        log.info("Finished emitting elicitation event for chat {}", chatId);
     }
 
     public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
+        log.debug("Completing form elicitation for chat id {}", chatId);
         UUID effectiveId = elicitationId;
 
         if (effectiveId == null && name != null) {
@@ -155,6 +162,7 @@ public class ElicitationService {
 
         result = new McpSchema.ElicitResult(action, fields);
 
+        log.info("Completing elicitation for chat {}", chatId);
         return future.complete(result);
     }
 
@@ -164,6 +172,7 @@ public class ElicitationService {
 
         if (future == null) {
             log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
+
             return new McpSchema.ElicitResult(DECLINE, null);
         }
 
@@ -180,6 +189,31 @@ public class ElicitationService {
 
             return new McpSchema.ElicitResult(DECLINE, null);
         }
+    }
+
+    public Mono<McpSchema.ElicitResult> awaitResultAsync(UUID chatId, UUID elicitationId) {
+        String idKey = idKey(chatId, elicitationId);
+        CompletableFuture<McpSchema.ElicitResult> future = pendingById.get(idKey);
+
+        if (future == null) {
+            log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
+
+            return Mono.just(new McpSchema.ElicitResult(DECLINE, null));
+        }
+
+        Duration timeout = Duration.ofSeconds(timeoutSeconds);
+
+        return Mono.fromFuture(future)
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(timeout)
+                .map(result -> Optional.ofNullable(result).orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null)))
+                .onErrorResume(ex -> {
+                    log.warn("Timeout or error while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, ex.getMessage());
+
+                    pendingById.remove(idKey);
+
+                    return Mono.just(new McpSchema.ElicitResult(DECLINE, null));
+                });
     }
 
     private static String idKey(UUID chatId, UUID elicitationId) {

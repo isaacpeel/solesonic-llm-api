@@ -72,12 +72,20 @@ public class StreamingChatService {
 
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
-        Flux<ServerSentEvent<?>> chunks = promptService.stream(chatId, chatMessage)
+        Flux<ServerSentEvent<Object>> chunkObjects = promptService.stream(chatId, chatMessage)
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
                 .doOnNext(assembled::append)
-                .map(chunk -> ServerSentEvent.builder(chunk)
+                .map(chunk -> ServerSentEvent.builder((Object) chunk)
                         .event("chunk")
-                        .build());
+                        .build())
+                .doFinally(signalType -> {
+                    
+                    log.info("Closing elicitation for chat id: {}", chatId);
+                    
+                    elicitationService.closeChat(chatId);
+                });
+        
+        Flux<ServerSentEvent<?>> chunks = chunkObjects.map(sse -> (ServerSentEvent<?>) sse);
 
         Mono<? extends ServerSentEvent<?>> done = Mono.fromSupplier(() -> {
             ChatMessage responseMessage = new ChatMessage();
@@ -88,14 +96,14 @@ public class StreamingChatService {
 
             SolesonicChatResponse resp = new SolesonicChatResponse(chatId, responseMessage);
 
+            log.info("Sending done event.");
+
             return ServerSentEvent.builder(resp)
                     .event("done")
                     .build();
-        }).doFinally(signalType -> {
-            // ensure chat-specific event sink is closed
-            elicitationService.closeChat(chatId);
         });
 
+        log.info("Finished streaming chat with chat id {}", chatId);
         // Merge token chunks with any out-of-band elicitation events; ensure done is last
         return Flux.merge(elicitationFlux, chunks).concatWith(done.map(sse -> (ServerSentEvent<?>) sse));
     }

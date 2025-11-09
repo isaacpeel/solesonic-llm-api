@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.mcp.annotation.McpElicitation;
 import org.springframework.stereotype.Component;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.Map;
 import java.util.Optional;
@@ -55,6 +56,8 @@ public class ElicitationProvider {
 
         elicitationService.emitElicitation(chatId, handle.getElicitationId(), request);
 
-        return elicitationService.awaitResult(chatId, handle.getElicitationId());
+        return elicitationService.awaitResultAsync(chatId, handle.getElicitationId())
+                .subscribeOn(Schedulers.boundedElastic())
+                .block();
     }
 }
