@@ -39,14 +39,22 @@ public class McpClientConfig {
         McpSchema.ClientCapabilities clientCapabilities = mcpClient.getClientCapabilities();
 
         log.info("Creating SecurityContextPropagatingMcpToolCallbackProvider with MCP client: {}", clientName);
+        
+        if (clientCapabilities != null) {
+            log.info("MCP ClientCapabilities on startup: {}", clientCapabilities);
+        } else {
+            log.warn("MCP ClientCapabilities are null on startup; expected elicitation to be enabled");
+        }
 
         return new McpIdentityProvider(mcpClient);
     }
-
+//
 //    @Bean
 //    public McpSchema.ClientCapabilities mcpClientCapabilities() {
 //        McpSchema.ClientCapabilities.RootCapabilities rootCapabilities = new McpSchema.ClientCapabilities.RootCapabilities(true);
+//
 //        McpSchema.ClientCapabilities.Sampling sampling = new McpSchema.ClientCapabilities.Sampling();
+//
 //        McpSchema.ClientCapabilities.Elicitation elicitation = new McpSchema.ClientCapabilities.Elicitation();
 //
 //        return new McpSchema.ClientCapabilities(Map.of(), rootCapabilities, sampling, elicitation);
