@@ -10,6 +10,7 @@ import java.util.UUID;
 public class UserRequestContext {
     private UUID userId;
     private String chatModel;
+    private UUID chatId;
 
     public UUID getUserId() {
         return userId;
@@ -25,5 +26,13 @@ public class UserRequestContext {
 
     public void setChatModel(String chatModel) {
         this.chatModel = chatModel;
+    }
+
+    public UUID getChatId() {
+        return chatId;
+    }
+
+    public void setChatId(UUID chatId) {
+        this.chatId = chatId;
     }
 }

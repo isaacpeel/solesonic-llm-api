@@ -5,6 +5,8 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.chat.ElicitationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.codec.ServerSentEvent;
@@ -23,11 +25,17 @@ public class StreamingChatService {
 
     private final ChatRepository chatRepository;
     private final PromptService promptService;
+    private final ElicitationService elicitationService;
+    private final UserRequestContext userRequestContext;
 
     public StreamingChatService(ChatRepository chatRepository,
-                                PromptService promptService) {
+                                PromptService promptService,
+                                ElicitationService elicitationService,
+                                UserRequestContext userRequestContext) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
+        this.elicitationService = elicitationService;
+        this.userRequestContext = userRequestContext;
     }
 
     private String removeThinkTags(String message) {
@@ -59,6 +67,11 @@ public class StreamingChatService {
         String chatModel = promptService.model();
         StringBuilder assembled = new StringBuilder();
 
+        // make chat id available for downstream components (e.g., MCP elicitation handler)
+        userRequestContext.setChatId(chatId);
+
+        Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
+
         Flux<ServerSentEvent<?>> chunks = promptService.stream(chatId, chatMessage)
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
                 .doOnNext(assembled::append)
@@ -66,7 +79,7 @@ public class StreamingChatService {
                         .event("chunk")
                         .build());
 
-        Mono<ServerSentEvent<?>> done = Mono.fromSupplier(() -> {
+        Mono<? extends ServerSentEvent<?>> done = Mono.fromSupplier(() -> {
             ChatMessage responseMessage = new ChatMessage();
             responseMessage.setChatId(chatId);
             responseMessage.setMessageType(ASSISTANT);
@@ -78,8 +91,12 @@ public class StreamingChatService {
             return ServerSentEvent.builder(resp)
                     .event("done")
                     .build();
+        }).doFinally(signalType -> {
+            // ensure chat-specific event sink is closed
+            elicitationService.closeChat(chatId);
         });
 
-        return chunks.concatWith(done);
+        // Merge token chunks with any out-of-band elicitation events; ensure done is last
+        return Flux.merge(elicitationFlux, chunks).concatWith(done.map(sse -> (ServerSentEvent<?>) sse));
     }
 }

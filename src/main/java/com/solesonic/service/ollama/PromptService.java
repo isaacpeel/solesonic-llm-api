@@ -44,6 +44,7 @@ public class PromptService {
     public static final String BOT_NAME = "botName";
     public static final String LBRACE = "lbrace";
     public static final String RBRACE = "rbrace";
+    public static final String CHAT_ID = "chatId";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -170,7 +171,7 @@ public class PromptService {
         }
 
         assert authToken != null;
-        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken);
+        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId);
 
         var chatClientBuilder = chatClient.prompt(mcpPrompt)
                 .user(chatMessage)

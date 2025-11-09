@@ -16,6 +16,8 @@ import reactor.util.context.Context;
 import java.util.HashMap;
 import java.util.Map;
 
+import static com.solesonic.service.ollama.PromptService.CHAT_ID;
+
 /**
  * A wrapper around SyncMcpToolCallback that captures the security context
  * and makes it available for reactive WebClient filters during MCP tool execution.
@@ -38,6 +40,9 @@ public class IdentityToolCallback implements ToolCallback {
                 .mcpClient(mcpSyncClient)
                 .tool(tool)
                 .build();
+
+        ToolDefinition definition = delegate.getToolDefinition();
+        log.info("Tool definition for {}: {}", tool.name(), definition);
     }
 
     @Override
@@ -60,6 +65,7 @@ public class IdentityToolCallback implements ToolCallback {
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
         String userToken = toolContextMap.get(USER_TOKEN).toString();
+        String chatId = toolContextMap.get(CHAT_ID).toString();
 
         if (StringUtils.isBlank(userToken)) {
             log.error("No user token found in context");
@@ -69,6 +75,7 @@ public class IdentityToolCallback implements ToolCallback {
         log.info("User token added to reactive context.");
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
         filteredContextMap.remove(USER_TOKEN);
+
         ToolContext filteredToolContext = new  ToolContext(filteredContextMap);
 
         Map<String, Object> contextMap = new HashMap<>();
