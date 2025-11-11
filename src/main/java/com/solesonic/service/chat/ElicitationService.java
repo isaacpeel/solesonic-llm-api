@@ -127,7 +127,9 @@ public class ElicitationService {
     }
 
     public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
+        
         log.info("Completing form elicitation for chat id {}", chatId);
+        
         UUID effectiveId = elicitationId;
 
         if (effectiveId == null && name != null) {
@@ -135,7 +137,9 @@ public class ElicitationService {
         }
 
         if (effectiveId == null) {
+            
             log.warn("No elicitation id or known name for chat {}", chatId);
+            
             return false;
         }
 
@@ -144,17 +148,20 @@ public class ElicitationService {
         CompletableFuture<McpSchema.ElicitResult> future = pendingById.remove(idKey);
 
         if (future == null) {
+            
             log.warn("No pending elicitation future found for chat {} id {}", chatId, effectiveId);
+            
             return false;
         }
 
+        
         log.info("Received elicitation fields: {}", fields);
-
+        
         Object confirmedField = fields.get(CONFIRMED);
+        
         log.info("Elicitation confirmed: {}", confirmedField);
-
+        
         ChatMessage chatMessage = new ChatMessage();
-
         chatMessage.setMessage(confirmedField.toString());
         chatMessage.setChatId(chatId);
         chatMessage.setMessageType(MessageType.USER);
@@ -163,7 +170,29 @@ public class ElicitationService {
 
         McpSchema.ElicitResult elicitResult = elicitResult(fields, confirmedField);
 
+        // If user canceled, emit a cancel control event on the SSE stream for this chat
+        if (elicitResult.action() == CANCEL) {
+            Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
+
+            if (serverSentEventMany != null) {
+                
+                log.info("Emitting cancel event for chat {}", chatId);
+                
+                ServerSentEvent<?> cancelEvent = ServerSentEvent.builder("cancel")
+                        .event("cancel")
+                        .build();
+
+                serverSentEventMany.tryEmitNext(cancelEvent);
+            } else {
+                
+                log.warn("No SSE sink found for chat {} while emitting cancel event", chatId);
+                
+            }
+        }
+
+        
         log.info("Completing elicitation for chat {}", chatId);
+        
         return future.complete(elicitResult);
     }
 
