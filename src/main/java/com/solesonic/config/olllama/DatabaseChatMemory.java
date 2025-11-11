@@ -29,8 +29,7 @@ public class DatabaseChatMemory implements ChatMemory {
             return null;
         }
 
-        String withoutThink = text.replaceAll("<think>.*?</think>", "");
-        String trimmed = withoutThink.trim();
+        String trimmed = text.trim();
 
         if (trimmed.isEmpty()) {
             return null;

@@ -54,9 +54,9 @@ public class ElicitationProvider {
         
         ElicitationService.ElicitationHandle handle = elicitationService.prepareElicitation(chatId, name);
 
-        elicitationService.emitElicitation(chatId, handle.getElicitationId(), request);
+        elicitationService.emitElicitation(chatId, handle.elicitationId(), request);
 
-        return elicitationService.awaitResultAsync(chatId, handle.getElicitationId())
+        return elicitationService.awaitResultAsync(chatId, handle.elicitationId())
                 .subscribeOn(Schedulers.boundedElastic())
                 .block();
     }

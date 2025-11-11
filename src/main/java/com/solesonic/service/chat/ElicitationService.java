@@ -1,9 +1,13 @@
 package com.solesonic.service.chat;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
@@ -18,33 +22,24 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 import static io.modelcontextprotocol.spec.McpSchema.ElicitResult.Action.*;
 
 @Service
 public class ElicitationService {
     private static final Logger log = LoggerFactory.getLogger(ElicitationService.class);
+    public static final String ELICITATION_ID = "elicitationId";
+    public static final String CHAT_ID = "chatId";
+    public static final String ELICITATION = "elicitation";
+    public static final String CONFIRMED = "confirmed";
+    public static final String ACCEPT_ACTION = "accept";
+    public static final String DECLINE_ACTION = "decline";
+    public static final String CANCEL_ACTION = "cancel";
 
-    public static final class ElicitationHandle {
-        private final UUID elicitationId;
-        private final CompletableFuture<McpSchema.ElicitResult> future;
-
-        public ElicitationHandle(UUID elicitationId, CompletableFuture<McpSchema.ElicitResult> future) {
-            this.elicitationId = elicitationId;
-            this.future = future;
-        }
-
-        public UUID getElicitationId() {
-            return elicitationId;
-        }
-
-        public CompletableFuture<McpSchema.ElicitResult> getFuture() {
-            return future;
-        }
-    }
+    public record ElicitationHandle(UUID elicitationId, CompletableFuture<McpSchema.ElicitResult> future) {}
 
     private final ObjectMapper objectMapper;
+    private final ChatMessageService chatMessageService;
 
     @Value("${solesonic.elicitation.timeout-seconds:600}")
     private long timeoutSeconds;
@@ -55,8 +50,10 @@ public class ElicitationService {
 
     private final ConcurrentHashMap<String, UUID> nameIndex = new ConcurrentHashMap<>();
 
-    public ElicitationService(ObjectMapper objectMapper) {
+    public ElicitationService(ObjectMapper objectMapper,
+                              ChatMessageService chatMessageService) {
         this.objectMapper = objectMapper;
+        this.chatMessageService = chatMessageService;
     }
 
     public Flux<ServerSentEvent<?>> registerChat(UUID chatId) {
@@ -94,25 +91,34 @@ public class ElicitationService {
 
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
         log.debug("Emitting elicitation for chat id {}", chatId);
-        Sinks.Many<ServerSentEvent<?>> sink = chatSinks.get(chatId);
+        Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
 
-        if (sink == null) {
+        if (serverSentEventMany == null) {
             log.warn("No SSE sink found for chat {} while emitting elicitation", chatId);
             return;
         }
 
         try {
-            Map<String, Object> requestJson = objectMapper.convertValue(request, Map.class);
-            requestJson.put("elicitationId", elicitationId.toString());
-            requestJson.put("chatId", chatId.toString());
+            Map<String, Object> requestJson = objectMapper.convertValue(request, new TypeReference<>() {});
+
+            requestJson.put(ELICITATION_ID, elicitationId.toString());
+            requestJson.put(CHAT_ID, chatId.toString());
 
             log.info("Emitting elicitation event for chat {}", chatId);
 
-            ServerSentEvent<?> event = ServerSentEvent.builder(requestJson)
-                    .event("elicitation")
+            ServerSentEvent<?> serverSentEvent = ServerSentEvent.builder(requestJson)
+                    .event(ELICITATION)
                     .build();
 
-            sink.tryEmitNext(event);
+            String elicitationMessage = request.message();
+            ChatMessage chatMessage = new ChatMessage();
+            chatMessage.setMessage(elicitationMessage);
+            chatMessage.setChatId(chatId);
+            chatMessage.setMessageType(MessageType.SYSTEM);
+
+            chatMessageService.save(chatMessage);
+
+            serverSentEventMany.tryEmitNext(serverSentEvent);
         } catch (IllegalArgumentException ex) {
             log.error("Failed to serialize elicitation request for chat {}", chatId, ex);
         }
@@ -121,7 +127,7 @@ public class ElicitationService {
     }
 
     public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
-        log.debug("Completing form elicitation for chat id {}", chatId);
+        log.info("Completing form elicitation for chat id {}", chatId);
         UUID effectiveId = elicitationId;
 
         if (effectiveId == null && name != null) {
@@ -144,9 +150,24 @@ public class ElicitationService {
 
         log.info("Received elicitation fields: {}", fields);
 
-        Object confirmed = fields.get("confirmed");
-        log.info("Elicitation confirmed: {}", confirmed);
+        Object confirmedField = fields.get(CONFIRMED);
+        log.info("Elicitation confirmed: {}", confirmedField);
 
+        ChatMessage chatMessage = new ChatMessage();
+
+        chatMessage.setMessage(confirmedField.toString());
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.USER);
+
+        chatMessageService.save(chatMessage);
+
+        McpSchema.ElicitResult elicitResult = elicitResult(fields, confirmedField);
+
+        log.info("Completing elicitation for chat {}", chatId);
+        return future.complete(elicitResult);
+    }
+
+    private static McpSchema.ElicitResult elicitResult(Map<String, Object> fields, Object confirmed) {
         McpSchema.ElicitResult result;
 
         if (!(confirmed instanceof String confirmedValue)) {
@@ -154,41 +175,14 @@ public class ElicitationService {
         }
 
         McpSchema.ElicitResult.Action action = switch (confirmedValue.toLowerCase()) {
-            case "accept" -> ACCEPT;
-            case "decline" -> DECLINE;
-            case "cancel" -> CANCEL;
+            case ACCEPT_ACTION -> ACCEPT;
+            case DECLINE_ACTION -> DECLINE;
+            case CANCEL_ACTION -> CANCEL;
             default -> throw new IllegalStateException("Unexpected value: " + confirmedValue);
         };
 
         result = new McpSchema.ElicitResult(action, fields);
-
-        log.info("Completing elicitation for chat {}", chatId);
-        return future.complete(result);
-    }
-
-    public McpSchema.ElicitResult awaitResult(UUID chatId, UUID elicitationId) {
-        String idKey = idKey(chatId, elicitationId);
-        CompletableFuture<McpSchema.ElicitResult> future = pendingById.get(idKey);
-
-        if (future == null) {
-            log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
-
-            return new McpSchema.ElicitResult(DECLINE, null);
-        }
-
-        try {
-            McpSchema.ElicitResult result = future.get(timeoutSeconds, TimeUnit.SECONDS);
-
-            return Optional.ofNullable(result)
-                    .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));
-
-        } catch (Exception ex) {
-            log.warn("Timeout or interruption while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, ex.getMessage());
-
-            pendingById.remove(idKey);
-
-            return new McpSchema.ElicitResult(DECLINE, null);
-        }
+        return result;
     }
 
     public Mono<McpSchema.ElicitResult> awaitResultAsync(UUID chatId, UUID elicitationId) {
