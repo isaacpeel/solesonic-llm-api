@@ -13,6 +13,8 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.Exceptions;
+import reactor.core.scheduler.Schedulers;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -74,11 +76,28 @@ public class StreamingChatService {
                 .share();
 
         Flux<ServerSentEvent<Object>> chunkObjects = promptService.stream(chatId, chatMessage)
+                .subscribeOn(Schedulers.boundedElastic())
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
                 .doOnNext(assembled::append)
                 .map(chunk -> ServerSentEvent.builder((Object) chunk)
                         .event(CHUNK)
                         .build())
+                .onErrorResume(throwable -> {
+
+                    Throwable unwrapped = Exceptions.unwrap(throwable);
+
+                    boolean isInterrupted = unwrapped instanceof InterruptedException
+                            || (unwrapped.getCause() instanceof InterruptedException);
+
+                    if (Exceptions.isCancel(unwrapped) || isInterrupted) {
+
+                        log.info("Chunk stream interrupted/cancelled gracefully for chat id {}", chatId);
+
+                        return Flux.empty();
+                    }
+
+                    return Flux.error(throwable);
+                })
                 .doFinally(signalType -> {
 
                     log.info("Closing elicitation for chat id: {}", chatId);
@@ -130,7 +149,24 @@ public class StreamingChatService {
         });
 
         Flux<ServerSentEvent<?>> elicitationNonCancel = elicitationFlux.filter(serverSentEvent -> !CANCEL_ACTION.equalsIgnoreCase(serverSentEvent.event()));
-        Flux<ServerSentEvent<?>> chunkFlow = chunks.takeUntilOther(cancelEvents);
+        Flux<ServerSentEvent<?>> chunkFlow = chunks
+                .takeUntilOther(cancelEvents)
+                .onErrorResume(throwable -> {
+
+                    Throwable unwrapped = Exceptions.unwrap(throwable);
+
+                    boolean isInterrupted = unwrapped instanceof InterruptedException
+                            || (unwrapped.getCause() instanceof InterruptedException);
+
+                    if (Exceptions.isCancel(unwrapped) || isInterrupted) {
+
+                        log.info("Chunk flow cancelled gracefully for chat id {}", chatId);
+
+                        return Flux.empty();
+                    }
+
+                    return Flux.error(throwable);
+                });
 
         log.info("Finished streaming chat with chat id {}", chatId);
 
