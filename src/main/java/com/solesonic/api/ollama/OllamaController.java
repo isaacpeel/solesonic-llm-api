@@ -2,6 +2,8 @@ package com.solesonic.api.ollama;
 
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.service.ollama.OllamaService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -11,6 +13,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/ollama")
 public class OllamaController {
+    private static final Logger log = LoggerFactory.getLogger(OllamaController.class);
     private final OllamaService ollamaService;
 
     public OllamaController(OllamaService ollamaService) {
@@ -19,6 +22,7 @@ public class OllamaController {
 
     @GetMapping("/models")
     public ResponseEntity<List<OllamaModel>> models() {
+        log.info("Getting all models");
         List<OllamaModel> models = ollamaService.models();
 
         return ResponseEntity.ok(models);
@@ -44,6 +48,7 @@ public class OllamaController {
 
     @GetMapping("/installed")
     public ResponseEntity<List<OllamaModel>> installed() {
+        log.info("Getting Installed Ollama Models");
         List<OllamaModel> models = ollamaService.installed();
         return ResponseEntity.ok(models);
     }

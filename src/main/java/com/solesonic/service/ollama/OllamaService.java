@@ -41,7 +41,7 @@ public class OllamaService {
     }
 
     public List<OllamaModel> models() {
-        log.debug("Getting models");
+        log.info("Getting models");
         List<OllamaModel> ollamaModels = modelRepository.findAll();
 
         List<OllamaModel> enriched = new ArrayList<>();
@@ -50,7 +50,7 @@ public class OllamaService {
             enriched.add(nativeModel(ollamaModel));
         }
 
-        log.debug("Found {} models.", enriched.size());
+        log.info("Found {} models.", enriched.size());
         return enriched;
     }
 
@@ -81,7 +81,7 @@ public class OllamaService {
     }
 
     public List<OllamaModel> installed() {
-        log.debug("Getting installed models");
+        log.info("Getting installed models");
         OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
         List<OllamaModel> ollamaModels = new ArrayList<>();
 
@@ -93,7 +93,7 @@ public class OllamaService {
             ollamaModels.add(ollamaModel);
         }
 
-        log.debug("Found {} installed models.", ollamaModels.size());
+        log.info("Found {} installed models.", ollamaModels.size());
         return ollamaModels;
     }
 
