@@ -2,11 +2,13 @@ package com.solesonic.service.chat;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springaicommunity.mcp.context.StructuredElicitResult;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.codec.ServerSentEvent;
@@ -47,6 +49,9 @@ public class ElicitationService {
     private final ConcurrentHashMap<UUID, Sinks.Many<ServerSentEvent<?>>> chatSinks = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, CompletableFuture<McpSchema.ElicitResult>> pendingById = new ConcurrentHashMap<>();
+
+    // Store the raw fields submitted from the frontend per elicitation id to reconstruct structured results
+    private final ConcurrentHashMap<String, Map<String, Object>> resultFieldsById = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, UUID> nameIndex = new ConcurrentHashMap<>();
 
@@ -170,6 +175,9 @@ public class ElicitationService {
 
         McpSchema.ElicitResult elicitResult = elicitResult(fields, confirmedField);
 
+        // Store fields so we can build a StructuredElicitResult later
+        resultFieldsById.put(idKey, fields);
+
         // If user canceled, emit a cancel control event on the SSE stream for this chat
         if (elicitResult.action() == CANCEL) {
             Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
@@ -214,29 +222,58 @@ public class ElicitationService {
         return result;
     }
 
-    public Mono<McpSchema.ElicitResult> awaitResultAsync(UUID chatId, UUID elicitationId) {
-        String idKey = idKey(chatId, elicitationId);
-        CompletableFuture<McpSchema.ElicitResult> future = pendingById.get(idKey);
+    public Mono<StructuredElicitResult<ElicitationProvider.DeleteConfirmation>> awaitResultAsync(UUID chatId, UUID elicitationId) {
+        String compositeIdKey = idKey(chatId, elicitationId);
+        CompletableFuture<McpSchema.ElicitResult> elicitationFuture = pendingById.get(compositeIdKey);
 
-        if (future == null) {
+        if (elicitationFuture == null) {
             log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
 
-            return Mono.just(new McpSchema.ElicitResult(DECLINE, null));
+            McpSchema.ElicitResult declineResult = new McpSchema.ElicitResult(DECLINE, null);
+
+            return Mono.just(toStructuredResult(declineResult, null));
         }
 
         Duration timeout = Duration.ofSeconds(timeoutSeconds);
 
-        return Mono.fromFuture(future)
+        return Mono.fromFuture(elicitationFuture)
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(timeout)
-                .map(result -> Optional.ofNullable(result).orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null)))
-                .onErrorResume(ex -> {
-                    log.warn("Timeout or error while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, ex.getMessage());
+                .map(result -> {
+                    McpSchema.ElicitResult safeResult = Optional.ofNullable(result)
+                            .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));
 
-                    pendingById.remove(idKey);
+                    log.info("Elicitation future result: {}", safeResult.action().name());
 
-                    return Mono.just(new McpSchema.ElicitResult(DECLINE, null));
+                    Map<String, Object> fieldsMap = resultFieldsById.remove(compositeIdKey);
+
+                    return toStructuredResult(safeResult, fieldsMap);
+                })
+                .onErrorResume(throwable -> {
+                    log.warn("Timeout or error while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, throwable.getMessage());
+
+                    pendingById.remove(compositeIdKey);
+
+                    Map<String, Object> fieldsMap = resultFieldsById.remove(compositeIdKey);
+
+                    McpSchema.ElicitResult declineResult = new McpSchema.ElicitResult(DECLINE, null);
+
+                    return Mono.just(toStructuredResult(declineResult, fieldsMap));
                 });
+    }
+
+    private StructuredElicitResult<ElicitationProvider.DeleteConfirmation> toStructuredResult(McpSchema.ElicitResult elicitResult, Map<String, Object> fieldsMap) {
+        ElicitationProvider.DeleteConfirmation deleteConfirmation = null;
+
+        if (fieldsMap != null) {
+            try {
+                deleteConfirmation = objectMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
+            } catch (IllegalArgumentException convertException) {
+                log.warn("Failed to convert elicitation fields to DeleteConfirmation: {}", convertException.getMessage());
+            }
+        }
+
+        return new StructuredElicitResult<>(elicitResult.action(), deleteConfirmation, fieldsMap);
     }
 
     private static String idKey(UUID chatId, UUID elicitationId) {

@@ -7,6 +7,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.mcp.annotation.McpElicitation;
+import org.springaicommunity.mcp.context.StructuredElicitResult;
 import org.springframework.stereotype.Component;
 import reactor.core.scheduler.Schedulers;
 
@@ -29,15 +30,17 @@ public class ElicitationProvider {
         this.objectMapper = objectMapper;
     }
 
+    public record DeleteConfirmation(boolean confirmed, String chatId) {}
+
     @SuppressWarnings("unused")
     @McpElicitation(clients = {"solesonic","mcp-client - solesonic"})
-    public McpSchema.ElicitResult handleElicitationRequest(McpSchema.ElicitRequest request) {
+    public StructuredElicitResult<DeleteConfirmation> handleElicitationRequest(McpSchema.ElicitRequest request) {
         log.info("Elicitation request received");
 
         Map<String, Object> requestMetadata = request.meta();
 
         if(requestMetadata == null || !requestMetadata.containsKey(CHAT_ID)) {
-            throw new ElicitationException("Elicitation request medadata is `null`.");
+            throw new ElicitationException("Elicitation request metadata is `null`.");
         }
 
         UUID chatId = UUID.fromString(request.meta().get(CHAT_ID).toString());
@@ -49,9 +52,9 @@ public class ElicitationProvider {
                 .map(Object::toString)
                 .orElse("elicitation");
 
-        
+
         log.info("Starting elicitation: {} for chat {}", name, chatId);
-        
+
         ElicitationService.ElicitationHandle handle = elicitationService.prepareElicitation(chatId, name);
 
         elicitationService.emitElicitation(chatId, handle.elicitationId(), request);
