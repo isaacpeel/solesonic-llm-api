@@ -1,5 +1,6 @@
 package com.solesonic.service.user;
 
+import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.UserPreferencesRepository;
 import org.slf4j.Logger;
@@ -66,7 +67,43 @@ public class UserPreferencesService {
         userPreferences.setUserId(userId);
         userPreferences.setUpdated(ZonedDateTime.now());
 
+        AtlassianAccessToken atlassianAccessToken = userPreferences.getAtlassianAccessToken();
+
+        //Ensure that when updating user preferences, the token is preserved
+        if (atlassianAccessToken == null) {
+            UserPreferences existingPreferences = get(userId);
+            AtlassianAccessToken existingToken = existingPreferences.getAtlassianAccessToken();
+            userPreferences.setAtlassianAccessToken(existingToken);
+        }
+
         return userPreferencesRepository.save(userPreferences);
+    }
+
+    public void save(UUID userId, AtlassianAccessToken atlassianAccessToken) {
+        log.info("Saving atlassian access token");
+
+        AtlassianAccessToken newToken = AtlassianAccessToken.from(atlassianAccessToken)
+                .created(ZonedDateTime.now())
+                .updated(ZonedDateTime.now())
+                .build();
+
+        UserPreferences userPreferences = get(userId);
+        userPreferences.setAtlassianAccessToken(newToken);
+        save(userId, userPreferences);
+    }
+
+    public void update(UUID userId, AtlassianAccessToken atlassianAccessToken) {
+        log.info("Updating atlassian access token");
+
+        UserPreferences userPreferences = get(userId);
+
+        AtlassianAccessToken updatedToken = AtlassianAccessToken.from(atlassianAccessToken)
+                .updated(ZonedDateTime.now())
+                .build();
+
+        userPreferences.setAtlassianAccessToken(updatedToken);
+
+        update(userId, userPreferences);
     }
 
     public UserPreferences serviceAccount() {

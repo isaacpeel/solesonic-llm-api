@@ -1,7 +1,6 @@
 package com.solesonic.config.olllama;
 
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ollama.ChatMessageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -9,7 +8,6 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
-import org.springframework.web.context.request.RequestContextHolder;
 
 import java.util.List;
 import java.util.UUID;
@@ -29,18 +27,13 @@ public class DatabaseChatMemory implements ChatMemory {
             return null;
         }
 
-        String withoutThink = text.replaceAll("<think>.*?</think>", "");
-        String trimmed = withoutThink.trim();
+        String trimmed = text.trim();
 
         if (trimmed.isEmpty()) {
             return null;
         }
 
         return trimmed;
-    }
-
-    private boolean isRequestScopeActive() {
-        return RequestContextHolder.getRequestAttributes() != null;
     }
 
     @Override
