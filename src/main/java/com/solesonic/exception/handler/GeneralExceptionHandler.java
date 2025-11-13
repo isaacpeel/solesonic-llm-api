@@ -41,6 +41,7 @@ public class GeneralExceptionHandler {
 
     @ExceptionHandler(ChatException.class)
     public ResponseEntity<SolesonicChatResponse> handleChatException(RuntimeException exception) {
+        log.error(exception.getMessage(), exception);
         String responseMessage = CHAT_EXCEPTION_TEMPLATE.replace(EXCEPTION_MESSAGE, exception.getMessage());
 
         return exceptionService.buildResponse(responseMessage);
