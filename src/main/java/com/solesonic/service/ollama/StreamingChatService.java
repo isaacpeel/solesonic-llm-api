@@ -11,9 +11,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
+import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.Exceptions;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.ZonedDateTime;
@@ -61,6 +61,8 @@ public class StreamingChatService {
         return update(chatId, chatRequest);
     }
 
+    public record ChunkPayload(String content) {}
+
     public Flux<ServerSentEvent<?>> update(UUID chatId, ChatRequest chatRequest) {
         String chatMessage = chatRequest.chatMessage();
         String chatModel = promptService.model();
@@ -75,13 +77,16 @@ public class StreamingChatService {
                 .take(1)
                 .share();
 
-        Flux<ServerSentEvent<Object>> chunkObjects = promptService.stream(chatId, chatMessage)
+        Flux<ServerSentEvent<ChunkPayload>> chunkObjects = promptService.stream(chatId, chatMessage)
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(chunk -> chunk != null && !chunk.isEmpty())
                 .doOnNext(assembled::append)
-                .map(chunk -> ServerSentEvent.builder((Object) chunk)
-                        .event(CHUNK)
-                        .build())
+                .map(chunk -> {
+                    ChunkPayload payload = new ChunkPayload(chunk);
+                    return ServerSentEvent.builder(payload)
+                            .event(CHUNK)
+                            .build();
+                })
                 .onErrorResume(throwable -> {
 
                     Throwable unwrapped = Exceptions.unwrap(throwable);
@@ -99,7 +104,6 @@ public class StreamingChatService {
                     return Flux.error(throwable);
                 })
                 .doFinally(signalType -> {
-
                     log.info("Closing elicitation for chat id: {}", chatId);
 
                     elicitationService.closeChat(chatId);
@@ -123,7 +127,7 @@ public class StreamingChatService {
                     .build();
         });
 
-        Flux<ServerSentEvent<?>> cancelResponse = cancelEvents.flatMap(serverSentEvent -> {
+        Flux<ServerSentEvent<?>> cancelResponse = cancelEvents.flatMap(_ -> {
             assembled.setLength(0);
             assembled.append("Chat canceled.");
 
@@ -152,7 +156,6 @@ public class StreamingChatService {
         Flux<ServerSentEvent<?>> chunkFlow = chunks
                 .takeUntilOther(cancelEvents)
                 .onErrorResume(throwable -> {
-
                     Throwable unwrapped = Exceptions.unwrap(throwable);
 
                     boolean isInterrupted = unwrapped instanceof InterruptedException

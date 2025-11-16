@@ -182,7 +182,7 @@ public class PromptService {
                 .toolContext(contextMap)
                 .options(ollamaChatOptions);
 
-        return Flux.deferContextual(upstreamView ->
+        return Flux.deferContextual(_ ->
                 chatClientBuilder.stream()
                         .content());
     }
