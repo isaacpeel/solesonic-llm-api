@@ -1,15 +1,10 @@
-# Stage 1: Java 21 JRE
-FROM amazoncorretto:25.0.1 AS jdk
+# Stage 1: Java 25 jre
+FROM eclipse-temurin:25.0.1_8-jre-noble AS jre
 
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 
-ENV JAVA_HOME=/usr/lib/jvm/java-25-amazon-corretto
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
-
-RUN apt update && apt install -y ca-certificates && update-ca-certificates
-
-COPY --from=jdk /usr/lib/jvm/java-25-amazon-corretto /usr/lib/jvm/java-25-amazon-corretto
 
 WORKDIR /app
 
