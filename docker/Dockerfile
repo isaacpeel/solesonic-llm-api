@@ -4,7 +4,10 @@ FROM eclipse-temurin:25.0.1_8-jre-noble AS jre
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 
+ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
+
+COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app
 
