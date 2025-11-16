@@ -1,5 +1,5 @@
 # Stage 1: Java 21 JRE
-FROM amazoncorretto:25-jdk AS jdk
+FROM amazoncorretto:25.0.1 AS jdk
 
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
