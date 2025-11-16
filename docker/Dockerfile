@@ -7,7 +7,8 @@ FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
+# Copy JRE from the first stage into the final image
+COPY --from=jre /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app
 
