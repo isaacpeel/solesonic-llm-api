@@ -1,14 +1,14 @@
 # Stage 1: Java 21 JRE
 FROM amazoncorretto:25.0.1 AS jdk
+from amazoncorretto
 
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 
-ENV JAVA_HOME=/opt/java/openjdk
+ENV JAVA_HOME=/usr/lib/jvm/java-25-amazon-corretto
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Copy Java 21 JRE from stage 1
-COPY --from=jdk /opt/java/openjdk /opt/java/openjdk
+COPY --from=jdk /usr/lib/jvm/java-25-amazon-corretto /usr/lib/jvm/java-25-amazon-corretto
 
 WORKDIR /app
 
