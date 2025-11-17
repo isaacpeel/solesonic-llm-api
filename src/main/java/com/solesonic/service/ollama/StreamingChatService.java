@@ -27,6 +27,7 @@ import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 public class StreamingChatService {
     private static final Logger log = LoggerFactory.getLogger(StreamingChatService.class);
     public static final String CHUNK = "chunk";
+    public static final String DONE = "done";
 
     private final ChatRepository chatRepository;
     private final PromptService promptService;
@@ -83,6 +84,7 @@ public class StreamingChatService {
                 .doOnNext(assembled::append)
                 .map(chunk -> {
                     ChunkPayload payload = new ChunkPayload(chunk);
+
                     return ServerSentEvent.builder(payload)
                             .event(CHUNK)
                             .build();
@@ -103,7 +105,7 @@ public class StreamingChatService {
 
                     return Flux.error(throwable);
                 })
-                .doFinally(signalType -> {
+                .doFinally(_ -> {
                     log.info("Closing elicitation for chat id: {}", chatId);
 
                     elicitationService.closeChat(chatId);
@@ -123,7 +125,7 @@ public class StreamingChatService {
             log.info("Sending done event.");
 
             return ServerSentEvent.builder(resp)
-                    .event("done")
+                    .event(DONE)
                     .build();
         });
 
@@ -131,7 +133,9 @@ public class StreamingChatService {
             assembled.setLength(0);
             assembled.append("Chat canceled.");
 
-            ServerSentEvent<?> cancelChunk = ServerSentEvent.builder((Object) "Chat canceled.")
+            ChunkPayload payload = new ChunkPayload("Chat Cancelled.");
+
+            ServerSentEvent<?> cancelChunk = ServerSentEvent.builder(payload)
                     .event(CHUNK)
                     .build();
 
@@ -143,10 +147,10 @@ public class StreamingChatService {
 
             chatMessageService.save(responseMessage);
 
-            SolesonicChatResponse resp = new SolesonicChatResponse(chatId, responseMessage);
+            SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
-            ServerSentEvent<?> doneEvent = ServerSentEvent.builder(resp)
-                    .event("done")
+            ServerSentEvent<?> doneEvent = ServerSentEvent.builder(solesonicChatResponse)
+                    .event(DONE)
                     .build();
 
             return Flux.just(cancelChunk, doneEvent);
@@ -158,11 +162,9 @@ public class StreamingChatService {
                 .onErrorResume(throwable -> {
                     Throwable unwrapped = Exceptions.unwrap(throwable);
 
-                    boolean isInterrupted = unwrapped instanceof InterruptedException
-                            || (unwrapped.getCause() instanceof InterruptedException);
+                    boolean isInterrupted = unwrapped instanceof InterruptedException || (unwrapped.getCause() instanceof InterruptedException);
 
                     if (Exceptions.isCancel(unwrapped) || isInterrupted) {
-
                         log.info("Chunk flow cancelled gracefully for chat id {}", chatId);
 
                         return Flux.empty();
@@ -175,6 +177,6 @@ public class StreamingChatService {
 
         return Flux.merge(elicitationNonCancel, chunkFlow, cancelResponse)
                 .concatWith(normalDone.map(sse -> (ServerSentEvent<?>) sse))
-                .takeUntil(sse -> "done".equalsIgnoreCase(sse.event()));
+                .takeUntil(sse -> DONE.equalsIgnoreCase(sse.event()));
     }
 }

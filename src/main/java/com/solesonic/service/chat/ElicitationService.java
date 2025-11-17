@@ -62,7 +62,7 @@ public class ElicitationService {
     }
 
     public Flux<ServerSentEvent<?>> registerChat(UUID chatId) {
-        Sinks.Many<ServerSentEvent<?>> sink = chatSinks.computeIfAbsent(chatId, id ->
+        Sinks.Many<ServerSentEvent<?>> sink = chatSinks.computeIfAbsent(chatId, _ ->
                 Sinks.many().multicast().onBackpressureBuffer());
 
         return sink.asFlux();
@@ -132,7 +132,6 @@ public class ElicitationService {
     }
 
     public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
-        
         log.info("Completing form elicitation for chat id {}", chatId);
         
         UUID effectiveId = elicitationId;
@@ -142,9 +141,7 @@ public class ElicitationService {
         }
 
         if (effectiveId == null) {
-            
             log.warn("No elicitation id or known name for chat {}", chatId);
-            
             return false;
         }
 
@@ -153,13 +150,10 @@ public class ElicitationService {
         CompletableFuture<McpSchema.ElicitResult> future = pendingById.remove(idKey);
 
         if (future == null) {
-            
             log.warn("No pending elicitation future found for chat {} id {}", chatId, effectiveId);
-            
             return false;
         }
 
-        
         log.info("Received elicitation fields: {}", fields);
         
         Object confirmedField = fields.get(CONFIRMED);
@@ -178,12 +172,11 @@ public class ElicitationService {
         // Store fields so we can build a StructuredElicitResult later
         resultFieldsById.put(idKey, fields);
 
-        // If user canceled, emit a cancel control event on the SSE stream for this chat
+        // If the user canceled, emit a cancel control event on the SSE stream for this chat
         if (elicitResult.action() == CANCEL) {
             Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
 
             if (serverSentEventMany != null) {
-                
                 log.info("Emitting cancel event for chat {}", chatId);
                 
                 ServerSentEvent<?> cancelEvent = ServerSentEvent.builder("cancel")
@@ -192,9 +185,7 @@ public class ElicitationService {
 
                 serverSentEventMany.tryEmitNext(cancelEvent);
             } else {
-                
                 log.warn("No SSE sink found for chat {} while emitting cancel event", chatId);
-                
             }
         }
 
