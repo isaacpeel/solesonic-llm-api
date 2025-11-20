@@ -3,7 +3,6 @@ package com.solesonic.service.ollama;
 
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
-import com.solesonic.service.intent.IntentType;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -14,14 +13,12 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.Resource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -40,10 +37,6 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 @Service
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
-    public static final String INPUT = "input";
-    public static final String BOT_NAME = "botName";
-    public static final String LBRACE = "lbrace";
-    public static final String RBRACE = "rbrace";
     public static final String CHAT_ID = "chatId";
 
     private final ChatClient chatClient;
@@ -52,18 +45,6 @@ public class PromptService {
     private final VectorStore vectorStore;
     private final UserIntentService userIntentService;
     private final List<McpSyncClient> mcpSyncClients;
-
-    @Value("classpath:prompts/jira_prompt.st")
-    private Resource jiraPrompt;
-
-    @Value("classpath:prompts/confluence_prompt.st")
-    private Resource confluencePrompt;
-
-    @Value("classpath:prompts/basic_prompt.st")
-    private Resource basicPrompt;
-
-    @Value("classpath:prompts/agile_prompt.st")
-    private Resource agilePrompt;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -103,11 +84,58 @@ public class PromptService {
     public String prompt(UUID chatId, String chatMessage) {
         String model = model();
 
-        IntentType intent = userIntentService.determineIntent(chatMessage);
+        String chosenPromptId;
 
-        Resource promptTemplate = promptResource(intent);
+        try {
+            Prompt prompt = userIntentService.prompt(chatMessage);
 
-        Prompt templatePrompt = buildTemplatePrompt(chatMessage, promptTemplate);
+            String routingResponse = chatClient
+                    .prompt(prompt)
+                    .call()
+                    .content();
+
+            if (routingResponse == null || routingResponse.trim().isEmpty()) {
+                log.warn("Intent model returned empty response; falling back to basic-prompt");
+
+                chosenPromptId = "basic-prompt";
+
+            } else {
+                chosenPromptId = routingResponse.trim();
+            }
+
+            log.debug("Chosen MCP prompt id '{}' for user message '{}'", chosenPromptId, chatMessage);
+
+        } catch (Exception exception) {
+            log.error("Failed to obtain routing decision from intent model: {}", exception.getMessage(), exception);
+
+            chosenPromptId = "basic-prompt";
+        }
+
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+
+        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                chosenPromptId,
+                Map.of("agentName", agentName, "userMessage", chatMessage)
+        );
+
+        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+
+        List<Message> messages = getPromptResult.messages().stream()
+                .map(mcpMessage -> {
+                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
+                        String textContent = extractTextContent(content);
+
+                        return (Message) switch (role) {
+                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
+                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
+                        };
+
+                    }
+                    throw new IllegalArgumentException("Unexpected message type.");
+                })
+                .toList();
+
+        Prompt mcpPrompt = new Prompt(messages);
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
@@ -116,7 +144,7 @@ public class PromptService {
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
         // Build the chat client call
-        var chatClientBuilder = chatClient.prompt(templatePrompt)
+        var chatClientBuilder = chatClient.prompt(mcpPrompt)
                 .user(chatMessage)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -131,11 +159,27 @@ public class PromptService {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model();
 
+        String promptName = userIntentService.determineIntent(chatMessage);
+
+        log.info("Intent model chose '{}'", promptName);
+
         McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
 
-        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest("basic-prompt", Map.of("agentName", agentName, "userMessage", chatMessage));
+        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                promptName,
+                Map.of("agentName", agentName, "userMessage", chatMessage)
+        );
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+
+        if (getPromptResult.messages().isEmpty()) {
+            getPromptRequest = new McpSchema.GetPromptRequest(
+                    promptName,
+                    Map.of("agentName", "basic-prompt", "userMessage", chatMessage)
+            );
+
+            getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+        }
 
         List<Message> messages = getPromptResult.messages().stream()
                 .map(mcpMessage -> {
@@ -147,7 +191,7 @@ public class PromptService {
                             case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
                         };
 
-                        }
+                    }
                     throw new IllegalArgumentException("Unexpected message type.");
                 })
                 .toList();
@@ -166,7 +210,7 @@ public class PromptService {
 
         String authToken = null;
 
-        if(principal instanceof Jwt jwt) {
+        if (principal instanceof Jwt jwt) {
             authToken = jwt.getTokenValue();
         }
 
@@ -209,33 +253,6 @@ public class PromptService {
                     .reduce("", (a, b) -> a + "\n" + b);
         }
         return "";
-    }
-
-    public Prompt buildTemplatePrompt(String chatMessage, Resource promptToUse) {
-        PromptTemplate promptTemplate = new PromptTemplate(promptToUse);
-
-        Map<String, Object> promptContext = Map.of(
-                INPUT, chatMessage,
-                BOT_NAME, agentName,
-                LBRACE, "{",
-                RBRACE, "}");
-
-        return promptTemplate.create(promptContext);
-    }
-
-    /**
-     * Determines which prompt template to use based on resolved intent.
-     *
-     * @param intent the resolved user intent
-     * @return the appropriate prompt resource
-     */
-    private Resource promptResource(IntentType intent) {
-        return switch (intent) {
-            case CREATING_JIRA_ISSUE -> jiraPrompt;
-            case CREATING_CONFLUENCE_PAGE -> confluencePrompt;
-            case JIRA_AGILE -> agilePrompt;
-            case GENERAL -> basicPrompt;
-        };
     }
 
     private Advisor retrievalAugmentationAdvisor() {
