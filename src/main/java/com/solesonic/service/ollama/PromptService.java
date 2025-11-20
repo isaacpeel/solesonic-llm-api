@@ -2,6 +2,7 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -19,6 +20,8 @@ import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -35,12 +38,10 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String CHAT_ID = "chatId";
-    public static final String BASIC_PROMPT = "basic-prompt";
-    public static final String AGENT_NAME = "agentName";
-    public static final String USER_MESSAGE = "userMessage";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
+    private final UserRequestContext userRequestContext;
     private final VectorStore vectorStore;
     private final UserIntentService userIntentService;
     private final List<McpSyncClient> mcpSyncClients;
@@ -54,28 +55,34 @@ public class PromptService {
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
+            UserRequestContext userRequestContext,
             VectorStore vectorStore,
             UserIntentService userIntentService,
             List<McpSyncClient> mcpSyncClients) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
+        this.userRequestContext = userRequestContext;
         this.vectorStore = vectorStore;
         this.userIntentService = userIntentService;
         this.mcpSyncClients = mcpSyncClients;
     }
 
-    public String model(UUID userId) {
+    public String model() {
+        UUID userId = userRequestContext.getUserId();
         UserPreferences userPreferences = userPreferencesService.get(userId);
+        String model = userPreferences.getModel();
+        userRequestContext.setChatModel(model);
 
-        return userPreferences.getModel();
+        return model;
     }
 
-    private UserPreferences userPreferences(UUID userId) {
+    private UserPreferences userPreferences() {
+        UUID userId = userRequestContext.getUserId();
         return userPreferencesService.get(userId);
     }
 
-    public String prompt(UUID chatId, UUID userId, String chatMessage) {
-        String model = model(userId);
+    public String prompt(UUID chatId, String chatMessage) {
+        String model = model();
 
         String chosenPromptId;
 
@@ -90,7 +97,7 @@ public class PromptService {
             if (routingResponse == null || routingResponse.trim().isEmpty()) {
                 log.warn("Intent model returned empty response; falling back to basic-prompt");
 
-                chosenPromptId = BASIC_PROMPT;
+                chosenPromptId = "basic-prompt";
 
             } else {
                 chosenPromptId = routingResponse.trim();
@@ -101,14 +108,14 @@ public class PromptService {
         } catch (Exception exception) {
             log.error("Failed to obtain routing decision from intent model: {}", exception.getMessage(), exception);
 
-            chosenPromptId = BASIC_PROMPT;
+            chosenPromptId = "basic-prompt";
         }
 
         McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
 
         McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
                 chosenPromptId,
-                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
+                Map.of("agentName", agentName, "userMessage", chatMessage)
         );
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -134,7 +141,7 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
         // Build the chat client call
         var chatClientBuilder = chatClient.prompt(mcpPrompt)
@@ -148,9 +155,9 @@ public class PromptService {
         return chatClientBuilder.call().content();
     }
 
-    public Flux<String> stream(UUID chatId, UUID userId, String chatMessage, Authentication authentication) {
+    public Flux<String> stream(UUID chatId, String chatMessage) {
         log.info("Streaming prompt for chat id {}", chatId);
-        String model = model(userId);
+        String model = model();
 
         String promptName = userIntentService.determineIntent(chatMessage);
 
@@ -160,7 +167,7 @@ public class PromptService {
 
         McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
                 promptName,
-                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
+                Map.of("agentName", agentName, "userMessage", chatMessage)
         );
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -168,7 +175,7 @@ public class PromptService {
         if (getPromptResult.messages().isEmpty()) {
             getPromptRequest = new McpSchema.GetPromptRequest(
                     promptName,
-                    Map.of(AGENT_NAME, BASIC_PROMPT, USER_MESSAGE, chatMessage)
+                    Map.of("agentName", "basic-prompt", "userMessage", chatMessage)
             );
 
             getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -195,8 +202,10 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
 
+        SecurityContext securityContext = SecurityContextHolder.getContext();
+        Authentication authentication = securityContext.getAuthentication();
         Object principal = authentication.getPrincipal();
 
         String authToken = null;
@@ -246,8 +255,8 @@ public class PromptService {
         return "";
     }
 
-    private Advisor retrievalAugmentationAdvisor(UUID userId) {
-        Double similarityThreshold = Optional.ofNullable(userPreferences(userId).getSimilarityThreshold())
+    private Advisor retrievalAugmentationAdvisor() {
+        Double similarityThreshold = Optional.ofNullable(userPreferences().getSimilarityThreshold())
                 .orElse(defaultSimilarityThreshold);
 
         return RetrievalAugmentationAdvisor.builder()
