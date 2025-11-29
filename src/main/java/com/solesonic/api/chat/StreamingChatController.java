@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -33,22 +34,24 @@ public class StreamingChatController {
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<?>> create(@PathVariable UUID userId,
                                            @RequestBody ChatRequest chatRequest,
-                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId) {
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId,
+                                           Authentication authentication) {
         
         log.info("Starting streaming chat for user {}", userId);
         log.info("last event id {}", lastEventId);
-        
-        return streamingChatService.create(userId, chatRequest, lastEventId);
+
+        return streamingChatService.create(userId, chatRequest, lastEventId, authentication);
     }
 
     @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<?>> update(@PathVariable UUID userId,
                                            @PathVariable UUID chatId,
                                            @RequestBody ChatRequest chatRequest,
-                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId) {
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId,
+                                           Authentication authentication) {
         log.info("Continuing streaming chat with chat id: {} and last event id: {}", chatId, lastEventId);
 
-        return streamingChatService.update(chatId, userId, chatRequest, lastEventId);
+        return streamingChatService.update(chatId, userId, chatRequest, lastEventId, authentication);
     }
 
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")

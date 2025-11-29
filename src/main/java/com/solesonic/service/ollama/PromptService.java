@@ -19,8 +19,6 @@ import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContext;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -37,6 +35,9 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String CHAT_ID = "chatId";
+    public static final String BASIC_PROMPT = "basic-prompt";
+    public static final String AGENT_NAME = "agentName";
+    public static final String USER_MESSAGE = "userMessage";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -89,7 +90,7 @@ public class PromptService {
             if (routingResponse == null || routingResponse.trim().isEmpty()) {
                 log.warn("Intent model returned empty response; falling back to basic-prompt");
 
-                chosenPromptId = "basic-prompt";
+                chosenPromptId = BASIC_PROMPT;
 
             } else {
                 chosenPromptId = routingResponse.trim();
@@ -100,14 +101,14 @@ public class PromptService {
         } catch (Exception exception) {
             log.error("Failed to obtain routing decision from intent model: {}", exception.getMessage(), exception);
 
-            chosenPromptId = "basic-prompt";
+            chosenPromptId = BASIC_PROMPT;
         }
 
         McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
 
         McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
                 chosenPromptId,
-                Map.of("agentName", agentName, "userMessage", chatMessage)
+                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
         );
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -147,7 +148,7 @@ public class PromptService {
         return chatClientBuilder.call().content();
     }
 
-    public Flux<String> stream(UUID chatId, UUID userId, String chatMessage) {
+    public Flux<String> stream(UUID chatId, UUID userId, String chatMessage, Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
 
@@ -159,7 +160,7 @@ public class PromptService {
 
         McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
                 promptName,
-                Map.of("agentName", agentName, "userMessage", chatMessage)
+                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
         );
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -167,7 +168,7 @@ public class PromptService {
         if (getPromptResult.messages().isEmpty()) {
             getPromptRequest = new McpSchema.GetPromptRequest(
                     promptName,
-                    Map.of("agentName", "basic-prompt", "userMessage", chatMessage)
+                    Map.of(AGENT_NAME, BASIC_PROMPT, USER_MESSAGE, chatMessage)
             );
 
             getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
@@ -196,8 +197,8 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
 
-        SecurityContext securityContext = SecurityContextHolder.getContext();
-        Authentication authentication = securityContext.getAuthentication();
+//        SecurityContext securityContext = SecurityContextHolder.getContext();
+//        Authentication authentication = securityContext.getAuthentication();
         Object principal = authentication.getPrincipal();
 
         String authToken = null;

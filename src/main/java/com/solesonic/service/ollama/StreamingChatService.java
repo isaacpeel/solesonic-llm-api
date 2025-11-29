@@ -10,6 +10,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
@@ -59,7 +60,8 @@ public class StreamingChatService {
 
     public Flux<ServerSentEvent<?>> create(UUID userId,
                                            ChatRequest chatRequest,
-                                           String lastEventId) {
+                                           String lastEventId,
+                                           Authentication authentication) {
 
         if (StringUtils.isNotBlank(lastEventId)) {
             UUID activeChatId = userActiveStreams.get(userId);
@@ -67,7 +69,7 @@ public class StreamingChatService {
             // If we found an active mapping and the stream is still alive in the cache
             if (activeChatId != null && streamCache.containsKey(activeChatId)) {
                 log.info("Auto-resuming active chat {} for user {} based on Last-Event-ID", activeChatId, userId);
-                return update(activeChatId, userId, chatRequest, lastEventId);
+                return update(activeChatId, userId, chatRequest, lastEventId, authentication);
             } else {
                 log.debug("Last-Event-ID present but no active stream found for user {}. Starting new session.", userId);
             }
@@ -80,12 +82,12 @@ public class StreamingChatService {
 
         log.debug("Starting streaming chat with new chat id {}", chatId);
 
-        return update(chatId, userId, chatRequest, null);
+        return update(chatId, userId, chatRequest, null, authentication);
     }
 
     public record ChunkPayload(String content) {}
 
-    public Flux<ServerSentEvent<?>> update(UUID chatId, UUID userId, ChatRequest chatRequest, String lastEventId) {
+    public Flux<ServerSentEvent<?>> update(UUID chatId, UUID userId, ChatRequest chatRequest, String lastEventId, Authentication authentication) {
         Long resumeFromIndex = null;
 
         if (StringUtils.isNotBlank(lastEventId)) {
@@ -101,13 +103,19 @@ public class StreamingChatService {
 
         Sinks.Many<ServerSentEvent<?>> sink = streamCache.computeIfAbsent(chatId, id -> {
             log.info("Initializing new background stream for chat id {}", id);
-            return initializeStream(id, userId, chatRequest);
+            return initializeStream(id, userId, chatRequest, authentication);
         });
 
         return sink.asFlux()
                 .filter(sse -> {
-                    if (finalResumeFromIndex == null) return true;
-                    if (sse.id() == null) return true;
+                    if (finalResumeFromIndex == null) {
+                        return true;
+                    }
+
+                    if (sse.id() == null) {
+                        return true;
+                    }
+
                     try {
                         return Long.parseLong(sse.id()) > finalResumeFromIndex;
                     } catch (NumberFormatException e) {
@@ -116,7 +124,7 @@ public class StreamingChatService {
                 });
     }
 
-    private Sinks.Many<ServerSentEvent<?>> initializeStream(UUID chatId, UUID userId, ChatRequest chatRequest) {
+    private Sinks.Many<ServerSentEvent<?>> initializeStream(UUID chatId, UUID userId, ChatRequest chatRequest, Authentication authentication) {
         if (userId != null) {
             userActiveStreams.put(userId, chatId);
         }
@@ -141,7 +149,7 @@ public class StreamingChatService {
                         .build()
         );
 
-        Flux<ServerSentEvent<ChunkPayload>> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatMessage))
+        Flux<ServerSentEvent<ChunkPayload>> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatMessage, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .doOnNext(assembled::append)
