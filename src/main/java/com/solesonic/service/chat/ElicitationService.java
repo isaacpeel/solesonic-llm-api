@@ -6,6 +6,7 @@ import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springaicommunity.mcp.context.StructuredElicitResult;
@@ -83,10 +84,12 @@ public class ElicitationService {
     public ElicitationHandle prepareElicitation(UUID chatId, String name) {
         UUID elicitationId = UUID.randomUUID();
         String idKey = idKey(chatId, elicitationId);
+
         CompletableFuture<McpSchema.ElicitResult> future = new CompletableFuture<>();
+
         pendingById.put(idKey, future);
 
-        if (name != null && !name.isBlank()) {
+        if (StringUtils.isNotEmpty(name)) {
             String nameKey = nameKey(chatId, name);
             nameIndex.put(nameKey, elicitationId);
         }
@@ -147,7 +150,7 @@ public class ElicitationService {
 
         String idKey = idKey(chatId, effectiveId);
 
-        CompletableFuture<McpSchema.ElicitResult> future = pendingById.remove(idKey);
+        CompletableFuture<McpSchema.ElicitResult> future = pendingById.get(idKey);
 
         if (future == null) {
             log.warn("No pending elicitation future found for chat {} id {}", chatId, effectiveId);
@@ -230,6 +233,11 @@ public class ElicitationService {
         return Mono.fromFuture(elicitationFuture)
                 .subscribeOn(Schedulers.boundedElastic())
                 .timeout(timeout)
+                .doOnCancel(() -> {
+                    log.debug("Elicitation await cancelled for chat {} id {}", chatId, elicitationId);
+                    pendingById.remove(compositeIdKey);
+                    resultFieldsById.remove(compositeIdKey);
+                })
                 .map(result -> {
                     McpSchema.ElicitResult safeResult = Optional.ofNullable(result)
                             .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));

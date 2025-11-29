@@ -99,7 +99,8 @@ public class ChatControllerTest {
     @Test
     void testUpdate() throws Exception {
         
-        when(chatService.update(eq(chatId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
+        when(chatService.get(chatId)).thenReturn(chat);
+        when(chatService.update(eq(chatId), eq(userId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
          
         mockMvc.perform(put("/chats/{chatId}", chatId)
@@ -184,7 +185,8 @@ public class ChatControllerTest {
     @Test
     void testUpdateJsonSerialization() throws Exception {
         
-        when(chatService.update(eq(chatId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
+        when(chatService.get(chatId)).thenReturn(chat);
+        when(chatService.update(eq(chatId), eq(userId), any(ChatRequest.class))).thenReturn(solesonicChatResponse);
 
         // Create a ChatRequest with a specific message
         String requestMessage = "This is a test message for JSON serialization in update";

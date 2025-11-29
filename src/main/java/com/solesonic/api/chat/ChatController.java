@@ -42,7 +42,15 @@ public class ChatController {
                                                         @RequestBody ChatRequest chatRequest) {
         log.info("Continuing standard chat with chat id {}", chatId);
 
-        SolesonicChatResponse solesonicChatResponse = chatService.update(chatId, chatRequest);
+        Chat chat = chatService.get(chatId);
+
+        if (chat == null) {
+            return ResponseEntity.notFound().build();
+        }
+
+        UUID userId = chat.getUserId();
+
+        SolesonicChatResponse solesonicChatResponse = chatService.update(chatId, userId, chatRequest);
 
         return ResponseEntity.ok(solesonicChatResponse);
     }

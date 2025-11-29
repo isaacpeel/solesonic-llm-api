@@ -2,7 +2,6 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -41,7 +40,6 @@ public class PromptService {
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
-    private final UserRequestContext userRequestContext;
     private final VectorStore vectorStore;
     private final UserIntentService userIntentService;
     private final List<McpSyncClient> mcpSyncClients;
@@ -55,34 +53,28 @@ public class PromptService {
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
-            UserRequestContext userRequestContext,
             VectorStore vectorStore,
             UserIntentService userIntentService,
             List<McpSyncClient> mcpSyncClients) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
-        this.userRequestContext = userRequestContext;
         this.vectorStore = vectorStore;
         this.userIntentService = userIntentService;
         this.mcpSyncClients = mcpSyncClients;
     }
 
-    public String model() {
-        UUID userId = userRequestContext.getUserId();
+    public String model(UUID userId) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
-        String model = userPreferences.getModel();
-        userRequestContext.setChatModel(model);
 
-        return model;
+        return userPreferences.getModel();
     }
 
-    private UserPreferences userPreferences() {
-        UUID userId = userRequestContext.getUserId();
+    private UserPreferences userPreferences(UUID userId) {
         return userPreferencesService.get(userId);
     }
 
-    public String prompt(UUID chatId, String chatMessage) {
-        String model = model();
+    public String prompt(UUID chatId, UUID userId, String chatMessage) {
+        String model = model(userId);
 
         String chosenPromptId;
 
@@ -141,7 +133,7 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
 
         // Build the chat client call
         var chatClientBuilder = chatClient.prompt(mcpPrompt)
@@ -155,9 +147,9 @@ public class PromptService {
         return chatClientBuilder.call().content();
     }
 
-    public Flux<String> stream(UUID chatId, String chatMessage) {
+    public Flux<String> stream(UUID chatId, UUID userId, String chatMessage) {
         log.info("Streaming prompt for chat id {}", chatId);
-        String model = model();
+        String model = model(userId);
 
         String promptName = userIntentService.determineIntent(chatMessage);
 
@@ -202,7 +194,7 @@ public class PromptService {
                 .model(model)
                 .build();
 
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor();
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
 
         SecurityContext securityContext = SecurityContextHolder.getContext();
         Authentication authentication = securityContext.getAuthentication();
@@ -255,8 +247,8 @@ public class PromptService {
         return "";
     }
 
-    private Advisor retrievalAugmentationAdvisor() {
-        Double similarityThreshold = Optional.ofNullable(userPreferences().getSimilarityThreshold())
+    private Advisor retrievalAugmentationAdvisor(UUID userId) {
+        Double similarityThreshold = Optional.ofNullable(userPreferences(userId).getSimilarityThreshold())
                 .orElse(defaultSimilarityThreshold);
 
         return RetrievalAugmentationAdvisor.builder()
