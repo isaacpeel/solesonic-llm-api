@@ -197,8 +197,6 @@ public class PromptService {
 
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
 
-//        SecurityContext securityContext = SecurityContextHolder.getContext();
-//        Authentication authentication = securityContext.getAuthentication();
         Object principal = authentication.getPrincipal();
 
         String authToken = null;

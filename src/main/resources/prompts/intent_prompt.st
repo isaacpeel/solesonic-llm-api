@@ -13,5 +13,5 @@ User message:
 
 Rules:
 - Choose exactly one prompt name from the catalog.
-- If no prompt fits, choose basic-prompt.
+- If no prompt fits, choose `basic-prompt`.
 - Output only the chosen prompt name, nothing else.
