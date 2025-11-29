@@ -5,7 +5,6 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.ollama.ChatRepository;
-import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.ElicitationService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -38,7 +37,6 @@ public class StreamingChatService {
     private final ChatRepository chatRepository;
     private final PromptService promptService;
     private final ElicitationService elicitationService;
-    private final UserRequestContext userRequestContext;
     private final ChatMessageService chatMessageService;
 
     private final ConcurrentHashMap<UUID, Sinks.Many<ServerSentEvent<?>>> streamCache = new ConcurrentHashMap<>();
@@ -47,11 +45,10 @@ public class StreamingChatService {
     public StreamingChatService(ChatRepository chatRepository,
                                 PromptService promptService,
                                 ElicitationService elicitationService,
-                                UserRequestContext userRequestContext, ChatMessageService chatMessageService) {
+                                ChatMessageService chatMessageService) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
-        this.userRequestContext = userRequestContext;
         this.chatMessageService = chatMessageService;
     }
 
@@ -89,8 +86,6 @@ public class StreamingChatService {
     public record ChunkPayload(String content) {}
 
     public Flux<ServerSentEvent<?>> update(UUID chatId, UUID userId, ChatRequest chatRequest, String lastEventId) {
-        userRequestContext.setChatId(chatId);
-
         Long resumeFromIndex = null;
 
         if (StringUtils.isNotBlank(lastEventId)) {
