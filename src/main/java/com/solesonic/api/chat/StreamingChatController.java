@@ -41,13 +41,14 @@ public class StreamingChatController {
         return streamingChatService.create(userId, chatRequest, lastEventId);
     }
 
-    @PutMapping(value = "/{chatId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<?>> update(@PathVariable UUID chatId,
+    @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<?>> update(@PathVariable UUID userId,
+                                           @PathVariable UUID chatId,
                                            @RequestBody ChatRequest chatRequest,
                                            @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId) {
         log.info("Continuing streaming chat with chat id: {} and last event id: {}", chatId, lastEventId);
 
-        return streamingChatService.update(chatId, null, chatRequest, lastEventId);
+        return streamingChatService.update(chatId, userId, chatRequest, lastEventId);
     }
 
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
