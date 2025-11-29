@@ -19,6 +19,7 @@ import java.util.UUID;
 @RequestMapping("/streaming/chats")
 public class StreamingChatController {
     private static final Logger log = LoggerFactory.getLogger(StreamingChatController.class);
+    public static final String LAST_EVENT_ID = "Last-Event-ID";
 
     private final StreamingChatService streamingChatService;
     private final ElicitationService elicitationService;
@@ -31,20 +32,22 @@ public class StreamingChatController {
 
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<?>> create(@PathVariable UUID userId,
-                                           @RequestBody ChatRequest chatRequest) {
+                                           @RequestBody ChatRequest chatRequest,
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId) {
         
         log.info("Starting streaming chat for user {}", userId);
+        log.info("last event id {}", lastEventId);
         
-        return streamingChatService.create(userId, chatRequest);
+        return streamingChatService.create(userId, chatRequest, lastEventId);
     }
 
     @PutMapping(value = "/{chatId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<?>> update(@PathVariable UUID chatId,
-                                           @RequestBody ChatRequest chatRequest) {
-        
-        log.info("Continuing streaming chat with chat id {}", chatId);
-        
-        return streamingChatService.update(chatId, chatRequest);
+                                           @RequestBody ChatRequest chatRequest,
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId) {
+        log.info("Continuing streaming chat with chat id: {} and last event id: {}", chatId, lastEventId);
+
+        return streamingChatService.update(chatId, null, chatRequest, lastEventId);
     }
 
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
