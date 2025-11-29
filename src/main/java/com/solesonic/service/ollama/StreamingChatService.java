@@ -167,7 +167,6 @@ public class StreamingChatService {
             responseMessage.setMessageType(ASSISTANT);
             responseMessage.setMessage(assembled.toString());
             responseMessage.setModel(chatModel);
-            chatMessageService.save(responseMessage);
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
