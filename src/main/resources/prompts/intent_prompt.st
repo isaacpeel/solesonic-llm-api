@@ -4,6 +4,7 @@ Do not answer the user’s question.
 Do not explain your choice.
 Your output must be only the chosen prompt name.
 You MUST respond only with a string containing the `name` of the selected prompt.
+Use the conversation memory from the MEMORY section to provide guide your decision and choose a prompt that stays on topic.
 
 Prompt Catalog:
 {prompt_catalog}
