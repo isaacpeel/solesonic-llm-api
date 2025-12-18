@@ -21,7 +21,7 @@ For local development, authentication may be more relaxed depending on configura
 
 ## Core API Endpoints
 
-### Chat API
+### Chat API (Non‑Streaming)
 
 The chat functionality is the primary feature of the Solesonic LLM API, providing intelligent conversations with intent-based tool selection.
 
@@ -275,3 +275,105 @@ class SolesonicApiClient {
 - **Security**: [docs/security.md](security.md) - Authentication and authorization details
 - **MCP Integration**: [docs/mcp-integration.md](mcp-integration.md) - Token broker for MCP servers
 - **Troubleshooting**: [docs/troubleshooting.md](troubleshooting.md) - Common API issues and solutions
+
+---
+
+## Streaming Chat & Elicitation API
+
+The streaming chat API uses Server‑Sent Events (SSE) to deliver incremental LLM output and interactive elicitation events over a single stream.
+
+### Start Streaming Chat
+
+- Endpoint: `POST /streaming/chats/users/{userId}`
+- Produces: `text/event-stream`
+- Headers: Optional `Last-Event-ID` to resume the stream from a given SSE id
+- Request Body: `ChatRequest`
+- Stream events:
+  - `init` — initialization marker
+  - `chunk` — assistant response chunks
+  - `elicitation` — interactive form request (see below)
+  - `cancel` — emitted when an elicitation is canceled
+  - `done` — final event with structured chat response
+
+### Continue Streaming Chat
+
+- Endpoint: `PUT /streaming/chats/{chatId}/users/{userId}`
+- Produces: `text/event-stream`
+- Same headers/body/event types as “Start Streaming Chat”
+
+### Elicitation Event (SSE)
+
+- Event name: `elicitation`
+- Body: A JSON object derived from `McpSchema.ElicitRequest` with additional fields:
+  - `elicitationId`: UUID (string)
+  - `chatId`: UUID (string)
+
+Example:
+```json
+{
+  "type": "form",
+  "name": "delete-confirmation",
+  "message": "Delete this item?",
+  "meta": { "chatId": "<uuid>" },
+  "elicitationId": "<uuid>",
+  "chatId": "<uuid>"
+}
+```
+
+### Submit Elicitation Response
+
+- Endpoint: `POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`
+- Request Body:
+```json
+{
+  "elicitationResponse": {
+    "name": "delete-confirmation",
+    "fields": { "confirmed": "accept" },
+    "action": "accept"
+  }
+}
+```
+- Action values: `accept`, `decline`, `cancel`
+- Responses:
+  - `200 OK` — response accepted
+  - `400 Bad Request` — invalid payload
+  - `404 Not Found` — no matching pending elicitation
+
+### Streaming Examples
+
+#### cURL — Start Streaming Chat
+```bash
+curl -N -X POST "http://localhost:8080/streaming/chats/users/${USER_ID}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "chatMessage": "Start a session and ask me for confirmation",
+    "model": "qwen2.5:7b"
+  }'
+```
+
+#### JavaScript — Listen for Elicitation and Submit
+```typescript
+const es = new EventSource(`${baseUrl}/streaming/chats/users/${userId}`);
+
+es.addEventListener('elicitation', async (e) => {
+  const payload = JSON.parse((e as MessageEvent<string>).data);
+  const { chatId, elicitationId, name } = payload;
+
+  // Render form... when user accepts:
+  await fetch(`${baseUrl}/streaming/chats/${chatId}/${elicitationId}/elicitation-response`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      elicitationResponse: {
+        name,
+        fields: { confirmed: 'accept' },
+        action: 'accept'
+      }
+    })
+  });
+});
+```
+
+## Related Documentation
+
+- **Elicitation**: [docs/elicitation.md](elicitation.md) — Architecture, flows, and examples

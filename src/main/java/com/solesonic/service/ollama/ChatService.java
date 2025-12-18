@@ -96,15 +96,15 @@ public class ChatService {
         UUID chatId = chat.getId();
         log.info("Starting standard chat with new chat id {}", chatId);
 
-        return update(chatId, chatRequest);
+        return update(chatId, userId, chatRequest);
     }
 
-    public SolesonicChatResponse update(UUID chatId, ChatRequest chatRequest) {
+    public SolesonicChatResponse update(UUID chatId, UUID userId, ChatRequest chatRequest) {
         String chatMessage = chatRequest.chatMessage();
 
-        String responseContent = promptService.prompt(chatId, chatMessage);
+        String responseContent = promptService.prompt(chatId, userId, chatMessage);
 
-        String chatModel = promptService.model();
+        String chatModel = promptService.model(userId);
 
         ChatMessage responseMessage = new ChatMessage();
         responseMessage.setChatId(chatId);

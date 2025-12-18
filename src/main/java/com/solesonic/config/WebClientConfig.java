@@ -25,15 +25,15 @@ public class WebClientConfig {
     @Bean
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
-                .filter((request, next) -> Mono.deferContextual(contextView -> {
+                .filter((request, next) -> Mono.deferContextual(_ -> {
 
-                    log.info("Filtering mcp request: {}", request.url().getPath());
-                    log.info("WebClient filter executing - checking for security context");
+                    log.debug("Filtering mcp request: {}", request.url().getPath());
+                    log.debug("WebClient filter executing - checking for security context");
 
                     String userToken = threadLocalUserToken();
 
                     if (StringUtils.isEmpty(userToken)) {
-                        log.info("User token for streaming is not found, using client credentials.");
+                        log.debug("User token for streaming is not found, using client credentials.");
 
                         // No user token — use client credentials token
                         String accessToken = mcpFilterService.getClientCredentialsAccessToken();
@@ -45,7 +45,7 @@ public class WebClientConfig {
                         return next.exchange(newRequest);
                     }
 
-                    log.info("User identity found, exchanging for an OBO token.");
+                    log.debug("User identity found, exchanging for an OBO token.");
 
                     // Otherwise, use OBO token exchange
                     return tokenExchangeService.exchangeToken(userToken)
@@ -53,7 +53,7 @@ public class WebClientConfig {
                                 ClientRequest newRequest = ClientRequest.from(request)
                                         .headers(headers -> headers.setBearerAuth(exchangedToken))
                                         .build();
-                                log.info("OBO exchange success.");
+                                log.debug("OBO exchange success.");
 
                                 return next.exchange(newRequest);
                             });
@@ -61,10 +61,10 @@ public class WebClientConfig {
     }
 
     private String threadLocalUserToken() {
-        log.info("Looking for users token in identity context");
+        log.debug("Looking for users token in identity context");
 
         if(!IdentityToolCallback.hasContext()) {
-            log.info("No identity context found.");
+            log.debug("No identity context found.");
             return null;
         }
 
@@ -72,11 +72,11 @@ public class WebClientConfig {
         Map<String, Object> securityContext = reactiveContext.get(SECURITY_CONTEXT_KEY);
 
         if (securityContext.containsKey(USER_TOKEN)) {
-            log.info("User Token found.");
+            log.debug("User Token found.");
             return securityContext.get(USER_TOKEN).toString();
         }
 
-        log.info("No user token found.");
+        log.debug("No user token found.");
         return null;
     }
 }

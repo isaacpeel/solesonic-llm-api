@@ -1,5 +1,5 @@
-# Stage 1: Java 21 JRE
-FROM eclipse-temurin:21-jre AS jre
+# Stage 1: Java 25 jre
+FROM eclipse-temurin:25.0.1_8-jre-noble AS jre
 
 # Stage 2: CUDA runtime for GPU support (choose a recent CUDA runtime tag)
 FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
@@ -7,7 +7,7 @@ FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Copy Java 21 JRE from stage 1
+# Copy JRE from the first stage into the final image
 COPY --from=jre /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app

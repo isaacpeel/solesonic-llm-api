@@ -1,5 +1,9 @@
 package com.solesonic.service.intent;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -14,14 +18,19 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Map;
 
 @Service
 public class UserIntentService {
     private static final Logger log = LoggerFactory.getLogger(UserIntentService.class);
     public static final String USER_MESSAGE = "user_message";
+    public static final String AGENT_NAME = "agent_name";
+    public static final String PROMPT_CATALOG = "prompt_catalog";
 
     private final OllamaApi ollamaApi;
+    private final List<McpSyncClient> mcpSyncClients;
+    private final ObjectMapper objectMapper;
 
     @Value("classpath:prompts/intent_prompt.st")
     private Resource intentPrompt;
@@ -29,55 +38,85 @@ public class UserIntentService {
     @Value("${solesonic.llm.intent.model}")
     private String intentModel;
 
-    public UserIntentService(OllamaApi ollamaApi) {
+    @Value("${solesonic.llm.bot.name}")
+    private String agentName;
+
+    public UserIntentService(OllamaApi ollamaApi,
+                             List<McpSyncClient> mcpSyncClients,
+                             ObjectMapper objectMapper) {
         this.ollamaApi = ollamaApi;
+        this.mcpSyncClients = mcpSyncClients;
+        this.objectMapper = objectMapper;
     }
 
+    public Prompt prompt(String userMessage) {
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        McpSchema.ListPromptsResult listPromptsResults = mcpSyncClient.listPrompts();
+
+        try {
+            String promptList = objectMapper.writeValueAsString(listPromptsResults);
+            PromptTemplate promptTemplate = new PromptTemplate(intentPrompt);
+
+            Map<String, Object> context = Map.of(
+                    AGENT_NAME, agentName,
+                    USER_MESSAGE, userMessage,
+                    PROMPT_CATALOG, promptList
+            );
+
+            return promptTemplate.create(context);
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     /**
      * Determines the user's intent based on their message using LLM classification.
      *
      * @param userMessage the user's input message
-     * @return the classified intent type
+     * @return the classified prompt
      */
-    public IntentType determineIntent(String userMessage) {
-        if (userMessage == null || userMessage.trim().isEmpty()) {
-            return IntentType.GENERAL;
-        }
+    public String determineIntent(String userMessage) {
+        log.info("Determining intent for message: {}", userMessage);
 
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        PromptTemplate promptTemplate = new PromptTemplate(intentPrompt);
+
+        OllamaChatOptions ollamaOptions = OllamaChatOptions.builder()
+                .model(intentModel)
+                .temperature(0.7)
+                .build();
+
+        ModelManagementOptions modelManagementOptions = ModelManagementOptions.builder()
+                .pullModelStrategy(PullModelStrategy.WHEN_MISSING)
+                .build();
+
+        OllamaChatModel intentChatModel = OllamaChatModel.builder()
+                .ollamaApi(ollamaApi)
+                .defaultOptions(ollamaOptions)
+                .modelManagementOptions(modelManagementOptions)
+                .build();
+
+        ChatClient intentChatClient = ChatClient.builder(intentChatModel)
+                .build();
+
+        McpSchema.ListPromptsResult listPromptsResults = mcpSyncClient.listPrompts();
+
+        Map<String, Object> context;
         try {
-            PromptTemplate promptTemplate = new PromptTemplate(intentPrompt);
-            Map<String, Object> promptContext = Map.of(USER_MESSAGE, userMessage);
-            Prompt prompt = promptTemplate.create(promptContext);
+            String promptList = objectMapper.writeValueAsString(listPromptsResults);
 
-            OllamaChatOptions ollamaOptions = OllamaChatOptions.builder()
-                    .model(intentModel)
-                    .build();
+            context = Map.of(
+                    USER_MESSAGE, userMessage,
+                    PROMPT_CATALOG, promptList
+            );
 
-            ModelManagementOptions modelManagementOptions = ModelManagementOptions.builder()
-                    .pullModelStrategy(PullModelStrategy.WHEN_MISSING)
-                    .build();
-
-            OllamaChatModel intentChatModel = OllamaChatModel.builder()
-                    .ollamaApi(ollamaApi)
-                    .defaultOptions(ollamaOptions)
-                    .modelManagementOptions(modelManagementOptions)
-                    .build();
-
-            ChatClient intentChatClient = ChatClient.builder(intentChatModel)
-                    .build();
-
-            String response = intentChatClient.prompt(prompt)
-                    .call()
-                    .content();
-
-            log.debug("Intent classification response for message '{}': '{}'", userMessage, response);
-
-            return IntentType.fromLabel(response);
-
-        } catch (Exception e) {
-            log.error("Error determining intent for message '{}': {}", userMessage, e.getMessage(), e);
-            return IntentType.GENERAL;
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
         }
+
+        Prompt intentPrompt = promptTemplate.create(context);
+
+        ChatClient.CallResponseSpec call = intentChatClient.prompt(intentPrompt).call();
+        return call.content();
     }
 }

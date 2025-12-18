@@ -8,12 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.PutMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -24,6 +20,7 @@ import java.util.UUID;
 @RequestMapping("/streaming/chats")
 public class StreamingChatController {
     private static final Logger log = LoggerFactory.getLogger(StreamingChatController.class);
+    public static final String LAST_EVENT_ID = "Last-Event-ID";
 
     private final StreamingChatService streamingChatService;
     private final ElicitationService elicitationService;
@@ -36,20 +33,25 @@ public class StreamingChatController {
 
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<?>> create(@PathVariable UUID userId,
-                                           @RequestBody ChatRequest chatRequest) {
+                                           @RequestBody ChatRequest chatRequest,
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId,
+                                           Authentication authentication) {
         
         log.info("Starting streaming chat for user {}", userId);
-        
-        return streamingChatService.create(userId, chatRequest);
+        log.info("last event id {}", lastEventId);
+
+        return streamingChatService.create(userId, chatRequest, lastEventId, authentication);
     }
 
-    @PutMapping(value = "/{chatId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<?>> update(@PathVariable UUID chatId,
-                                           @RequestBody ChatRequest chatRequest) {
-        
-        log.info("Continuing streaming chat with chat id {}", chatId);
-        
-        return streamingChatService.update(chatId, chatRequest);
+    @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public Flux<ServerSentEvent<?>> update(@PathVariable UUID userId,
+                                           @PathVariable UUID chatId,
+                                           @RequestBody ChatRequest chatRequest,
+                                           @RequestHeader(value = LAST_EVENT_ID, required = false) String lastEventId,
+                                           Authentication authentication) {
+        log.info("Continuing streaming chat with chat id: {} and last event id: {}", chatId, lastEventId);
+
+        return streamingChatService.update(chatId, userId, chatRequest, lastEventId, authentication);
     }
 
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")

@@ -10,6 +10,7 @@ This document serves as the single source of truth for all environment variables
 |----------|-------------|---------|----------|--------|
 | `BASE_URI` | Base context path for the application | `api` | No | Sets server.servlet.context-path |
 | `BOT_NAME` | Bot name identifier | `solesonic-llm-api` | No | Default: solesonic-llm-api |
+| `SOLESONIC_ELICITATION_TIMEOUT_SECONDS` | Max seconds to wait for elicitation response | `600` | No | Maps to `solesonic.elicitation.timeout-seconds`; default 600 |
 
 ### Database Configuration
 

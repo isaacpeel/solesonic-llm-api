@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 
 @ControllerAdvice
 public class GeneralExceptionHandler {
@@ -60,6 +61,11 @@ public class GeneralExceptionHandler {
         String responseMessage = GENERIC_EXCEPTION_TEMPLATE.replace(EXCEPTION_MESSAGE, exception.getMessage());
 
         return exceptionService.buildResponse(responseMessage);
+    }
+
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public void handleAsyncRequestNotUsableException(AsyncRequestNotUsableException e) {
+        log.debug("Async request not usable (client disconnected): {}", e.getMessage());
     }
 
 
