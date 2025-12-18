@@ -5,7 +5,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.0</version>
+        <version>3.5.8</version>
         <relativePath/>
     </parent>
     <groupId>com.solesonic</groupId>
@@ -70,7 +70,6 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
-            <version>6.5.5</version>
         </dependency>
 
         <dependency>
@@ -259,7 +258,6 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
                 <configuration>
-                    <forkCount>0</forkCount>
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
                     <useSystemClassLoader>true</useSystemClassLoader>
