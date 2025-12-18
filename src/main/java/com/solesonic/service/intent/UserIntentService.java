@@ -83,7 +83,7 @@ public class UserIntentService {
 
         OllamaChatOptions ollamaOptions = OllamaChatOptions.builder()
                 .model(intentModel)
-                .temperature(0.0)
+                .temperature(0.7)
                 .build();
 
         ModelManagementOptions modelManagementOptions = ModelManagementOptions.builder()
