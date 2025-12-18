@@ -156,6 +156,25 @@ INFO  - Successfully applied x migrations to schema "public"
 
 You can test the chat functionality using the API endpoints (see [docs/api.md](api.md) for detailed endpoint documentation).
 
+### 5. (Optional) Verify Streaming & Elicitation
+
+The application supports Server‑Sent Events (SSE) streaming and interactive elicitations:
+
+1. Start a streaming chat (replace `USER_ID`):
+   ```bash
+   curl -N -X POST "http://localhost:8080/streaming/chats/users/USER_ID" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "chatMessage": "Start a session and ask me to confirm a delete",
+       "model": "qwen2.5:7b"
+     }'
+   ```
+
+2. When an `elicitation` event is emitted, the frontend (or your script) should POST the response to:
+   `POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`
+
+See the [Elicitation Guide](elicitation.md) for full details and examples in TypeScript and Python.
+
 ## Port Information
 
 The application uses the following ports by default:

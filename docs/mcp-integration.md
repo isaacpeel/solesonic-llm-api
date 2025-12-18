@@ -254,3 +254,53 @@ Common error responses:
 For a complete list of all required environment variables including MCP, Atlassian OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).
 
 For getting started with the Solesonic LLM API, see [docs/getting-started.md](getting-started.md).
+
+---
+
+## Elicitation with MCP Servers
+
+The Solesonic LLM API supports interactive elicitation flows initiated from MCP tools. This enables MCP servers to pause tool execution, ask the end user for structured input (e.g., confirmation forms), and resume with a well‑typed result.
+
+### Components
+
+- `com.solesonic.mcp.client.elicitation.ElicitationProvider`
+  - Annotated with `@McpElicitation`
+  - Entry point for MCP `ElicitRequest`
+- `com.solesonic.service.chat.ElicitationService`
+  - Prepares, emits, and awaits elicitation results
+  - Bridges the frontend via SSE and collects responses
+
+### Flow
+
+1. MCP tool issues an `ElicitRequest` with metadata containing the `chatId`
+2. Provider calls:
+   - `prepareElicitation(chatId, name)` → returns `ElicitationHandle { elicitationId, future }`
+   - `emitElicitation(chatId, elicitationId, request)` → emits SSE `elicitation` event
+   - `awaitResultAsync(chatId, elicitationId)` → waits for frontend submission (with timeout)
+3. Frontend submits result to `POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`
+4. Provider returns a `StructuredElicitResult` to the MCP tool with:
+   - `action`: `ACCEPT` | `DECLINE` | `CANCEL`
+   - `data`: typed object (e.g., `DeleteConfirmation`), plus raw fields map
+
+### Structured Results
+
+The example provider returns `StructuredElicitResult<DeleteConfirmation>` where:
+
+```java
+public record DeleteConfirmation(boolean confirmed, String chatId) {}
+```
+
+The raw fields submitted by the frontend are also preserved, enabling flexible consumers while keeping a typed surface.
+
+### Timeouts & Cancellation
+
+- Timeout is controlled by `solesonic.elicitation.timeout-seconds` (default 600). On timeout, backend returns `DECLINE` and cleans up state.
+- If a user cancels, a `cancel` SSE event is emitted to the active chat stream and the MCP flow completes with `CANCEL`.
+
+### Frontend Considerations
+
+- Always display clear accept/decline/cancel options
+- Use the `name` field from the elicitation payload as a stable identifier in the UI
+- Submit only the requested fields and an `action` value
+
+For more details including request/response samples and code examples, see the [Elicitation Guide](elicitation.md).

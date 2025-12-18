@@ -7,16 +7,17 @@
 
 ## Features
 
-- **🤖 LLM Integration** - Uses Ollama for chat and embedding models with intelligent response generation
-- **🎯 Intent-Based Prompts** - Automatically classifies user messages and selects appropriate tools and prompts
-- **🔗 MCP Server Integration** - Connects to Model Context Protocol (MCP) servers with secure OAuth2 authentication
-- **📄 Document Processing** - Supports PDF and other document formats with intelligent content extraction
-- **🔍 Vector Storage** - Uses pgvector for efficient vector embeddings storage and similarity search
-- **🧠 RAG (Retrieval Augmented Generation)** - Enhances LLM responses with relevant contextual information
-- **👤 User Management** - Supports user-specific chat history, preferences, and personalized experiences
-- **⚡ Atlassian Integration** - Seamless connectivity with Jira and Confluence for product management workflows
-- **🔐 OAuth2 Token Broker** - Secure 3-legged OAuth2 authentication with automatic refresh token rotation
-- **🛡️ Enterprise Security** - OAuth2 with JWT authentication, comprehensive authorization controls
+- ** LLM Integration** - Uses Ollama for chat and embedding models with intelligent response generation
+- ** Intent-Based Prompts** - Automatically classifies user messages and selects appropriate tools and prompts
+- ** MCP Server Integration** - Connects to Model Context Protocol (MCP) servers with secure OAuth2 authentication
+- ** Interactive Elicitation** - Real-time, structured user input during streaming chats via SSE with accept/decline/cancel actions
+- ** Document Processing** - Supports PDF and other document formats with intelligent content extraction
+- ** Vector Storage** - Uses pgvector for efficient vector embeddings storage and similarity search
+- ** RAG (Retrieval Augmented Generation)** - Enhances LLM responses with relevant contextual information
+- ** User Management** - Supports user-specific chat history, preferences, and personalized experiences
+- ** Atlassian Integration** - Seamless connectivity with Jira and Confluence for product management workflows
+- ** OAuth2 Token Broker** - Secure 3-legged OAuth2 authentication with automatic refresh token rotation
+- **️ Enterprise Security** - OAuth2 with JWT authentication, comprehensive authorization controls
 
 ## Quick Start
 
@@ -129,6 +130,7 @@ The token broker acts as a secure intermediary, storing long-lived refresh token
 
 ### 🏗️ **Architecture & Integration**
 - **[MCP Integration](docs/mcp-integration.md)** - Model Context Protocol server integration
+- **[Elicitation](docs/elicitation.md)** - Interactive, structured input flow over streaming chat
 - **[Product Management](docs/product-management.md)** - Jira/Confluence integration and RAG workflows
 - **[Database Schema](docs/database.md)** - PostgreSQL with pgvector setup and migrations
 
