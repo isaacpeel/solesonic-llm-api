@@ -23,7 +23,7 @@ import static com.solesonic.security.SecurityConfig.BROKER_ATLASSIAN_TOKEN;
 
 @Component
 @Order(1)
-@Profile({"prod"})
+@Profile({"prod", "prod-nginx"})
 public class JwtUserRequestFilter extends OncePerRequestFilter {
     private static final Logger log = LoggerFactory.getLogger(JwtUserRequestFilter.class);
 
