@@ -56,7 +56,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Profile({"prod"})
+    @Profile({"prod", "prod-nginx"})
     public SecurityFilterChain prodSecurityFilterChain(HttpSecurity http) throws Exception {
         http.exceptionHandling(config -> config.accessDeniedHandler(accessDeniedHandler()));
         http.exceptionHandling(config -> config.authenticationEntryPoint(authenticationEntryPoint()));
