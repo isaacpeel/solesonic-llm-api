@@ -7,7 +7,6 @@ FROM nvidia/cuda:12.5.0-runtime-ubuntu22.04
 ENV JAVA_HOME=/opt/java/openjdk
 ENV PATH="${JAVA_HOME}/bin:${PATH}"
 
-# Copy JRE from the first stage into the final image
 COPY --from=jre /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app
@@ -16,10 +15,9 @@ WORKDIR /app
 RUN mkdir -p /var/log/solesonic-llm-api
 VOLUME /var/log/solesonic-llm-api
 
-# Copy the pre-built application
 COPY target/*.jar app.jar
 
-EXPOSE 8443
+EXPOSE 8080
 
-# Keep existing runtime flags
-ENTRYPOINT ["java", "-Dspring.profiles.active=prod,ssl", "-Djava.net.preferIPv4Stack=true", "-jar", "/app/app.jar"]
+# Run without SSL profile - TLS is terminated at nginx
+ENTRYPOINT ["java", "-Dspring.profiles.active=prod-nginx", "-Djava.net.preferIPv4Stack=true", "-jar", "/app/app.jar"]

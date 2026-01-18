@@ -7,17 +7,15 @@ services:
       dockerfile: docker/Dockerfile
     image: solesonic-llm-api:latest
     container_name: solesonic-llm-api
-    network_mode: "host"
     ports:
-      - "8443:8443"
-    restart: no
+      - "127.0.0.1:8080:8080"
+    restart: unless-stopped
     environment:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - SERVER_PORT=8080
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
-      - ${SSL_PUBLIC_CERT}:/run/secrets/fullchain.pem:ro
-      - ${SSL_PRIVATE_CERT}:/run/secrets/privkey.pem:ro
     deploy:
       resources:
         reservations:
@@ -25,4 +23,3 @@ services:
             - driver: nvidia
               count: all
               capabilities: ["gpu"]
-
