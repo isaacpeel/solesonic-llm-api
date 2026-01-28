@@ -1,7 +1,5 @@
 package com.solesonic.service.intent;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
@@ -17,6 +15,7 @@ import org.springframework.ai.ollama.management.PullModelStrategy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -30,7 +29,7 @@ public class UserIntentService {
 
     private final OllamaApi ollamaApi;
     private final List<McpSyncClient> mcpSyncClients;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
     @Value("classpath:prompts/intent_prompt.st")
     private Resource intentPrompt;
@@ -43,30 +42,26 @@ public class UserIntentService {
 
     public UserIntentService(OllamaApi ollamaApi,
                              List<McpSyncClient> mcpSyncClients,
-                             ObjectMapper objectMapper) {
+                             JsonMapper jsonMapper) {
         this.ollamaApi = ollamaApi;
         this.mcpSyncClients = mcpSyncClients;
-        this.objectMapper = objectMapper;
+        this.jsonMapper = jsonMapper;
     }
 
     public Prompt prompt(String userMessage) {
         McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
         McpSchema.ListPromptsResult listPromptsResults = mcpSyncClient.listPrompts();
 
-        try {
-            String promptList = objectMapper.writeValueAsString(listPromptsResults);
-            PromptTemplate promptTemplate = new PromptTemplate(intentPrompt);
+        String promptList = jsonMapper.writeValueAsString(listPromptsResults);
+        PromptTemplate promptTemplate = new PromptTemplate(intentPrompt);
 
-            Map<String, Object> context = Map.of(
-                    AGENT_NAME, agentName,
-                    USER_MESSAGE, userMessage,
-                    PROMPT_CATALOG, promptList
-            );
+        Map<String, Object> context = Map.of(
+                AGENT_NAME, agentName,
+                USER_MESSAGE, userMessage,
+                PROMPT_CATALOG, promptList
+        );
 
-            return promptTemplate.create(context);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
-        }
+        return promptTemplate.create(context);
     }
 
     /**
@@ -102,17 +97,12 @@ public class UserIntentService {
         McpSchema.ListPromptsResult listPromptsResults = mcpSyncClient.listPrompts();
 
         Map<String, Object> context;
-        try {
-            String promptList = objectMapper.writeValueAsString(listPromptsResults);
+        String promptList = jsonMapper.writeValueAsString(listPromptsResults);
 
-            context = Map.of(
-                    USER_MESSAGE, userMessage,
-                    PROMPT_CATALOG, promptList
-            );
-
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
-        }
+        context = Map.of(
+                USER_MESSAGE, userMessage,
+                PROMPT_CATALOG, promptList
+        );
 
         Prompt intentPrompt = promptTemplate.create(context);
 

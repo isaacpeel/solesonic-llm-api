@@ -1,7 +1,6 @@
 package com.solesonic.service.chat;
 
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
@@ -18,6 +17,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Schedulers;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.Map;
@@ -41,7 +41,7 @@ public class ElicitationService {
 
     public record ElicitationHandle(UUID elicitationId, CompletableFuture<McpSchema.ElicitResult> future) {}
 
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
 
     @Value("${solesonic.elicitation.timeout-seconds:600}")
@@ -56,9 +56,9 @@ public class ElicitationService {
 
     private final ConcurrentHashMap<String, UUID> nameIndex = new ConcurrentHashMap<>();
 
-    public ElicitationService(ObjectMapper objectMapper,
+    public ElicitationService(JsonMapper jsonMapper,
                               ChatMessageService chatMessageService) {
-        this.objectMapper = objectMapper;
+        this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
     }
 
@@ -107,7 +107,9 @@ public class ElicitationService {
         }
 
         try {
-            Map<String, Object> requestJson = objectMapper.convertValue(request, new TypeReference<>() {});
+            String json = jsonMapper.writeValueAsString(request);
+            Map<String, Object> requestJson = jsonMapper.readerFor(new TypeReference<Map<String, Object>>() {}.getClass())
+                    .readValue(json);
 
             requestJson.put(ELICITATION_ID, elicitationId.toString());
             requestJson.put(CHAT_ID, chatId.toString());
@@ -239,7 +241,7 @@ public class ElicitationService {
                     resultFieldsById.remove(compositeIdKey);
                 })
                 .map(result -> {
-                    McpSchema.ElicitResult safeResult = Optional.ofNullable(result)
+                    McpSchema.ElicitResult safeResult = Optional.of(result)
                             .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));
 
                     log.info("Elicitation future result: {}", safeResult.action().name());
@@ -266,7 +268,7 @@ public class ElicitationService {
 
         if (fieldsMap != null) {
             try {
-                deleteConfirmation = objectMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
+                deleteConfirmation = jsonMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
             } catch (IllegalArgumentException convertException) {
                 log.warn("Failed to convert elicitation fields to DeleteConfirmation: {}", convertException.getMessage());
             }

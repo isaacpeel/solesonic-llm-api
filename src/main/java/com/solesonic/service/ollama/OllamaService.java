@@ -1,7 +1,5 @@
 package com.solesonic.service.ollama;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.repository.ollama.OllamaModelRepository;
@@ -9,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -21,23 +20,25 @@ public class OllamaService {
     private static final Logger log = LoggerFactory.getLogger(OllamaService.class);
     @SuppressWarnings("unused")
     public static final String EMBEDDING = "embedding";
+    @SuppressWarnings("unused")
     public static final String TOOLS = "tools";
     @SuppressWarnings("unused")
     public static final String VISION = "vision";
     @SuppressWarnings("unused")
     public static final String THINKING = "thinking";
+    @SuppressWarnings("unused")
     public static final String CAPABILITIES = "capabilities";
 
     private final OllamaApi ollamaApi;
     private final OllamaModelRepository modelRepository;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
     public OllamaService(OllamaApi ollamaApi,
                          OllamaModelRepository modelRepository,
-                         ObjectMapper objectMapper) {
+                         JsonMapper jsonMapper) {
         this.ollamaApi = ollamaApi;
         this.modelRepository = modelRepository;
-        this.objectMapper = objectMapper;
+        this.jsonMapper = jsonMapper;
     }
 
     public List<OllamaModel> models() {
@@ -120,8 +121,11 @@ public class OllamaService {
 
             ollamaModel.setName(modelName);
 
-            Map<String, Object> ollamaShow = objectMapper.convertValue(showModelResponse, new TypeReference<>() {});
-            Map<String, Object> ollamaDetails = objectMapper.convertValue(nativeModel, new TypeReference<>() {});
+            String showJson = jsonMapper.writeValueAsString(showModelResponse);
+            Map<String, Object> ollamaShow = jsonMapper.readerFor(Map.class).readValue(showJson);
+
+            String detailsJson = jsonMapper.writeValueAsString(nativeModel);
+            Map<String, Object> ollamaDetails = jsonMapper.readerFor(Map.class).readValue(detailsJson);
 
             ollamaModel.setOllamaShow(ollamaShow);
             ollamaModel.setOllamaModel(ollamaDetails);

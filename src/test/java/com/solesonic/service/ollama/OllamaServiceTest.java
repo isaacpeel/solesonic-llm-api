@@ -1,6 +1,6 @@
 package com.solesonic.service.ollama;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.repository.ollama.OllamaModelRepository;

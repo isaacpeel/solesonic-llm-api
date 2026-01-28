@@ -2,11 +2,12 @@ package com.solesonic.config.olllama;
 
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
+import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
-import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -37,7 +38,7 @@ public class DatabaseChatMemory implements ChatMemory {
     }
 
     @Override
-    public void add(@NonNull String conversationId, @NonNull List<Message> messages) {
+    public void add(@NonNull String conversationId, List<Message> messages) {
         log.debug("Adding messages to history.");
 
         UUID chatId = UUID.fromString(conversationId);
@@ -59,8 +60,8 @@ public class DatabaseChatMemory implements ChatMemory {
     }
 
     @Override
-    @NonNull
-    public List<Message> get(@NonNull String conversationId) {
+    @NullMarked
+    public List<Message> get(String conversationId) {
         log.debug("Getting messages from history.");
         List<Message> messages = chatMessageService.findByChatId(UUID.fromString(conversationId));
 
@@ -69,7 +70,8 @@ public class DatabaseChatMemory implements ChatMemory {
     }
 
     @Override
-    public void clear(@NonNull String conversationId) {
+    @NullMarked
+    public void clear(String conversationId) {
         //Leave as a no-op
         log.info("Clearing history.");
     }

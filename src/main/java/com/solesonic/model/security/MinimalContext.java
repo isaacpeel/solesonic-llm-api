@@ -5,7 +5,7 @@ import org.springframework.core.codec.ByteArrayEncoder;
 import org.springframework.core.codec.ResourceEncoder;
 import org.springframework.http.codec.EncoderHttpMessageWriter;
 import org.springframework.http.codec.HttpMessageWriter;
-import org.springframework.http.codec.json.Jackson2JsonEncoder;
+import org.springframework.http.codec.json.JacksonJsonEncoder;
 import org.springframework.web.reactive.function.BodyInserter;
 
 import java.util.*;
@@ -16,7 +16,7 @@ public class MinimalContext implements BodyInserter.Context {
     public MinimalContext() {
         List<HttpMessageWriter<?>> httpMessageWriters = new ArrayList<>();
 
-        Jackson2JsonEncoder jackson2JsonEncoder = new Jackson2JsonEncoder();
+        JacksonJsonEncoder jackson2JsonEncoder = new JacksonJsonEncoder();
         httpMessageWriters.add(new EncoderHttpMessageWriter<>(jackson2JsonEncoder));
 
         ByteArrayEncoder byteArrayEncoder = new ByteArrayEncoder();

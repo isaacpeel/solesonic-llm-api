@@ -1,7 +1,6 @@
 package com.solesonic.api.ollama;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.service.ollama.OllamaService;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +12,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -30,8 +31,11 @@ public class OllamaControllerTest {
 
     private MockMvc mockMvc;
 
-    private final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
+    private final JsonMapper jsonMapper = JsonMapper.builder()
+            .changeDefaultPropertyInclusion(incl ->
+                    incl.withValueInclusion(JsonInclude.Include.NON_NULL))
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .build();
 
     @Mock
     private OllamaService ollamaService;
@@ -99,7 +103,7 @@ public class OllamaControllerTest {
          
         mockMvc.perform(post("/ollama/models")
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(ollamaModel)))
+                .content(jsonMapper.writeValueAsString(ollamaModel)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
@@ -115,7 +119,7 @@ public class OllamaControllerTest {
          
         mockMvc.perform(put("/ollama/models/{id}", modelId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(ollamaModel)))
+                .content(jsonMapper.writeValueAsString(ollamaModel)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))

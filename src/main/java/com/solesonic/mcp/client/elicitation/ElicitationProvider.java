@@ -1,6 +1,5 @@
 package com.solesonic.mcp.client.elicitation;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.elicitation.ElicitationException;
 import com.solesonic.service.chat.ElicitationService;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -10,6 +9,8 @@ import org.springaicommunity.mcp.annotation.McpElicitation;
 import org.springaicommunity.mcp.context.StructuredElicitResult;
 import org.springframework.stereotype.Component;
 import reactor.core.scheduler.Schedulers;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.type.MapType;
 
 import java.util.Map;
 import java.util.Optional;
@@ -22,12 +23,12 @@ public class ElicitationProvider {
     private static final Logger log = LoggerFactory.getLogger(ElicitationProvider.class);
 
     private final ElicitationService elicitationService;
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
     public ElicitationProvider(ElicitationService elicitationService,
-                               ObjectMapper objectMapper) {
+                               JsonMapper jsonMapper) {
         this.elicitationService = elicitationService;
-        this.objectMapper = objectMapper;
+        this.jsonMapper = jsonMapper;
     }
 
     public record DeleteConfirmation(boolean confirmed, String chatId) {}
@@ -45,8 +46,10 @@ public class ElicitationProvider {
 
         UUID chatId = UUID.fromString(request.meta().get(CHAT_ID).toString());
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> requestMap = objectMapper.convertValue(request, Map.class);
+        MapType mapType = jsonMapper.getTypeFactory().constructMapType(Map.class, String.class, Object.class);
+
+        String json = jsonMapper.writeValueAsString(request);
+        Map<String, Object> requestMap = jsonMapper.readerFor(mapType).readValue(json);
 
         String name = Optional.ofNullable(requestMap.get("name"))
                 .map(Object::toString)

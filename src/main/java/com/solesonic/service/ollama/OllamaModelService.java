@@ -1,22 +1,26 @@
 package com.solesonic.service.ollama;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Map;
 
 @Service
+@SuppressWarnings("unused")
 public class OllamaModelService {
 
-    private final ObjectMapper objectMapper;
+    private final JsonMapper jsonMapper;
 
-    public OllamaModelService(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
+    public OllamaModelService(JsonMapper jsonMapper, JsonMapper jsonMapper1) {
+        this.jsonMapper = jsonMapper1;
     }
 
+
+
     public JsonNode readPath(Map<String, Object> jsonData, String... path) {
-        JsonNode jsonNode = objectMapper.valueToTree(jsonData);
+        String json = jsonMapper.writeValueAsString(jsonData);
+        JsonNode jsonNode = jsonMapper.readTree(json);
 
         for (String pathKey : path) {
             if (jsonNode == null || jsonNode.isMissingNode() || jsonNode.isNull()) {
@@ -25,7 +29,7 @@ public class OllamaModelService {
 
             if (jsonNode.isArray()) {
                 for (JsonNode element : jsonNode) {
-                    if (element.asText().equals(pathKey)) {
+                    if (element.asString().equals(pathKey)) {
                         return element;
                     }
                 }
@@ -41,6 +45,7 @@ public class OllamaModelService {
         return jsonNode;
     }
 
+    @SuppressWarnings("unused")
     public boolean hasNode(Map<String, Object> jsonData, String... path) {
         JsonNode foundNode = readPath(jsonData, path);
 
@@ -51,13 +56,13 @@ public class OllamaModelService {
     public String readText(Map<String, Object> jsonData, String... path) {
         JsonNode jsonNode = readPath(jsonData, path);
 
-        return jsonNode != null && jsonNode.isTextual() ? jsonNode.asText() : null;
+        return jsonNode != null && jsonNode.isString() ? jsonNode.asString() : null;
     }
 
     @SuppressWarnings("unused")
     public <T> T toTreeValue(Object pojo, Class<T> clazz) {
-        JsonNode node = objectMapper.valueToTree(pojo);
+        JsonNode node = jsonMapper.valueToTree(pojo);
 
-        return objectMapper.convertValue(node, clazz);
+        return jsonMapper.convertValue(node, clazz);
     }
 }

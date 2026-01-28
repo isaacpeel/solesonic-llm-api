@@ -3,14 +3,14 @@ package com.solesonic.mcp.client;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.lang3.StringUtils;
+import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.lang.NonNull;
-import org.springframework.lang.Nullable;
 import reactor.util.context.Context;
 
 import java.util.HashMap;
@@ -65,6 +65,7 @@ public class IdentityToolCallback implements ToolCallback {
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
         String userToken = toolContextMap.get(USER_TOKEN).toString();
+        @SuppressWarnings("unused")
         String chatId = toolContextMap.get(CHAT_ID).toString();
 
         if (StringUtils.isBlank(userToken)) {

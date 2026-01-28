@@ -1,7 +1,7 @@
 package com.solesonic.api.chat;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.annotation.JsonInclude;
+import tools.jackson.databind.DeserializationFeature;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.history.Chat;
@@ -17,6 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -37,8 +38,11 @@ public class ChatControllerTest {
 
     private MockMvc mockMvc;
 
-    private final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
+    private final JsonMapper jsonMapper = JsonMapper.builder()
+            .changeDefaultPropertyInclusion(incl ->
+                    incl.withValueInclusion(JsonInclude.Include.NON_NULL))
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .build();
 
     @Mock
     private ChatService chatService;
@@ -89,7 +93,7 @@ public class ChatControllerTest {
          
         mockMvc.perform(post("/chats/users/{userId}", userId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(chatRequest)))
+                .content(jsonMapper.writeValueAsString(chatRequest)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(chatId.toString()))
@@ -105,7 +109,7 @@ public class ChatControllerTest {
          
         mockMvc.perform(put("/chats/{chatId}", chatId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(chatRequest)))
+                .content(jsonMapper.writeValueAsString(chatRequest)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(chatId.toString()))
@@ -158,7 +162,7 @@ public class ChatControllerTest {
         // Create a ChatRequest with a specific message
         String requestMessage = "This is a test message for JSON serialization";
         ChatRequest testRequest = new ChatRequest(requestMessage);
-        String requestJson = objectMapper.writeValueAsString(testRequest);
+        String requestJson = jsonMapper.writeValueAsString(testRequest);
 
         
         MvcResult result = mockMvc.perform(post("/chats/users/{userId}", userId)
@@ -173,7 +177,7 @@ public class ChatControllerTest {
         assertNotNull(responseJson, "Response JSON should not be null");
 
         // Deserialize the response JSON back to an IzzyBotResponse object
-        SolesonicChatResponse responseObject = objectMapper.readValue(responseJson, SolesonicChatResponse.class);
+        SolesonicChatResponse responseObject = jsonMapper.readValue(responseJson, SolesonicChatResponse.class);
 
         // Verify the deserialized object
         assertNotNull(responseObject, "Deserialized response object should not be null");
@@ -191,7 +195,7 @@ public class ChatControllerTest {
         // Create a ChatRequest with a specific message
         String requestMessage = "This is a test message for JSON serialization in update";
         ChatRequest testRequest = new ChatRequest(requestMessage);
-        String requestJson = objectMapper.writeValueAsString(testRequest);
+        String requestJson = jsonMapper.writeValueAsString(testRequest);
 
         
         MvcResult result = mockMvc.perform(put("/chats/{chatId}", chatId)
@@ -206,7 +210,7 @@ public class ChatControllerTest {
         assertNotNull(responseJson, "Response JSON should not be null");
 
         // Deserialize the response JSON back to an IzzyBotResponse object
-        SolesonicChatResponse responseObject = objectMapper.readValue(responseJson, SolesonicChatResponse.class);
+        SolesonicChatResponse responseObject = jsonMapper.readValue(responseJson, SolesonicChatResponse.class);
 
         // Verify the deserialized object
         assertNotNull(responseObject, "Deserialized response object should not be null");

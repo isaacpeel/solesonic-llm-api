@@ -1,6 +1,6 @@
 package com.solesonic.mcp.client;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -43,7 +43,7 @@ public class TokenExchangeService {
                         .with(REQUESTED_TOKEN_TYPE, TOKEN_TYPE_ACCESS_TOKEN))
                 .retrieve()
                 .bodyToMono(JsonNode.class)
-                .map(json -> json.get(ACCESS_TOKEN).asText())
+                .map(json -> json.get(ACCESS_TOKEN).asString())
                 .switchIfEmpty(Mono.error(new IllegalStateException("Token exchange returned no access_token")));
     }
 }
