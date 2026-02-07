@@ -1,6 +1,8 @@
 package com.solesonic.model.atlassian.auth;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.annotation.Nulls;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -22,6 +24,7 @@ public record AtlassianAccessToken(
         @JsonProperty(value = "expires_in")
         Integer expiresIn,
 
+        @JsonSetter(nulls = Nulls.SKIP)
         boolean administrator,
 
         @JsonProperty(defaultValue = "0")
@@ -42,6 +45,7 @@ public record AtlassianAccessToken(
         return ZonedDateTime.now().isAfter(expirationTime);
     }
 
+    @SuppressWarnings("unused")
     public boolean hasNewRefreshToken(String oldRefreshToken) {
         return refreshToken != null && !refreshToken.equals(oldRefreshToken);
     }
