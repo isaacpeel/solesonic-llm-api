@@ -87,7 +87,11 @@ public class StreamingChatService {
 
     public record ChunkPayload(String content) {}
 
-    public Flux<ServerSentEvent<?>> update(UUID chatId, UUID userId, ChatRequest chatRequest, String lastEventId, Authentication authentication) {
+    public Flux<ServerSentEvent<?>> update(UUID chatId,
+                                           UUID userId,
+                                           ChatRequest chatRequest,
+                                           String lastEventId,
+                                           Authentication authentication) {
         Long resumeFromIndex = null;
 
         if (StringUtils.isNotBlank(lastEventId)) {
