@@ -129,8 +129,8 @@ public class ElicitationService {
             chatMessageService.save(chatMessage);
 
             serverSentEventMany.tryEmitNext(serverSentEvent);
-        } catch (IllegalArgumentException ex) {
-            log.error("Failed to serialize elicitation request for chat {}", chatId, ex);
+        } catch (IllegalArgumentException illegalArgumentException) {
+            log.error("Failed to serialize elicitation request for chat {}", chatId, illegalArgumentException);
         }
 
         log.info("Finished emitting elicitation event for chat {}", chatId);
@@ -194,7 +194,6 @@ public class ElicitationService {
             }
         }
 
-        
         log.info("Completing elicitation for chat {}", chatId);
         
         return future.complete(elicitResult);

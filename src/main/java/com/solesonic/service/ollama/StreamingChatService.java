@@ -217,8 +217,9 @@ public class StreamingChatService {
                 sink::tryEmitNext,
                 error -> {
                     Throwable unwrapped = Exceptions.unwrap(error);
-                    boolean isInterrupted = unwrapped instanceof InterruptedException
-                            || (unwrapped.getCause() instanceof InterruptedException);
+
+                    boolean isInterrupted = unwrapped instanceof InterruptedException ||
+                            (unwrapped.getCause() instanceof InterruptedException);
 
                     if (Exceptions.isCancel(unwrapped) || isInterrupted) {
                         log.info("Stream cancelled gracefully for chat id {}", chatId);
