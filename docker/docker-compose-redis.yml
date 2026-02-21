@@ -1,6 +1,8 @@
 services:
   redis:
-    image: redis:8.6.0
+    env_file:
+      - .env
+    image: redis:7
     container_name: solesonic-redis
     network_mode: "host"
     command: >
