@@ -3,7 +3,6 @@ package com.solesonic.redis.subscriber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
@@ -16,7 +15,6 @@ import reactor.core.publisher.Flux;
 import java.time.Duration;
 
 @Service
-@ConditionalOnProperty(name = "redis.stream.enabled", havingValue = "true")
 public class ChatStreamSubscriber {
     private static final Logger log = LoggerFactory.getLogger(ChatStreamSubscriber.class);
     private static final String DONE_EVENT_TYPE = "done";
