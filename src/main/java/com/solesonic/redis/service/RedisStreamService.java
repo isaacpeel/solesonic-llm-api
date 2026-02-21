@@ -5,7 +5,6 @@ import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.codec.ServerSentEvent;
@@ -18,7 +17,6 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
-@ConditionalOnProperty(name = "redis.stream.enabled", havingValue = "true")
 public class RedisStreamService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamService.class);
     private static final String STREAM_KEY_PREFIX = "chat";
