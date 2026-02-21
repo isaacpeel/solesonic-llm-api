@@ -40,7 +40,7 @@ public class StreamingChatController {
         log.info("Starting streaming chat for user {}", userId);
         log.info("last event id {}", lastEventId);
 
-        return streamingChatService.create(userId, chatRequest, lastEventId, authentication);
+        return streamingChatService.create(userId, chatRequest, authentication);
     }
 
     @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

@@ -119,8 +119,7 @@ class RedisChatEventTest {
 
         Map<String, String> eventMap = original.toMap();
 
-        Map<Object, Object> objectMap = new java.util.HashMap<>();
-        eventMap.forEach(objectMap::put);
+        Map<Object, Object> objectMap = new java.util.HashMap<>(eventMap);
 
         RedisChatEvent deserialized = RedisChatEvent.fromMap(objectMap);
 

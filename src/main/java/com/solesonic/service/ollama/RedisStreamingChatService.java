@@ -64,7 +64,6 @@ public class RedisStreamingChatService {
 
     public Flux<ServerSentEvent<?>> create(UUID userId,
                                            ChatRequest chatRequest,
-                                           String lastEventId,
                                            Authentication authentication) {
 
         Chat chat = new Chat();

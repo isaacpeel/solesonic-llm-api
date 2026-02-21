@@ -55,21 +55,6 @@ public class RedisStreamService {
         return chatStreamPublisher.publish(streamKey, event);
     }
 
-    public Mono<String> getLatestOffset(UUID chatId, UUID userId) {
-        String streamKey = buildStreamKey(chatId, userId);
-
-        return redisTemplate.opsForStream()
-                .reverseRange(streamKey, org.springframework.data.domain.Range.unbounded(),
-                        org.springframework.data.redis.connection.Limit.limit().count(1))
-                .next()
-                .map(record -> record.getId().getValue())
-                .defaultIfEmpty("0")
-                .onErrorResume(e -> {
-                    log.debug("Stream {} does not exist yet, starting from 0", streamKey);
-                    return Mono.just("0");
-                });
-    }
-
     public Flux<ServerSentEvent<?>> subscribe(UUID chatId, UUID userId, String lastEventId) {
         String streamKey = buildStreamKey(chatId, userId);
 

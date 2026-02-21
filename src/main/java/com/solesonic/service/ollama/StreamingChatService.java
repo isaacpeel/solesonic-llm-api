@@ -27,6 +27,8 @@ import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
 @Service
+@SuppressWarnings("unused")
+@Deprecated
 public class StreamingChatService {
     private static final Logger log = LoggerFactory.getLogger(StreamingChatService.class);
     public static final String CHUNK = "chunk";
