@@ -109,6 +109,11 @@
       "name": "aws.kms.key-id",
       "type": "java.lang.String",
       "description": "AWS KMS key identifier (ID, ARN, or alias) for encryption."
+    },
+    {
+      "name": "redis.stream.enabled",
+      "type": "java.lang.String",
+      "description": "Feature flag for redis."
     }
   ]
 }

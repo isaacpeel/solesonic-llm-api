@@ -32,8 +32,9 @@ public class StreamingChatService {
     public static final String CHUNK = "chunk";
     public static final String INIT = "init";
     public static final String DONE = "done";
-
     public static final String CHAT_CANCELED = "Chat canceled.";
+
+    public record ChunkPayload(String content) {}
 
     private final ChatRepository chatRepository;
     private final PromptService promptService;
@@ -66,9 +67,9 @@ public class StreamingChatService {
         if (StringUtils.isNotBlank(lastEventId)) {
             UUID activeChatId = userActiveStreams.get(userId);
 
-            // If we found an active mapping and the stream is still alive in the cache
             if (activeChatId != null && streamCache.containsKey(activeChatId)) {
                 log.info("Auto-resuming active chat {} for user {} based on Last-Event-ID", activeChatId, userId);
+
                 return update(activeChatId, userId, chatRequest, lastEventId, authentication);
             } else {
                 log.debug("Last-Event-ID present but no active stream found for user {}. Starting new session.", userId);
@@ -84,8 +85,6 @@ public class StreamingChatService {
 
         return update(chatId, userId, chatRequest, null, authentication);
     }
-
-    public record ChunkPayload(String content) {}
 
     public Flux<ServerSentEvent<?>> update(UUID chatId,
                                            UUID userId,
@@ -107,6 +106,7 @@ public class StreamingChatService {
 
         Sinks.Many<ServerSentEvent<?>> sink = streamCache.computeIfAbsent(chatId, id -> {
             log.info("Initializing new background stream for chat id {}", id);
+
             return initializeStream(id, userId, chatRequest, authentication);
         });
 
@@ -242,6 +242,7 @@ public class StreamingChatService {
 
     private void cleanup(UUID chatId, UUID userId) {
         log.info("Cleaning up stream cache for chat id: {}", chatId);
+
         elicitationService.closeChat(chatId);
         streamCache.remove(chatId);
 
