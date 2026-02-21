@@ -69,13 +69,11 @@ class RedisChatEventTest {
 
         Map<String, String> eventMap = event.toMap();
 
-        assertThat(eventMap).hasSize(10);
+        assertThat(eventMap).hasSize(8);
         assertThat(eventMap.get("eventId")).isEqualTo("evt-1");
         assertThat(eventMap.get("type")).isEqualTo("done");
         assertThat(eventMap.get("chatId")).isEqualTo(chatId.toString());
         assertThat(eventMap.get("userId")).isEqualTo(userId.toString());
-        assertThat(eventMap.get("principal")).isEqualTo("user@test.com");
-        assertThat(eventMap.get("authorities")).isEqualTo("ROLE_USER");
         assertThat(eventMap.get("payload")).isEqualTo("{\"status\":\"complete\"}");
         assertThat(eventMap.get("timestamp")).isEqualTo("1700000000000");
         assertThat(eventMap.get("correlationId")).isEqualTo("corr-456");
@@ -95,8 +93,6 @@ class RedisChatEventTest {
 
         Map<String, String> eventMap = event.toMap();
 
-        assertThat(eventMap.get("principal")).isEqualTo("");
-        assertThat(eventMap.get("authorities")).isEqualTo("");
         assertThat(eventMap.get("payload")).isEqualTo("");
         assertThat(eventMap.get("correlationId")).isEqualTo("");
     }
