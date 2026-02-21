@@ -82,9 +82,15 @@ public class RedisStreamingChatService {
                                            String lastEventId,
                                            Authentication authentication) {
 
-        publishToRedisStream(chatId, userId, chatRequest, authentication);
+        if(StringUtils.isNotEmpty(lastEventId)) {
+            return redisStreamService.subscribe(chatId, userId, lastEventId);
+        }
 
-        return redisStreamService.subscribe(chatId, userId, lastEventId);
+        return redisStreamService.getLatestOffset(chatId, userId)
+                .flatMapMany(offset -> {
+                    publishToRedisStream(chatId, userId, chatRequest, authentication);
+                    return redisStreamService.subscribe(chatId, userId, offset);
+                });
     }
 
 
@@ -185,10 +191,6 @@ public class RedisStreamingChatService {
         log.info("Cleaning up Redis stream for chat id: {}", chatId);
 
         elicitationService.closeChat(chatId);
-
-        redisStreamService.deleteStream(chatId, userId)
-                .subscribeOn(Schedulers.boundedElastic())
-                .subscribe();
 
         if (userId != null) {
             activeStreamTracker.remove(userId, chatId)
