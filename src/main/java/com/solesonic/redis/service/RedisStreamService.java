@@ -62,7 +62,7 @@ public class RedisStreamService {
                 .next()
                 .map(record -> record.getId().getValue())
                 .defaultIfEmpty("0")
-                .onErrorResume(e -> {
+                .onErrorResume(_ -> {
                     log.debug("Stream {} does not exist yet, starting from 0", streamKey);
                     return Mono.just("0");
                 });
@@ -92,6 +92,7 @@ public class RedisStreamService {
         return jsonMapper.writeValueAsString(payload);
     }
 
+    @SuppressWarnings("unused")
     public Mono<Boolean> deleteStream(UUID chatId, UUID userId) {
         String streamKey = buildStreamKey(chatId, userId);
         log.debug("Deleting Redis stream {} before new exchange", streamKey);
