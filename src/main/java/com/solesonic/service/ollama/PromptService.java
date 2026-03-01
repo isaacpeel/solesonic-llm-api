@@ -54,7 +54,6 @@ public class PromptService {
 
     private record PreparedPrompt(Prompt mcpPrompt, OllamaChatOptions options, Advisor retrievalAdvisor) {}
 
-
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
