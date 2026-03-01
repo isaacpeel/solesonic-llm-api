@@ -87,6 +87,8 @@ public class RedisStreamingChatService {
         }
 
         return redisStreamService.getLatestOffset(chatId, userId)
+                .flatMap(offset -> redisStreamService.publish(chatId, userId, INIT, new ChunkPayload(""))
+                        .thenReturn(offset))
                 .flatMapMany(offset -> {
                     publishToRedisStream(chatId, userId, chatRequest, authentication);
                     return redisStreamService.subscribe(chatId, userId, offset);
@@ -116,10 +118,6 @@ public class RedisStreamingChatService {
                 .filter(sse -> CANCEL_ACTION.equalsIgnoreCase(sse.event()))
                 .take(1)
                 .share();
-
-        redisStreamService.publish(chatId, userId, INIT, new ChunkPayload(""))
-                .subscribeOn(Schedulers.boundedElastic())
-                .subscribe();
 
         Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatMessage, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
