@@ -6,6 +6,7 @@ import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -51,6 +52,9 @@ public class PromptService {
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
 
+    private record PreparedPrompt(Prompt mcpPrompt, OllamaChatOptions options, Advisor retrievalAdvisor) {}
+
+
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
@@ -65,9 +69,7 @@ public class PromptService {
     }
 
     public String model(UUID userId) {
-        UserPreferences userPreferences = userPreferencesService.get(userId);
-
-        return userPreferences.getModel();
+        return userPreferencesService.get(userId).getModel();
     }
 
     private UserPreferences userPreferences(UUID userId) {
@@ -87,11 +89,10 @@ public class PromptService {
                     .call()
                     .content();
 
-            if (routingResponse == null || routingResponse.trim().isEmpty()) {
+            if (StringUtils.isEmpty(routingResponse)) {
                 log.warn("Intent model returned empty response; falling back to basic-prompt");
 
                 chosenPromptId = BASIC_PROMPT;
-
             } else {
                 chosenPromptId = routingResponse.trim();
             }
@@ -113,22 +114,7 @@ public class PromptService {
 
         McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
 
-        List<Message> messages = getPromptResult.messages().stream()
-                .map(mcpMessage -> {
-                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
-                        String textContent = extractTextContent(content);
-
-                        return (Message) switch (role) {
-                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
-                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
-                        };
-
-                    }
-                    throw new IllegalArgumentException("Unexpected message type.");
-                })
-                .toList();
-
-        Prompt mcpPrompt = new Prompt(messages);
+        PreparedPrompt prepared = preparePrompt(getPromptResult, model, userId);
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
@@ -137,7 +123,7 @@ public class PromptService {
         Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
 
         // Build the chat client call
-        var chatClientBuilder = chatClient.prompt(mcpPrompt)
+        var chatClientBuilder = chatClient.prompt(prepared.mcpPrompt)
                 .user(chatMessage)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -156,40 +142,9 @@ public class PromptService {
 
         log.info("Intent model chose '{}'", promptName);
 
-        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        McpSchema.GetPromptResult getPromptResult = getGetPromptResult(chatMessage, promptName);
 
-        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                promptName,
-                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
-        );
-
-        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
-
-        if (getPromptResult.messages().isEmpty()) {
-            getPromptRequest = new McpSchema.GetPromptRequest(
-                    promptName,
-                    Map.of(AGENT_NAME, BASIC_PROMPT, USER_MESSAGE, chatMessage)
-            );
-
-            getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
-        }
-
-        List<Message> messages = getPromptResult.messages().stream()
-                .map(mcpMessage -> {
-                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
-                        String textContent = extractTextContent(content);
-
-                        return (Message) switch (role) {
-                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
-                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
-                        };
-
-                    }
-                    throw new IllegalArgumentException("Unexpected message type.");
-                })
-                .toList();
-
-        Prompt mcpPrompt = new Prompt(messages);
+        PreparedPrompt prepared = preparePrompt(getPromptResult, model, userId);
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(model)
@@ -208,7 +163,7 @@ public class PromptService {
         assert authToken != null;
         Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId);
 
-        var chatClientBuilder = chatClient.prompt(mcpPrompt)
+        var chatClientBuilder = chatClient.prompt(prepared.mcpPrompt)
                 .user(chatMessage)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -222,28 +177,42 @@ public class PromptService {
                         .content());
     }
 
-    private String extractTextContent(Object content) {
-        if (content instanceof String) {
-            return (String) content;
-        } else if (content instanceof McpSchema.TextContent textContent) {
-            return textContent.text();
-        } else if (content instanceof McpSchema.ImageContent) {
-            return "[Image content not supported]";
-        } else if (content instanceof List<?> contentList) {
-            // Handle list of content items
-            return contentList.stream()
-                    .map(item -> {
-                        if (item instanceof McpSchema.TextContent textContent) {
-                            return textContent.text();
-                        } else if (item instanceof String) {
-                            return (String) item;
-                        }
-                        return "";
-                    })
-                    .filter(s -> !s.isEmpty())
-                    .reduce("", (a, b) -> a + "\n" + b);
+    private McpSchema.GetPromptResult getGetPromptResult(String chatMessage, String promptName) {
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+
+        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                promptName,
+                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
+        );
+
+        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+
+        if (getPromptResult.messages().isEmpty()) {
+            getPromptRequest = new McpSchema.GetPromptRequest(
+                    promptName,
+                    Map.of(AGENT_NAME, BASIC_PROMPT, USER_MESSAGE, chatMessage)
+            );
+
+            getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
         }
-        return "";
+        return getPromptResult;
+    }
+
+    private String extractTextContent(Object content) {
+        return switch (content) {
+            case String text -> text;
+            case McpSchema.TextContent textContent -> textContent.text();
+            case McpSchema.ImageContent _ -> "[Image content not supported]";
+            case List<?> contentList -> contentList.stream()
+                    .map(item -> switch (item) {
+                        case McpSchema.TextContent textContent -> textContent.text();
+                        case String text -> text;
+                        default -> "";
+                    })
+                    .filter(entry -> !entry.isEmpty())
+                    .reduce("", (accumulated, next) -> accumulated + "\n" + next);
+            default -> "";
+        };
     }
 
     private Advisor retrievalAugmentationAdvisor(UUID userId) {
@@ -259,5 +228,31 @@ public class PromptService {
                         .allowEmptyContext(true)
                         .build())
                 .build();
+    }
+
+    private PreparedPrompt preparePrompt(McpSchema.GetPromptResult getPromptResult, String model, UUID userId) {
+        List<Message> messages = getPromptResult.messages().stream()
+                .map(mcpMessage -> {
+                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
+                        String textContent = extractTextContent(content);
+
+                        return (Message) switch (role) {
+                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
+                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
+                        };
+                    }
+                    throw new IllegalArgumentException("Unexpected message type.");
+                })
+                .toList();
+
+        Prompt mcpPrompt = new Prompt(messages);
+
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                .model(model)
+                .build();
+
+        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
+
+        return new PreparedPrompt(mcpPrompt, ollamaChatOptions, retrievalAugmentationAdvisor);
     }
 }
