@@ -10,7 +10,8 @@ import java.util.List;
 public class EtlTextSplitter     {
 
     public List<Document> split(List<Document> documents) {
-        TokenTextSplitter tokenTextSplitter = new TokenTextSplitter();
-        return tokenTextSplitter.split(documents);
+        return TokenTextSplitter.builder()
+                .build()
+                .split(documents);
     }
 }
