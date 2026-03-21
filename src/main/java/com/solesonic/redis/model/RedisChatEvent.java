@@ -1,11 +1,18 @@
 package com.solesonic.redis.model;
 
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
 public class RedisChatEvent {
+    public static final String EVENT_ID = "eventId";
+    public static final String TYPE = "type";
+    public static final String CHAT_ID = "chatId";
+    public static final String USER_ID = "userId";
+    public static final String PAYLOAD = "payload";
+    public static final String TIMESTAMP = "timestamp";
+    public static final String CORRELATION_ID = "correlationId";
+    public static final String INTERNAL_SEQUENCE = "internalSequence";
 
     private final String eventId;
     private final String type;
@@ -59,29 +66,28 @@ public class RedisChatEvent {
         return internalSequence;
     }
 
-    public Map<String, String> toMap() {
-        Map<String, String> map = new HashMap<>();
-        map.put("eventId", eventId);
-        map.put("type", type);
-        map.put("chatId", chatId.toString());
-        map.put("userId", userId.toString());
-        map.put("payload", payload != null ? payload : "");
-        map.put("timestamp", String.valueOf(timestamp));
-        map.put("correlationId", correlationId != null ? correlationId : "");
-        map.put("internalSequence", String.valueOf(internalSequence));
-        return map;
+    public Map<String, Object> toMap() {
+        return Map.of(
+        EVENT_ID, eventId,
+        TYPE, type,
+        CHAT_ID, chatId,
+        USER_ID, userId,
+        PAYLOAD, payload,
+        TIMESTAMP, timestamp,
+        CORRELATION_ID, correlationId,
+        INTERNAL_SEQUENCE, internalSequence);
     }
 
     public static RedisChatEvent fromMap(Map<Object, Object> map) {
         return builder()
-                .eventId(stringValue(map, "eventId"))
-                .type(stringValue(map, "type"))
-                .chatId(UUID.fromString(stringValue(map, "chatId")))
-                .userId(UUID.fromString(stringValue(map, "userId")))
-                .payload(stringValue(map, "payload"))
-                .timestamp(Long.parseLong(stringValue(map, "timestamp")))
-                .correlationId(stringValue(map, "correlationId"))
-                .internalSequence(Long.parseLong(stringValue(map, "internalSequence")))
+                .eventId(stringValue(map, EVENT_ID))
+                .type(stringValue(map, TYPE))
+                .chatId(UUID.fromString(stringValue(map, CHAT_ID)))
+                .userId(UUID.fromString(stringValue(map, USER_ID)))
+                .payload(stringValue(map, PAYLOAD))
+                .timestamp(Long.parseLong(stringValue(map, TIMESTAMP)))
+                .correlationId(stringValue(map, CORRELATION_ID))
+                .internalSequence(Long.parseLong(stringValue(map, INTERNAL_SEQUENCE)))
                 .build();
     }
 

@@ -16,7 +16,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.solesonic.service.ollama.PromptService.CHAT_ID;
+import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
 @Component
 public class ElicitationProvider {

@@ -26,7 +26,7 @@ public class ChatStreamPublisher {
     }
 
     public Mono<RecordId> publish(String streamKey, RedisChatEvent event) {
-        Map<String, String> eventMap = event.toMap();
+        Map<String, Object> eventMap = event.toMap();
 
         return redisTemplate.opsForStream()
                 .add(StreamRecords.newRecord().in(streamKey).ofMap(eventMap))

@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 import java.util.UUID;
 
+import static com.solesonic.redis.model.RedisChatEvent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RedisChatEventTest {
@@ -67,17 +68,17 @@ class RedisChatEventTest {
                 .internalSequence(10)
                 .build();
 
-        Map<String, String> eventMap = event.toMap();
+        Map<String, Object> eventMap = event.toMap();
 
         assertThat(eventMap).hasSize(8);
-        assertThat(eventMap.get("eventId")).isEqualTo("evt-1");
-        assertThat(eventMap.get("type")).isEqualTo("done");
-        assertThat(eventMap.get("chatId")).isEqualTo(chatId.toString());
-        assertThat(eventMap.get("userId")).isEqualTo(userId.toString());
-        assertThat(eventMap.get("payload")).isEqualTo("{\"status\":\"complete\"}");
-        assertThat(eventMap.get("timestamp")).isEqualTo("1700000000000");
-        assertThat(eventMap.get("correlationId")).isEqualTo("corr-456");
-        assertThat(eventMap.get("internalSequence")).isEqualTo("10");
+        assertThat(eventMap.get(EVENT_ID)).isEqualTo("evt-1");
+        assertThat(eventMap.get(TYPE)).isEqualTo("done");
+        assertThat(eventMap.get(CHAT_ID)).isEqualTo(chatId);
+        assertThat(eventMap.get(USER_ID)).isEqualTo(userId.toString());
+        assertThat(eventMap.get(PAYLOAD)).isEqualTo("{\"status\":\"complete\"}");
+        assertThat(eventMap.get(TIMESTAMP)).isEqualTo("1700000000000");
+        assertThat(eventMap.get(CORRELATION_ID)).isEqualTo("corr-456");
+        assertThat(eventMap.get(INTERNAL_SEQUENCE)).isEqualTo("10");
     }
 
     @Test
@@ -91,10 +92,10 @@ class RedisChatEventTest {
                 .userId(userId)
                 .build();
 
-        Map<String, String> eventMap = event.toMap();
+        Map<String, Object> eventMap = event.toMap();
 
-        assertThat(eventMap.get("payload")).isEqualTo("");
-        assertThat(eventMap.get("correlationId")).isEqualTo("");
+        assertThat(eventMap.get(PAYLOAD)).isEqualTo("");
+        assertThat(eventMap.get(CORRELATION_ID)).isEqualTo("");
     }
 
     @Test
@@ -113,7 +114,7 @@ class RedisChatEventTest {
                 .internalSequence(99)
                 .build();
 
-        Map<String, String> eventMap = original.toMap();
+        Map<String, Object> eventMap = original.toMap();
 
         Map<Object, Object> objectMap = new java.util.HashMap<>(eventMap);
 

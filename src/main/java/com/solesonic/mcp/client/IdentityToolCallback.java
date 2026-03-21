@@ -16,7 +16,7 @@ import reactor.util.context.Context;
 import java.util.HashMap;
 import java.util.Map;
 
-import static com.solesonic.service.ollama.PromptService.CHAT_ID;
+import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
 /**
  * A wrapper around SyncMcpToolCallback that captures the security context

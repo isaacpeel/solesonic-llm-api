@@ -1,8 +1,9 @@
 
-package com.solesonic.service.ollama;
+package com.solesonic.service.prompt;
 
+import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.prompt.SlashCommandPrompt;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.service.intent.UserIntentService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -39,12 +40,13 @@ public class PromptService {
     public static final String BASIC_PROMPT = "basic-prompt";
     public static final String AGENT_NAME = "agentName";
     public static final String USER_MESSAGE = "userMessage";
+    public static final String DEFAULT = "default";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
     private final VectorStore vectorStore;
-    private final UserIntentService userIntentService;
     private final List<McpSyncClient> mcpSyncClients;
+    private final SlashCommandService slashCommandService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -52,19 +54,20 @@ public class PromptService {
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
 
-    private record PreparedPrompt(Prompt mcpPrompt, OllamaChatOptions options, Advisor retrievalAdvisor) {}
+    private record PreparedPrompt(Prompt mcpPrompt, OllamaChatOptions options, Advisor retrievalAdvisor) {
+    }
 
     public PromptService(
             ChatClient chatClient,
             UserPreferencesService userPreferencesService,
             VectorStore vectorStore,
-            UserIntentService userIntentService,
-            List<McpSyncClient> mcpSyncClients) {
+            List<McpSyncClient> mcpSyncClients,
+            SlashCommandService slashCommandService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.vectorStore = vectorStore;
-        this.userIntentService = userIntentService;
         this.mcpSyncClients = mcpSyncClients;
+        this.slashCommandService = slashCommandService;
     }
 
     public String model(UUID userId) {
@@ -75,73 +78,21 @@ public class PromptService {
         return userPreferencesService.get(userId);
     }
 
-    public String prompt(UUID chatId, UUID userId, String chatMessage) {
-        String model = model(userId);
-
-        String chosenPromptId;
-
-        try {
-            Prompt prompt = userIntentService.prompt(chatMessage);
-
-            String routingResponse = chatClient
-                    .prompt(prompt)
-                    .call()
-                    .content();
-
-            if (StringUtils.isEmpty(routingResponse)) {
-                log.warn("Intent model returned empty response; falling back to basic-prompt");
-
-                chosenPromptId = BASIC_PROMPT;
-            } else {
-                chosenPromptId = routingResponse.trim();
-            }
-
-            log.debug("Chosen MCP prompt id '{}' for user message '{}'", chosenPromptId, chatMessage);
-
-        } catch (Exception exception) {
-            log.error("Failed to obtain routing decision from intent model: {}", exception.getMessage(), exception);
-
-            chosenPromptId = BASIC_PROMPT;
-        }
-
-        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
-
-        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                chosenPromptId,
-                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
-        );
-
-        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
-
-        PreparedPrompt prepared = preparePrompt(getPromptResult, model, userId);
-
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model(model)
-                .build();
-
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
-
-        // Build the chat client call
-        var chatClientBuilder = chatClient.prompt(prepared.mcpPrompt)
-                .user(chatMessage)
-                .advisors(advisorSpec -> advisorSpec
-                        .param(CONVERSATION_ID, chatId)
-                )
-                .advisors(retrievalAugmentationAdvisor)
-                .options(ollamaChatOptions);
-
-        return chatClientBuilder.call().content();
-    }
-
-    public Flux<String> stream(UUID chatId, UUID userId, String chatMessage, Authentication authentication) {
+    public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
+        String message = chatMessage.chatMessage();
+        String command = chatMessage.command();
 
-        String promptName = userIntentService.determineIntent(chatMessage);
+        if (StringUtils.isEmpty(command)) {
+            command = DEFAULT;
+        }
 
-        log.info("Intent model chose '{}'", promptName);
+        SlashCommandPrompt slashCommandPrompt = slashCommandService.command(command);
+        String promptName = slashCommandPrompt.name();
+        log.info("Slash command prompt selected: {}", slashCommandPrompt.name());
 
-        McpSchema.GetPromptResult getPromptResult = getGetPromptResult(chatMessage, promptName);
+        McpSchema.GetPromptResult getPromptResult = getGetPromptResult(message, promptName);
 
         PreparedPrompt prepared = preparePrompt(getPromptResult, model, userId);
 
@@ -163,7 +114,7 @@ public class PromptService {
         Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId);
 
         var chatClientBuilder = chatClient.prompt(prepared.mcpPrompt)
-                .user(chatMessage)
+                .user(message)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )

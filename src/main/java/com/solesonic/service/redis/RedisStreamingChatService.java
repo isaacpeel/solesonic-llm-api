@@ -1,4 +1,4 @@
-package com.solesonic.service.ollama;
+package com.solesonic.service.redis;
 
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
@@ -7,6 +7,8 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,6 +71,7 @@ public class RedisStreamingChatService {
         Chat chat = new Chat();
         chat.setUserId(userId);
         chat = save(chat);
+
         UUID chatId = chat.getId();
 
         log.debug("Starting Redis streaming chat with new chat id {}", chatId);
@@ -86,8 +89,9 @@ public class RedisStreamingChatService {
             return redisStreamService.subscribe(chatId, userId, lastEventId);
         }
 
+        //Start a chat stream with an init event
         return redisStreamService.getLatestOffset(chatId, userId)
-                .flatMap(offset -> redisStreamService.publish(chatId, userId, INIT, new ChunkPayload(""))
+                .flatMap(offset -> redisStreamService.publish(chatId, userId, INIT)
                         .thenReturn(offset))
                 .flatMapMany(offset -> {
                     publishToRedisStream(chatId, userId, chatRequest, authentication);
@@ -95,12 +99,10 @@ public class RedisStreamingChatService {
                 });
     }
 
-
     private void publishToRedisStream(UUID chatId,
                                       UUID userId,
                                       ChatRequest chatRequest,
                                       Authentication authentication) {
-
         if (userId != null) {
             //Add the users' current stream for tracking
             activeStreamTracker.put(userId, chatId)
@@ -108,7 +110,6 @@ public class RedisStreamingChatService {
                     .subscribe();
         }
 
-        String chatMessage = chatRequest.chatMessage();
         String chatModel = promptService.model(userId);
         StringBuilder assembled = new StringBuilder();
 
@@ -119,7 +120,7 @@ public class RedisStreamingChatService {
                 .take(1)
                 .share();
 
-        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatMessage, authentication))
+        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .doOnNext(assembled::append);

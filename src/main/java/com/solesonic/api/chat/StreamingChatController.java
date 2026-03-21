@@ -2,7 +2,7 @@ package com.solesonic.api.chat;
 
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.service.chat.ElicitationService;
-import com.solesonic.service.ollama.RedisStreamingChatService;
+import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;

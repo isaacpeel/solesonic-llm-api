@@ -3,6 +3,7 @@ package com.solesonic.redis.service;
 import com.solesonic.redis.model.RedisChatEvent;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
+import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -16,10 +17,13 @@ import tools.jackson.databind.json.JsonMapper;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
+import static org.springframework.data.domain.Range.unbounded;
+import static org.springframework.data.redis.connection.Limit.limit;
+
 @Service
 public class RedisStreamService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamService.class);
-    private static final String STREAM_KEY_PREFIX = "chat";
+    private static final String STREAM_KEY_TEMPLATE = "chat:%s:%s";
 
     private final ChatStreamPublisher chatStreamPublisher;
     private final ChatStreamSubscriber chatStreamSubscriber;
@@ -37,11 +41,17 @@ public class RedisStreamService {
         this.redisTemplate = redisTemplate;
     }
 
+    public Mono<RecordId> publish(UUID chatId, UUID userId, String type) {
+        RedisStreamingChatService.ChunkPayload emptyPayload = new RedisStreamingChatService.ChunkPayload("");
+
+        return publish(chatId, userId, type, emptyPayload);
+    }
+
     public Mono<RecordId> publish(UUID chatId, UUID userId, String type, Object payload) {
         String serializePayload = serializePayload(payload);
         String streamKey = buildStreamKey(chatId, userId);
 
-        RedisChatEvent event = RedisChatEvent.builder()
+        RedisChatEvent streamEvent = RedisChatEvent.builder()
                 .chatId(chatId)
                 .userId(userId)
                 .type(type)
@@ -50,20 +60,27 @@ public class RedisStreamService {
                 .internalSequence(sequenceCounter.incrementAndGet())
                 .build();
 
-        return chatStreamPublisher.publish(streamKey, event);
+        return chatStreamPublisher.publish(streamKey, streamEvent);
     }
 
+    /**
+     * This is the offset where to resume the given stream from redis.
+     *
+     * @param chatId Chat ID to build the stream key from
+     * @param userId User ID to build the stream key from
+     * @return The offset of the most recent stream for the stream key
+     */
     public Mono<String> getLatestOffset(UUID chatId, UUID userId) {
         String streamKey = buildStreamKey(chatId, userId);
 
         return redisTemplate.opsForStream()
-                .reverseRange(streamKey, org.springframework.data.domain.Range.unbounded(),
-                        org.springframework.data.redis.connection.Limit.limit().count(1))
+                .reverseRange(streamKey, unbounded(), limit().count(1))
                 .next()
                 .map(record -> record.getId().getValue())
                 .defaultIfEmpty("0")
                 .onErrorResume(_ -> {
                     log.debug("Stream {} does not exist yet, starting from 0", streamKey);
+                    //If all fails, start the strea from the beginning
                     return Mono.just("0");
                 });
     }
@@ -77,7 +94,7 @@ public class RedisStreamService {
     }
 
     public String buildStreamKey(UUID chatId, UUID userId) {
-        return STREAM_KEY_PREFIX + ":" + chatId + ":" + userId;
+        return STREAM_KEY_TEMPLATE.formatted(chatId, userId);
     }
 
     private String serializePayload(Object payload) {

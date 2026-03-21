@@ -25,7 +25,7 @@ public class ChatRequestTest {
     public void testSerializeDeserialize() {
         // Create a ChatRequest instance
         String originalMessage = "Hello, this is a test message";
-        ChatRequest originalRequest = new ChatRequest(originalMessage);
+        ChatRequest originalRequest = new ChatRequest(originalMessage, null);
 
         // Serialize to JSON
         String json = objectMapper.writeValueAsString(originalRequest);
@@ -46,7 +46,7 @@ public class ChatRequestTest {
     public void testSerializeDeserializeEmptyMessage() {
         // Create a ChatRequest instance with an empty message
         String originalMessage = "";
-        ChatRequest originalRequest = new ChatRequest(originalMessage);
+        ChatRequest originalRequest = new ChatRequest(originalMessage, null);
 
         // Serialize to JSON
         String json = objectMapper.writeValueAsString(originalRequest);
@@ -67,7 +67,7 @@ public class ChatRequestTest {
     public void testSerializeDeserializeSpecialCharacters() {
         // Create a ChatRequest instance with special characters
         String originalMessage = "Special characters: !@#$%^&*()_+{}[]|\\:;\"'<>,.?/\nNew line and emoji 😊";
-        ChatRequest originalRequest = new ChatRequest(originalMessage);
+        ChatRequest originalRequest = new ChatRequest(originalMessage, null);
 
         // Serialize to JSON
         String json = objectMapper.writeValueAsString(originalRequest);
@@ -88,7 +88,7 @@ public class ChatRequestTest {
     public void testJsonStructure() {
         // Create a ChatRequest instance
         String message = "Test message";
-        ChatRequest request = new ChatRequest(message);
+        ChatRequest request = new ChatRequest(message, null);
 
         // Serialize to JSON
         String json = objectMapper.writeValueAsString(request);

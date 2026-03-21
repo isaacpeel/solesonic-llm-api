@@ -1,4 +1,4 @@
-package com.solesonic.service.ollama;
+package com.solesonic.service.redis;
 
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;

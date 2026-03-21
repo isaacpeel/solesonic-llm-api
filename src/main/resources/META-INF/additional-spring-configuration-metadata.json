@@ -114,6 +114,16 @@
       "name": "redis.stream.enabled",
       "type": "java.lang.String",
       "description": "Feature flag for redis."
+    },
+    {
+      "name": "solesonic.llm.slash-commands.cache.ttl-seconds",
+      "type": "java.lang.Long",
+      "description": "Time-to-live for slash-command prompt catalog cache, in seconds."
+    },
+    {
+      "name": "solesonic.llm.slash-commands.cache.warmup-on-startup",
+      "type": "java.lang.Boolean",
+      "description": "Whether to pre-populate slash-command prompt catalog cache on application startup."
     }
   ]
 }
