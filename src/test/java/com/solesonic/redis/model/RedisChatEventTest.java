@@ -7,6 +7,7 @@ import java.util.UUID;
 
 import static com.solesonic.redis.model.RedisChatEvent.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RedisChatEventTest {
 
@@ -74,11 +75,11 @@ class RedisChatEventTest {
         assertThat(eventMap.get(EVENT_ID)).isEqualTo("evt-1");
         assertThat(eventMap.get(TYPE)).isEqualTo("done");
         assertThat(eventMap.get(CHAT_ID)).isEqualTo(chatId);
-        assertThat(eventMap.get(USER_ID)).isEqualTo(userId.toString());
+        assertThat(eventMap.get(USER_ID)).isEqualTo(userId);
         assertThat(eventMap.get(PAYLOAD)).isEqualTo("{\"status\":\"complete\"}");
-        assertThat(eventMap.get(TIMESTAMP)).isEqualTo("1700000000000");
+        assertThat(eventMap.get(TIMESTAMP)).isEqualTo(1700000000000L);
         assertThat(eventMap.get(CORRELATION_ID)).isEqualTo("corr-456");
-        assertThat(eventMap.get(INTERNAL_SEQUENCE)).isEqualTo("10");
+        assertThat(eventMap.get(INTERNAL_SEQUENCE)).isEqualTo(10L);
     }
 
     @Test
@@ -92,10 +93,7 @@ class RedisChatEventTest {
                 .userId(userId)
                 .build();
 
-        Map<String, Object> eventMap = event.toMap();
-
-        assertThat(eventMap.get(PAYLOAD)).isEqualTo("");
-        assertThat(eventMap.get(CORRELATION_ID)).isEqualTo("");
+        assertThatThrownBy(event::toMap).isInstanceOf(NullPointerException.class);
     }
 
     @Test

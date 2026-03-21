@@ -28,13 +28,28 @@ class SlashCommandControllerTest {
                 new SlashCommandPrompt("/jira", "jira", "jira prompt"),
                 new SlashCommandPrompt("/sports", "sports", "sports prompt")
         );
-        when(slashCommandService.slashCommands()).thenReturn(slashCommands);
+        when(slashCommandService.typeAhead(null)).thenReturn(slashCommands);
 
         var responseEntity = slashCommandController.slashCommands(null);
 
         assertThat(responseEntity.getStatusCode().is2xxSuccessful()).isTrue();
         assertThat(responseEntity.getBody()).isNotNull();
         assertThat(responseEntity.getBody().commands()).hasSize(2);
+        assertThat(responseEntity.getBody().commands().getFirst().command()).isEqualTo("/jira");
+    }
+
+    @Test
+    void shouldUseCommandPrefixWhenProvided() {
+        List<SlashCommandPrompt> slashCommands = List.of(
+                new SlashCommandPrompt("/jira", "jira", "jira prompt")
+        );
+        when(slashCommandService.typeAhead("/ji")).thenReturn(slashCommands);
+
+        var responseEntity = slashCommandController.slashCommands("/ji");
+
+        assertThat(responseEntity.getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(responseEntity.getBody()).isNotNull();
+        assertThat(responseEntity.getBody().commands()).hasSize(1);
         assertThat(responseEntity.getBody().commands().getFirst().command()).isEqualTo("/jira");
     }
 }
