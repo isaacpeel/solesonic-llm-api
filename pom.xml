@@ -33,6 +33,9 @@
     <properties>
         <java.version>25</java.version>
         <spring-ai.version>2.0.0-M3</spring-ai.version>
+        <java.version>25</java.version>
+        <hibernate.version>7.3.0.Final</hibernate.version>
+        <jackson-bom.version>3.1.0</jackson-bom.version>
     </properties>
     <dependencies>
         <dependency>
@@ -138,8 +141,14 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
-            <version>11.3.1</version>
+            <version>12.1.1</version>
             <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>12.1.1</version>
         </dependency>
 
         <dependency>
@@ -148,11 +157,7 @@
             <version>3.1.0</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-            <version>12.1.0</version>
-        </dependency>
+
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
