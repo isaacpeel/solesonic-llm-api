@@ -110,7 +110,7 @@ public class DocumentService {
 
         var pdfReader = new PagePdfDocumentReader(pdfResource, config);
 
-        var textSplitter = new TokenTextSplitter();
+        var textSplitter = TokenTextSplitter.builder().build();
 
         List<Document> documents = pdfReader.get();
 

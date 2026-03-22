@@ -1,7 +1,7 @@
 package com.solesonic.model.atlassian.auth;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
@@ -15,23 +15,59 @@ public record AtlassianAccessToken(
         @JsonProperty("refresh_token")
         String refreshToken,
 
-        @JsonProperty(value = "token_type")
+        @JsonProperty("token_type")
         String tokenType,
+
         String scope,
 
-        @JsonProperty(value = "expires_in")
+        @JsonProperty("expires_in")
         Integer expiresIn,
 
         boolean administrator,
 
         @JsonProperty(defaultValue = "0")
         ZonedDateTime created,
+
         ZonedDateTime updated,
+
         String error,
 
         @JsonProperty("error_description")
         String errorDescription
 ) {
+
+    /**
+     * Custom creator to safely handle JSON null for the primitive {@code administrator}.
+     * If the JSON contains "administrator": null (or omits it), we default it to false.
+     */
+    @JsonCreator
+    public static AtlassianAccessToken of(
+            @JsonProperty(access = JsonProperty.Access.READ_ONLY) UUID userId,
+            @JsonProperty("access_token") String accessToken,
+            @JsonProperty("refresh_token") String refreshToken,
+            @JsonProperty("token_type") String tokenType,
+            @JsonProperty("scope") String scope,
+            @JsonProperty("expires_in") Integer expiresIn,
+            @JsonProperty("administrator") Boolean administrator,
+            @JsonProperty("created") ZonedDateTime created,
+            @JsonProperty("updated") ZonedDateTime updated,
+            @JsonProperty("error") String error,
+            @JsonProperty("error_description") String errorDescription
+    ) {
+        return new AtlassianAccessToken(
+                userId,
+                accessToken,
+                refreshToken,
+                tokenType,
+                scope,
+                expiresIn,
+                Boolean.TRUE.equals(administrator), // null -> false
+                created,
+                updated,
+                error,
+                errorDescription
+        );
+    }
 
     public boolean isExpired() {
         if (expiresIn == null || created == null) {
@@ -42,6 +78,7 @@ public record AtlassianAccessToken(
         return ZonedDateTime.now().isAfter(expirationTime);
     }
 
+    @SuppressWarnings("unused")
     public boolean hasNewRefreshToken(String oldRefreshToken) {
         return refreshToken != null && !refreshToken.equals(oldRefreshToken);
     }

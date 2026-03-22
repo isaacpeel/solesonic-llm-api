@@ -3,11 +3,11 @@ package com.solesonic.exception.handler;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.scope.UserRequestContext;
+import jakarta.annotation.Nonnull;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
-import javax.validation.constraints.NotNull;
 import java.util.UUID;
 
 @Service
@@ -19,7 +19,7 @@ public class ExceptionService {
         this.userRequestContext = userRequestContext;
     }
 
-    @NotNull
+    @Nonnull
     public ResponseEntity<SolesonicChatResponse> buildResponse(String responseMessage) {
         ChatMessage chatMessage = new ChatMessage();
         chatMessage.setMessage(responseMessage);

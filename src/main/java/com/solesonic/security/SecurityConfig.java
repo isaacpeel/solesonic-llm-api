@@ -30,7 +30,7 @@ import static org.springframework.security.config.Customizer.withDefaults;
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
-@Profile({"prod"})
+@Profile({"prod", "prod-nginx"})
 public class SecurityConfig {
     private static final Logger log = LoggerFactory.getLogger(SecurityConfig.class);
     public static final String BROKER_ATLASSIAN_TOKEN = "/broker/atlassian/token";
@@ -56,7 +56,7 @@ public class SecurityConfig {
     }
 
     @Bean
-    @Profile({"prod"})
+    @Profile({"prod", "prod-nginx"})
     public SecurityFilterChain prodSecurityFilterChain(HttpSecurity http) throws Exception {
         http.exceptionHandling(config -> config.accessDeniedHandler(accessDeniedHandler()));
         http.exceptionHandling(config -> config.authenticationEntryPoint(authenticationEntryPoint()));
@@ -94,7 +94,7 @@ public class SecurityConfig {
     }
 
     private AuthenticationEntryPoint authenticationEntryPoint() {
-        return (request, response, authException) -> {
+        return (request, response, _) -> {
             log.warn("{} - Unauthorized access attempt: remote addr: {} {} - {}", SC_UNAUTHORIZED, request.getRemoteAddr(), request.getMethod(), request.getRequestURI());
 
             response.setContentType(APPLICATION_JSON_VALUE);
@@ -103,7 +103,7 @@ public class SecurityConfig {
     }
 
     private AccessDeniedHandler accessDeniedHandler() {
-        return (request, response, accessDeniedException) -> {
+        return (request, response, _) -> {
             log.warn("{} - Access Denied: {} trying to access {} from IP: {}", SC_FORBIDDEN, request.getRemoteAddr(), request.getRequestURI(), request.getRemoteAddr());
             response.sendError(SC_FORBIDDEN, "Access Denied");
         };

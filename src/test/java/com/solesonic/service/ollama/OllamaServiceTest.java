@@ -1,16 +1,15 @@
 package com.solesonic.service.ollama;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.ollama.OllamaModel;
 import com.solesonic.repository.ollama.OllamaModelRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.ollama.api.OllamaApi;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
 import java.util.Arrays;
@@ -32,11 +31,6 @@ public class OllamaServiceTest {
     @Mock
     private OllamaModelRepository modelRepository;
 
-    @SuppressWarnings("unused")
-    @Mock
-    private ObjectMapper objectMapper;
-
-    @InjectMocks
     private OllamaService ollamaService;
 
     private UUID modelId;
@@ -44,6 +38,8 @@ public class OllamaServiceTest {
 
     @BeforeEach
     void setUp() {
+        JsonMapper jsonMapper = new JsonMapper();
+        ollamaService = new OllamaService(ollamaApi, modelRepository, jsonMapper);
         modelId = UUID.randomUUID();
 
         // Set up OllamaModel

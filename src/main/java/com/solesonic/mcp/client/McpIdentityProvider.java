@@ -3,11 +3,11 @@ package com.solesonic.mcp.client;
 
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import org.springframework.lang.NonNull;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +16,7 @@ import java.util.List;
  * A ToolCallbackProvider that wraps MCP tools with security context propagation.
  * This ensures that user authentication information is available during tool execution.
  */
+@NullMarked
 public class McpIdentityProvider implements ToolCallbackProvider {
     private static final Logger log = LoggerFactory.getLogger(McpIdentityProvider.class);
 
@@ -44,7 +45,6 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     }
 
     @Override
-    @NonNull
     public ToolCallback[] getToolCallbacks() {
         return toolCallbacks.toArray(new ToolCallback[0]);
     }

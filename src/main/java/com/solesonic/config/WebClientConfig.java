@@ -11,6 +11,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.context.Context;
 
 import java.util.Map;
@@ -36,13 +37,14 @@ public class WebClientConfig {
                         log.debug("User token for streaming is not found, using client credentials.");
 
                         // No user token — use client credentials token
-                        String accessToken = mcpFilterService.getClientCredentialsAccessToken();
-
-                        ClientRequest newRequest = ClientRequest.from(request)
-                                .headers(headers -> headers.setBearerAuth(accessToken))
-                                .build();
-
-                        return next.exchange(newRequest);
+                        return Mono.fromCallable(mcpFilterService::getClientCredentialsAccessToken)
+                                .subscribeOn(Schedulers.boundedElastic())
+                                .flatMap(accessToken -> {
+                                    ClientRequest newRequest = ClientRequest.from(request)
+                                            .headers(headers -> headers.setBearerAuth(accessToken))
+                                            .build();
+                                    return next.exchange(newRequest);
+                                });
                     }
 
                     log.debug("User identity found, exchanging for an OBO token.");
@@ -63,7 +65,7 @@ public class WebClientConfig {
     private String threadLocalUserToken() {
         log.debug("Looking for users token in identity context");
 
-        if(!IdentityToolCallback.hasContext()) {
+        if (!IdentityToolCallback.hasContext()) {
             log.debug("No identity context found.");
             return null;
         }

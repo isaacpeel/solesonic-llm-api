@@ -1,7 +1,5 @@
 package com.solesonic.service.atlassian;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.exception.atlassian.AtlassianTokenException;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAuthRequest;
@@ -15,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -83,12 +82,8 @@ public class AtlassianTokenBrokerService {
                 .refreshToken(refreshToken)
                 .build();
 
-        try {
-            String authRequest = objectMapper.writeValueAsString(atlassianAuthRequest);
-            assert authRequest != null;
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
-        }
+        String authRequest = objectMapper.writeValueAsString(atlassianAuthRequest);
+        assert authRequest != null;
 
         WebClient client = WebClient.create(atlassianTokenUri);
 
@@ -103,23 +98,19 @@ public class AtlassianTokenBrokerService {
                 .exchangeToMono(response -> response.bodyToMono(String.class))
                 .block();
 
-        try {
-            AtlassianAccessToken atlassianAccessToken = objectMapper.readValue(responseJson, AtlassianAccessToken.class);
+        AtlassianAccessToken atlassianAccessToken = objectMapper.readValue(responseJson, AtlassianAccessToken.class);
 
-            if (StringUtils.isNotEmpty(atlassianAccessToken.error())) {
-                String error = atlassianAccessToken.error();
-                String errorDescription = atlassianAccessToken.errorDescription();
-                String exceptionMessage = error + ": " + errorDescription;
+        if (StringUtils.isNotEmpty(atlassianAccessToken.error())) {
+            String error = atlassianAccessToken.error();
+            String errorDescription = atlassianAccessToken.errorDescription();
+            String exceptionMessage = error + ": " + errorDescription;
 
-                throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
-            }
-
-            log.info("Token refresh successful");
-
-            return atlassianAccessToken;
-        } catch (JsonProcessingException e) {
-            throw new AtlassianTokenException("Failed to parse token refresh response", BAD_REQUEST, false, e);
+            throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
         }
+
+        log.info("Token refresh successful");
+
+        return atlassianAccessToken;
 
     }
 }

@@ -1,0 +1,130 @@
+package com.solesonic.redis.model;
+
+import org.junit.jupiter.api.Test;
+
+import java.util.Map;
+import java.util.UUID;
+
+import static com.solesonic.redis.model.RedisChatEvent.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class RedisChatEventTest {
+
+    @Test
+    void builderCreatesEventWithAllFields() {
+        UUID chatId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        RedisChatEvent event = RedisChatEvent.builder()
+                .eventId("test-event-id")
+                .type("chunk")
+                .chatId(chatId)
+                .userId(userId)
+                .payload("{\"content\":\"hello\"}")
+                .timestamp(1700000000000L)
+                .correlationId("corr-123")
+                .internalSequence(42)
+                .build();
+
+        assertThat(event.getEventId()).isEqualTo("test-event-id");
+        assertThat(event.getType()).isEqualTo("chunk");
+        assertThat(event.getChatId()).isEqualTo(chatId);
+        assertThat(event.getUserId()).isEqualTo(userId);
+        assertThat(event.getPayload()).isEqualTo("{\"content\":\"hello\"}");
+        assertThat(event.getTimestamp()).isEqualTo(1700000000000L);
+        assertThat(event.getCorrelationId()).isEqualTo("corr-123");
+        assertThat(event.getInternalSequence()).isEqualTo(42);
+    }
+
+    @Test
+    void builderGeneratesDefaultEventIdAndTimestamp() {
+        UUID chatId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        RedisChatEvent event = RedisChatEvent.builder()
+                .type("init")
+                .chatId(chatId)
+                .userId(userId)
+                .build();
+
+        assertThat(event.getEventId()).isNotNull();
+        assertThat(event.getEventId()).isNotBlank();
+        assertThat(event.getTimestamp()).isGreaterThan(0);
+    }
+
+    @Test
+    void toMapSerializesAllFields() {
+        UUID chatId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        RedisChatEvent event = RedisChatEvent.builder()
+                .eventId("evt-1")
+                .type("done")
+                .chatId(chatId)
+                .userId(userId)
+                .payload("{\"status\":\"complete\"}")
+                .timestamp(1700000000000L)
+                .correlationId("corr-456")
+                .internalSequence(10)
+                .build();
+
+        Map<String, Object> eventMap = event.toMap();
+
+        assertThat(eventMap).hasSize(8);
+        assertThat(eventMap.get(EVENT_ID)).isEqualTo("evt-1");
+        assertThat(eventMap.get(TYPE)).isEqualTo("done");
+        assertThat(eventMap.get(CHAT_ID)).isEqualTo(chatId);
+        assertThat(eventMap.get(USER_ID)).isEqualTo(userId);
+        assertThat(eventMap.get(PAYLOAD)).isEqualTo("{\"status\":\"complete\"}");
+        assertThat(eventMap.get(TIMESTAMP)).isEqualTo(1700000000000L);
+        assertThat(eventMap.get(CORRELATION_ID)).isEqualTo("corr-456");
+        assertThat(eventMap.get(INTERNAL_SEQUENCE)).isEqualTo(10L);
+    }
+
+    @Test
+    void toMapHandlesNullOptionalFields() {
+        UUID chatId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        RedisChatEvent event = RedisChatEvent.builder()
+                .type("chunk")
+                .chatId(chatId)
+                .userId(userId)
+                .build();
+
+        assertThatThrownBy(event::toMap).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void fromMapDeserializesCorrectly() {
+        UUID chatId = UUID.randomUUID();
+        UUID userId = UUID.randomUUID();
+
+        RedisChatEvent original = RedisChatEvent.builder()
+                .eventId("evt-roundtrip")
+                .type("chunk")
+                .chatId(chatId)
+                .userId(userId)
+                .payload("{\"key\":\"value\"}")
+                .timestamp(1700000000000L)
+                .correlationId("corr-rt")
+                .internalSequence(99)
+                .build();
+
+        Map<String, Object> eventMap = original.toMap();
+
+        Map<Object, Object> objectMap = new java.util.HashMap<>(eventMap);
+
+        RedisChatEvent deserialized = RedisChatEvent.fromMap(objectMap);
+
+        assertThat(deserialized.getEventId()).isEqualTo(original.getEventId());
+        assertThat(deserialized.getType()).isEqualTo(original.getType());
+        assertThat(deserialized.getChatId()).isEqualTo(original.getChatId());
+        assertThat(deserialized.getUserId()).isEqualTo(original.getUserId());
+        assertThat(deserialized.getPayload()).isEqualTo(original.getPayload());
+        assertThat(deserialized.getTimestamp()).isEqualTo(original.getTimestamp());
+        assertThat(deserialized.getCorrelationId()).isEqualTo(original.getCorrelationId());
+        assertThat(deserialized.getInternalSequence()).isEqualTo(original.getInternalSequence());
+    }
+}

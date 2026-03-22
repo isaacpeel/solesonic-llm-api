@@ -1,7 +1,6 @@
 package com.solesonic.api.user;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +12,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import tools.jackson.databind.DeserializationFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
@@ -28,8 +29,11 @@ public class UserControllerTest {
 
     private MockMvc mockMvc;
 
-    private final ObjectMapper objectMapper = new ObjectMapper()
-            .registerModule(new JavaTimeModule());
+    private final JsonMapper jsonMapper = JsonMapper.builder()
+            .changeDefaultPropertyInclusion(incl ->
+                    incl.withValueInclusion(JsonInclude.Include.NON_NULL))
+            .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+            .build();
 
     @Mock
     private UserPreferencesService userPreferencesService;
@@ -78,7 +82,7 @@ public class UserControllerTest {
          
         mockMvc.perform(post("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(userPreferences)))
+                .content(jsonMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isCreated())
                 .andExpect(header().exists("Location"))
                 .andExpect(jsonPath("$.model").value("llama3"))
@@ -93,7 +97,7 @@ public class UserControllerTest {
          
         mockMvc.perform(put("/users/{userId}/preferences", userId)
                 .contentType(MediaType.APPLICATION_JSON)
-                .content(objectMapper.writeValueAsString(userPreferences)))
+                .content(jsonMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))

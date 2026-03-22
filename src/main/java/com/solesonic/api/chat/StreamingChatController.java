@@ -2,7 +2,7 @@ package com.solesonic.api.chat;
 
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.service.chat.ElicitationService;
-import com.solesonic.service.ollama.StreamingChatService;
+import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -22,10 +22,10 @@ public class StreamingChatController {
     private static final Logger log = LoggerFactory.getLogger(StreamingChatController.class);
     public static final String LAST_EVENT_ID = "Last-Event-ID";
 
-    private final StreamingChatService streamingChatService;
+    private final RedisStreamingChatService streamingChatService;
     private final ElicitationService elicitationService;
 
-    public StreamingChatController(StreamingChatService streamingChatService,
+    public StreamingChatController(RedisStreamingChatService streamingChatService,
                                    ElicitationService elicitationService) {
         this.streamingChatService = streamingChatService;
         this.elicitationService = elicitationService;
@@ -40,7 +40,7 @@ public class StreamingChatController {
         log.info("Starting streaming chat for user {}", userId);
         log.info("last event id {}", lastEventId);
 
-        return streamingChatService.create(userId, chatRequest, lastEventId, authentication);
+        return streamingChatService.create(userId, chatRequest, authentication);
     }
 
     @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

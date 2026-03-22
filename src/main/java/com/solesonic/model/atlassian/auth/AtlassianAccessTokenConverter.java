@@ -1,12 +1,9 @@
 package com.solesonic.model.atlassian.auth;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Converter;
 import org.springframework.security.crypto.encrypt.BytesEncryptor;
-
-import java.io.IOException;
+import tools.jackson.databind.ObjectMapper;
 
 @Converter
 public class AtlassianAccessTokenConverter implements AttributeConverter<AtlassianAccessToken, byte[]> {
@@ -27,12 +24,8 @@ public class AtlassianAccessTokenConverter implements AttributeConverter<Atlassi
             return null;
         }
 
-        try {
-            byte[] bytes = objectMapper.writeValueAsBytes(atlassianAccessToken);
-            return encryptor.encrypt(bytes);
-        } catch (JsonProcessingException jsonProcessingException) {
-            throw new RuntimeException(jsonProcessingException);
-        }
+        byte[] bytes = objectMapper.writeValueAsBytes(atlassianAccessToken);
+        return encryptor.encrypt(bytes);
     }
 
     @Override
@@ -41,12 +34,7 @@ public class AtlassianAccessTokenConverter implements AttributeConverter<Atlassi
             return null;
         }
 
-
-        try {
-            byte[] decrypted = encryptor.decrypt(bytes);
-            return objectMapper.readValue(decrypted, AtlassianAccessToken.class);
-        } catch (IOException ioException) {
-            throw new RuntimeException(ioException);
-        }
+        byte[] decrypted = encryptor.decrypt(bytes);
+        return objectMapper.readValue(decrypted, AtlassianAccessToken.class);
     }
 }

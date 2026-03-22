@@ -5,9 +5,9 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.StringUtils;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -38,6 +38,7 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 
+    @SuppressWarnings("SameParameterValue")
     private String redact(String queryString, String... toRedact) {
         if (StringUtils.isEmpty(queryString)) {
             return queryString;

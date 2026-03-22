@@ -65,7 +65,7 @@ public class AtlassianInternalAuthorizationFilter implements ExchangeFilterFunct
         log.debug("Admin token expiresIn: {}", refreshedToken.expiresIn());
 
         serviceAccountPreferences.setAtlassianAccessToken(refreshedToken);
-        userPreferencesService.save(serviceAccountPreferences.getUserId(),  serviceAccountPreferences);
+        userPreferencesService.save(serviceAccountPreferences.getUserId(), serviceAccountPreferences);
 
         return refreshedToken;
     }
