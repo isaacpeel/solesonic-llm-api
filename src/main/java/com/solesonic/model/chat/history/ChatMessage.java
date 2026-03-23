@@ -1,16 +1,14 @@
 package com.solesonic.model.chat.history;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.EnumType;
-import jakarta.persistence.Enumerated;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
+import jakarta.persistence.*;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.Type;
+import org.hibernate.type.SqlTypes;
 import org.springframework.ai.chat.messages.MessageType;
 
 import java.time.ZonedDateTime;
+import java.util.Set;
 import java.util.UUID;
 
 @Entity
@@ -31,6 +29,10 @@ public class ChatMessage {
     private String message;
 
     private String model;
+
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private Set<String> commands;
 
     public UUID getId() {
         return id;
@@ -79,5 +81,13 @@ public class ChatMessage {
 
     public void setModel(String model) {
         this.model = model;
+    }
+
+    public Set<String> getCommands() {
+        return commands;
+    }
+
+    public void setCommands(Set<String> commands) {
+        this.commands = commands;
     }
 }

@@ -7,6 +7,7 @@ import com.solesonic.model.user.UserPreferences;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,10 +26,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
@@ -82,10 +80,10 @@ public class PromptService {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
         String message = chatMessage.chatMessage();
-        String command = chatMessage.command();
+        Set<String> commands = chatMessage.commands();
 
-        if (StringUtils.isEmpty(command)) {
-            command = DEFAULT;
+        if (CollectionUtils.isEmpty(commands)) {
+            commands = Set.of(DEFAULT);
         }
 
         SlashCommandPrompt slashCommandPrompt = slashCommandService.command(command);
