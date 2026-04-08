@@ -29,6 +29,28 @@ public class McpIdentityProvider implements ToolCallbackProvider {
         initializeTools();
     }
 
+    public McpIdentityProvider(McpSyncClient mcpClient, String tool) {
+        this.mcpClient = mcpClient;
+        this.toolCallbacks = new ArrayList<>();
+        initializeTool(tool);
+    }
+
+    public void initializeTool(String name) {
+        try {
+            List<Tool> tools = mcpClient.listTools().tools();
+
+            Tool tool = tools.stream().filter(mcpTool -> mcpTool.name().equals(name))
+                    .findFirst().orElseThrow(() -> new IllegalStateException("Tool not found"));
+            log.info("Initializing {} MCP tools with security context propagation", tools.size());
+
+            IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
+            toolCallbacks.add(callback);
+            log.debug("Wrapped MCP tool: {} ", tool.name());
+        } catch (Exception e) {
+            log.error("Failed to initialize MCP tools", e);
+        }
+    }
+
     private void initializeTools() {
         try {
             List<Tool> tools = mcpClient.listTools().tools();
@@ -37,7 +59,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             for (Tool tool : tools) {
                 IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
                 toolCallbacks.add(callback);
-                log.info("Wrapped MCP tool: {} ", tool.name());
+                log.debug("Wrapped MCP tool: {} ", tool.name());
             }
         } catch (Exception e) {
             log.error("Failed to initialize MCP tools", e);

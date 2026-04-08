@@ -18,6 +18,7 @@ import java.util.List;
 @Configuration
 public class McpClientConfig {
     private static final Logger log = LoggerFactory.getLogger(McpClientConfig.class);
+    private McpSyncClient mcpClient;
 
     /**
      * Creates a SecurityContextPropagatingMcpToolCallbackProvider for each McpSyncClient.
@@ -32,11 +33,11 @@ public class McpClientConfig {
         }
 
 
-        McpSyncClient mcpClient = mcpSyncClients.getFirst();
-        McpSchema.Implementation clientInfo = mcpClient.getClientInfo();
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        McpSchema.Implementation clientInfo = mcpSyncClient.getClientInfo();
         String clientName = clientInfo.name();
 
-        McpSchema.ClientCapabilities clientCapabilities = mcpClient.getClientCapabilities();
+        McpSchema.ClientCapabilities clientCapabilities = mcpSyncClient.getClientCapabilities();
 
         log.info("Creating SecurityContextPropagatingMcpToolCallbackProvider with MCP client: {}", clientName);
         
@@ -46,8 +47,16 @@ public class McpClientConfig {
             log.warn("MCP ClientCapabilities are null on startup; expected elicitation to be enabled");
         }
 
-        return new McpIdentityProvider(mcpClient);
+        this.mcpClient = mcpSyncClient;
+
+        return new McpIdentityProvider(mcpSyncClient);
     }
+
+    @Bean
+    public McpSyncClient mcpSyncClient() {
+        return this.mcpClient;
+    }
+
 //
 //    @Bean
 //    public McpSchema.ClientCapabilities mcpClientCapabilities() {

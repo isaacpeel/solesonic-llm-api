@@ -42,7 +42,7 @@ public class IdentityToolCallback implements ToolCallback {
                 .build();
 
         ToolDefinition definition = delegate.getToolDefinition();
-        log.info("Tool definition for {}: {}", tool.name(), definition);
+        log.debug("Tool definition for {}: {}", tool.name(), definition);
     }
 
     @Override
