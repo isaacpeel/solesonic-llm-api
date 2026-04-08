@@ -2,7 +2,6 @@ package com.solesonic.model.prompt;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import io.modelcontextprotocol.spec.McpSchema;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;

@@ -16,7 +16,6 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
-import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -114,7 +113,7 @@ public class SlashCommandService {
     public List<SlashCommand> slashCommands() {
         String cachedPayload = redisTemplate.opsForValue().get(CACHE_KEY).block();
 
-        if (StringUtils.isNotBlank(cachedPayload)  && false) {
+        if (StringUtils.isNotBlank(cachedPayload)) {
             return jsonMapper.readValue(cachedPayload, CATALOG_TYPE_REFERENCE);
         }
 
