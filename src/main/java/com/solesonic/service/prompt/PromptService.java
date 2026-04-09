@@ -1,6 +1,7 @@
 
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.rag.VectorStoreService;
@@ -36,12 +37,14 @@ public class PromptService {
     public static final String DEFAULT = "default";
     public static final String TASK_PROMPT = "task-prompt";
     public static final String TASK_TOOL = "taskTool";
+    public static final String PROGRESS_TOKEN = "progressToken";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
     private final SlashCommandService slashCommandService;
     private final VectorStoreService vectorStoreService;
     private final McpSyncClient mcpClient;
+    private final McpPromptAdapter mcpPromptAdapter;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -51,12 +54,14 @@ public class PromptService {
             UserPreferencesService userPreferencesService,
             SlashCommandService slashCommandService,
             VectorStoreService vectorStoreService,
-            McpSyncClient mcpClient) {
+            McpSyncClient mcpClient,
+            McpPromptAdapter mcpPromptAdapter) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
         this.vectorStoreService = vectorStoreService;
         this.mcpClient = mcpClient;
+        this.mcpPromptAdapter = mcpPromptAdapter;
     }
 
     public String model(UUID userId) {
@@ -90,7 +95,7 @@ public class PromptService {
         }
 
         assert authToken != null;
-        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId);
+        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId, PROGRESS_TOKEN, chatId);
 
         SlashCommand slashCommand = slashCommands.stream().findFirst()
                 .orElseThrow(IllegalStateException::new);
@@ -107,11 +112,12 @@ public class PromptService {
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
 
-                Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+                Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
 
                 ChatClient taskClient = slashCommandService.taskClient(tool.name());
 
                 var chatClientBuilder = taskClient.prompt(prompt)
+                        .user(message)
                         .advisors(advisorSpec -> advisorSpec
                                 .param(CONVERSATION_ID, chatId)
                         )

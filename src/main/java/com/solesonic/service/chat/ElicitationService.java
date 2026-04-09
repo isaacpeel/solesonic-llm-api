@@ -34,6 +34,7 @@ public class ElicitationService {
     public static final String ELICITATION_ID = "elicitationId";
     public static final String CHAT_ID = "chatId";
     public static final String ELICITATION = "elicitation";
+    public static final String PROGRESS = "progress";
     public static final String CONFIRMED = "confirmed";
     public static final String ACCEPT_ACTION = "accept";
     public static final String DECLINE_ACTION = "decline";
@@ -132,6 +133,30 @@ public class ElicitationService {
         }
 
         log.info("Finished emitting elicitation event for chat {}", chatId);
+    }
+
+    public void emitProgress(UUID chatId, McpSchema.ProgressNotification progressNotification) {
+        log.info("Emitting progress for chat id {} with message: {}", chatId, progressNotification.message());
+
+        Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
+
+        if (serverSentEventMany == null) {
+            log.info("No SSE sink found for chat {} while emitting progress", chatId);
+            return;
+        }
+
+        try {
+            Map<String, Object> progressJson = jsonMapper.convertValue(progressNotification, new TypeReference<>() {});
+            progressJson.put(CHAT_ID, chatId.toString());
+
+            ServerSentEvent<?> serverSentEvent = ServerSentEvent.builder(progressJson)
+                    .event(PROGRESS)
+                    .build();
+
+            serverSentEventMany.tryEmitNext(serverSentEvent);
+        } catch (IllegalArgumentException illegalArgumentException) {
+            log.info("Failed to serialize progress notification for chat {}", chatId, illegalArgumentException);
+        }
     }
 
     public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
