@@ -11,6 +11,7 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.AsyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+    import org.springframework.ai.tool.metadata.ToolMetadata;
 import reactor.util.context.Context;
 
 import java.util.HashMap;
@@ -34,6 +35,7 @@ public class IdentityToolCallback implements ToolCallback {
     private static final ThreadLocal<Context> TOOL_CALL_CONTEXT = new ThreadLocal<>();
 
     private final AsyncMcpToolCallback delegate;
+    private final ToolMetadata toolMetadata;
 
     public IdentityToolCallback(McpAsyncClient mcpAsyncClient, Tool tool) {
         this.delegate = AsyncMcpToolCallback.builder()
@@ -41,14 +43,24 @@ public class IdentityToolCallback implements ToolCallback {
                 .tool(tool)
                 .build();
 
-        ToolDefinition definition = delegate.getToolDefinition();
-        log.debug("Tool definition for {}: {}", tool.name(), definition);
+        boolean returnDirect = tool.meta() != null && Boolean.TRUE.equals(tool.meta().get("returnDirect"));
+        this.toolMetadata = ToolMetadata.builder()
+                .returnDirect(returnDirect)
+                .build();
+
+        log.debug("Tool definition for {}: {}, returnDirect={}", tool.name(), delegate.getToolDefinition(), returnDirect);
     }
 
     @Override
     @NonNull
     public ToolDefinition getToolDefinition() {
         return delegate.getToolDefinition();
+    }
+
+    @Override
+    @NonNull
+    public ToolMetadata getToolMetadata() {
+        return toolMetadata;
     }
 
     @Override
