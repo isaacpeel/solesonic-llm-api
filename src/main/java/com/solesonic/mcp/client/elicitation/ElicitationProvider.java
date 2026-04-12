@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpElicitation;
 import org.springframework.ai.mcp.annotation.context.StructuredElicitResult;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.type.MapType;
@@ -34,14 +35,14 @@ public class ElicitationProvider {
     public record DeleteConfirmation(boolean confirmed, String chatId) {}
 
     @SuppressWarnings("unused")
-    @McpElicitation(clients = {"solesonic","mcp-client - solesonic"})
-    public StructuredElicitResult<DeleteConfirmation> handleElicitationRequest(McpSchema.ElicitRequest request) {
+    @McpElicitation(clients = { "mcp-client - solesonic"})
+    public Mono<StructuredElicitResult<DeleteConfirmation>> handleElicitationRequest(McpSchema.ElicitRequest request) {
         log.info("Elicitation request received");
 
         Map<String, Object> requestMetadata = request.meta();
 
         if(requestMetadata == null || !requestMetadata.containsKey(CHAT_ID)) {
-            throw new ElicitationException("Elicitation request metadata is `null`.");
+            return Mono.error(new ElicitationException("Elicitation request metadata is `null`."));
         }
 
         UUID chatId = UUID.fromString(request.meta().get(CHAT_ID).toString());
@@ -55,7 +56,6 @@ public class ElicitationProvider {
                 .map(Object::toString)
                 .orElse("elicitation");
 
-
         log.info("Starting elicitation: {} for chat {}", name, chatId);
 
         ElicitationService.ElicitationHandle handle = elicitationService.prepareElicitation(chatId, name);
@@ -63,7 +63,6 @@ public class ElicitationProvider {
         elicitationService.emitElicitation(chatId, handle.elicitationId(), request);
 
         return elicitationService.awaitResultAsync(chatId, handle.elicitationId())
-                .subscribeOn(Schedulers.boundedElastic())
-                .block();
+                .subscribeOn(Schedulers.boundedElastic());
     }
 }

@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpProgress;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Mono;
 
 import java.util.UUID;
 
@@ -19,17 +20,17 @@ public class ProgressProvider {
         this.elicitationService = elicitationService;
     }
 
-    @SuppressWarnings("unused")
-    @McpProgress(clients = {"solesonic", "mcp-client - solesonic"})
-    public void handleProgressNotification(McpSchema.ProgressNotification progressNotification) {
-        log.info("handle progress notification");
+    @SuppressWarnings({"unused", "UnusedReturnValue"})
+    @McpProgress(clients = {"solesonic"})
+    public Mono<Void> handleProgressNotification(McpSchema.ProgressNotification progressNotification) {
+        log.info("Handling progress notification: {}", progressNotification);
         Object progressTokenObject = progressNotification.progressToken();
 
         String progressToken = progressTokenObject == null ? null : progressTokenObject.toString();
 
         if (progressToken == null) {
             log.info("Ignoring progress notification with missing progress token");
-            return;
+            return Mono.empty();
         }
 
         UUID chatId;
@@ -38,9 +39,10 @@ public class ProgressProvider {
             chatId = UUID.fromString(progressToken);
         } catch (IllegalArgumentException illegalArgumentException) {
             log.info("Ignoring progress notification with non-UUID progress token: {}", progressToken);
-            return;
+            return Mono.empty();
         }
 
         elicitationService.emitProgress(chatId, progressNotification);
+        return Mono.empty();
     }
 }

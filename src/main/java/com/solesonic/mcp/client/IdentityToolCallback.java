@@ -1,6 +1,6 @@
 package com.solesonic.mcp.client;
 
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.lang3.StringUtils;
 import org.jspecify.annotations.NonNull;
@@ -8,7 +8,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.mcp.SyncMcpToolCallback;
+import org.springframework.ai.mcp.AsyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import reactor.util.context.Context;
@@ -19,7 +19,7 @@ import java.util.Map;
 import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
 /**
- * A wrapper around SyncMcpToolCallback that captures the security context
+ * A wrapper around AsyncMcpToolCallback that captures the security context
  * and makes it available for reactive WebClient filters during MCP tool execution.
  * <p>
  * This class solves the context propagation issue where the user's JWT token
@@ -33,11 +33,11 @@ public class IdentityToolCallback implements ToolCallback {
     public static final String SECURITY_CONTEXT_KEY = "SECURITY_CONTEXT";
     private static final ThreadLocal<Context> TOOL_CALL_CONTEXT = new ThreadLocal<>();
 
-    private final SyncMcpToolCallback delegate;
+    private final AsyncMcpToolCallback delegate;
 
-    public IdentityToolCallback(McpSyncClient mcpSyncClient, Tool tool) {
-        this.delegate = SyncMcpToolCallback.builder()
-                .mcpClient(mcpSyncClient)
+    public IdentityToolCallback(McpAsyncClient mcpAsyncClient, Tool tool) {
+        this.delegate = AsyncMcpToolCallback.builder()
+                .mcpClient(mcpAsyncClient)
                 .tool(tool)
                 .build();
 
@@ -60,7 +60,6 @@ public class IdentityToolCallback implements ToolCallback {
     @Override
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
-        // Capture the current security context
         log.info("Tool callback wrapper invoked for: {}", delegate.getOriginalToolName());
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
@@ -77,7 +76,7 @@ public class IdentityToolCallback implements ToolCallback {
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
         filteredContextMap.remove(USER_TOKEN);
 
-        ToolContext filteredToolContext = new  ToolContext(filteredContextMap);
+        ToolContext filteredToolContext = new ToolContext(filteredContextMap);
 
         Map<String, Object> contextMap = new HashMap<>();
         contextMap.put(USER_TOKEN, userToken);

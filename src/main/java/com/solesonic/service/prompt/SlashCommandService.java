@@ -3,7 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.prompt.SlashCommand;
-import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -22,6 +22,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -41,7 +42,7 @@ public class SlashCommandService {
     private final ChatMemory chatMemory;
     private final OllamaApi ollamaApi;
 
-    private final McpSyncClient mcpClient;
+    private final McpAsyncClient mcpAsyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
     private final long cacheTtlSeconds;
@@ -49,7 +50,7 @@ public class SlashCommandService {
 
     public SlashCommandService(ChatMemory chatMemory,
                                OllamaApi ollamaApi,
-                               List<McpSyncClient> mcpSyncClients,
+                               List<McpAsyncClient> mcpAsyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
@@ -61,29 +62,31 @@ public class SlashCommandService {
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
 
-        mcpClient = mcpSyncClients.getFirst();
+        mcpAsyncClient = mcpAsyncClients.getFirst();
     }
 
-    public ChatClient taskClient(String tool) {
-        log.info("Creating task client with tool: {}", tool);
+    public Mono<ChatClient> taskClient(String tool) {
+        return Mono.fromCallable(() -> {
+            log.info("Creating task client with tool: {}", tool);
 
-        McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpClient, tool);
+            McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpAsyncClient, tool);
 
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model("mistral:7b")
-                .build();
+            OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                    .model("mistral:7b")
+                    .build();
 
-        OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
-                .ollamaApi(ollamaApi)
-                .defaultOptions(ollamaChatOptions).build();
+            OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
+                    .ollamaApi(ollamaApi)
+                    .defaultOptions(ollamaChatOptions).build();
 
-        return ChatClient.builder(ollamaChatModel)
-                .defaultToolCallbacks(mcpIdentityProvider)
-                .defaultAdvisors(
-                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
-                        simpleLoggerAdvisor
-                )
-                .build();
+            return ChatClient.builder(ollamaChatModel)
+                    .defaultToolCallbacks(mcpIdentityProvider)
+                    .defaultAdvisors(
+                            PromptChatMemoryAdvisor.builder(chatMemory).build(),
+                            simpleLoggerAdvisor
+                    )
+                    .build();
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
     public List<SlashCommand> commands(Set<String> commands) {
@@ -147,14 +150,21 @@ public class SlashCommandService {
             return;
         }
 
+        redisTemplate.delete(CACHE_KEY)
+                .doOnSuccess(deleted -> log.info("Purged slash-commands cache on startup"))
+                .onErrorResume(exception -> {
+                    log.warn("Failed to purge slash-commands cache on startup: {}", exception.getMessage());
+                    return Mono.just(0L);
+                })
+                .block();
+
         List<SlashCommand> slashCommands = slashCommands();
         log.info("Slash-commands prompt catalog ready with {} commands(s)", slashCommands.size());
     }
 
     private List<SlashCommand> loadSlashCommandsFromMcp() {
-
-        McpSchema.ListPromptsResult listPromptsResult = mcpClient.listPrompts();
-        McpSchema.ListToolsResult listToolsResult = mcpClient.listTools();
+        McpSchema.ListPromptsResult listPromptsResult = mcpAsyncClient.listPrompts().block();
+        McpSchema.ListToolsResult listToolsResult = mcpAsyncClient.listTools().block();
 
         List<SlashCommand> promptCommands = List.of();
 

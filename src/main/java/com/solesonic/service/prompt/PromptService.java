@@ -6,6 +6,7 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.CollectionUtils;
@@ -43,7 +44,7 @@ public class PromptService {
     private final UserPreferencesService userPreferencesService;
     private final SlashCommandService slashCommandService;
     private final VectorStoreService vectorStoreService;
-    private final McpSyncClient mcpClient;
+    private final McpAsyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
 
     @Value("${solesonic.llm.bot.name}")
@@ -54,7 +55,7 @@ public class PromptService {
             UserPreferencesService userPreferencesService,
             SlashCommandService slashCommandService,
             VectorStoreService vectorStoreService,
-            McpSyncClient mcpClient,
+            McpAsyncClient mcpClient,
             McpPromptAdapter mcpPromptAdapter) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
@@ -95,7 +96,10 @@ public class PromptService {
         }
 
         assert authToken != null;
-        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId, PROGRESS_TOKEN, chatId);
+        Map<String, Object> contextMap = Map.of(
+                USER_TOKEN, authToken,
+                CHAT_ID, chatId,
+                PROGRESS_TOKEN, chatId);
 
         SlashCommand slashCommand = slashCommands.stream().findFirst()
                 .orElseThrow(IllegalStateException::new);
@@ -110,23 +114,21 @@ public class PromptService {
                         Map.of(USER_MESSAGE, message, TASK_TOOL, tool.name())
                 );
 
-                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-
-                Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
-
-                ChatClient taskClient = slashCommandService.taskClient(tool.name());
-
-                var chatClientBuilder = taskClient.prompt(prompt)
-                        .user(message)
-                        .advisors(advisorSpec -> advisorSpec
-                                .param(CONVERSATION_ID, chatId)
-                        )
-                        .advisors(retrievalAugmentationAdvisor)
-                        .toolContext(contextMap);
-
-                return Flux.deferContextual(_ ->
-                        chatClientBuilder.stream()
-                                .content());
+                return mcpClient.getPrompt(getPromptRequest)
+                        .map(mcpPromptAdapter::toPrompt)
+                        .flatMapMany(prompt ->
+                                slashCommandService.taskClient(tool.name())
+                                        .flatMapMany(taskClient -> taskClient.prompt(prompt)
+                                                .user(message)
+                                                .advisors(advisorSpec -> advisorSpec
+                                                        .param(CONVERSATION_ID, chatId)
+                                                )
+                                                .advisors(retrievalAugmentationAdvisor)
+                                                .toolContext(contextMap)
+                                                .stream()
+                                                .content()
+                                        )
+                        );
             }
             case PROMPT -> {
                 log.info("Prompt invoke: {}", slashCommand.name());
