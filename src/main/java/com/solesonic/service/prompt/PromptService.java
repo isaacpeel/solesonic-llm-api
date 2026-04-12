@@ -15,7 +15,6 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
@@ -44,9 +43,6 @@ public class PromptService {
     private final VectorStoreService vectorStoreService;
     private final McpAsyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
-
-    @Value("${solesonic.llm.bot.name}")
-    private String agentName;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -99,7 +95,8 @@ public class PromptService {
                 CHAT_ID, chatId,
                 PROGRESS_TOKEN, chatId);
 
-        SlashCommand slashCommand = slashCommands.stream().findFirst()
+        SlashCommand slashCommand = slashCommands.stream()
+                .findFirst()
                 .orElseThrow(IllegalStateException::new);
 
         switch (slashCommand.commandType) {
