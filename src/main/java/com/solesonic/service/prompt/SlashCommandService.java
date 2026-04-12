@@ -151,7 +151,7 @@ public class SlashCommandService {
         }
 
         redisTemplate.delete(CACHE_KEY)
-                .doOnSuccess(deleted -> log.info("Purged slash-commands cache on startup"))
+                .doOnSuccess(_ -> log.info("Purged slash-commands cache on startup"))
                 .onErrorResume(exception -> {
                     log.warn("Failed to purge slash-commands cache on startup: {}", exception.getMessage());
                     return Mono.just(0L);

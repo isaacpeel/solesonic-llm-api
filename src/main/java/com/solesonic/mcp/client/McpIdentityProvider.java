@@ -11,6 +11,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * A ToolCallbackProvider that wraps MCP tools with security context propagation.
@@ -37,9 +38,9 @@ public class McpIdentityProvider implements ToolCallbackProvider {
 
     public void initializeTool(String name) {
         try {
-            List<Tool> tools = mcpClient.listTools()
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .block()
+            List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .block())
                     .tools();
 
             Tool tool = tools.stream()
@@ -57,9 +58,9 @@ public class McpIdentityProvider implements ToolCallbackProvider {
 
     private void initializeTools() {
         try {
-            List<Tool> tools = mcpClient.listTools()
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .block()
+            List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .block())
                     .tools();
 
             log.info("Initializing {} MCP tools with security context propagation", tools.size());
