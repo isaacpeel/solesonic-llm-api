@@ -11,11 +11,15 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.AsyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
-    import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.springframework.ai.tool.metadata.ToolMetadata;
 import reactor.util.context.Context;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
@@ -33,6 +37,11 @@ public class IdentityToolCallback implements ToolCallback {
     public static final String USER_TOKEN = "userToken";
     public static final String SECURITY_CONTEXT_KEY = "SECURITY_CONTEXT";
     private static final ThreadLocal<Context> TOOL_CALL_CONTEXT = new ThreadLocal<>();
+    private static final JsonMapper jsonMapper = new JsonMapper();
+
+    private static final TypeReference<List<Map<String, Object>>> CONTENT_LIST_TYPE = new TypeReference<>() {
+    };
+    public static final String TEXT = "text";
 
     private final AsyncMcpToolCallback delegate;
     private final ToolMetadata toolMetadata;
@@ -97,10 +106,22 @@ public class IdentityToolCallback implements ToolCallback {
         TOOL_CALL_CONTEXT.set(reactiveContext);
 
         try {
-            return delegate.call(toolCallInput, filteredToolContext);
+            String rawResult = delegate.call(toolCallInput, filteredToolContext);
+            return extractText(rawResult);
         } finally {
             TOOL_CALL_CONTEXT.remove();
         }
+    }
+
+    private String extractText(String rawResult) {
+        if (!toolMetadata.returnDirect() || StringUtils.isBlank(rawResult)) {
+            return rawResult;
+        }
+
+        List<Map<String, Object>> contentList = jsonMapper.readValue(rawResult, CONTENT_LIST_TYPE);
+        return contentList.stream()
+                .map(entry -> entry.getOrDefault(TEXT, "").toString())
+                .collect(Collectors.joining());
     }
 
     /**
