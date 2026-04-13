@@ -35,11 +35,10 @@ public class SlashCommand {
 
         String command = meta.get(COMMAND).toString();
 
+        this.commandType = PROMPT;
         this.name = name;
         this.description = description;
         this.command = command;
-
-
     }
 
     public SlashCommand(McpSchema.Tool tool) {

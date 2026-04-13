@@ -240,6 +240,13 @@
             <version>0.7.0</version>
             <scope>compile</scope>
         </dependency>
+
+        <!-- Fix CVE-2026-34237: hardcoded wildcard CORS in MCP SDK -->
+        <dependency>
+            <groupId>io.modelcontextprotocol.sdk</groupId>
+            <artifactId>mcp-core</artifactId>
+            <version>1.1.1</version>
+        </dependency>
     </dependencies>
     <dependencyManagement>
         <dependencies>

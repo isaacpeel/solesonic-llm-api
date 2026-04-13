@@ -35,7 +35,7 @@ public class ElicitationProvider {
     public record DeleteConfirmation(boolean confirmed, String chatId) {}
 
     @SuppressWarnings("unused")
-    @McpElicitation(clients = { "mcp-client - solesonic"})
+    @McpElicitation(clients = { "solesonic"})
     public Mono<StructuredElicitResult<DeleteConfirmation>> handleElicitationRequest(McpSchema.ElicitRequest request) {
         log.info("Elicitation request received");
 

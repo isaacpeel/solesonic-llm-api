@@ -130,6 +130,9 @@ public class SlashCommandService {
             return slashCommands;
         }
 
+        slashCommands
+                .forEach(slashCommand -> log.info("Loaded command: {}", slashCommand.name()));
+
         String serializedPayload = jsonMapper.writeValueAsString(slashCommands);
 
         redisTemplate.opsForValue()

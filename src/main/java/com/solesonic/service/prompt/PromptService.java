@@ -15,6 +15,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
@@ -36,6 +37,7 @@ public class PromptService {
     public static final String TASK_PROMPT = "task-prompt";
     public static final String TASK_TOOL = "taskTool";
     public static final String PROGRESS_TOKEN = "progressToken";
+    public static final String AGENT_NAME = "agentName";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
@@ -43,6 +45,9 @@ public class PromptService {
     private final VectorStoreService vectorStoreService;
     private final McpAsyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
+
+    @Value("${solesonic.llm.bot.name}")
+    private String agentName;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -70,6 +75,7 @@ public class PromptService {
         Set<String> commands = chatMessage.commands();
 
         if (CollectionUtils.isEmpty(commands)) {
+            log.info("Using default command.");
             commands = Set.of(DEFAULT);
         }
 
@@ -83,13 +89,11 @@ public class PromptService {
 
         Object principal = authentication.getPrincipal();
 
-        String authToken = null;
-
-        if (principal instanceof Jwt jwt) {
-            authToken = jwt.getTokenValue();
+        if (!(principal instanceof Jwt jwt)) {
+            throw new IllegalStateException("Authentication principal is not a JWT token");
         }
 
-        assert authToken != null;
+        String authToken = jwt.getTokenValue();
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
                 CHAT_ID, chatId,
@@ -127,18 +131,26 @@ public class PromptService {
             }
             case PROMPT -> {
                 log.info("Prompt invoke: {}", slashCommand.name());
-                var chatClientBuilder = chatClient.prompt(slashCommand.prompt())
-                        .user(message)
-                        .advisors(advisorSpec -> advisorSpec
-                                .param(CONVERSATION_ID, chatId)
-                        )
-                        .advisors(retrievalAugmentationAdvisor)
-                        .toolContext(contextMap)
-                        .options(ollamaChatOptions);
 
-                return Flux.deferContextual(_ ->
-                        chatClientBuilder.stream()
-                                .content());
+                McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                        slashCommand.name(),
+                        Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
+                );
+
+                return mcpClient.getPrompt(getPromptRequest)
+                        .flatMapMany(getPromptResult -> {
+                            org.springframework.ai.chat.prompt.Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+
+                            return chatClient.prompt(prompt)
+                                    .advisors(advisorSpec -> advisorSpec
+                                            .param(CONVERSATION_ID, chatId)
+                                    )
+                                    .advisors(retrievalAugmentationAdvisor)
+                                    .toolContext(contextMap)
+                                    .options(ollamaChatOptions)
+                                    .stream()
+                                    .content();
+                        });
             }
             default -> throw new IllegalStateException();
         }
