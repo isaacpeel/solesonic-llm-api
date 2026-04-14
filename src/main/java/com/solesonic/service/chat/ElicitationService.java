@@ -172,8 +172,8 @@ public class ElicitationService {
                         result.action()))
                 .onErrorResume(throwable -> {
                     log.error("Error processing elicitation response.", throwable);
-                    redisTemplate.delete(resultFieldsKey).subscribe();
-                    return Mono.just(toStructuredResult(new McpSchema.ElicitResult(DECLINE, null), null));
+                    return redisTemplate.delete(resultFieldsKey)
+                            .thenReturn(toStructuredResult(new McpSchema.ElicitResult(DECLINE, null), null));
                 });
     }
 
