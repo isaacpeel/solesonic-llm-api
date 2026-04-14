@@ -10,11 +10,8 @@ import org.springframework.ai.mcp.annotation.context.StructuredElicitResult;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import tools.jackson.databind.json.JsonMapper;
-import tools.jackson.databind.type.MapType;
 
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 import static com.solesonic.service.prompt.PromptService.CHAT_ID;
@@ -24,15 +21,12 @@ public class ElicitationProvider {
     private static final Logger log = LoggerFactory.getLogger(ElicitationProvider.class);
 
     private final ElicitationService elicitationService;
-    private final JsonMapper jsonMapper;
 
-    public ElicitationProvider(ElicitationService elicitationService,
-                               JsonMapper jsonMapper) {
+    public ElicitationProvider(ElicitationService elicitationService) {
         this.elicitationService = elicitationService;
-        this.jsonMapper = jsonMapper;
     }
 
-    public record DeleteConfirmation(boolean confirmed, String chatId) {}
+    public record DeleteConfirmation(McpSchema.ElicitResult.Action action, UUID chatId, UUID elicitationId) {}
 
     @SuppressWarnings("unused")
     @McpElicitation(clients = { "solesonic"})
@@ -47,18 +41,9 @@ public class ElicitationProvider {
 
         UUID chatId = UUID.fromString(request.meta().get(CHAT_ID).toString());
 
-        MapType mapType = jsonMapper.getTypeFactory().constructMapType(Map.class, String.class, Object.class);
+        log.info("Starting elicitation for chat {}", chatId);
 
-        String json = jsonMapper.writeValueAsString(request);
-        Map<String, Object> requestMap = jsonMapper.readerFor(mapType).readValue(json);
-
-        String name = Optional.ofNullable(requestMap.get("name"))
-                .map(Object::toString)
-                .orElse("elicitation");
-
-        log.info("Starting elicitation: {} for chat {}", name, chatId);
-
-        ElicitationService.ElicitationHandle handle = elicitationService.prepareElicitation(chatId, name);
+        ElicitationService.ElicitationHandle handle = elicitationService.prepareElicitation();
 
         elicitationService.emitElicitation(chatId, handle.elicitationId(), request);
 

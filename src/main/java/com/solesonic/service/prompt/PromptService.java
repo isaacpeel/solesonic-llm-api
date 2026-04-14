@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -94,6 +95,7 @@ public class PromptService {
         }
 
         String authToken = jwt.getTokenValue();
+
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
                 CHAT_ID, chatId,
@@ -139,7 +141,7 @@ public class PromptService {
 
                 return mcpClient.getPrompt(getPromptRequest)
                         .flatMapMany(getPromptResult -> {
-                            org.springframework.ai.chat.prompt.Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+                            Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
 
                             return chatClient.prompt(prompt)
                                     .advisors(advisorSpec -> advisorSpec

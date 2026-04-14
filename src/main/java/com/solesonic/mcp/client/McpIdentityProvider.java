@@ -38,19 +38,12 @@ public class McpIdentityProvider implements ToolCallbackProvider {
 
     public void initializeTool(String name) {
         try {
-            List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()
-                            .subscribeOn(Schedulers.boundedElastic())
-                            .block())
-                    .tools();
+            Tool tool = findTool(name);
 
-            Tool tool = tools.stream()
-                    .filter(mcpTool -> mcpTool.name().equals(name))
-                    .findFirst().orElseThrow(() -> new IllegalStateException("Tool not found"));
-            log.info("Initializing {} MCP tools with security context propagation", tools.size());
+            log.info("MCP tool {} initialized with security context propagation", tool.name());
 
             IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
             toolCallbacks.add(callback);
-            log.debug("Wrapped MCP tool: {} ", tool.name());
         } catch (Exception e) {
             log.error("Failed to initialize MCP tools", e);
         }
@@ -58,10 +51,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
 
     private void initializeTools() {
         try {
-            List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()
-                            .subscribeOn(Schedulers.boundedElastic())
-                            .block())
-                    .tools();
+            List<Tool> tools = allMcpTools();
 
             log.info("Initializing {} MCP tools with security context propagation", tools.size());
 
@@ -73,6 +63,20 @@ public class McpIdentityProvider implements ToolCallbackProvider {
         } catch (Exception e) {
             log.error("Failed to initialize MCP tools", e);
         }
+    }
+
+    private Tool findTool(String name) {
+        return allMcpTools().stream()
+                .filter(mcpTool -> mcpTool.name().equals(name))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Tool not found"));
+    }
+
+    private List<Tool> allMcpTools() {
+        return Objects.requireNonNull(mcpClient.listTools()
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .block())
+                .tools();
     }
 
     @Override

@@ -4,27 +4,22 @@ import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.mcp.annotation.context.StructuredElicitResult;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import reactor.core.publisher.Sinks;
-import reactor.core.scheduler.Schedulers;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 
 import static io.modelcontextprotocol.spec.McpSchema.ElicitResult.Action.*;
 
@@ -35,99 +30,71 @@ public class ElicitationService {
     public static final String CHAT_ID = "chatId";
     public static final String ELICITATION = "elicitation";
     public static final String PROGRESS = "progress";
-    public static final String CONFIRMED = "confirmed";
-    public static final String ACCEPT_ACTION = "accept";
-    public static final String DECLINE_ACTION = "decline";
     public static final String CANCEL_ACTION = "cancel";
 
-    public record ElicitationHandle(UUID elicitationId, CompletableFuture<McpSchema.ElicitResult> future) {}
+    private static final String CLOSE_EVENT = "__close__";
+    private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
+    private static final String FIELDS_KEY_PREFIX = "elicitation:fields:";
+
+    private static final Duration POLL_INTERVAL = Duration.ofMillis(100);
+
+    public record ElicitationHandle(UUID elicitationId) {}
 
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
+    private final ReactiveStringRedisTemplate redisTemplate;
 
     @Value("${solesonic.elicitation.timeout-seconds:600}")
     private long timeoutSeconds;
 
-    private final ConcurrentHashMap<UUID, Sinks.Many<ServerSentEvent<?>>> chatSinks = new ConcurrentHashMap<>();
-
-    private final ConcurrentHashMap<String, CompletableFuture<McpSchema.ElicitResult>> pendingById = new ConcurrentHashMap<>();
-
-    // Store the raw fields submitted from the frontend per elicitation id to reconstruct structured results
-    private final ConcurrentHashMap<String, Map<String, Object>> resultFieldsById = new ConcurrentHashMap<>();
-
-    private final ConcurrentHashMap<String, UUID> nameIndex = new ConcurrentHashMap<>();
-
     public ElicitationService(JsonMapper jsonMapper,
-                              ChatMessageService chatMessageService) {
+                              ChatMessageService chatMessageService,
+                              ReactiveStringRedisTemplate redisTemplate) {
         this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
+        this.redisTemplate = redisTemplate;
     }
 
+    @SuppressWarnings("unchecked")
     public Flux<ServerSentEvent<?>> registerChat(UUID chatId) {
-        Sinks.Many<ServerSentEvent<?>> sink = chatSinks.computeIfAbsent(chatId, _ ->
-                Sinks.many().multicast().onBackpressureBuffer());
-
-        return sink.asFlux();
+        return (Flux<ServerSentEvent<?>>) (Flux<?>) redisTemplate.listenToChannel(eventsChannelKey(chatId))
+                .map(message -> deserializeEventMessage(message.getMessage()))
+                .takeWhile(serverSentEvent -> !CLOSE_EVENT.equals(serverSentEvent.event()))
+                .share();
     }
 
     public void closeChat(UUID chatId) {
-        Sinks.Many<ServerSentEvent<?>> sink = chatSinks.remove(chatId);
+        String closeMessage = serializeEventMessage(CLOSE_EVENT, "");
 
-        if (sink != null) {
-            sink.tryEmitComplete();
-        }
-
-        // Clean up any pending elicitations for this chat id
-        pendingById.keySet().removeIf(key -> key.startsWith(keyPrefix(chatId)));
-        nameIndex.keySet().removeIf(key -> key.startsWith(keyPrefix(chatId)));
+        redisTemplate.convertAndSend(eventsChannelKey(chatId), closeMessage)
+                .subscribe(count -> log.debug("Closed elicitation channel for chat {}", count));
     }
 
-    public ElicitationHandle prepareElicitation(UUID chatId, String name) {
-        UUID elicitationId = UUID.randomUUID();
-        String idKey = idKey(chatId, elicitationId);
-
-        CompletableFuture<McpSchema.ElicitResult> future = new CompletableFuture<>();
-
-        pendingById.put(idKey, future);
-
-        if (StringUtils.isNotEmpty(name)) {
-            String nameKey = nameKey(chatId, name);
-            nameIndex.put(nameKey, elicitationId);
-        }
-
-        return new ElicitationHandle(elicitationId, future);
+    public ElicitationHandle prepareElicitation() {
+        return new ElicitationHandle(UUID.randomUUID());
     }
 
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
         log.debug("Emitting elicitation for chat id {}", chatId);
-        Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
-
-        if (serverSentEventMany == null) {
-            log.warn("No SSE sink found for chat {} while emitting elicitation", chatId);
-            return;
-        }
 
         try {
             Map<String, Object> requestJson = jsonMapper.convertValue(request, new TypeReference<>() {});
-
             requestJson.put(ELICITATION_ID, elicitationId.toString());
             requestJson.put(CHAT_ID, chatId.toString());
 
             log.info("Emitting elicitation event for chat {}", chatId);
-
-            ServerSentEvent<?> serverSentEvent = ServerSentEvent.builder(requestJson)
-                    .event(ELICITATION)
-                    .build();
 
             String elicitationMessage = request.message();
             ChatMessage chatMessage = new ChatMessage();
             chatMessage.setMessage(elicitationMessage);
             chatMessage.setChatId(chatId);
             chatMessage.setMessageType(MessageType.SYSTEM);
-
             chatMessageService.save(chatMessage);
 
-            serverSentEventMany.tryEmitNext(serverSentEvent);
+            String message = serializeEventMessage(ELICITATION, requestJson);
+
+            redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+                    .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
         } catch (IllegalArgumentException illegalArgumentException) {
             log.error("Failed to serialize elicitation request for chat {}", chatId, illegalArgumentException);
         }
@@ -138,150 +105,86 @@ public class ElicitationService {
     public void emitProgress(UUID chatId, McpSchema.ProgressNotification progressNotification) {
         log.info("Emitting progress for chat id {} with message: {}", chatId, progressNotification.message());
 
-        Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
-
-        if (serverSentEventMany == null) {
-            log.info("No SSE sink found for chat {} while emitting progress", chatId);
-            return;
-        }
-
         try {
             Map<String, Object> progressJson = jsonMapper.convertValue(progressNotification, new TypeReference<>() {});
             progressJson.put(CHAT_ID, chatId.toString());
 
-            ServerSentEvent<?> serverSentEvent = ServerSentEvent.builder(progressJson)
-                    .event(PROGRESS)
-                    .build();
+            String message = serializeEventMessage(PROGRESS, progressJson);
 
-            serverSentEventMany.tryEmitNext(serverSentEvent);
+            redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+                    .subscribe(subscriberCount -> log.debug("Emitted progress event to {} subscribers for chat {}", subscriberCount, chatId));
         } catch (IllegalArgumentException illegalArgumentException) {
             log.info("Failed to serialize progress notification for chat {}", chatId, illegalArgumentException);
         }
     }
 
-    public boolean completeFromFrontend(UUID chatId, UUID elicitationId, String name, Map<String, Object> fields) {
-        log.info("Completing form elicitation for chat id {}", chatId);
-        
-        UUID effectiveId = elicitationId;
+    public Mono<Boolean> completeFromFrontend(ElicitationProvider.DeleteConfirmation deleteConfirmation) {
+        log.info("Completing elicitation for chat {}", deleteConfirmation.chatId());
 
-        if (effectiveId == null && name != null) {
-            effectiveId = nameIndex.remove(nameKey(chatId, name));
+        McpSchema.ElicitResult.Action action = deleteConfirmation.action();
+        if (action == null) {
+            log.warn("Missing action in elicitation response for chat {}", deleteConfirmation.chatId());
+            return Mono.just(false);
         }
 
-        if (effectiveId == null) {
-            log.warn("No elicitation id or known name for chat {}", chatId);
-            return false;
-        }
+        log.info("Elicitation action: {}", action);
 
-        String idKey = idKey(chatId, effectiveId);
+        UUID chatId = deleteConfirmation.chatId();
+        UUID elicitationId = deleteConfirmation.elicitationId();
 
-        CompletableFuture<McpSchema.ElicitResult> future = pendingById.get(idKey);
+        log.info("Response for chat id: {}", chatId);
+        log.info("Response for elicitationId: {}", elicitationId);
 
-        if (future == null) {
-            log.warn("No pending elicitation future found for chat {} id {}", chatId, effectiveId);
-            return false;
-        }
-
-        log.info("Received elicitation fields: {}", fields);
-        
-        Object confirmedField = fields.get(CONFIRMED);
-        
-        log.info("Elicitation confirmed: {}", confirmedField);
-        
         ChatMessage chatMessage = new ChatMessage();
-        chatMessage.setMessage(confirmedField.toString());
+        chatMessage.setMessage(action.name().toLowerCase());
         chatMessage.setChatId(chatId);
         chatMessage.setMessageType(MessageType.USER);
-
         chatMessageService.save(chatMessage);
 
-        McpSchema.ElicitResult elicitResult = elicitResult(fields, confirmedField);
+        String contentJson = jsonMapper.writeValueAsString(deleteConfirmation);
 
-        // Store fields so we can build a StructuredElicitResult later
-        resultFieldsById.put(idKey, fields);
+        Mono<Boolean> storeContent = redisTemplate.opsForValue()
+                .set(fieldsKey(chatId, elicitationId), contentJson, Duration.ofSeconds(timeoutSeconds + 60));
 
-        // If the user canceled, emit a cancel control event on the SSE stream for this chat
-        if (elicitResult.action() == CANCEL) {
-            Sinks.Many<ServerSentEvent<?>> serverSentEventMany = chatSinks.get(chatId);
+        Mono<Long> publishCancelEvent = Mono.just(0L);
 
-            if (serverSentEventMany != null) {
-                log.info("Emitting cancel event for chat {}", chatId);
-                
-                ServerSentEvent<?> cancelEvent = ServerSentEvent.builder("cancel")
-                        .event("cancel")
-                        .build();
-
-                serverSentEventMany.tryEmitNext(cancelEvent);
-            } else {
-                log.warn("No SSE sink found for chat {} while emitting cancel event", chatId);
-            }
+        if (action == CANCEL) {
+            log.info("Emitting cancel event for chat {}", deleteConfirmation.chatId());
+            publishCancelEvent = redisTemplate.convertAndSend(
+                    eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION));
         }
 
-        log.info("Completing elicitation for chat {}", chatId);
-        
-        return future.complete(elicitResult);
-    }
-
-    private static McpSchema.ElicitResult elicitResult(Map<String, Object> fields, Object confirmed) {
-        McpSchema.ElicitResult result;
-
-        if (!(confirmed instanceof String confirmedValue)) {
-            throw new IllegalStateException("Expected string value for 'confirmed', got: " + confirmed);
-        }
-
-        McpSchema.ElicitResult.Action action = switch (confirmedValue.toLowerCase()) {
-            case ACCEPT_ACTION -> ACCEPT;
-            case DECLINE_ACTION -> DECLINE;
-            case CANCEL_ACTION -> CANCEL;
-            default -> throw new IllegalStateException("Unexpected value: " + confirmedValue);
-        };
-
-        result = new McpSchema.ElicitResult(action, fields);
-        return result;
+        return storeContent
+                .then(publishCancelEvent)
+                .thenReturn(true);
     }
 
     public Mono<StructuredElicitResult<ElicitationProvider.DeleteConfirmation>> awaitResultAsync(UUID chatId, UUID elicitationId) {
-        String compositeIdKey = idKey(chatId, elicitationId);
-        CompletableFuture<McpSchema.ElicitResult> elicitationFuture = pendingById.get(compositeIdKey);
-
-        if (elicitationFuture == null) {
-            log.warn("Attempted to await non-existent elicitation future for chat {} id {}", chatId, elicitationId);
-
-            McpSchema.ElicitResult declineResult = new McpSchema.ElicitResult(DECLINE, null);
-
-            return Mono.just(toStructuredResult(declineResult, null));
-        }
-
+        String resultFieldsKey = fieldsKey(chatId, elicitationId);
         Duration timeout = Duration.ofSeconds(timeoutSeconds);
 
-        return Mono.fromFuture(elicitationFuture)
-                .subscribeOn(Schedulers.boundedElastic())
+        return Mono.defer(() -> readStoredResult(resultFieldsKey))
+                .repeatWhenEmpty(repeat -> repeat.delayElements(POLL_INTERVAL))
                 .timeout(timeout)
-                .doOnCancel(() -> {
-                    log.debug("Elicitation await cancelled for chat {} id {}", chatId, elicitationId);
-                    pendingById.remove(compositeIdKey);
-                    resultFieldsById.remove(compositeIdKey);
-                })
-                .map(result -> {
-                    McpSchema.ElicitResult safeResult = Optional.of(result)
-                            .orElseGet(() -> new McpSchema.ElicitResult(DECLINE, null));
-
-                    log.info("Elicitation future result: {}", safeResult.action().name());
-
-                    Map<String, Object> fieldsMap = resultFieldsById.remove(compositeIdKey);
-
-                    return toStructuredResult(safeResult, fieldsMap);
-                })
+                .doOnNext(result -> log.info("Elicitation result received for chat {} id {}: {}",
+                        chatId,
+                        elicitationId,
+                        result.action()))
                 .onErrorResume(throwable -> {
-                    log.warn("Timeout or error while awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, throwable.getMessage());
+                    log.error("Error processing elicitation response.", throwable);
+                    redisTemplate.delete(resultFieldsKey).subscribe();
+                    return Mono.just(toStructuredResult(new McpSchema.ElicitResult(DECLINE, null), null));
+                });
+    }
 
-                    pendingById.remove(compositeIdKey);
+    private Mono<StructuredElicitResult<ElicitationProvider.DeleteConfirmation>> readStoredResult(String resultFieldsKey) {
+        return redisTemplate.opsForValue().getAndDelete(resultFieldsKey)
+                .map(fieldsJson -> {
+                    Map<String, Object> fieldsMap = deserializeFields(fieldsJson);
+                    ElicitationProvider.DeleteConfirmation deleteConfirmation =
+                            jsonMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
 
-                    Map<String, Object> fieldsMap = resultFieldsById.remove(compositeIdKey);
-
-                    McpSchema.ElicitResult declineResult = new McpSchema.ElicitResult(DECLINE, null);
-
-                    return Mono.just(toStructuredResult(declineResult, fieldsMap));
+                    return toStructuredResult(new McpSchema.ElicitResult(deleteConfirmation.action(), null), fieldsMap);
                 });
     }
 
@@ -299,15 +202,29 @@ public class ElicitationService {
         return new StructuredElicitResult<>(elicitResult.action(), deleteConfirmation, fieldsMap);
     }
 
-    private static String idKey(UUID chatId, UUID elicitationId) {
-        return keyPrefix(chatId) + elicitationId.toString();
+    private String serializeEventMessage(String event, Object data) {
+        String serializedData = (data instanceof String stringData)
+                ? stringData
+                : jsonMapper.writeValueAsString(data);
+        return jsonMapper.writeValueAsString(Map.of("event", event, "data", serializedData));
     }
 
-    private static String nameKey(UUID chatId, String name) {
-        return keyPrefix(chatId) + name;
+    private ServerSentEvent<?> deserializeEventMessage(String json) {
+        Map<String, Object> wrapper = jsonMapper.readValue(json, new TypeReference<>() {});
+        String event = (String) wrapper.get("event");
+        String data = (String) wrapper.get("data");
+        return ServerSentEvent.builder(data).event(event).build();
     }
 
-    private static String keyPrefix(UUID chatId) {
-        return chatId.toString() + ":";
+    private Map<String, Object> deserializeFields(String json) {
+        return jsonMapper.readValue(json, new TypeReference<>() {});
+    }
+
+    private static String eventsChannelKey(UUID chatId) {
+        return EVENTS_CHANNEL_PREFIX + chatId;
+    }
+
+    private static String fieldsKey(UUID chatId, UUID elicitationId) {
+        return FIELDS_KEY_PREFIX + chatId + ":" + elicitationId;
     }
 }

@@ -7,9 +7,11 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.customizer.McpClientCustomizer;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -60,13 +62,16 @@ public class McpClientConfig {
     }
 
     @Bean
-    public McpClientCustomizer<McpClient.AsyncSpec> elicitationCapabilityCustomizer() {
+    public McpClientCustomizer<McpClient.AsyncSpec> elicitationCapabilityCustomizer(
+            @Value("${solesonic.elicitation.timeout-seconds:600}") long timeoutSeconds) {
         return (serverConfigurationName, asyncSpec) -> {
-            log.info("Customizing MCP client '{}' to enable elicitation capability", serverConfigurationName);
+            log.info("Customizing MCP client '{}' to enable elicitation capability and set request timeout to {}s", 
+                    serverConfigurationName, timeoutSeconds);
             asyncSpec.capabilities(McpSchema.ClientCapabilities.builder()
                     .elicitation(true, false)
                     .sampling()
-                    .build());
+                    .build())
+                    .requestTimeout(Duration.ofSeconds(timeoutSeconds));
         };
     }
 

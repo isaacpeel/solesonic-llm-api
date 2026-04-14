@@ -2,7 +2,9 @@ package com.solesonic.model.prompt;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 
@@ -25,6 +27,7 @@ public class SlashCommand {
     public McpSchema.Tool tool;
     public OllamaChatOptions options;
 
+    @SuppressWarnings("unused")
     public SlashCommand() {
     }
 
@@ -62,8 +65,8 @@ public class SlashCommand {
                         String textContent = extractTextContent(content);
 
                         return (Message) switch (role) {
-                            case USER -> new org.springframework.ai.chat.messages.UserMessage(message);
-                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
+                            case USER -> new UserMessage(message);
+                            case ASSISTANT -> new AssistantMessage(textContent);
                         };
                     }
                     throw new IllegalArgumentException("Unexpected message type.");

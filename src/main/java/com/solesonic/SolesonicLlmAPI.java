@@ -10,7 +10,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 public class SolesonicLlmAPI {
 
-    public static void main(String[] args) {
+    static void main(String[] args) {
         SpringApplication.run(SolesonicLlmAPI.class, args);
     }
 }
