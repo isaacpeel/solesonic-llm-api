@@ -57,12 +57,12 @@ public class StreamingChatController {
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
     public Mono<ResponseEntity<Void>> submitElicitationResponse(@PathVariable UUID chatId,
                                                                 @PathVariable UUID elicitationId,
-                                                                @RequestBody ElicitationProvider.DeleteConfirmation deleteConfirmation) {
+                                                                @RequestBody ElicitationProvider.ElicitationActionResult elicitationActionResult) {
         log.info("Received elicitation response for chat {}", chatId);
 
-        assert deleteConfirmation.elicitationId().equals(elicitationId);
+        assert elicitationActionResult.elicitationId().equals(elicitationId);
 
-        return elicitationService.completeFromFrontend(deleteConfirmation)
+        return elicitationService.completeFromFrontend(elicitationActionResult)
                 .map(completed -> completed
                         ? ResponseEntity.ok().build()
                         : ResponseEntity.notFound().build());

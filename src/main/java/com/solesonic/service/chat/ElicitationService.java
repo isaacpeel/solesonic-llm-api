@@ -118,19 +118,19 @@ public class ElicitationService {
         }
     }
 
-    public Mono<Boolean> completeFromFrontend(ElicitationProvider.DeleteConfirmation deleteConfirmation) {
-        log.info("Completing elicitation for chat {}", deleteConfirmation.chatId());
+    public Mono<Boolean> completeFromFrontend(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
+        log.info("Completing elicitation for chat {}", elicitationActionResult.chatId());
 
-        McpSchema.ElicitResult.Action action = deleteConfirmation.action();
+        McpSchema.ElicitResult.Action action = elicitationActionResult.action();
         if (action == null) {
-            log.warn("Missing action in elicitation response for chat {}", deleteConfirmation.chatId());
+            log.warn("Missing action in elicitation response for chat {}", elicitationActionResult.chatId());
             return Mono.just(false);
         }
 
         log.info("Elicitation action: {}", action);
 
-        UUID chatId = deleteConfirmation.chatId();
-        UUID elicitationId = deleteConfirmation.elicitationId();
+        UUID chatId = elicitationActionResult.chatId();
+        UUID elicitationId = elicitationActionResult.elicitationId();
 
         log.info("Response for chat id: {}", chatId);
         log.info("Response for elicitationId: {}", elicitationId);
@@ -141,7 +141,7 @@ public class ElicitationService {
         chatMessage.setMessageType(MessageType.USER);
         chatMessageService.save(chatMessage);
 
-        String contentJson = jsonMapper.writeValueAsString(deleteConfirmation);
+        String contentJson = jsonMapper.writeValueAsString(elicitationActionResult);
 
         Mono<Boolean> storeContent = redisTemplate.opsForValue()
                 .set(fieldsKey(chatId, elicitationId), contentJson, Duration.ofSeconds(timeoutSeconds + 60));
@@ -149,7 +149,7 @@ public class ElicitationService {
         Mono<Long> publishCancelEvent = Mono.just(0L);
 
         if (action == CANCEL) {
-            log.info("Emitting cancel event for chat {}", deleteConfirmation.chatId());
+            log.info("Emitting cancel event for chat {}", elicitationActionResult.chatId());
             publishCancelEvent = redisTemplate.convertAndSend(
                     eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION));
         }
@@ -159,7 +159,7 @@ public class ElicitationService {
                 .thenReturn(true);
     }
 
-    public Mono<StructuredElicitResult<ElicitationProvider.DeleteConfirmation>> awaitResultAsync(UUID chatId, UUID elicitationId) {
+    public Mono<StructuredElicitResult<ElicitationProvider.ElicitationActionResult>> awaitResultAsync(UUID chatId, UUID elicitationId) {
         String resultFieldsKey = fieldsKey(chatId, elicitationId);
         Duration timeout = Duration.ofSeconds(timeoutSeconds);
 
@@ -177,29 +177,29 @@ public class ElicitationService {
                 });
     }
 
-    private Mono<StructuredElicitResult<ElicitationProvider.DeleteConfirmation>> readStoredResult(String resultFieldsKey) {
+    private Mono<StructuredElicitResult<ElicitationProvider.ElicitationActionResult>> readStoredResult(String resultFieldsKey) {
         return redisTemplate.opsForValue().getAndDelete(resultFieldsKey)
                 .map(fieldsJson -> {
                     Map<String, Object> fieldsMap = deserializeFields(fieldsJson);
-                    ElicitationProvider.DeleteConfirmation deleteConfirmation =
-                            jsonMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
+                    ElicitationProvider.ElicitationActionResult elicitationActionResult =
+                            jsonMapper.convertValue(fieldsMap, ElicitationProvider.ElicitationActionResult.class);
 
-                    return toStructuredResult(new McpSchema.ElicitResult(deleteConfirmation.action(), null), fieldsMap);
+                    return toStructuredResult(new McpSchema.ElicitResult(elicitationActionResult.action(), null), fieldsMap);
                 });
     }
 
-    private StructuredElicitResult<ElicitationProvider.DeleteConfirmation> toStructuredResult(McpSchema.ElicitResult elicitResult, Map<String, Object> fieldsMap) {
-        ElicitationProvider.DeleteConfirmation deleteConfirmation = null;
+    private StructuredElicitResult<ElicitationProvider.ElicitationActionResult> toStructuredResult(McpSchema.ElicitResult elicitResult, Map<String, Object> fieldsMap) {
+        ElicitationProvider.ElicitationActionResult elicitationActionResult = null;
 
         if (fieldsMap != null) {
             try {
-                deleteConfirmation = jsonMapper.convertValue(fieldsMap, ElicitationProvider.DeleteConfirmation.class);
+                elicitationActionResult = jsonMapper.convertValue(fieldsMap, ElicitationProvider.ElicitationActionResult.class);
             } catch (IllegalArgumentException convertException) {
                 log.warn("Failed to convert elicitation fields to DeleteConfirmation: {}", convertException.getMessage());
             }
         }
 
-        return new StructuredElicitResult<>(elicitResult.action(), deleteConfirmation, fieldsMap);
+        return new StructuredElicitResult<>(elicitResult.action(), elicitationActionResult, fieldsMap);
     }
 
     private String serializeEventMessage(String event, Object data) {

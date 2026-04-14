@@ -26,11 +26,11 @@ public class ElicitationProvider {
         this.elicitationService = elicitationService;
     }
 
-    public record DeleteConfirmation(McpSchema.ElicitResult.Action action, UUID chatId, UUID elicitationId) {}
+    public record ElicitationActionResult(McpSchema.ElicitResult.Action action, UUID chatId, UUID elicitationId) {}
 
     @SuppressWarnings("unused")
     @McpElicitation(clients = { "solesonic"})
-    public Mono<StructuredElicitResult<DeleteConfirmation>> handleElicitationRequest(McpSchema.ElicitRequest request) {
+    public Mono<StructuredElicitResult<ElicitationActionResult>> handleElicitationRequest(McpSchema.ElicitRequest request) {
         log.info("Elicitation request received");
 
         Map<String, Object> requestMetadata = request.meta();
