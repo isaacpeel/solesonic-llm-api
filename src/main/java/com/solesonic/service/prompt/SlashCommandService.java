@@ -4,6 +4,7 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.prompt.SlashCommand;
 import io.modelcontextprotocol.client.McpAsyncClient;
+import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -42,7 +43,7 @@ public class SlashCommandService {
     private final ChatMemory chatMemory;
     private final OllamaApi ollamaApi;
 
-    private final McpAsyncClient mcpAsyncClient;
+    private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
     private final long cacheTtlSeconds;
@@ -50,7 +51,7 @@ public class SlashCommandService {
 
     public SlashCommandService(ChatMemory chatMemory,
                                OllamaApi ollamaApi,
-                               List<McpAsyncClient> mcpAsyncClients,
+                               List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
@@ -62,31 +63,29 @@ public class SlashCommandService {
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
 
-        mcpAsyncClient = mcpAsyncClients.getFirst();
+        mcpSyncClient = mcpSyncClients.getFirst();
     }
 
-    public Mono<ChatClient> taskClient(String tool) {
-        return Mono.fromCallable(() -> {
-            log.info("Creating task client with tool: {}", tool);
+    public ChatClient taskClient(String tool) {
+        log.info("Creating task client with tool: {}", tool);
 
-            McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpAsyncClient, tool);
+        McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpSyncClient, tool);
 
-            OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                    .model("mistral:7b")
-                    .build();
+        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
+                .model("mistral:7b")
+                .build();
 
-            OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
-                    .ollamaApi(ollamaApi)
-                    .defaultOptions(ollamaChatOptions).build();
+        OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
+                .ollamaApi(ollamaApi)
+                .defaultOptions(ollamaChatOptions).build();
 
-            return ChatClient.builder(ollamaChatModel)
-                    .defaultToolCallbacks(mcpIdentityProvider)
-                    .defaultAdvisors(
-                            PromptChatMemoryAdvisor.builder(chatMemory).build(),
-                            simpleLoggerAdvisor
-                    )
-                    .build();
-        }).subscribeOn(Schedulers.boundedElastic());
+        return ChatClient.builder(ollamaChatModel)
+                .defaultToolCallbacks(mcpIdentityProvider)
+                .defaultAdvisors(
+                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
+                        simpleLoggerAdvisor
+                )
+                .build();
     }
 
     public List<SlashCommand> commands(Set<String> commands) {
@@ -166,8 +165,8 @@ public class SlashCommandService {
     }
 
     private List<SlashCommand> loadSlashCommandsFromMcp() {
-        McpSchema.ListPromptsResult listPromptsResult = mcpAsyncClient.listPrompts().block();
-        McpSchema.ListToolsResult listToolsResult = mcpAsyncClient.listTools().block();
+        McpSchema.ListPromptsResult listPromptsResult = mcpSyncClient.listPrompts();
+        McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
         List<SlashCommand> promptCommands = List.of();
 

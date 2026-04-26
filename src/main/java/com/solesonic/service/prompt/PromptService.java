@@ -7,6 +7,7 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpAsyncClient;
+import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
@@ -44,7 +45,7 @@ public class PromptService {
     private final UserPreferencesService userPreferencesService;
     private final SlashCommandService slashCommandService;
     private final VectorStoreService vectorStoreService;
-    private final McpAsyncClient mcpClient;
+    private final McpSyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
 
     @Value("${solesonic.llm.bot.name}")
@@ -55,7 +56,7 @@ public class PromptService {
             UserPreferencesService userPreferencesService,
             SlashCommandService slashCommandService,
             VectorStoreService vectorStoreService,
-            McpAsyncClient mcpClient,
+            McpSyncClient mcpClient,
             McpPromptAdapter mcpPromptAdapter) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
@@ -115,21 +116,19 @@ public class PromptService {
                         Map.of(USER_MESSAGE, message, TASK_TOOL, tool.name())
                 );
 
-                return mcpClient.getPrompt(getPromptRequest)
-                        .map(mcpPromptAdapter::toPrompt)
-                        .flatMapMany(prompt ->
-                                slashCommandService.taskClient(tool.name())
-                                        .flatMapMany(taskClient -> taskClient.prompt(prompt)
-                                                .user(message)
-                                                .advisors(advisorSpec -> advisorSpec
-                                                        .param(CONVERSATION_ID, chatId)
-                                                )
-                                                .advisors(retrievalAugmentationAdvisor)
-                                                .toolContext(contextMap)
-                                                .stream()
-                                                .content()
-                                        )
-                        );
+                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+                Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
+                ChatClient taskClient = slashCommandService.taskClient(tool.name());
+
+                return taskClient.prompt(prompt)
+                        .user(message)
+                        .advisors(advisorSpec -> advisorSpec
+                                .param(CONVERSATION_ID, chatId)
+                        )
+                        .advisors(retrievalAugmentationAdvisor)
+                        .toolContext(contextMap)
+                        .stream()
+                        .content();
             }
             case PROMPT -> {
                 log.info("Prompt invoke: {}", slashCommand.name());
@@ -139,20 +138,18 @@ public class PromptService {
                         Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
                 );
 
-                return mcpClient.getPrompt(getPromptRequest)
-                        .flatMapMany(getPromptResult -> {
-                            Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+                Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
 
-                            return chatClient.prompt(prompt)
-                                    .advisors(advisorSpec -> advisorSpec
-                                            .param(CONVERSATION_ID, chatId)
-                                    )
-                                    .advisors(retrievalAugmentationAdvisor)
-                                    .toolContext(contextMap)
-                                    .options(ollamaChatOptions)
-                                    .stream()
-                                    .content();
-                        });
+                return chatClient.prompt(prompt)
+                        .advisors(advisorSpec -> advisorSpec
+                                .param(CONVERSATION_ID, chatId)
+                        )
+                        .advisors(retrievalAugmentationAdvisor)
+                        .toolContext(contextMap)
+                        .options(ollamaChatOptions)
+                        .stream()
+                        .content();
             }
             default -> throw new IllegalStateException();
         }

@@ -34,11 +34,12 @@ public class ElicitationService {
 
     private static final String CLOSE_EVENT = "__close__";
     private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
+    private static final String RESULT_CHANNEL_PREFIX = "elicitation:result:";
     private static final String FIELDS_KEY_PREFIX = "elicitation:fields:";
+    private static final String PENDING_SET_PREFIX = "elicitation:pending:";
 
-    private static final Duration POLL_INTERVAL = Duration.ofMillis(100);
-
-    public record ElicitationHandle(UUID elicitationId) {}
+    public record ElicitationHandle(UUID elicitationId) {
+    }
 
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
@@ -65,20 +66,36 @@ public class ElicitationService {
 
     public void closeChat(UUID chatId) {
         String closeMessage = serializeEventMessage(CLOSE_EVENT, "");
-
         redisTemplate.convertAndSend(eventsChannelKey(chatId), closeMessage)
                 .subscribe(count -> log.debug("Closed elicitation channel for chat {}", count));
+
+        String pendingKey = pendingSetKey(chatId);
+        redisTemplate.opsForSet().members(pendingKey)
+                .flatMap(elicitationIdString ->
+                    redisTemplate.convertAndSend(
+                        resultChannelKey(chatId, UUID.fromString(elicitationIdString)),
+                        DECLINE.name()
+                    )
+                )
+                .then(redisTemplate.delete(pendingKey))
+                .subscribe(deleted -> log.debug("Closed {} pending elicitations for chat {}", deleted, chatId));
     }
 
-    public ElicitationHandle prepareElicitation() {
-        return new ElicitationHandle(UUID.randomUUID());
+    public ElicitationHandle prepareElicitation(UUID chatId) {
+        UUID elicitationId = UUID.randomUUID();
+        redisTemplate.opsForSet()
+                .add(pendingSetKey(chatId), elicitationId.toString())
+                .flatMap(count -> redisTemplate.expire(pendingSetKey(chatId), Duration.ofSeconds(timeoutSeconds + 60)))
+                .subscribe();
+        return new ElicitationHandle(elicitationId);
     }
 
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
         log.debug("Emitting elicitation for chat id {}", chatId);
 
         try {
-            Map<String, Object> requestJson = jsonMapper.convertValue(request, new TypeReference<>() {});
+            Map<String, Object> requestJson = jsonMapper.convertValue(request, new TypeReference<>() {
+            });
             requestJson.put(ELICITATION_ID, elicitationId.toString());
             requestJson.put(CHAT_ID, chatId.toString());
 
@@ -91,7 +108,7 @@ public class ElicitationService {
             chatMessage.setMessageType(MessageType.SYSTEM);
             chatMessageService.save(chatMessage);
 
-            String message = serializeEventMessage(ELICITATION, requestJson);
+            String message = jsonMapper.writeValueAsString(Map.of("event", ELICITATION, "data", requestJson));
 
             redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
                     .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
@@ -106,7 +123,8 @@ public class ElicitationService {
         log.info("Emitting progress for chat id {} with message: {}", chatId, progressNotification.message());
 
         try {
-            Map<String, Object> progressJson = jsonMapper.convertValue(progressNotification, new TypeReference<>() {});
+            Map<String, Object> progressJson = jsonMapper.convertValue(progressNotification, new TypeReference<>() {
+            });
             progressJson.put(CHAT_ID, chatId.toString());
 
             String message = serializeEventMessage(PROGRESS, progressJson);
@@ -141,51 +159,67 @@ public class ElicitationService {
         chatMessage.setMessageType(MessageType.USER);
         chatMessageService.save(chatMessage);
 
-        String contentJson = jsonMapper.writeValueAsString(elicitationActionResult);
+        Map<String, Object> fieldsMap = jsonMapper.convertValue(elicitationActionResult, new TypeReference<>() {});
+        String fieldsJson = jsonMapper.writeValueAsString(fieldsMap);
 
-        Mono<Boolean> storeContent = redisTemplate.opsForValue()
-                .set(fieldsKey(chatId, elicitationId), contentJson, Duration.ofSeconds(timeoutSeconds + 60));
-
-        Mono<Long> publishCancelEvent = Mono.just(0L);
+        Mono<Boolean> storeAndSignal = redisTemplate.opsForValue()
+                .set(fieldsKey(chatId, elicitationId), fieldsJson, Duration.ofSeconds(timeoutSeconds + 60))
+                .then(redisTemplate.convertAndSend(resultChannelKey(chatId, elicitationId), action.name()))
+                .thenReturn(true);
 
         if (action == CANCEL) {
-            log.info("Emitting cancel event for chat {}", elicitationActionResult.chatId());
-            publishCancelEvent = redisTemplate.convertAndSend(
-                    eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION));
+            log.info("Emitting cancel event for chat {}", chatId);
+            return storeAndSignal.then(
+                redisTemplate.convertAndSend(eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION))
+                    .thenReturn(true)
+            );
         }
 
-        return storeContent
-                .then(publishCancelEvent)
-                .thenReturn(true);
+        return storeAndSignal;
     }
 
     public Mono<StructuredElicitResult<ElicitationProvider.ElicitationActionResult>> awaitResultAsync(UUID chatId, UUID elicitationId) {
-        String resultFieldsKey = fieldsKey(chatId, elicitationId);
-        Duration timeout = Duration.ofSeconds(timeoutSeconds);
+        return redisTemplate.listenToChannel(resultChannelKey(chatId, elicitationId))
+                .next()
+                .timeout(Duration.ofSeconds(timeoutSeconds))
+                .flatMap(message -> {
+                    String actionName = message.getMessage();
+                    log.info("Elicitation future resolved: {}", actionName);
+                    McpSchema.ElicitResult.Action action;
+                    try {
+                        action = McpSchema.ElicitResult.Action.valueOf(actionName);
+                    } catch (IllegalArgumentException illegalArgumentException) {
+                        log.warn("Unknown elicitation action '{}', defaulting to DECLINE", actionName);
+                        action = DECLINE;
+                    }
+                    final McpSchema.ElicitResult.Action resolvedAction = action;
 
-        return Mono.defer(() -> readStoredResult(resultFieldsKey))
-                .repeatWhenEmpty(repeat -> repeat.delayElements(POLL_INTERVAL))
-                .timeout(timeout)
-                .doOnNext(result -> log.info("Elicitation result received for chat {} id {}: {}",
-                        chatId,
-                        elicitationId,
-                        result.action()))
+                    return redisTemplate.opsForValue().getAndDelete(fieldsKey(chatId, elicitationId))
+                            .map(fieldsJson -> {
+                                Map<String, Object> fieldsMap = deserializeFields(fieldsJson);
+                                return toStructuredResult(new McpSchema.ElicitResult(resolvedAction, fieldsMap), fieldsMap);
+                            })
+                            .defaultIfEmpty(toStructuredResult(new McpSchema.ElicitResult(resolvedAction, null), null));
+                })
+                .doFinally(signal ->
+                    redisTemplate.opsForSet().remove(pendingSetKey(chatId), elicitationId.toString()).subscribe()
+                )
                 .onErrorResume(throwable -> {
-                    log.error("Error processing elicitation response.", throwable);
-                    return redisTemplate.delete(resultFieldsKey)
-                            .thenReturn(toStructuredResult(new McpSchema.ElicitResult(DECLINE, null), null));
+                    log.error("Timeout or error awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, throwable.getMessage());
+                    return Mono.just(toStructuredResult(new McpSchema.ElicitResult(DECLINE, null), null));
                 });
     }
 
-    private Mono<StructuredElicitResult<ElicitationProvider.ElicitationActionResult>> readStoredResult(String resultFieldsKey) {
-        return redisTemplate.opsForValue().getAndDelete(resultFieldsKey)
-                .map(fieldsJson -> {
-                    Map<String, Object> fieldsMap = deserializeFields(fieldsJson);
-                    ElicitationProvider.ElicitationActionResult elicitationActionResult =
-                            jsonMapper.convertValue(fieldsMap, ElicitationProvider.ElicitationActionResult.class);
-
-                    return toStructuredResult(new McpSchema.ElicitResult(elicitationActionResult.action(), null), fieldsMap);
-                });
+    private Map<String, Object> deserializeFields(String fieldsJson) {
+        if (fieldsJson == null || fieldsJson.isBlank()) {
+            return null;
+        }
+        try {
+            return jsonMapper.readValue(fieldsJson, new TypeReference<>() {});
+        } catch (Exception exception) {
+            log.warn("Failed to deserialize elicitation fields: {}", exception.getMessage());
+            return null;
+        }
     }
 
     private StructuredElicitResult<ElicitationProvider.ElicitationActionResult> toStructuredResult(McpSchema.ElicitResult elicitResult, Map<String, Object> fieldsMap) {
@@ -210,21 +244,28 @@ public class ElicitationService {
     }
 
     private ServerSentEvent<?> deserializeEventMessage(String json) {
-        Map<String, Object> wrapper = jsonMapper.readValue(json, new TypeReference<>() {});
+        Map<String, Object> wrapper = jsonMapper.readValue(json, new TypeReference<>() {
+        });
         String event = (String) wrapper.get("event");
-        String data = (String) wrapper.get("data");
-        return ServerSentEvent.builder(data).event(event).build();
-    }
+        Object data = wrapper.get("data");
+        String dataJson = jsonMapper.writeValueAsString(data);
 
-    private Map<String, Object> deserializeFields(String json) {
-        return jsonMapper.readValue(json, new TypeReference<>() {});
+        return ServerSentEvent.builder(dataJson).event(event).build();
     }
 
     private static String eventsChannelKey(UUID chatId) {
         return EVENTS_CHANNEL_PREFIX + chatId;
     }
 
+    private static String resultChannelKey(UUID chatId, UUID elicitationId) {
+        return RESULT_CHANNEL_PREFIX + chatId + ":" + elicitationId;
+    }
+
     private static String fieldsKey(UUID chatId, UUID elicitationId) {
         return FIELDS_KEY_PREFIX + chatId + ":" + elicitationId;
+    }
+
+    private static String pendingSetKey(UUID chatId) {
+        return PENDING_SET_PREFIX + chatId;
     }
 }

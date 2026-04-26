@@ -1,6 +1,7 @@
 package com.solesonic.mcp.client;
 
 import io.modelcontextprotocol.client.McpAsyncClient;
+import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
@@ -21,16 +22,16 @@ import java.util.Objects;
 public class McpIdentityProvider implements ToolCallbackProvider {
     private static final Logger log = LoggerFactory.getLogger(McpIdentityProvider.class);
 
-    private final McpAsyncClient mcpClient;
+    private final McpSyncClient mcpClient;
     private final List<ToolCallback> toolCallbacks;
 
-    public McpIdentityProvider(McpAsyncClient mcpClient) {
+    public McpIdentityProvider(McpSyncClient mcpClient) {
         this.mcpClient = mcpClient;
         this.toolCallbacks = new ArrayList<>();
         initializeTools();
     }
 
-    public McpIdentityProvider(McpAsyncClient mcpClient, String tool) {
+    public McpIdentityProvider(McpSyncClient mcpClient, String tool) {
         this.mcpClient = mcpClient;
         this.toolCallbacks = new ArrayList<>();
         initializeTool(tool);
@@ -73,9 +74,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     }
 
     private List<Tool> allMcpTools() {
-        return Objects.requireNonNull(mcpClient.listTools()
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .block())
+        return Objects.requireNonNull(mcpClient.listTools())
                 .tools();
     }
 

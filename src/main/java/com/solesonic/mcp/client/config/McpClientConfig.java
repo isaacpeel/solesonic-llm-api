@@ -1,8 +1,8 @@
 package com.solesonic.mcp.client.config;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
-import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpClient;
+import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,27 +21,27 @@ import java.util.List;
 @Configuration
 public class McpClientConfig {
     private static final Logger log = LoggerFactory.getLogger(McpClientConfig.class);
-    private McpAsyncClient mcpClient;
+    private McpSyncClient mcpClient;
 
     /**
      * Creates a SecurityContextPropagatingMcpToolCallbackProvider for each McpAsyncClient.
      * Spring AI auto-configuration will provide the McpAsyncClient beans.
      */
     @Bean
-    public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpAsyncClient> mcpAsyncClients) {
+    public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients) {
 
-        if (mcpAsyncClients.isEmpty()) {
+        if (mcpSyncClients.isEmpty()) {
             log.warn("No MCP clients configured. MCP tools will not be available.");
             throw new IllegalStateException("At least one MCP client must be configured");
         }
 
-        McpAsyncClient mcpAsyncClient = mcpAsyncClients.getFirst();
-        McpSchema.Implementation clientInfo = mcpAsyncClient.getClientInfo();
+        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        McpSchema.Implementation clientInfo = mcpSyncClient.getClientInfo();
         String clientName = clientInfo.name();
 
-        mcpAsyncClients.forEach(asyncClient -> log.info("Available client: '{}'", asyncClient.getClientInfo().name()));
+        mcpSyncClients.forEach(asyncClient -> log.info("Available client: '{}'", asyncClient.getClientInfo().name()));
 
-        McpSchema.ClientCapabilities clientCapabilities = mcpAsyncClient.getClientCapabilities();
+        McpSchema.ClientCapabilities clientCapabilities = mcpSyncClient.getClientCapabilities();
 
         log.info("Creating SecurityContextPropagatingMcpToolCallbackProvider with MCP client: {}", clientName);
 
@@ -51,23 +51,22 @@ public class McpClientConfig {
             log.warn("MCP ClientCapabilities are null on startup; expected elicitation to be enabled");
         }
 
-        this.mcpClient = mcpAsyncClient;
+        this.mcpClient = mcpSyncClient;
 
-        return new McpIdentityProvider(mcpAsyncClient);
+        return new McpIdentityProvider(mcpSyncClient);
     }
 
     @Bean
-    public McpAsyncClient mcpAsyncClient() {
+    public McpSyncClient mcpSyncClient() {
         return this.mcpClient;
     }
 
     @Bean
-    public McpClientCustomizer<McpClient.AsyncSpec> elicitationCapabilityCustomizer(
-            @Value("${solesonic.elicitation.timeout-seconds:600}") long timeoutSeconds) {
-        return (serverConfigurationName, asyncSpec) -> {
-            log.info("Customizing MCP client '{}' to enable elicitation capability and set request timeout to {}s", 
-                    serverConfigurationName, timeoutSeconds);
-            asyncSpec.capabilities(McpSchema.ClientCapabilities.builder()
+    public McpClientCustomizer<McpClient.SyncSpec> elicitationCapabilityCustomizer(@Value("${solesonic.elicitation.timeout-seconds:600}") long timeoutSeconds) {
+        return (serverConfigurationName, syncSpec) -> {
+            log.info("Customizing MCP client '{}' to enable elicitation capability and set request timeout to {}s", serverConfigurationName, timeoutSeconds);
+
+            syncSpec.capabilities(McpSchema.ClientCapabilities.builder()
                     .elicitation(true, false)
                     .sampling()
                     .build())

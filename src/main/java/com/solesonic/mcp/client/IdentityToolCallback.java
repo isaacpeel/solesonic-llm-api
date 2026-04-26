@@ -1,6 +1,7 @@
 package com.solesonic.mcp.client;
 
 import io.modelcontextprotocol.client.McpAsyncClient;
+import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.lang3.StringUtils;
 import org.jspecify.annotations.NonNull;
@@ -9,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.mcp.AsyncMcpToolCallback;
+import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
@@ -43,12 +45,12 @@ public class IdentityToolCallback implements ToolCallback {
     };
     public static final String TEXT = "text";
 
-    private final AsyncMcpToolCallback delegate;
+    private final SyncMcpToolCallback delegate;
     private final ToolMetadata toolMetadata;
 
-    public IdentityToolCallback(McpAsyncClient mcpAsyncClient, Tool tool) {
-        this.delegate = AsyncMcpToolCallback.builder()
-                .mcpClient(mcpAsyncClient)
+    public IdentityToolCallback(McpSyncClient mcpSyncClient, Tool tool) {
+        this.delegate = SyncMcpToolCallback.builder()
+                .mcpClient(mcpSyncClient)
                 .tool(tool)
                 .build();
 
