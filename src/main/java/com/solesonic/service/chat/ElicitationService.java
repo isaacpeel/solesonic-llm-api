@@ -14,6 +14,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -85,7 +86,7 @@ public class ElicitationService {
         UUID elicitationId = UUID.randomUUID();
         redisTemplate.opsForSet()
                 .add(pendingSetKey(chatId), elicitationId.toString())
-                .flatMap(count -> redisTemplate.expire(pendingSetKey(chatId), Duration.ofSeconds(timeoutSeconds + 60)))
+                .flatMap(_ -> redisTemplate.expire(pendingSetKey(chatId), Duration.ofSeconds(timeoutSeconds + 60)))
                 .subscribe();
         return new ElicitationHandle(elicitationId);
     }
@@ -106,6 +107,7 @@ public class ElicitationService {
             chatMessage.setMessage(elicitationMessage);
             chatMessage.setChatId(chatId);
             chatMessage.setMessageType(MessageType.SYSTEM);
+            chatMessage.setElicitationId(elicitationId);
             chatMessageService.save(chatMessage);
 
             String message = jsonMapper.writeValueAsString(Map.of("event", ELICITATION, "data", requestJson));
@@ -153,13 +155,9 @@ public class ElicitationService {
         log.info("Response for chat id: {}", chatId);
         log.info("Response for elicitationId: {}", elicitationId);
 
-        ChatMessage chatMessage = new ChatMessage();
-        chatMessage.setMessage(action.name().toLowerCase());
-        chatMessage.setChatId(chatId);
-        chatMessage.setMessageType(MessageType.USER);
-        chatMessageService.save(chatMessage);
-
         Map<String, Object> fieldsMap = jsonMapper.convertValue(elicitationActionResult, new TypeReference<>() {});
+        chatMessageService.updateElicitationResponse(chatId, elicitationId, fieldsMap);
+
         String fieldsJson = jsonMapper.writeValueAsString(fieldsMap);
 
         Mono<Boolean> storeAndSignal = redisTemplate.opsForValue()
@@ -187,7 +185,7 @@ public class ElicitationService {
                     log.info("Elicitation future resolved: {}", actionName);
                     McpSchema.ElicitResult.Action action;
                     try {
-                        action = McpSchema.ElicitResult.Action.valueOf(actionName);
+                        action = valueOf(actionName);
                     } catch (IllegalArgumentException illegalArgumentException) {
                         log.warn("Unknown elicitation action '{}', defaulting to DECLINE", actionName);
                         action = DECLINE;
@@ -201,7 +199,8 @@ public class ElicitationService {
                             })
                             .defaultIfEmpty(toStructuredResult(new McpSchema.ElicitResult(resolvedAction, null), null));
                 })
-                .doFinally(signal ->
+                .publishOn(Schedulers.boundedElastic())
+                .doFinally(_ ->
                     redisTemplate.opsForSet().remove(pendingSetKey(chatId), elicitationId.toString()).subscribe()
                 )
                 .onErrorResume(throwable -> {

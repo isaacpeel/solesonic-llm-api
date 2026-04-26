@@ -3,14 +3,15 @@ package com.solesonic.model.chat.history;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.annotations.Type;
 import org.hibernate.type.SqlTypes;
 import org.springframework.ai.chat.messages.MessageType;
 
 import java.time.ZonedDateTime;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+@SuppressWarnings("unused")
 @Entity
 public class ChatMessage {
     @Id
@@ -33,6 +34,12 @@ public class ChatMessage {
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Set<String> commands;
+
+    private UUID elicitationId;
+
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private Map<String, Object> elicitationResponse;
 
     public UUID getId() {
         return id;
@@ -89,5 +96,21 @@ public class ChatMessage {
 
     public void setCommands(Set<String> commands) {
         this.commands = commands;
+    }
+
+    public UUID getElicitationId() {
+        return elicitationId;
+    }
+
+    public void setElicitationId(UUID elicitationId) {
+        this.elicitationId = elicitationId;
+    }
+
+    public Map<String, Object> getElicitationResponse() {
+        return elicitationResponse;
+    }
+
+    public void setElicitationResponse(Map<String, Object> elicitationResponse) {
+        this.elicitationResponse = elicitationResponse;
     }
 }

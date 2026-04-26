@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service()
@@ -43,6 +44,14 @@ public class ChatMessageService {
         message.setModel(chatModel);
         message.setTimestamp(ZonedDateTime.now());
         chatMessageRepository.save(message);
+    }
+
+    public void updateElicitationResponse(UUID chatId, UUID elicitationId, Map<String, Object> elicitationResponse) {
+        chatMessageRepository.findByChatIdAndElicitationId(chatId, elicitationId)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setElicitationResponse(elicitationResponse);
+                    chatMessageRepository.save(chatMessage);
+                });
     }
 
     public List<Message> findByChatId(UUID chatId) {
