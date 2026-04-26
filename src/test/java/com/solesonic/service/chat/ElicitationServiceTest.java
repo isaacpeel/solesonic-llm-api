@@ -31,7 +31,6 @@ import org.springframework.data.redis.core.ReactiveValueOperations;
 
 @ExtendWith(MockitoExtension.class)
 class ElicitationServiceTest {
-
     @Mock
     private ChatMessageService chatMessageService;
 
@@ -98,7 +97,12 @@ class ElicitationServiceTest {
         assertThat(serverSentEvent.event()).isEqualTo(ElicitationService.PROGRESS);
         assertThat(serverSentEvent.data()).isInstanceOf(String.class);
 
-        Map<String, Object> eventData = jsonMapper.readValue((String) serverSentEvent.data(), new TypeReference<>() {});
+        assert serverSentEvent.data() != null;
+        Object data = serverSentEvent.data();
+
+        Object wrappedObj = jsonMapper.readValue(data.toString(), Object.class);
+        Map<String, Object> eventData = jsonMapper.readValue((String) wrappedObj, new TypeReference<>() {});
+
         assertThat(eventData).containsEntry(ElicitationService.CHAT_ID, chatId.toString());
     }
 
