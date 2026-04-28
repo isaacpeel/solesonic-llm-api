@@ -41,6 +41,10 @@ public class ChatMessage {
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> elicitationResponse;
 
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private Map<String, Object> progressData;
+
     public UUID getId() {
         return id;
     }
@@ -112,5 +116,13 @@ public class ChatMessage {
 
     public void setElicitationResponse(Map<String, Object> elicitationResponse) {
         this.elicitationResponse = elicitationResponse;
+    }
+
+    public Map<String, Object> getProgressData() {
+        return progressData;
+    }
+
+    public void setProgressData(Map<String, Object> progressData) {
+        this.progressData = progressData;
     }
 }

@@ -61,6 +61,10 @@ public class ChatMessageService {
             List<Message> messages = new ArrayList<>(chatMessages.size());
 
             for(ChatMessage chatMessage : chatMessages) {
+                if (chatMessage.getProgressData() != null) {
+                    continue;
+                }
+
                 // Remove <think>...</think> tags from message
                 String messageText = chatMessage.getMessage();
 

@@ -129,6 +129,13 @@ public class ElicitationService {
             });
             progressJson.put(CHAT_ID, chatId.toString());
 
+            ChatMessage chatMessage = new ChatMessage();
+            chatMessage.setChatId(chatId);
+            chatMessage.setMessageType(MessageType.SYSTEM);
+            chatMessage.setMessage(progressNotification.message());
+            chatMessage.setProgressData(progressJson);
+            chatMessageService.save(chatMessage);
+
             String message = serializeEventMessage(PROGRESS, progressJson);
 
             redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
