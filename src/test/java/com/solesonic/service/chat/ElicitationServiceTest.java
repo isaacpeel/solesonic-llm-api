@@ -100,8 +100,7 @@ class ElicitationServiceTest {
         assert serverSentEvent.data() != null;
         Object data = serverSentEvent.data();
 
-        Object wrappedObj = jsonMapper.readValue(data.toString(), Object.class);
-        Map<String, Object> eventData = jsonMapper.readValue((String) wrappedObj, new TypeReference<>() {});
+        Map<String, Object> eventData = jsonMapper.readValue(data.toString(), new TypeReference<>() {});
 
         assertThat(eventData).containsEntry(ElicitationService.CHAT_ID, chatId.toString());
     }
