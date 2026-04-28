@@ -236,10 +236,7 @@ public class ElicitationService {
     }
 
     private String serializeEventMessage(String event, Object data) {
-        String serializedData = (data instanceof String stringData)
-                ? stringData
-                : jsonMapper.writeValueAsString(data);
-        return jsonMapper.writeValueAsString(Map.of("event", event, "data", serializedData));
+        return jsonMapper.writeValueAsString(Map.of("event", event, "data", data));
     }
 
     private ServerSentEvent<?> deserializeEventMessage(String json) {
@@ -247,7 +244,9 @@ public class ElicitationService {
         });
         String event = (String) wrapper.get("event");
         Object data = wrapper.get("data");
-        String dataJson = jsonMapper.writeValueAsString(data);
+        String dataJson = (data instanceof String stringData)
+                ? stringData
+                : jsonMapper.writeValueAsString(data);
 
         return ServerSentEvent.builder(dataJson).event(event).build();
     }
