@@ -6,7 +6,6 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
-import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.CollectionUtils;
@@ -83,10 +82,6 @@ public class PromptService {
 
         List<SlashCommand> slashCommands = slashCommandService.commands(commands);
 
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model(model)
-                .build();
-
         Advisor retrievalAugmentationAdvisor = vectorStoreService.retrievalAugmentationAdvisor(userId);
 
         Object principal = authentication.getPrincipal();
@@ -147,7 +142,7 @@ public class PromptService {
                         )
                         .advisors(retrievalAugmentationAdvisor)
                         .toolContext(contextMap)
-                        .options(ollamaChatOptions)
+                        .options(OllamaChatOptions.builder().model(model))
                         .stream()
                         .content();
             }

@@ -124,6 +124,11 @@
       "name": "solesonic.llm.slash-commands.cache.warmup-on-startup",
       "type": "java.lang.Boolean",
       "description": "Whether to pre-populate slash-command prompt catalog cache on application startup."
+    },
+    {
+      "name": "solesonic.llm.ollama.cache.refresh.enabled",
+      "type": "java.lang.String",
+      "description": "Enable or diable ollama model cache."
     }
   ]
 }
