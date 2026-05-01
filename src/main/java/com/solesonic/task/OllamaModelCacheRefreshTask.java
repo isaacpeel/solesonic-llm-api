@@ -26,10 +26,10 @@ public class OllamaModelCacheRefreshTask {
                                        JsonMapper jsonMapper) {
         this.ollamaApi = ollamaApi;
         this.ollamaModelCacheService = ollamaModelCacheService;
-        this.jsonMapper = jsonMapper;
+        this.jsonMapper = jsonMapper;   
     }
 
-    @Scheduled(initialDelay = 5, fixedRateString = "${solesonic.llm.ollama.cache.refresh-seconds:60}", timeUnit = TimeUnit.SECONDS)
+    @Scheduled(initialDelay = 5, fixedRateString = "${solesonic.llm.ollama.cache.refresh-hours:1}", timeUnit = TimeUnit.HOURS)
     public void refresh() {
         log.info("Refreshing Ollama model cache");
         try {
