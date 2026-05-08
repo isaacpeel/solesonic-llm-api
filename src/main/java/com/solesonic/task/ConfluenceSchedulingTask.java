@@ -20,7 +20,7 @@ public class ConfluenceSchedulingTask {
         this.confluenceTrainingService = confluenceTrainingService;
     }
 
-    @Scheduled(fixedRate = 5, timeUnit = TimeUnit.MINUTES)
+    @Scheduled(fixedRate = 5, timeUnit = TimeUnit.HOURS)
     public void scanConfluence() {
         log.debug("Scanning confluence...");
         confluenceTrainingService.pageScan();

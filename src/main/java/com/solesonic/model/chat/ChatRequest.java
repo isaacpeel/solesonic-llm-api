@@ -1,4 +1,6 @@
 package com.solesonic.model.chat;
 
-public record ChatRequest (String chatMessage, String command){
+import java.util.Set;
+
+public record ChatRequest (String chatMessage, Set<String> commands){
 }

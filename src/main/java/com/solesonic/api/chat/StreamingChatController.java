@@ -1,5 +1,6 @@
 package com.solesonic.api.chat;
 
+import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.service.chat.ElicitationService;
 import com.solesonic.service.redis.RedisStreamingChatService;
@@ -13,7 +14,6 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -57,30 +57,14 @@ public class StreamingChatController {
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
     public Mono<ResponseEntity<Void>> submitElicitationResponse(@PathVariable UUID chatId,
                                                                 @PathVariable UUID elicitationId,
-                                                                @RequestBody Map<String, Object> payload) {
+                                                                @RequestBody ElicitationProvider.ElicitationActionResult elicitationActionResult) {
         log.info("Received elicitation response for chat {}", chatId);
-        
-        Object responseObj = payload.get("elicitationResponse");
-        if (!(responseObj instanceof Map<?, ?> responseMap)) {
-            return Mono.just(ResponseEntity.badRequest().build());
-        }
 
-        String name = responseMap.get("name") instanceof String s ? s : null;
+        assert elicitationActionResult.elicitationId().equals(elicitationId);
 
-        @SuppressWarnings("unchecked")
-        Map<String, Object> fields = responseMap.get("fields") instanceof Map<?, ?> m ? (Map<String, Object>) m : null;
-
-        String action = responseMap.get("action") instanceof String s ? s : null;
-        if (action != null && action.equalsIgnoreCase("decline")) {
-            fields = null;
-        }
-
-        boolean completed = elicitationService.completeFromFrontend(chatId, elicitationId, name, fields);
-
-        if (completed) {
-            return Mono.just(ResponseEntity.ok().build());
-        } else {
-            return Mono.just(ResponseEntity.notFound().build());
-        }
+        return elicitationService.completeFromFrontend(elicitationActionResult)
+                .map(completed -> completed
+                        ? ResponseEntity.ok().build()
+                        : ResponseEntity.notFound().build());
     }
 }

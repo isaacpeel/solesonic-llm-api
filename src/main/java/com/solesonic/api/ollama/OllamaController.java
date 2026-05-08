@@ -1,6 +1,7 @@
 package com.solesonic.api.ollama;
 
 import com.solesonic.model.ollama.OllamaModel;
+import com.solesonic.service.ollama.OllamaModelCacheService;
 import com.solesonic.service.ollama.OllamaService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,16 +16,20 @@ import java.util.UUID;
 public class OllamaController {
     private static final Logger log = LoggerFactory.getLogger(OllamaController.class);
     private final OllamaService ollamaService;
+    private final OllamaModelCacheService ollamaModelCacheService;
 
-    public OllamaController(OllamaService ollamaService) {
+    public OllamaController(OllamaService ollamaService, OllamaModelCacheService ollamaModelCacheService) {
         this.ollamaService = ollamaService;
+        this.ollamaModelCacheService = ollamaModelCacheService;
     }
 
     @GetMapping("/models")
-    public ResponseEntity<List<OllamaModel>> models() {
-        log.info("Getting all models");
+    public ResponseEntity<List<OllamaModel>> models(@RequestParam(defaultValue = "false") boolean refresh) {
+        log.info("Getting all models (refresh={})", refresh);
+        if (refresh) {
+            ollamaModelCacheService.evictAll();
+        }
         List<OllamaModel> models = ollamaService.models();
-
         return ResponseEntity.ok(models);
     }
 

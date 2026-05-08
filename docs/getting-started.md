@@ -6,15 +6,16 @@ This guide will walk you through setting up and running the Solesonic LLM API fo
 
 Before you begin, ensure you have the following installed:
 
-- **Java 24** - The application requires Java 24 or later
+- **Java 25** - The application requires Java 25 or later
 - **Docker and Docker Compose** - For running the PostgreSQL database with pgvector
 - **Ollama** - For LLM chat and embedding models
+- **Redis** - For streaming chat and caching (required at runtime)
 - **Git** - To clone the repository (if applicable)
 
 ### Installing Prerequisites
 
-#### Java 24
-Download and install Java 24 from [Oracle](https://www.oracle.com/java/technologies/downloads/) or use your preferred JDK distribution.
+#### Java 25
+Download and install Java 25 from [Oracle](https://www.oracle.com/java/technologies/downloads/) or use your preferred JDK distribution.
 
 Verify installation:
 ```bash
@@ -39,6 +40,20 @@ ollama --version
 ```
 
 The application expects Ollama to be available at `http://localhost:11434`.
+
+#### Redis
+Install Redis using Docker or your platform's package manager.
+
+For a quick local setup using Docker:
+```bash
+docker run -d -p 6379:6379 redis:latest
+```
+
+Verify it is running:
+```bash
+redis-cli ping
+# Should return: PONG
+```
 
 ## Initial Setup
 
@@ -69,9 +84,8 @@ Create a `.env` file in the project root directory with the minimum required con
 
 ```bash
 # Database (required)
-SPRING_DATASOURCE_URI=jdbc:postgresql://localhost:5445/solesonic-llm-api
-SPRING_DATASOURCE_USERNAME=solesonic-llm-api
-SPRING_DATASOURCE_PASSWORD=docker_pw
+DB_URL=jdbc:postgresql://localhost:5445/solesonic-llm-api
+POSTGRES_USER=solesonic-llm-api
 DB_PASSWORD=docker_pw
 
 # Security (required for production, optional for local development)
@@ -79,7 +93,7 @@ ISSUER_URI=https://your-issuer
 JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # Application
-APPLICATION_NAME=solesonic-llm-api
+BOT_NAME=solesonic-llm-api
 
 # CORS (adjust for your frontend)
 CORS_ALLOWED_ORIGINS=http://localhost:3000
@@ -99,6 +113,9 @@ ollama pull qwen2.5:7b
 
 # Embedding model (default for local development)
 ollama pull twine/mxbai-embed-xsmall-v1:latest
+
+# Intent classification model (default for local development)
+ollama pull qwen3:0.6b
 ```
 
 ### 4. Build and Run the Application
@@ -117,7 +134,7 @@ ollama pull twine/mxbai-embed-xsmall-v1:latest
 
 1. Import the project into your IDE (IntelliJ IDEA, Eclipse, etc.)
 2. Set the active profile to `local`
-3. Run the main class: `com.solesonic.llmapi.SolesonicLlmApiApplication`
+3. Run the main class: `com.solesonic.SolesonicLlmAPI`
 
 ## Verification
 
@@ -125,7 +142,7 @@ ollama pull twine/mxbai-embed-xsmall-v1:latest
 
 The application should start successfully and be available at:
 - **Base URL**: `http://localhost:8080`
-- **Context Path**: `http://localhost:8080/izzybot` (if BASE_URI environment variable is set)
+- **Context Path**: `http://localhost:8080/{BASE_URI}` (if the `BASE_URI` environment variable is set)
 
 ### 2. Health Check
 
@@ -156,9 +173,9 @@ INFO  - Successfully applied x migrations to schema "public"
 
 You can test the chat functionality using the API endpoints (see [docs/api.md](api.md) for detailed endpoint documentation).
 
-### 5. (Optional) Verify Streaming & Elicitation
+### 5. (Optional) Verify Streaming and Elicitation
 
-The application supports Server‑Sent Events (SSE) streaming and interactive elicitations:
+The application supports Server-Sent Events (SSE) streaming and interactive elicitations:
 
 1. Start a streaming chat (replace `USER_ID`):
    ```bash
@@ -184,6 +201,7 @@ The application uses the following ports by default:
 | Application | 8080 | Main application (local profile) |
 | Application | 8443 | Main application (prod profile with TLS) |
 | PostgreSQL | 5445 | Database with pgvector |
+| Redis | 6379 | Streaming and caching |
 | Ollama | 11434 | LLM service |
 
 ## Troubleshooting
@@ -214,7 +232,14 @@ If you encounter port conflicts:
 
 2. **Authentication failed:**
    - Verify the `.env` file contains the correct database credentials
-   - Ensure `SPRING_DATASOURCE_PASSWORD` and `DB_PASSWORD` match
+   - Ensure `DB_PASSWORD` is set correctly
+
+#### Redis Connection Issues
+
+1. **Connection refused:**
+   - Verify Redis is running: `redis-cli ping`
+   - For local development, the application expects Redis on `localhost:6379`
+   - If using Docker: `docker run -d -p 6379:6379 redis:latest`
 
 #### Missing Environment Variables
 
@@ -230,7 +255,7 @@ If you see errors about missing environment variables:
    ```bash
    # Check if Ollama is running
    ollama list
-   
+
    # Start Ollama service if needed
    ollama serve
    ```
@@ -240,14 +265,15 @@ If you see errors about missing environment variables:
    # Pull required models
    ollama pull qwen2.5:7b
    ollama pull twine/mxbai-embed-xsmall-v1:latest
+   ollama pull qwen3:0.6b
    ```
 
 #### Java Version Issues
 
-Ensure you're using Java 24:
+Ensure you're using Java 25:
 ```bash
 java -version
-# Should show version 24.x.x
+# Should show version 25.x.x
 
 # If using JAVA_HOME
 echo $JAVA_HOME

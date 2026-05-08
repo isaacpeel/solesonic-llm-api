@@ -1,7 +1,7 @@
-package com.solesonic.api.prompt;
+package com.solesonic.api.command;
 
 import com.solesonic.model.prompt.SlashCommandCatalogResponse;
-import com.solesonic.model.prompt.SlashCommandPrompt;
+import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.prompt.SlashCommandService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,7 +22,7 @@ public class SlashCommandController {
 
     @GetMapping("/commands")
     public ResponseEntity<SlashCommandCatalogResponse> slashCommands(@RequestParam(name="command", required = false) String command) {
-        List<SlashCommandPrompt> slashCommands = slashCommandService.typeAhead(command);
+        List<SlashCommand> slashCommands = slashCommandService.typeAhead(command);
         SlashCommandCatalogResponse slashCommandCatalogResponse = new SlashCommandCatalogResponse(slashCommands);
 
         return ResponseEntity.ok(slashCommandCatalogResponse);

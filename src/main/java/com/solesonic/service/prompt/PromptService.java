@@ -1,208 +1,152 @@
 
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
-import com.solesonic.model.prompt.SlashCommandPrompt;
-import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
-import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
-import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
-import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
-import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
-import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
-import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.util.*;
 
+import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
+import static com.solesonic.model.prompt.SlashCommand.*;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String CHAT_ID = "chatId";
-    public static final String BASIC_PROMPT = "basic-prompt";
-    public static final String AGENT_NAME = "agentName";
     public static final String USER_MESSAGE = "userMessage";
     public static final String DEFAULT = "default";
+    public static final String TASK_PROMPT = "task-prompt";
+    public static final String TASK_TOOL = "taskTool";
+    public static final String PROGRESS_TOKEN = "progressToken";
+    public static final String AGENT_NAME = "agentName";
 
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
-    private final VectorStore vectorStore;
-    private final List<McpSyncClient> mcpSyncClients;
     private final SlashCommandService slashCommandService;
+    private final VectorStoreService vectorStoreService;
+    private final McpSyncClient mcpClient;
+    private final McpPromptAdapter mcpPromptAdapter;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
 
-    @Value("${spring.ai.similarity-threshold}")
-    private Double defaultSimilarityThreshold;
-
-    private record PreparedPrompt(Prompt mcpPrompt, OllamaChatOptions options, Advisor retrievalAdvisor) {
-    }
-
     public PromptService(
-            ChatClient chatClient,
+            @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
             UserPreferencesService userPreferencesService,
-            VectorStore vectorStore,
-            List<McpSyncClient> mcpSyncClients,
-            SlashCommandService slashCommandService) {
+            SlashCommandService slashCommandService,
+            VectorStoreService vectorStoreService,
+            McpSyncClient mcpClient,
+            McpPromptAdapter mcpPromptAdapter) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
-        this.vectorStore = vectorStore;
-        this.mcpSyncClients = mcpSyncClients;
         this.slashCommandService = slashCommandService;
+        this.vectorStoreService = vectorStoreService;
+        this.mcpClient = mcpClient;
+        this.mcpPromptAdapter = mcpPromptAdapter;
     }
 
     public String model(UUID userId) {
         return userPreferencesService.get(userId).getModel();
     }
 
-    private UserPreferences userPreferences(UUID userId) {
-        return userPreferencesService.get(userId);
-    }
-
     public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
         String message = chatMessage.chatMessage();
-        String command = chatMessage.command();
+        Set<String> commands = chatMessage.commands();
 
-        if (StringUtils.isEmpty(command)) {
-            command = DEFAULT;
+        if (CollectionUtils.isEmpty(commands)) {
+            log.info("Using default command.");
+            commands = Set.of(DEFAULT);
         }
 
-        SlashCommandPrompt slashCommandPrompt = slashCommandService.command(command);
-        String promptName = slashCommandPrompt.name();
-        log.info("Slash command prompt selected: {}", slashCommandPrompt.name());
+        List<SlashCommand> slashCommands = slashCommandService.commands(commands);
 
-        McpSchema.GetPromptResult getPromptResult = getGetPromptResult(message, promptName);
-
-        PreparedPrompt prepared = preparePrompt(getPromptResult, model, userId);
-
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model(model)
-                .build();
-
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
+        Advisor retrievalAugmentationAdvisor = vectorStoreService.retrievalAugmentationAdvisor(userId);
 
         Object principal = authentication.getPrincipal();
 
-        String authToken = null;
-
-        if (principal instanceof Jwt jwt) {
-            authToken = jwt.getTokenValue();
+        if (!(principal instanceof Jwt jwt)) {
+            throw new IllegalStateException("Authentication principal is not a JWT token");
         }
 
-        assert authToken != null;
-        Map<String, Object> contextMap = Map.of(USER_TOKEN, authToken, CHAT_ID, chatId);
+        String authToken = jwt.getTokenValue();
 
-        var chatClientBuilder = chatClient.prompt(prepared.mcpPrompt)
-                .user(message)
-                .advisors(advisorSpec -> advisorSpec
-                        .param(CONVERSATION_ID, chatId)
-                )
-                .advisors(retrievalAugmentationAdvisor)
-                .toolContext(contextMap)
-                .options(ollamaChatOptions);
+        Map<String, Object> contextMap = Map.of(
+                USER_TOKEN, authToken,
+                CHAT_ID, chatId,
+                PROGRESS_TOKEN, chatId);
 
-        return Flux.deferContextual(_ ->
-                chatClientBuilder.stream()
-                        .content());
-    }
+        SlashCommand slashCommand = slashCommands.stream()
+                .findFirst()
+                .orElseThrow(IllegalStateException::new);
 
-    private McpSchema.GetPromptResult getGetPromptResult(String chatMessage, String promptName) {
-        McpSyncClient mcpSyncClient = mcpSyncClients.getFirst();
+        switch (slashCommand.commandType) {
+            case TOOL -> {
+                log.info("Tool invoke: {}", slashCommand.command);
+                McpSchema.Tool tool = slashCommand.tool();
 
-        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                promptName,
-                Map.of(AGENT_NAME, agentName, USER_MESSAGE, chatMessage)
-        );
+                McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                        TASK_PROMPT,
+                        Map.of(USER_MESSAGE, message, TASK_TOOL, tool.name())
+                );
 
-        McpSchema.GetPromptResult getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+                Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
+                ChatClient taskClient = slashCommandService.taskClient(tool.name());
 
-        if (getPromptResult.messages().isEmpty()) {
-            getPromptRequest = new McpSchema.GetPromptRequest(
-                    promptName,
-                    Map.of(AGENT_NAME, BASIC_PROMPT, USER_MESSAGE, chatMessage)
-            );
+                return taskClient.prompt(prompt)
+                        .user(message)
+                        .advisors(advisorSpec -> advisorSpec
+                                .param(CONVERSATION_ID, chatId)
+                        )
+                        .advisors(retrievalAugmentationAdvisor)
+                        .toolContext(contextMap)
+                        .stream()
+                        .content();
+            }
+            case PROMPT -> {
+                log.info("Prompt invoke: {}", slashCommand.name());
 
-            getPromptResult = mcpSyncClient.getPrompt(getPromptRequest);
+                McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                        slashCommand.name(),
+                        Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
+                );
+
+                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+                Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+
+                return chatClient.prompt(prompt)
+                        .advisors(advisorSpec -> advisorSpec
+                                .param(CONVERSATION_ID, chatId)
+                        )
+                        .advisors(retrievalAugmentationAdvisor)
+                        .toolContext(contextMap)
+                        .options(OllamaChatOptions.builder().model(model))
+                        .stream()
+                        .content();
+            }
+            default -> throw new IllegalStateException();
         }
-        return getPromptResult;
-    }
-
-    private String extractTextContent(Object content) {
-        return switch (content) {
-            case String text -> text;
-            case McpSchema.TextContent textContent -> textContent.text();
-            case McpSchema.ImageContent _ -> "[Image content not supported]";
-            case List<?> contentList -> contentList.stream()
-                    .map(item -> switch (item) {
-                        case McpSchema.TextContent textContent -> textContent.text();
-                        case String text -> text;
-                        default -> "";
-                    })
-                    .filter(entry -> !entry.isEmpty())
-                    .reduce("", (accumulated, next) -> accumulated + "\n" + next);
-            default -> "";
-        };
-    }
-
-    private Advisor retrievalAugmentationAdvisor(UUID userId) {
-        Double similarityThreshold = Optional.ofNullable(userPreferences(userId).getSimilarityThreshold())
-                .orElse(defaultSimilarityThreshold);
-
-        return RetrievalAugmentationAdvisor.builder()
-                .documentRetriever(VectorStoreDocumentRetriever.builder()
-                        .similarityThreshold(similarityThreshold)
-                        .vectorStore(vectorStore)
-                        .build())
-                .queryAugmenter(ContextualQueryAugmenter.builder()
-                        .allowEmptyContext(true)
-                        .build())
-                .build();
-    }
-
-    private PreparedPrompt preparePrompt(McpSchema.GetPromptResult getPromptResult, String model, UUID userId) {
-        List<Message> messages = getPromptResult.messages().stream()
-                .map(mcpMessage -> {
-                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
-                        String textContent = extractTextContent(content);
-
-                        return (Message) switch (role) {
-                            case USER -> new org.springframework.ai.chat.messages.UserMessage(textContent);
-                            case ASSISTANT -> new org.springframework.ai.chat.messages.AssistantMessage(textContent);
-                        };
-                    }
-                    throw new IllegalArgumentException("Unexpected message type.");
-                })
-                .toList();
-
-        Prompt mcpPrompt = new Prompt(messages);
-
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model(model)
-                .build();
-
-        Advisor retrievalAugmentationAdvisor = retrievalAugmentationAdvisor(userId);
-
-        return new PreparedPrompt(mcpPrompt, ollamaChatOptions, retrievalAugmentationAdvisor);
     }
 }

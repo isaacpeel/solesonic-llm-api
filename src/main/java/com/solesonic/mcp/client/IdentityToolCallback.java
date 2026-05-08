@@ -1,5 +1,6 @@
 package com.solesonic.mcp.client;
 
+import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.lang3.StringUtils;
@@ -8,18 +9,24 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
+import org.springframework.ai.mcp.AsyncMcpToolCallback;
 import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.metadata.ToolMetadata;
 import reactor.util.context.Context;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
 /**
- * A wrapper around SyncMcpToolCallback that captures the security context
+ * A wrapper around AsyncMcpToolCallback that captures the security context
  * and makes it available for reactive WebClient filters during MCP tool execution.
  * <p>
  * This class solves the context propagation issue where the user's JWT token
@@ -32,8 +39,14 @@ public class IdentityToolCallback implements ToolCallback {
     public static final String USER_TOKEN = "userToken";
     public static final String SECURITY_CONTEXT_KEY = "SECURITY_CONTEXT";
     private static final ThreadLocal<Context> TOOL_CALL_CONTEXT = new ThreadLocal<>();
+    private static final JsonMapper jsonMapper = new JsonMapper();
+
+    private static final TypeReference<List<Map<String, Object>>> CONTENT_LIST_TYPE = new TypeReference<>() {
+    };
+    public static final String TEXT = "text";
 
     private final SyncMcpToolCallback delegate;
+    private final ToolMetadata toolMetadata;
 
     public IdentityToolCallback(McpSyncClient mcpSyncClient, Tool tool) {
         this.delegate = SyncMcpToolCallback.builder()
@@ -41,14 +54,24 @@ public class IdentityToolCallback implements ToolCallback {
                 .tool(tool)
                 .build();
 
-        ToolDefinition definition = delegate.getToolDefinition();
-        log.info("Tool definition for {}: {}", tool.name(), definition);
+        boolean returnDirect = tool.meta() != null && Boolean.TRUE.equals(tool.meta().get("returnDirect"));
+        this.toolMetadata = ToolMetadata.builder()
+                .returnDirect(returnDirect)
+                .build();
+
+        log.debug("Tool definition for {}: {}, returnDirect={}", tool.name(), delegate.getToolDefinition(), returnDirect);
     }
 
     @Override
     @NonNull
     public ToolDefinition getToolDefinition() {
         return delegate.getToolDefinition();
+    }
+
+    @Override
+    @NonNull
+    public ToolMetadata getToolMetadata() {
+        return toolMetadata;
     }
 
     @Override
@@ -60,7 +83,6 @@ public class IdentityToolCallback implements ToolCallback {
     @Override
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
-        // Capture the current security context
         log.info("Tool callback wrapper invoked for: {}", delegate.getOriginalToolName());
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
@@ -77,7 +99,7 @@ public class IdentityToolCallback implements ToolCallback {
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
         filteredContextMap.remove(USER_TOKEN);
 
-        ToolContext filteredToolContext = new  ToolContext(filteredContextMap);
+        ToolContext filteredToolContext = new ToolContext(filteredContextMap);
 
         Map<String, Object> contextMap = new HashMap<>();
         contextMap.put(USER_TOKEN, userToken);
@@ -86,10 +108,22 @@ public class IdentityToolCallback implements ToolCallback {
         TOOL_CALL_CONTEXT.set(reactiveContext);
 
         try {
-            return delegate.call(toolCallInput, filteredToolContext);
+            String rawResult = delegate.call(toolCallInput, filteredToolContext);
+            return extractText(rawResult);
         } finally {
             TOOL_CALL_CONTEXT.remove();
         }
+    }
+
+    private String extractText(String rawResult) {
+        if (!toolMetadata.returnDirect() || StringUtils.isBlank(rawResult)) {
+            return rawResult;
+        }
+
+        List<Map<String, Object>> contentList = jsonMapper.readValue(rawResult, CONTENT_LIST_TYPE);
+        return contentList.stream()
+                .map(entry -> entry.getOrDefault(TEXT, "").toString())
+                .collect(Collectors.joining());
     }
 
     /**

@@ -31,13 +31,16 @@ public class OllamaService {
 
     private final OllamaApi ollamaApi;
     private final OllamaModelRepository modelRepository;
+    private final OllamaModelCacheService ollamaModelCacheService;
     private final JsonMapper jsonMapper;
 
     public OllamaService(OllamaApi ollamaApi,
                          OllamaModelRepository modelRepository,
+                         OllamaModelCacheService ollamaModelCacheService,
                          JsonMapper jsonMapper) {
         this.ollamaApi = ollamaApi;
         this.modelRepository = modelRepository;
+        this.ollamaModelCacheService = ollamaModelCacheService;
         this.jsonMapper = jsonMapper;
     }
 
@@ -47,11 +50,11 @@ public class OllamaService {
 
         List<OllamaModel> enriched = new ArrayList<>();
 
-        for(OllamaModel ollamaModel : ollamaModels) {
+        for (OllamaModel ollamaModel : ollamaModels) {
             enriched.add(nativeModel(ollamaModel));
         }
 
-        log.info("Found {} models.", enriched.size());
+        log.info("Found {} and enriched models.", enriched.size());
         return enriched;
     }
 
@@ -70,6 +73,7 @@ public class OllamaService {
         model.setUpdated(ZonedDateTime.now());
 
         model = modelRepository.save(model);
+        ollamaModelCacheService.evictModel(model.getName());
         return nativeModel(model);
     }
 
@@ -78,6 +82,7 @@ public class OllamaService {
         model.setUpdated(ZonedDateTime.now());
 
         model = modelRepository.save(model);
+        ollamaModelCacheService.evictModel(model.getName());
         return nativeModel(model);
     }
 
@@ -106,33 +111,41 @@ public class OllamaService {
     }
 
     private OllamaModel nativeModel(OllamaModel ollamaModel) {
-        OllamaApi.ListModelResponse nativeOllamaModels = ollamaApi.listModels();
+        String modelName = ollamaModel.getName();
 
-        if (nativeOllamaModels != null) {
-            String modelName = ollamaModel.getName();
+        Map<String, Object> ollamaDetails = ollamaModelCacheService.getModelDetails(modelName)
+                .orElseGet(() -> fetchAndCacheModelDetails(modelName));
 
-            OllamaApi.Model nativeModel = nativeOllamaModels.models().stream()
-                    .filter(model -> model.model().equals(modelName))
-                    .findFirst()
-                    .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
+        Map<String, Object> ollamaShow = ollamaModelCacheService.getShowModel(modelName)
+                .orElseGet(() -> fetchAndCacheShowModel(modelName));
 
-            OllamaApi.ShowModelRequest showModelRequest = new OllamaApi.ShowModelRequest(modelName);
-            OllamaApi.ShowModelResponse showModelResponse = ollamaApi.showModel(showModelRequest);
+        ollamaModel.setOllamaModel(ollamaDetails);
+        ollamaModel.setOllamaShow(ollamaShow);
+        return ollamaModel;
+    }
 
-            ollamaModel.setName(modelName);
+    private Map<String, Object> fetchAndCacheModelDetails(String modelName) {
+        log.debug("Cache miss for model details: {} — fetching from Ollama", modelName);
+        OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
 
-            String showJson = jsonMapper.writeValueAsString(showModelResponse);
-            Map<String, Object> ollamaShow = jsonMapper.readerFor(Map.class).readValue(showJson);
+        OllamaApi.Model nativeModel = listModelResponse.models().stream()
+                .filter(model -> model.model().equals(modelName))
+                .findFirst()
+                .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
 
-            String detailsJson = jsonMapper.writeValueAsString(nativeModel);
-            Map<String, Object> ollamaDetails = jsonMapper.readerFor(Map.class).readValue(detailsJson);
+        String detailsJson = jsonMapper.writeValueAsString(nativeModel);
+        Map<String, Object> details = jsonMapper.readerFor(Map.class).readValue(detailsJson);
+        ollamaModelCacheService.putModelDetails(modelName, details);
+        return details;
+    }
 
-            ollamaModel.setOllamaShow(ollamaShow);
-            ollamaModel.setOllamaModel(ollamaDetails);
+    private Map<String, Object> fetchAndCacheShowModel(String modelName) {
+        log.debug("Cache miss for show model: {} — fetching from Ollama", modelName);
+        OllamaApi.ShowModelResponse showModelResponse = ollamaApi.showModel(new OllamaApi.ShowModelRequest(modelName));
 
-            return ollamaModel;
-        }
-
-        throw new ChatException("OLLAMA MODEL NOT FOUND");
+        String showJson = jsonMapper.writeValueAsString(showModelResponse);
+        Map<String, Object> show = jsonMapper.readerFor(Map.class).readValue(showJson);
+        ollamaModelCacheService.putShowModel(modelName, show);
+        return show;
     }
 }
