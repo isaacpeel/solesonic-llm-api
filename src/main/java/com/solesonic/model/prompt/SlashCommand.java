@@ -1,12 +1,12 @@
 package com.solesonic.model.prompt;
 
 import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import io.a2a.spec.AgentCard;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.ollama.api.OllamaChatOptions;
 
 import java.util.List;
 import java.util.Map;
@@ -15,7 +15,7 @@ import java.util.Map;
 public class SlashCommand {
     public static final String COMMAND = "command";
     public static final String PROMPT = "prompt";
-    public static final String TOOL = "tool";
+    public static final String AGENT = "agent";
 
     public String command;
     public String name;
@@ -24,8 +24,6 @@ public class SlashCommand {
     public Map<String, Object> meta;
 
     public Prompt prompt;
-    public McpSchema.Tool tool;
-    public OllamaChatOptions options;
 
     @SuppressWarnings("unused")
     public SlashCommand() {
@@ -44,18 +42,12 @@ public class SlashCommand {
         this.command = command;
     }
 
-    public SlashCommand(McpSchema.Tool tool) {
-        Map<String, Object> meta = tool.meta();
-        String name = tool.name();
-        String description = tool.description();
-
-        String command = meta.get(COMMAND).toString();
-
-        this.commandType = TOOL;
-        this.name = name;
-        this.description = description;
-        this.command = command;
-        this.tool = tool;
+    public SlashCommand(AgentCard agentCard) {
+        this.commandType = AGENT;
+        this.command = agentCard.name();
+        this.name = agentCard.name();
+        this.description = agentCard.description();
+        this.meta = Map.of(COMMAND, agentCard.name());
     }
 
     public Prompt preparePrompt(McpSchema.GetPromptResult getPromptResult, String message) {
@@ -100,10 +92,6 @@ public class SlashCommand {
 
     public String name() {
         return name;
-    }
-
-    public McpSchema.Tool tool() {
-        return tool;
     }
 
     public Prompt prompt() {

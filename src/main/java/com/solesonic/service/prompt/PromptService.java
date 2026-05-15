@@ -1,9 +1,10 @@
 
 package com.solesonic.service.prompt;
 
-import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.service.a2a.A2AAgentService;
+import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -35,8 +36,6 @@ public class PromptService {
     public static final String CHAT_ID = "chatId";
     public static final String USER_MESSAGE = "userMessage";
     public static final String DEFAULT = "default";
-    public static final String TASK_PROMPT = "task-prompt";
-    public static final String TASK_TOOL = "taskTool";
     public static final String PROGRESS_TOKEN = "progressToken";
     public static final String AGENT_NAME = "agentName";
 
@@ -45,7 +44,8 @@ public class PromptService {
     private final SlashCommandService slashCommandService;
     private final VectorStoreService vectorStoreService;
     private final McpSyncClient mcpClient;
-    private final McpPromptAdapter mcpPromptAdapter;
+    private final Optional<A2AAgentService> a2aAgentService;
+    private final Optional<A2AStickyAgentService> a2aStickyAgentService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -56,13 +56,15 @@ public class PromptService {
             SlashCommandService slashCommandService,
             VectorStoreService vectorStoreService,
             McpSyncClient mcpClient,
-            McpPromptAdapter mcpPromptAdapter) {
+            Optional<A2AAgentService> a2aAgentService,
+            Optional<A2AStickyAgentService> a2aStickyAgentService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
         this.vectorStoreService = vectorStoreService;
         this.mcpClient = mcpClient;
-        this.mcpPromptAdapter = mcpPromptAdapter;
+        this.a2aAgentService = a2aAgentService;
+        this.a2aStickyAgentService = a2aStickyAgentService;
     }
 
     public String model(UUID userId) {
@@ -101,32 +103,21 @@ public class PromptService {
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
 
-        switch (slashCommand.commandType) {
-            case TOOL -> {
-                log.info("Tool invoke: {}", slashCommand.command);
-                McpSchema.Tool tool = slashCommand.tool();
+        // Route to sticky A2A agent when no explicit command was supplied
+        if (DEFAULT.equals(slashCommand.command()) && a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
+            Optional<String> stickyAgent = a2aStickyAgentService.get().getActiveAgent(chatId).block();
 
-                McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                        TASK_PROMPT,
-                        Map.of(USER_MESSAGE, message, TASK_TOOL, tool.name())
-                );
+            if (stickyAgent != null && stickyAgent.isPresent()) {
+                log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-                Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
-                ChatClient taskClient = slashCommandService.taskClient(tool.name());
-
-                return taskClient.prompt(prompt)
-                        .user(message)
-                        .advisors(advisorSpec -> advisorSpec
-                                .param(CONVERSATION_ID, chatId)
-                        )
-                        .advisors(retrievalAugmentationAdvisor)
-                        .toolContext(contextMap)
-                        .stream()
-                        .content();
+                return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
             }
+        }
+
+        switch (slashCommand.commandType) {
             case PROMPT -> {
                 log.info("Prompt invoke: {}", slashCommand.name());
+                a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
 
                 McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
                         slashCommand.name(),
@@ -145,6 +136,17 @@ public class PromptService {
                         .options(OllamaChatOptions.builder().model(model))
                         .stream()
                         .content();
+            }
+            case AGENT -> {
+                log.info("A2A agent invoke: {}", slashCommand.command);
+
+                A2AAgentService agentService = a2aAgentService.orElseThrow(
+                        () -> new IllegalStateException("A2A agent service is not configured"));
+
+                a2aStickyAgentService.ifPresent(stickyService ->
+                        stickyService.activate(chatId, slashCommand.command()).subscribe());
+
+                return agentService.delegate(chatId, slashCommand.command(), message, authToken);
             }
             default -> throw new IllegalStateException();
         }

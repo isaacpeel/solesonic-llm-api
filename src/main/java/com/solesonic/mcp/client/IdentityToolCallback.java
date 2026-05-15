@@ -141,4 +141,14 @@ public class IdentityToolCallback implements ToolCallback {
     public static boolean hasContext() {
         return TOOL_CALL_CONTEXT.get() != null;
     }
+
+    public static void setUserTokenContext(String userToken) {
+        Map<String, Object> contextMap = new HashMap<>();
+        contextMap.put(USER_TOKEN, userToken);
+        TOOL_CALL_CONTEXT.set(Context.of(SECURITY_CONTEXT_KEY, contextMap));
+    }
+
+    public static void clearContext() {
+        TOOL_CALL_CONTEXT.remove();
+    }
 }

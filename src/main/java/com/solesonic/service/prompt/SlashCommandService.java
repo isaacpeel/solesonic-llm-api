@@ -1,29 +1,20 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
-import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.prompt.SlashCommand;
-import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.PromptChatMemoryAdvisor;
-import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.ollama.OllamaChatModel;
-import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -39,53 +30,26 @@ public class SlashCommandService {
     private static final TypeReference<List<SlashCommand>> CATALOG_TYPE_REFERENCE = new TypeReference<>() {
     };
 
-    private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
-    private final ChatMemory chatMemory;
-    private final OllamaApi ollamaApi;
-
     private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
     private final long cacheTtlSeconds;
     private final boolean warmupOnStartup;
+    private final Optional<A2AAgentRegistry> a2aAgentRegistry;
 
-    public SlashCommandService(ChatMemory chatMemory,
-                               OllamaApi ollamaApi,
-                               List<McpSyncClient> mcpSyncClients,
+    public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
+                               Optional<A2AAgentRegistry> a2aAgentRegistry,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
-        this.chatMemory = chatMemory;
-        this.ollamaApi = ollamaApi;
         this.redisTemplate = redisTemplate;
         this.jsonMapper = jsonMapper;
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
+        this.a2aAgentRegistry = a2aAgentRegistry;
 
         mcpSyncClient = mcpSyncClients.getFirst();
-    }
-
-    public ChatClient taskClient(String tool) {
-        log.info("Creating task client with tool: {}", tool);
-
-        McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpSyncClient, tool);
-
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model("mistral:7b")
-                .build();
-
-        OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
-                .ollamaApi(ollamaApi)
-                .defaultOptions(ollamaChatOptions).build();
-
-        return ChatClient.builder(ollamaChatModel)
-                .defaultToolCallbacks(mcpIdentityProvider)
-                .defaultAdvisors(
-                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
-                        simpleLoggerAdvisor
-                )
-                .build();
     }
 
     public List<SlashCommand> commands(Set<String> commands) {
@@ -166,7 +130,6 @@ public class SlashCommandService {
 
     private List<SlashCommand> loadSlashCommandsFromMcp() {
         McpSchema.ListPromptsResult listPromptsResult = mcpSyncClient.listPrompts();
-        McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
         List<SlashCommand> promptCommands = List.of();
 
@@ -182,20 +145,10 @@ public class SlashCommandService {
                     .toList();
         }
 
-        List<SlashCommand> toolCommands = List.of();
+        List<SlashCommand> agentCommands = a2aAgentRegistry
+                .map(A2AAgentRegistry::asSlashCommands)
+                .orElse(List.of());
 
-        if (listToolsResult != null) {
-            List<McpSchema.Tool> tools = listToolsResult.tools();
-
-            toolCommands = tools.stream()
-                    .filter(listedTool -> StringUtils.isNotBlank(listedTool.name()))
-                    .filter(listedTool -> listedTool.meta() != null)
-                    .filter(listedTool -> listedTool.meta().get(COMMAND) != null)
-                    .map(SlashCommand::new)
-                    .sorted(Comparator.comparing(SlashCommand::command))
-                    .toList();
-        }
-
-        return ListUtils.union(promptCommands, toolCommands);
+        return ListUtils.union(promptCommands, agentCommands);
     }
 }
