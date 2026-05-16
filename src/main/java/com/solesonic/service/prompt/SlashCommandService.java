@@ -69,15 +69,17 @@ public class SlashCommandService {
         log.info("Type ahead for commands search: {}", commandPrefix);
 
         return slashCommands().stream()
-                .filter(prompt -> {
+                .filter(slashCommand -> {
                     String prefix = commandPrefix.toLowerCase();
-                    return StringUtils.isEmpty(prefix) || prompt.command().startsWith(prefix);
+                    return StringUtils.isEmpty(prefix) || slashCommand.command().toLowerCase().startsWith(prefix.toLowerCase());
                 })
                 .toList();
     }
 
     public List<SlashCommand> slashCommands() {
-        String cachedPayload = redisTemplate.opsForValue().get(CACHE_KEY).block();
+        String cachedPayload = redisTemplate.opsForValue()
+                .get(CACHE_KEY)
+                .block();
 
         if (StringUtils.isNotBlank(cachedPayload)) {
             return jsonMapper.readValue(cachedPayload, CATALOG_TYPE_REFERENCE);

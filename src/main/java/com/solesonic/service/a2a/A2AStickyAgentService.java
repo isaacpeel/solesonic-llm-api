@@ -17,6 +17,7 @@ public class A2AStickyAgentService {
 
     private static final Logger log = LoggerFactory.getLogger(A2AStickyAgentService.class);
     private static final String STICKY_KEY_PREFIX = "chat:a2a:active-agent:";
+    private static final String TASK_KEY_PREFIX = "chat:a2a:active-task:";
     private static final Duration STICKY_TTL = Duration.ofHours(24);
 
     private final ReactiveStringRedisTemplate redisTemplate;
@@ -29,13 +30,13 @@ public class A2AStickyAgentService {
         log.debug("Activating sticky A2A agent '{}' for chat {}", agentName, chatId);
 
         return redisTemplate.opsForValue()
-                .set(key(chatId), agentName, STICKY_TTL)
+                .set(agentKey(chatId), agentName, STICKY_TTL)
                 .then();
     }
 
     public Mono<Optional<String>> getActiveAgent(UUID chatId) {
         return redisTemplate.opsForValue()
-                .get(key(chatId))
+                .get(agentKey(chatId))
                 .map(Optional::of)
                 .defaultIfEmpty(Optional.empty());
     }
@@ -43,10 +44,35 @@ public class A2AStickyAgentService {
     public Mono<Void> deactivate(UUID chatId) {
         log.debug("Deactivating sticky A2A agent for chat {}", chatId);
 
-        return redisTemplate.delete(key(chatId)).then();
+        return redisTemplate.delete(agentKey(chatId)).then();
     }
 
-    private String key(UUID chatId) {
+    public Mono<Void> activateTask(UUID chatId, String taskId) {
+        log.debug("Activating A2A task '{}' for chat {}", taskId, chatId);
+
+        return redisTemplate.opsForValue()
+                .set(taskKey(chatId), taskId, STICKY_TTL)
+                .then();
+    }
+
+    public Mono<Optional<String>> getActiveTaskId(UUID chatId) {
+        return redisTemplate.opsForValue()
+                .get(taskKey(chatId))
+                .map(Optional::of)
+                .defaultIfEmpty(Optional.empty());
+    }
+
+    public Mono<Void> deactivateTask(UUID chatId) {
+        log.debug("Deactivating A2A task for chat {}", chatId);
+
+        return redisTemplate.delete(taskKey(chatId)).then();
+    }
+
+    private String agentKey(UUID chatId) {
         return STICKY_KEY_PREFIX + chatId;
+    }
+
+    private String taskKey(UUID chatId) {
+        return TASK_KEY_PREFIX + chatId;
     }
 }

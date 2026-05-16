@@ -82,4 +82,50 @@ class A2AStickyAgentServiceTest {
 
         verify(redisTemplate).delete(eq("chat:a2a:active-agent:" + chatId));
     }
+
+    @Test
+    void activateTaskWritesTaskIdWithTtlToCorrectKey() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.set(any(), any(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        StepVerifier.create(stickyAgentService.activateTask(chatId, "task-abc-123"))
+                .verifyComplete();
+
+        verify(valueOperations).set(
+                eq("chat:a2a:active-task:" + chatId),
+                eq("task-abc-123"),
+                eq(Duration.ofHours(24)));
+    }
+
+    @Test
+    void getActiveTaskIdReturnsPresentOptionalWhenKeyExists() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(eq("chat:a2a:active-task:" + chatId)))
+                .thenReturn(Mono.just("task-abc-123"));
+
+        StepVerifier.create(stickyAgentService.getActiveTaskId(chatId))
+                .expectNext(Optional.of("task-abc-123"))
+                .verifyComplete();
+    }
+
+    @Test
+    void getActiveTaskIdReturnsEmptyOptionalWhenKeyMissing() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(eq("chat:a2a:active-task:" + chatId)))
+                .thenReturn(Mono.empty());
+
+        StepVerifier.create(stickyAgentService.getActiveTaskId(chatId))
+                .expectNext(Optional.empty())
+                .verifyComplete();
+    }
+
+    @Test
+    void deactivateTaskDeletesCorrectKey() {
+        when(redisTemplate.delete(eq("chat:a2a:active-task:" + chatId))).thenReturn(Mono.just(1L));
+
+        StepVerifier.create(stickyAgentService.deactivateTask(chatId))
+                .verifyComplete();
+
+        verify(redisTemplate).delete(eq("chat:a2a:active-task:" + chatId));
+    }
 }

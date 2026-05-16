@@ -35,7 +35,7 @@ public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String CHAT_ID = "chatId";
     public static final String USER_MESSAGE = "userMessage";
-    public static final String DEFAULT = "default";
+    public static final String BASIC_PROMPT = "basic-prompt";
     public static final String PROGRESS_TOKEN = "progressToken";
     public static final String AGENT_NAME = "agentName";
 
@@ -77,15 +77,6 @@ public class PromptService {
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
 
-        if (CollectionUtils.isEmpty(commands)) {
-            log.info("Using default command.");
-            commands = Set.of(DEFAULT);
-        }
-
-        List<SlashCommand> slashCommands = slashCommandService.commands(commands);
-
-        Advisor retrievalAugmentationAdvisor = vectorStoreService.retrievalAugmentationAdvisor(userId);
-
         Object principal = authentication.getPrincipal();
 
         if (!(principal instanceof Jwt jwt)) {
@@ -99,20 +90,29 @@ public class PromptService {
                 CHAT_ID, chatId,
                 PROGRESS_TOKEN, chatId);
 
+        Advisor retrievalAugmentationAdvisor = vectorStoreService.retrievalAugmentationAdvisor(userId);
+
+        if (CollectionUtils.isEmpty(commands)) {
+            if (a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
+                Optional<String> stickyAgent = a2aStickyAgentService.get().getActiveAgent(chatId).block();
+
+                if (stickyAgent != null && stickyAgent.isPresent()) {
+                    log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
+
+                    return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
+                }
+            }
+
+            log.info("No command or sticky agent, using basic-prompt from MCP.");
+
+            return streamBasicPrompt(chatId, message, contextMap, retrievalAugmentationAdvisor, model);
+        }
+
+        List<SlashCommand> slashCommands = slashCommandService.commands(commands);
+
         SlashCommand slashCommand = slashCommands.stream()
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
-
-        // Route to sticky A2A agent when no explicit command was supplied
-        if (DEFAULT.equals(slashCommand.command()) && a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
-            Optional<String> stickyAgent = a2aStickyAgentService.get().getActiveAgent(chatId).block();
-
-            if (stickyAgent != null && stickyAgent.isPresent()) {
-                log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
-
-                return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
-            }
-        }
 
         switch (slashCommand.commandType) {
             case PROMPT -> {
@@ -150,5 +150,26 @@ public class PromptService {
             }
             default -> throw new IllegalStateException();
         }
+    }
+
+    private Flux<String> streamBasicPrompt(UUID chatId, String message, Map<String, Object> contextMap,
+                                           Advisor retrievalAugmentationAdvisor, String model) {
+        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
+                BASIC_PROMPT,
+                Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
+        );
+
+        McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+        Prompt prompt = new SlashCommand().preparePrompt(getPromptResult, message);
+
+        return chatClient.prompt(prompt)
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                )
+                .advisors(retrievalAugmentationAdvisor)
+                .toolContext(contextMap)
+                .options(OllamaChatOptions.builder().model(model))
+                .stream()
+                .content();
     }
 }
