@@ -25,7 +25,11 @@ class ProgressProviderTest {
     @Test
     void handleProgressNotificationShouldEmitProgressWhenProgressTokenIsValidChatId() {
         UUID chatId = UUID.randomUUID();
-        McpSchema.ProgressNotification progressNotification = new McpSchema.ProgressNotification(chatId.toString(), 0.5d, 1.0d, "half-way");
+
+        McpSchema.ProgressNotification progressNotification = McpSchema.ProgressNotification.builder(chatId.toString(), 0.5d)
+                .total(1.0d)
+                .message("half-way")
+                .build();
 
         progressProvider.handleProgressNotification(progressNotification);
 
@@ -34,7 +38,10 @@ class ProgressProviderTest {
 
     @Test
     void handleProgressNotificationShouldIgnoreProgressWhenTokenIsNotUuid() {
-        McpSchema.ProgressNotification progressNotification = new McpSchema.ProgressNotification("not-a-uuid", 0.5d, 1.0d, "half-way");
+        McpSchema.ProgressNotification progressNotification = McpSchema.ProgressNotification.builder("not-a-uuid", 0.5d)
+                .total(1.0d)
+                .message("half-way")
+                .build();
 
         progressProvider.handleProgressNotification(progressNotification);
 

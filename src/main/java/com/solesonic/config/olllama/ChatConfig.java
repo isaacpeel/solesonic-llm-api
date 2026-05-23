@@ -2,7 +2,7 @@ package com.solesonic.config.olllama;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.PromptChatMemoryAdvisor;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
@@ -34,12 +34,12 @@ public class ChatConfig {
     public ChatClient defaultChatClient(ChatMemory chatMemory,
                                  OllamaChatModel chatModel) {
 
+        MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
+                .build();
+
         return ChatClient.builder(chatModel)
-                .defaultToolCallbacks(mcpToolCallbackProvider)
-                .defaultAdvisors(
-                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
-                        simpleLoggerAdvisor
-                )
+                .defaultTools(mcpToolCallbackProvider)
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
 
@@ -48,12 +48,12 @@ public class ChatConfig {
     public ChatClient taskChatClient(ChatMemory chatMemory,
                                  OllamaChatModel chatModel) {
 
+        MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
+                .build();
+
         return ChatClient.builder(chatModel)
-                .defaultToolCallbacks(mcpToolCallbackProvider)
-                .defaultAdvisors(
-                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
-                        simpleLoggerAdvisor
-                )
+                .defaultTools(mcpToolCallbackProvider)
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
 

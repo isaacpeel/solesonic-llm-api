@@ -79,7 +79,11 @@ class ElicitationServiceTest {
                     countDownLatch.countDown();
                 });
 
-        McpSchema.ProgressNotification progressNotification = new McpSchema.ProgressNotification(chatId.toString(), 0.5d, 1.0d, "half-way");
+
+        McpSchema.ProgressNotification progressNotification = McpSchema.ProgressNotification.builder(chatId.toString(), 0.5d)
+                .total(1.0d)
+                .message("half-way")
+                .build();
 
         elicitationService.emitProgress(chatId, progressNotification);
 

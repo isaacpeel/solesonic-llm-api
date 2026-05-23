@@ -94,7 +94,9 @@ public class PromptService {
 
         if (CollectionUtils.isEmpty(commands)) {
             if (a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
-                Optional<String> stickyAgent = a2aStickyAgentService.get().getActiveAgent(chatId).block();
+                Optional<String> stickyAgent = a2aStickyAgentService.get()
+                        .getActiveAgent(chatId)
+                        .block();
 
                 if (stickyAgent != null && stickyAgent.isPresent()) {
                     log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
@@ -119,10 +121,9 @@ public class PromptService {
                 log.info("Prompt invoke: {}", slashCommand.name());
                 a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
 
-                McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                        slashCommand.name(),
-                        Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
-                );
+                McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(slashCommand.name)
+                        .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
+                        .build();
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
                 Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
@@ -132,7 +133,7 @@ public class PromptService {
                                 .param(CONVERSATION_ID, chatId)
                         )
                         .advisors(retrievalAugmentationAdvisor)
-                        .toolContext(contextMap)
+                        .tools(contextMap)
                         .options(OllamaChatOptions.builder().model(model))
                         .stream()
                         .content();
@@ -154,10 +155,10 @@ public class PromptService {
 
     private Flux<String> streamBasicPrompt(UUID chatId, String message, Map<String, Object> contextMap,
                                            Advisor retrievalAugmentationAdvisor, String model) {
-        McpSchema.GetPromptRequest getPromptRequest = new McpSchema.GetPromptRequest(
-                BASIC_PROMPT,
-                Map.of(USER_MESSAGE, message, AGENT_NAME, agentName)
-        );
+
+        McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
+                .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
+                .build();
 
         McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
         Prompt prompt = new SlashCommand().preparePrompt(getPromptResult, message);
@@ -167,7 +168,7 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
-                .toolContext(contextMap)
+                .tools(contextMap)
                 .options(OllamaChatOptions.builder().model(model))
                 .stream()
                 .content();
