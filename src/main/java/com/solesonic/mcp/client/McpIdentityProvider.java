@@ -54,11 +54,11 @@ public class McpIdentityProvider implements ToolCallbackProvider {
         try {
             List<ToolCallback> rawCallbacks = allMcpToolCallbacks();
 
-            log.info("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
+            log.debug("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
             for (ToolCallback rawCallback : rawCallbacks) {
                 toolCallbacks.add(new IdentityToolCallback(rawCallback));
-                log.info("Wrapped MCP tool: {}", rawCallback.getToolDefinition().name());
+                log.debug("Wrapped MCP tool: {}", rawCallback.getToolDefinition().name());
             }
         } catch (Exception exception) {
             log.error("Failed to initialize MCP tools", exception);

@@ -10,8 +10,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.netty.http.client.PrematureCloseException;
 import reactor.util.context.Context;
 
 import java.util.Map;
@@ -26,6 +28,8 @@ public class WebClientConfig {
     @Bean
     public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
         return WebClient.builder()
+                .filter((request, next) -> next.exchange(request)
+                        .onErrorMap(exception -> handleMcpConnectionException(exception, request)))
                 .filter((request, next) -> Mono.deferContextual(_ -> {
 
                     log.debug("Filtering mcp request: {}", request.url().getPath());
@@ -60,6 +64,14 @@ public class WebClientConfig {
                                 return next.exchange(newRequest);
                             });
                 }));
+    }
+
+    private Throwable handleMcpConnectionException(Throwable throwable, ClientRequest clientRequest) {
+        if(throwable instanceof WebClientRequestException && throwable.getCause() instanceof PrematureCloseException) {
+            log.warn("MCP server connection lost ({}): {}", clientRequest.url(), throwable.getMessage());
+        }
+
+        return throwable;
     }
 
     private String threadLocalUserToken() {
