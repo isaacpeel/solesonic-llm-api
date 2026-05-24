@@ -1,16 +1,11 @@
 package com.solesonic.mcp.client;
 
-import io.modelcontextprotocol.client.McpAsyncClient;
-import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.apache.commons.lang3.StringUtils;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
-import org.springframework.ai.mcp.AsyncMcpToolCallback;
-import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
@@ -45,21 +40,19 @@ public class IdentityToolCallback implements ToolCallback {
     };
     public static final String TEXT = "text";
 
-    private final SyncMcpToolCallback delegate;
+    private final ToolCallback delegate;
     private final ToolMetadata toolMetadata;
 
-    public IdentityToolCallback(McpSyncClient mcpSyncClient, Tool tool) {
-        this.delegate = SyncMcpToolCallback.builder()
-                .mcpClient(mcpSyncClient)
-                .tool(tool)
-                .build();
+    public IdentityToolCallback(ToolCallback tool) {
 
-        boolean returnDirect = tool.meta() != null && Boolean.TRUE.equals(tool.meta().get("returnDirect"));
+        this.delegate = tool;
+
+        boolean returnDirect = tool.getToolMetadata().returnDirect();
         this.toolMetadata = ToolMetadata.builder()
                 .returnDirect(returnDirect)
                 .build();
 
-        log.debug("Tool definition for {}: {}, returnDirect={}", tool.name(), delegate.getToolDefinition(), returnDirect);
+        log.debug("Tool definition for {}: {}, returnDirect={}", tool.getToolDefinition().name(), delegate.getToolDefinition(), returnDirect);
     }
 
     @Override
@@ -83,7 +76,8 @@ public class IdentityToolCallback implements ToolCallback {
     @Override
     @NonNull
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
-        log.info("Tool callback wrapper invoked for: {}", delegate.getOriginalToolName());
+        log.info("Tool callback wrapper invoked for: {}", delegate.getToolDefinition().name());
+
         assert toolContext != null;
         Map<String, Object> toolContextMap = toolContext.getContext();
         String userToken = toolContextMap.get(USER_TOKEN).toString();

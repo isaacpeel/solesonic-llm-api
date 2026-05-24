@@ -4,7 +4,7 @@ import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
 import com.solesonic.mcp.client.IdentityToolCallback;
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.NotificationService;
 import io.a2a.client.Client;
 import io.a2a.client.ClientEvent;
 import io.a2a.client.MessageEvent;
@@ -22,7 +22,6 @@ import io.a2a.spec.TaskState;
 import io.a2a.spec.TaskStatusUpdateEvent;
 import io.a2a.spec.TextPart;
 import io.a2a.spec.UpdateEvent;
-import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,18 +45,18 @@ public class A2AAgentService {
 
     private final A2AAgentRegistry agentRegistry;
     private final A2AAuthInterceptor a2aAuthInterceptor;
-    private final ElicitationService elicitationService;
+    private final NotificationService notificationService;
     private final Optional<A2AStickyAgentService> a2aStickyAgentService;
     private final long timeoutSeconds;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
                            A2AAuthInterceptor a2aAuthInterceptor,
-                           ElicitationService elicitationService,
+                           NotificationService notificationService,
                            Optional<A2AStickyAgentService> a2aStickyAgentService,
                            A2AClientProperties properties) {
         this.agentRegistry = agentRegistry;
         this.a2aAuthInterceptor = a2aAuthInterceptor;
-        this.elicitationService = elicitationService;
+        this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.timeoutSeconds = properties.timeoutSeconds();
     }
@@ -177,17 +176,14 @@ public class A2AAgentService {
         }
     }
 
-    private void emitStatusNotification(UUID chatId, Message statusMessage, FluxSink<String> sink) {
-        String text = extractText(statusMessage.getParts());
+    private void emitStatusNotification(UUID chatId, Message a2aMessage, FluxSink<String> sink) {
+        String text = extractText(a2aMessage.getParts());
 
         if (text.isEmpty()) {
             return;
         }
 
-        McpSchema.ProgressNotification progressNotification = new McpSchema.ProgressNotification(
-                chatId.toString(), null, null, text, null);
-
-        elicitationService.emitProgress(chatId, progressNotification);
+        notificationService.emitProgress(chatId, a2aMessage);
         sink.next("");
     }
 

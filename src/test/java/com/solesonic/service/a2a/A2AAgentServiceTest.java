@@ -3,12 +3,12 @@ package com.solesonic.service.a2a;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
+import com.solesonic.service.chat.events.NotificationService;
 import io.a2a.client.MessageEvent;
 import io.a2a.client.TaskEvent;
 import io.a2a.client.TaskUpdateEvent;
 import io.a2a.spec.Artifact;
 import io.a2a.spec.Message;
-import io.a2a.spec.Part;
 import io.a2a.spec.Task;
 import io.a2a.spec.TaskArtifactUpdateEvent;
 import io.a2a.spec.TaskState;
@@ -44,7 +44,7 @@ class A2AAgentServiceTest {
     private A2AAuthInterceptor a2aAuthInterceptor;
 
     @Mock
-    private com.solesonic.service.chat.ElicitationService elicitationService;
+    private NotificationService notificationService;
 
     @Mock
     private A2AStickyAgentService stickyAgentService;
@@ -57,7 +57,7 @@ class A2AAgentServiceTest {
     void setUp() {
         A2AClientProperties properties = new A2AClientProperties(false, 5, null);
 
-        agentService = new A2AAgentService(agentRegistry, a2aAuthInterceptor, elicitationService,
+        agentService = new A2AAgentService(agentRegistry, a2aAuthInterceptor, notificationService,
                 Optional.of(stickyAgentService), properties);
     }
 
@@ -84,7 +84,7 @@ class A2AAgentServiceTest {
         StepVerifier.create(captureFromEvents(sink -> {
             TaskArtifactUpdateEvent artifactEvent = new TaskArtifactUpdateEvent(
                     "task-1",
-                    new Artifact("artifact-1", null, null, List.<Part<?>>of(new TextPart("hello")), null, null),
+                    new Artifact("artifact-1", null, null, List.of(new TextPart("hello")), null, null),
                     "context-1",
                     false,
                     false,
@@ -126,7 +126,7 @@ class A2AAgentServiceTest {
         when(stickyAgentService.deactivateTask(any())).thenReturn(Mono.empty());
 
         StepVerifier.create(captureFromEvents(sink -> {
-            Artifact artifact = new Artifact("artifact-1", null, null, List.<Part<?>>of(new TextPart("final")), null, null);
+            Artifact artifact = new Artifact("artifact-1", null, null, List.of(new TextPart("final")), null, null);
             Task task = new Task(
                     "task-1",
                     "context-1",
@@ -168,7 +168,7 @@ class A2AAgentServiceTest {
         when(stickyAgentService.activateTask(eq(CHAT_ID), eq("task-1"))).thenReturn(Mono.empty());
 
         Artifact artifact = new Artifact("a-1", null, null,
-                List.<Part<?>>of(new TextPart("What is the title?")), null, null);
+                List.of(new TextPart("What is the title?")), null, null);
         Task task = new Task(
                 "task-1",
                 "context-1",

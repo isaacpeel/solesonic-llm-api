@@ -32,13 +32,13 @@ public class ChatConfig {
     @Bean
     @Qualifier(DEFAULT_CHAT_CLIENT)
     public ChatClient defaultChatClient(ChatMemory chatMemory,
-                                 OllamaChatModel chatModel) {
+                                        OllamaChatModel chatModel) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
         return ChatClient.builder(chatModel)
-                .defaultTools(mcpToolCallbackProvider)
+                .defaultTools(toolSpec -> toolSpec.callbacks(mcpToolCallbackProvider))
                 .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
@@ -46,13 +46,13 @@ public class ChatConfig {
     @Bean
     @Qualifier(TASK_CHAT_CLIENT)
     public ChatClient taskChatClient(ChatMemory chatMemory,
-                                 OllamaChatModel chatModel) {
+                                     OllamaChatModel chatModel) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
         return ChatClient.builder(chatModel)
-                .defaultTools(mcpToolCallbackProvider)
+                .defaultTools(toolSpec -> toolSpec.callbacks(mcpToolCallbackProvider))
                 .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }

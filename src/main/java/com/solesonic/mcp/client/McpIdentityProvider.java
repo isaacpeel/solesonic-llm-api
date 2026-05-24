@@ -1,14 +1,13 @@
 package com.solesonic.mcp.client;
 
-import io.modelcontextprotocol.client.McpAsyncClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
-import reactor.core.scheduler.Schedulers;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -28,54 +27,56 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     public McpIdentityProvider(McpSyncClient mcpClient) {
         this.mcpClient = mcpClient;
         this.toolCallbacks = new ArrayList<>();
-        initializeTools();
+        initializeToolCallbacks();
     }
 
-    public McpIdentityProvider(McpSyncClient mcpClient, String tool) {
+    public McpIdentityProvider(McpSyncClient mcpClient, String toolName) {
         this.mcpClient = mcpClient;
         this.toolCallbacks = new ArrayList<>();
-        initializeTool(tool);
+        initializeTool(toolName);
     }
 
     public void initializeTool(String name) {
         try {
-            Tool tool = findTool(name);
+            ToolCallback rawCallback = allMcpToolCallbacks().stream()
+                    .filter(toolCallback -> toolCallback.getToolDefinition().name().equals(name))
+                    .findFirst()
+                    .orElseThrow(() -> new IllegalStateException("Tool not found: " + name));
 
-            log.info("MCP tool {} initialized with security context propagation", tool.name());
-
-            IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
-            toolCallbacks.add(callback);
-        } catch (Exception e) {
-            log.error("Failed to initialize MCP tools", e);
+            log.info("MCP tool {} initialized with security context propagation", name);
+            toolCallbacks.add(new IdentityToolCallback(rawCallback));
+        } catch (Exception exception) {
+            log.error("Failed to initialize MCP tool {}", name, exception);
         }
     }
 
-    private void initializeTools() {
+    private void initializeToolCallbacks() {
         try {
-            List<Tool> tools = allMcpTools();
+            List<ToolCallback> rawCallbacks = allMcpToolCallbacks();
 
-            log.info("Initializing {} MCP tools with security context propagation", tools.size());
+            log.info("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
-            for (Tool tool : tools) {
-                IdentityToolCallback callback = new IdentityToolCallback(mcpClient, tool);
-                toolCallbacks.add(callback);
-                log.debug("Wrapped MCP tool: {} ", tool.name());
+            for (ToolCallback rawCallback : rawCallbacks) {
+                toolCallbacks.add(new IdentityToolCallback(rawCallback));
+                log.info("Wrapped MCP tool: {}", rawCallback.getToolDefinition().name());
             }
-        } catch (Exception e) {
-            log.error("Failed to initialize MCP tools", e);
+        } catch (Exception exception) {
+            log.error("Failed to initialize MCP tools", exception);
         }
     }
 
-    private Tool findTool(String name) {
-        return allMcpTools().stream()
-                .filter(mcpTool -> mcpTool.name().equals(name))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException("Tool not found"));
-    }
+    private List<ToolCallback> allMcpToolCallbacks() {
+        List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()).tools();
 
-    private List<Tool> allMcpTools() {
-        return Objects.requireNonNull(mcpClient.listTools())
-                .tools();
+        log.info("Found {} MCP tools from client", tools.size());
+        tools.forEach(tool -> log.debug("Available MCP tool: {}", tool.name()));
+
+        return tools.stream()
+                .<ToolCallback>map(tool -> SyncMcpToolCallback.builder()
+                        .mcpClient(mcpClient)
+                        .tool(tool)
+                        .build())
+                .toList();
     }
 
     @Override

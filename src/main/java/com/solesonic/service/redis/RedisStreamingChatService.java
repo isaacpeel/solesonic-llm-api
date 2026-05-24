@@ -6,7 +6,7 @@ import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.ollama.ChatRepository;
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.ollama.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
@@ -23,7 +23,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
-import static com.solesonic.service.chat.ElicitationService.CANCEL_ACTION;
+import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
