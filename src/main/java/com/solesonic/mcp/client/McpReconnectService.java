@@ -3,6 +3,7 @@ package com.solesonic.mcp.client;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +11,7 @@ import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
+@ConditionalOnProperty(name = "solesonic.mcp.reconnect.enabled", havingValue = "true")
 public class McpReconnectService {
     private static final Logger log = LoggerFactory.getLogger(McpReconnectService.class);
 
@@ -25,6 +27,7 @@ public class McpReconnectService {
     }
 
     @EventListener
+    @SuppressWarnings("unused")
     public void onMcpServerDisconnected(McpServerDisconnectedEvent event) {
         if (!reconnecting.compareAndSet(false, true)) {
             log.debug("MCP reconnect already in progress, skipping duplicate disconnect event.");
@@ -35,6 +38,7 @@ public class McpReconnectService {
         Thread.ofVirtual().start(this::runReconnectLoop);
     }
 
+    @SuppressWarnings("BusyWait")
     private void runReconnectLoop() {
         Duration currentBackoff = INITIAL_BACKOFF;
         long startTime = System.currentTimeMillis();

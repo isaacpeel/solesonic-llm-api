@@ -7,6 +7,7 @@ import com.solesonic.model.security.McpFilterService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -34,11 +35,19 @@ public class WebClientConfig {
     }
 
     @Bean
-    public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
-        return WebClient.builder()
-                .filter((request, next) -> next.exchange(request)
-                        .onErrorMap(exception -> handleMcpConnectionException(exception, request)))
-                .filter((request, next) -> Mono.deferContextual(_ -> {
+    public WebClient.Builder webClientBuilder(
+            TokenExchangeService tokenExchangeService,
+            McpFilterService mcpFilterService,
+            @Value("${solesonic.mcp.reconnect.enabled:false}") boolean reconnectEnabled) {
+
+        WebClient.Builder builder = WebClient.builder();
+
+        if (reconnectEnabled) {
+            builder = builder.filter((request, next) -> next.exchange(request)
+                    .onErrorMap(exception -> handleMcpConnectionException(exception, request)));
+        }
+
+        return builder.filter((request, next) -> Mono.deferContextual(_ -> {
 
                     log.debug("Filtering mcp request: {}", request.url().getPath());
                     log.debug("WebClient filter executing - checking for security context");
