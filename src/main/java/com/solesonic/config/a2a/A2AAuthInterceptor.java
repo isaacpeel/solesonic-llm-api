@@ -7,9 +7,9 @@ import io.a2a.client.transport.spi.interceptors.ClientCallContext;
 import io.a2a.client.transport.spi.interceptors.ClientCallInterceptor;
 import io.a2a.client.transport.spi.interceptors.PayloadAndHeaders;
 import io.a2a.spec.AgentCard;
+import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 
@@ -33,8 +33,12 @@ public class A2AAuthInterceptor extends ClientCallInterceptor {
     }
 
     @Override
-    public PayloadAndHeaders intercept(String methodName, Object payload, Map<String, String> headers,
-                                       AgentCard agentCard, ClientCallContext clientCallContext) {
+    @NonNull
+    public PayloadAndHeaders intercept(@NonNull String methodName,
+                                       Object payload,
+                                       @NonNull Map<String, String> headers,
+                                       @NonNull AgentCard agentCard,
+                                       ClientCallContext clientCallContext) {
         String accessToken = resolveAccessToken();
 
         Map<String, String> authenticatedHeaders = new HashMap<>(headers);

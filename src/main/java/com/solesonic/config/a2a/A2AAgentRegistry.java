@@ -1,22 +1,17 @@
 package com.solesonic.config.a2a;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.solesonic.model.prompt.SlashCommand;
 import io.a2a.spec.AgentCard;
 import jakarta.annotation.PostConstruct;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
