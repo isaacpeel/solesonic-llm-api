@@ -75,6 +75,7 @@ public class A2AAgentRegistry {
         return agentCards.get(agentName);
     }
 
+    @SuppressWarnings("unused")
     public boolean hasAgent(String agentName) {
         return agentCards.containsKey(agentName);
     }
