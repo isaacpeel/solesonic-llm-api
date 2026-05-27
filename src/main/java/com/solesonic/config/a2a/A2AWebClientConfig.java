@@ -16,7 +16,6 @@ import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
-@ConditionalOnProperty(prefix = "solesonic.a2a", name = "enabled", havingValue = "true")
 public class A2AWebClientConfig {
 
     private static final Logger log = LoggerFactory.getLogger(A2AWebClientConfig.class);

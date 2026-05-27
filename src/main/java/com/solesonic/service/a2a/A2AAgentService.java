@@ -38,9 +38,7 @@ import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 
 @Service
-@ConditionalOnProperty(prefix = "solesonic.a2a", name = "enabled", havingValue = "true")
 public class A2AAgentService {
-
     private static final Logger log = LoggerFactory.getLogger(A2AAgentService.class);
 
     private final A2AAgentRegistry agentRegistry;

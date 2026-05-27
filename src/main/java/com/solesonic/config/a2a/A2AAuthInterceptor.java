@@ -20,7 +20,6 @@ import static com.solesonic.mcp.client.IdentityToolCallback.SECURITY_CONTEXT_KEY
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 
 @Component
-@ConditionalOnProperty(prefix = "solesonic.a2a", name = "enabled", havingValue = "true")
 public class A2AAuthInterceptor extends ClientCallInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(A2AAuthInterceptor.class);

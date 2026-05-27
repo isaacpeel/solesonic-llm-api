@@ -24,7 +24,6 @@ import java.util.Map;
 import static com.solesonic.config.a2a.A2AWebClientConfig.A2A_WEB_CLIENT;
 
 @Component
-@ConditionalOnProperty(prefix = "solesonic.a2a", name = "enabled", havingValue = "true")
 @EnableConfigurationProperties(A2AClientProperties.class)
 public class A2AAgentRegistry {
 

@@ -12,7 +12,6 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Service
-@ConditionalOnProperty(prefix = "solesonic.a2a", name = "enabled", havingValue = "true")
 public class A2AStickyAgentService {
 
     private static final Logger log = LoggerFactory.getLogger(A2AStickyAgentService.class);
