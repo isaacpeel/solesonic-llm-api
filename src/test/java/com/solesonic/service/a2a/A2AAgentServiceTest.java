@@ -58,11 +58,12 @@ class A2AAgentServiceTest {
         A2AClientProperties properties = new A2AClientProperties(false, 5, null);
 
         agentService = new A2AAgentService(agentRegistry, a2aAuthInterceptor, notificationService,
-                Optional.of(stickyAgentService), properties);
+                stickyAgentService, properties);
     }
 
     @Test
     void delegateThrowsWhenAgentUnknown() {
+        when(stickyAgentService.getActiveTaskId(any())).thenReturn(Mono.just(Optional.empty()));
         when(agentRegistry.getCard("missing"))
                 .thenThrow(new IllegalArgumentException("Unknown A2A agent: missing"));
 

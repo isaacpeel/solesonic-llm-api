@@ -5,23 +5,10 @@ import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
 import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.service.chat.events.NotificationService;
-import io.a2a.client.Client;
-import io.a2a.client.ClientEvent;
-import io.a2a.client.MessageEvent;
-import io.a2a.client.TaskEvent;
-import io.a2a.client.TaskUpdateEvent;
+import io.a2a.client.*;
 import io.a2a.client.transport.jsonrpc.JSONRPCTransport;
 import io.a2a.client.transport.jsonrpc.JSONRPCTransportConfigBuilder;
-import io.a2a.spec.AgentCard;
-import io.a2a.spec.Artifact;
-import io.a2a.spec.Message;
-import io.a2a.spec.Part;
-import io.a2a.spec.Task;
-import io.a2a.spec.TaskArtifactUpdateEvent;
-import io.a2a.spec.TaskState;
-import io.a2a.spec.TaskStatusUpdateEvent;
-import io.a2a.spec.TextPart;
-import io.a2a.spec.UpdateEvent;
+import io.a2a.spec.*;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,7 +18,6 @@ import reactor.core.publisher.FluxSink;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
@@ -43,13 +29,13 @@ public class A2AAgentService {
     private final A2AAgentRegistry agentRegistry;
     private final A2AAuthInterceptor a2aAuthInterceptor;
     private final NotificationService notificationService;
-    private final Optional<A2AStickyAgentService> a2aStickyAgentService;
+    private final A2AStickyAgentService a2aStickyAgentService;
     private final long timeoutSeconds;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
                            A2AAuthInterceptor a2aAuthInterceptor,
                            NotificationService notificationService,
-                           Optional<A2AStickyAgentService> a2aStickyAgentService,
+                           A2AStickyAgentService a2aStickyAgentService,
                            A2AClientProperties properties) {
         this.agentRegistry = agentRegistry;
         this.a2aAuthInterceptor = a2aAuthInterceptor;
@@ -59,53 +45,50 @@ public class A2AAgentService {
     }
 
     public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
-        return Flux.<String>create(sink -> {
-            Client client;
+        return a2aStickyAgentService.getActiveTaskId(chatId)
+                .flatMapMany(activeTaskId -> Flux.<String>create(sink -> {
+                    Client client;
 
-            try {
-                AgentCard agentCard = agentRegistry.getCard(agentName);
+                    try {
+                        AgentCard agentCard = agentRegistry.getCard(agentName);
 
-                BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
+                        BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
 
-                JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
-                        .addInterceptor(a2aAuthInterceptor);
+                        JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
+                                .addInterceptor(a2aAuthInterceptor);
 
-                client = Client.builder(agentCard)
-                        .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
-                        .addConsumer(consumer)
-                        .streamingErrorHandler(sink::error)
-                        .build();
+                        client = Client.builder(agentCard)
+                                .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
+                                .addConsumer(consumer)
+                                .streamingErrorHandler(sink::error)
+                                .build();
 
-                sink.onDispose(client::close);
+                        sink.onDispose(client::close);
 
-                Optional<String> activeTaskId = a2aStickyAgentService
-                        .flatMap(stickyService -> stickyService.getActiveTaskId(chatId)
-                                .blockOptional()
-                                .orElse(Optional.empty()));
+                        Message.Builder messageBuilder = new Message.Builder()
+                                .role(Message.Role.USER)
+                                .contextId(chatId.toString())
+                                .messageId(UUID.randomUUID().toString())
+                                .parts(new TextPart(message));
 
-                Message.Builder messageBuilder = new Message.Builder()
-                        .role(Message.Role.USER)
-                        .contextId(chatId.toString())
-                        .messageId(UUID.randomUUID().toString())
-                        .parts(new TextPart(message));
+                        if (activeTaskId.isPresent()) {
+                            log.debug("Continuing A2A task '{}' for chat {}", activeTaskId.get(), chatId);
+                            messageBuilder.taskId(activeTaskId.get());
+                        }
 
-                if (activeTaskId.isPresent()) {
-                    log.debug("Continuing A2A task '{}' for chat {}", activeTaskId.get(), chatId);
-                    messageBuilder.taskId(activeTaskId.get());
-                }
+                        IdentityToolCallback.setUserTokenContext(userToken);
 
-                IdentityToolCallback.setUserTokenContext(userToken);
-
-                try {
-                    client.sendMessage(messageBuilder.build(), null);
-                } finally {
-                    IdentityToolCallback.clearContext();
-                }
-            } catch (Exception exception) {
-                log.error("Failed to send message to A2A agent '{}': {}", agentName, exception.getMessage(), exception);
-                sink.error(exception);
-            }
-        }).timeout(Duration.ofSeconds(timeoutSeconds));
+                        try {
+                            client.sendMessage(messageBuilder.build(), null);
+                        } finally {
+                            IdentityToolCallback.clearContext();
+                        }
+                    } catch (Exception exception) {
+                        log.error("Failed to send message to A2A agent '{}': {}", agentName, exception.getMessage(), exception);
+                        sink.error(exception);
+                    }
+                }))
+                .timeout(Duration.ofSeconds(timeoutSeconds));
     }
 
     void handleEvent(UUID chatId, ClientEvent clientEvent, FluxSink<String> sink) {
@@ -118,16 +101,13 @@ public class A2AAgentService {
                 if (state == TaskState.INPUT_REQUIRED) {
                     log.debug("A2A agent event handler waiting for input on task '{}' for chat {}", task.getId(), chatId);
 
-                    a2aStickyAgentService.ifPresent(stickyService ->
-                            stickyService
-                                    .activateTask(chatId, task.getId())
-                                    .subscribe());
+                    a2aStickyAgentService.activateTask(chatId, task.getId())
+                            .subscribe();
 
                     emitArtifactsIfAny(task.getArtifacts(), sink);
                     sink.complete();
                 } else if (state != null && state.isFinal()) {
-                    a2aStickyAgentService.ifPresent(stickyService ->
-                            stickyService.deactivateTask(chatId).subscribe());
+                    a2aStickyAgentService.deactivateTask(chatId).subscribe();
                     emitArtifactsIfAny(task.getArtifacts(), sink);
                     complete(state, sink);
                 }
@@ -149,10 +129,9 @@ public class A2AAgentService {
                 if (state == TaskState.INPUT_REQUIRED) {
                     log.debug("A2A agent waiting for input on task '{}' for chat {}", statusEvent.getTaskId(), chatId);
 
-                    a2aStickyAgentService.ifPresent(stickyService ->
-                            stickyService
-                                    .activateTask(chatId, statusEvent.getTaskId())
-                                    .subscribe());
+                    a2aStickyAgentService.activateTask(chatId, statusEvent.getTaskId())
+                            .subscribe();
+
                     if (statusEvent.getStatus().message() != null) {
                         emitParts(statusEvent.getStatus().message().getParts(), sink);
                     }
@@ -163,8 +142,7 @@ public class A2AAgentService {
                     }
 
                     if (statusEvent.isFinal()) {
-                        a2aStickyAgentService.ifPresent(stickyService ->
-                                stickyService.deactivateTask(chatId).subscribe());
+                        a2aStickyAgentService.deactivateTask(chatId).subscribe();
                         complete(state, sink);
                     }
                 }
