@@ -108,15 +108,30 @@ public class SlashCommandService {
         return matched;
     }
 
-    public List<SlashCommand> typeAhead(String commandPrefix) {
-        log.info("Type ahead for commands search: {}", commandPrefix);
+    public List<SlashCommand> typeAhead(String searchInput) {
+        log.info("Type ahead for commands search: {}", searchInput);
 
-        return slashCommands().stream()
+        List<SlashCommand> allCommands = slashCommands();
+
+        if (StringUtils.isEmpty(searchInput)) {
+            return allCommands;
+        }
+
+        String searchTerm = searchInput.toLowerCase();
+
+        List<SlashCommand> matches = allCommands.stream()
                 .filter(slashCommand -> {
-                    String prefix = commandPrefix.toLowerCase();
-                    return StringUtils.isEmpty(prefix) || slashCommand.command().toLowerCase().startsWith(prefix.toLowerCase());
+                    String command = slashCommand.command().toLowerCase();
+                    String description = StringUtils.defaultString(slashCommand.description()).toLowerCase();
+                    return command.contains(searchTerm) || description.contains(searchTerm);
                 })
                 .toList();
+
+        if (matches.isEmpty()) {
+            return allCommands;
+        }
+
+        return matches;
     }
 
     public List<SlashCommand> slashCommands() {
@@ -143,7 +158,7 @@ public class SlashCommandService {
         }
 
         slashCommands
-                .forEach(slashCommand -> log.info("Loaded command: {}", slashCommand.name()));
+                .forEach(slashCommand -> log.debug("Loaded command: {}", slashCommand.name()));
 
         String serializedPayload = jsonMapper.writeValueAsString(slashCommands);
 
