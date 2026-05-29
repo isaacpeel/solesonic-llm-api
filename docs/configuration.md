@@ -40,7 +40,7 @@ Redis is required for streaming chat (Redis Streams) and for caching (Ollama mod
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `REDDIS_HOST` | Redis server hostname | `redis.internal` | Yes (prod) | Note: the env var name has a double-D typo inherited from early configuration; it must be spelled `REDDIS_HOST` |
+| `REDIS_HOST` | Redis server hostname | `redis.internal` | Yes (prod) | Note: the env var name has a double-D typo inherited from early configuration; it must be spelled `REDIS_HOST` |
 | `REDIS_PASSWORD` | Redis password | `your-redis-password` | No | Leave unset if Redis has no authentication |
 
 ### Atlassian Integration
@@ -148,7 +148,7 @@ ISSUER_URI=https://your-issuer
 JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # Redis Configuration (production; local profile uses localhost:6379 by default)
-REDDIS_HOST=redis.internal
+REDIS_HOST=redis.internal
 REDIS_PASSWORD=your-redis-password
 
 # Atlassian Integration
@@ -204,7 +204,7 @@ The application supports different profiles with varying configuration requireme
 1. **Database connection failures**: Verify `DB_URL` and `POSTGRES_USER` variables match your database setup
 2. **Authentication errors**: Ensure `ISSUER_URI` and `JWK_SET_URI` are correctly set and accessible
 3. **CORS errors**: Add your frontend URL to `CORS_ALLOWED_ORIGINS`
-4. **Redis connection failures**: Verify Redis is running and that `REDDIS_HOST` (note the double-D) is set correctly for non-local environments
+4. **Redis connection failures**: Verify Redis is running and that `REDIS_HOST` (note the double-D) is set correctly for non-local environments
 5. **MCP integration issues**: Verify `SOLESONIC_MCP_URI`, `MCP_CLIENT_ID`, `MCP_CLIENT_SECRET`, and `MCP_ISSUER_URI` are all configured
 
 For more troubleshooting guidance, see [docs/troubleshooting.md](troubleshooting.md).

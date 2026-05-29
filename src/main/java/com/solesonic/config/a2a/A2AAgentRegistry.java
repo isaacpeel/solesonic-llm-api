@@ -1,5 +1,6 @@
 package com.solesonic.config.a2a;
 
+import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import io.a2a.spec.AgentCard;
 import jakarta.annotation.PostConstruct;
@@ -83,7 +84,7 @@ public class A2AAgentRegistry {
     public List<SlashCommand> asSlashCommands() {
         return agentCards.values()
                 .stream()
-                .map(SlashCommand::new)
+                .<SlashCommand>map(AgentSlashCommand::new)
                 .toList();
     }
 }

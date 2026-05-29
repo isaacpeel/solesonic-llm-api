@@ -1,8 +1,11 @@
-
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.prompt.AgentSlashCommand;
+import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.rag.VectorStoreService;
@@ -27,7 +30,6 @@ import java.util.*;
 
 import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
-import static com.solesonic.model.prompt.SlashCommand.*;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 @Service
@@ -44,6 +46,8 @@ public class PromptService {
     private final SlashCommandService slashCommandService;
     private final VectorStoreService vectorStoreService;
     private final McpSyncClient mcpClient;
+    private final McpPromptAdapter mcpPromptAdapter;
+    private final ToolCallService toolCallService;
     private final Optional<A2AAgentService> a2aAgentService;
     private final Optional<A2AStickyAgentService> a2aStickyAgentService;
 
@@ -56,6 +60,8 @@ public class PromptService {
             SlashCommandService slashCommandService,
             VectorStoreService vectorStoreService,
             McpSyncClient mcpClient,
+            McpPromptAdapter mcpPromptAdapter,
+            ToolCallService toolCallService,
             Optional<A2AAgentService> a2aAgentService,
             Optional<A2AStickyAgentService> a2aStickyAgentService) {
         this.chatClient = chatClient;
@@ -63,6 +69,8 @@ public class PromptService {
         this.slashCommandService = slashCommandService;
         this.vectorStoreService = vectorStoreService;
         this.mcpClient = mcpClient;
+        this.mcpPromptAdapter = mcpPromptAdapter;
+        this.toolCallService = toolCallService;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
     }
@@ -116,41 +124,41 @@ public class PromptService {
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
 
-        switch (slashCommand.commandType) {
-            case PROMPT -> {
-                log.info("Prompt invoke: {}", slashCommand.name());
+        return switch (slashCommand) {
+            case PromptSlashCommand promptCommand -> {
+                log.info("Prompt invoke: {}", promptCommand.name());
                 a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
 
-                McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(slashCommand.name)
+                McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(promptCommand.name())
                         .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
                         .build();
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-                Prompt prompt = slashCommand.preparePrompt(getPromptResult, message);
+                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message);
 
-                return chatClient.prompt(prompt)
-                        .advisors(advisorSpec -> advisorSpec
-                                .param(CONVERSATION_ID, chatId)
-                        )
+                yield chatClient.prompt(prompt)
+                        .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                         .advisors(retrievalAugmentationAdvisor)
-                        .tools(contextMap)
+                        .tools(toolSpec -> toolSpec.context(contextMap))
                         .options(OllamaChatOptions.builder().model(model))
                         .stream()
                         .content();
             }
-            case AGENT -> {
-                log.info("A2A agent invoke: {}", slashCommand.command);
-
+            case ToolSlashCommand toolCommand -> {
+                a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
+                yield toolCallService.stream(chatId, message, toolCommand, contextMap, retrievalAugmentationAdvisor);
+            }
+            case AgentSlashCommand agentCommand -> {
+                log.info("A2A agent invoke: {}", agentCommand.command());
                 A2AAgentService agentService = a2aAgentService.orElseThrow(
                         () -> new IllegalStateException("A2A agent service is not configured"));
 
                 a2aStickyAgentService.ifPresent(stickyService ->
-                        stickyService.activate(chatId, slashCommand.command()).subscribe());
+                        stickyService.activate(chatId, agentCommand.command()).subscribe());
 
-                return agentService.delegate(chatId, slashCommand.command(), message, authToken);
+                yield agentService.delegate(chatId, agentCommand.command(), message, authToken);
             }
-            default -> throw new IllegalStateException();
-        }
+        };
     }
 
     private Flux<String> streamBasicPrompt(UUID chatId, String message, Map<String, Object> contextMap,
@@ -161,14 +169,14 @@ public class PromptService {
                 .build();
 
         McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-        Prompt prompt = new SlashCommand().preparePrompt(getPromptResult, message);
+        Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
 
         return chatClient.prompt(prompt)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
                 .advisors(retrievalAugmentationAdvisor)
-                .tools(contextMap)
+                .tools(toolSpec -> toolSpec.context(contextMap))
                 .options(OllamaChatOptions.builder().model(model))
                 .stream()
                 .content();
