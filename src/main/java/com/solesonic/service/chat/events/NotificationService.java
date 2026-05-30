@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -28,6 +29,7 @@ public class NotificationService {
     private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
     public static final String EVENT = "event";
     public static final String DATA = "data";
+    public static final String ERROR = "error";
 
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
@@ -54,13 +56,13 @@ public class NotificationService {
         chatMessage.setProgressData(progressJson);
         chatMessageService.save(chatMessage);
 
-        String message = serializeEventMessage(progressJson);
+        String message = serializeEventMessage(PROGRESS, progressJson);
 
         redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
                 .subscribe(subscriberCount -> log.debug("Emitted progress event to {} subscribers for chat {}", subscriberCount, chatId));
     }
     public void emitProgress(UUID chatId, Message a2aMessage) {
-        log.info("Emitting a2a notification.");
+        log.debug("Emitting a2a notification.");
 
         List<Part<?>> parts = a2aMessage.getParts();
 
@@ -72,7 +74,7 @@ public class NotificationService {
                 })
                 .collect(Collectors.joining());
 
-        log.info("Emitting a2a progress for chat id {} with message: {}", chatId, messageText);
+        log.debug("Emitted a2a progress for chat id {} with message: {}", chatId, messageText);
 
         String progressToken = a2aMessage.getMessageId();
 
@@ -92,8 +94,28 @@ public class NotificationService {
         emitProgress(chatId, notificationEventMessage);
     }
 
-    private String serializeEventMessage(Object data) {
-        return jsonMapper.writeValueAsString(Map.of(EVENT, NotificationService.PROGRESS, DATA, data));
+    public void emitFailure(UUID chatId, String message) {
+        log.warn("Emitting failure notification for chat id {} with message: {}", chatId, message);
+
+        Map<String, Object> errorData = new HashMap<>();
+        errorData.put(CHAT_ID, chatId.toString());
+        errorData.put("message", message);
+
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.SYSTEM);
+        chatMessage.setMessage(message);
+        chatMessage.setProgressData(errorData);
+        chatMessageService.save(chatMessage);
+
+        String payload = serializeEventMessage(ERROR, errorData);
+        redisTemplate.convertAndSend(eventsChannelKey(chatId), payload)
+                .subscribe(subscriberCount ->
+                        log.debug("Emitted error event to {} subscribers for chat {}", subscriberCount, chatId));
+    }
+
+    private String serializeEventMessage(String eventType, Object data) {
+        return jsonMapper.writeValueAsString(Map.of(EVENT, eventType, DATA, data));
     }
 
     private static String eventsChannelKey(UUID chatId) {
