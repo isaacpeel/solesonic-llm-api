@@ -102,15 +102,19 @@ public class PromptService {
 
         if (CollectionUtils.isEmpty(commands)) {
             if (a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
-                Optional<String> stickyAgent = a2aStickyAgentService.get()
+                return a2aStickyAgentService.get()
                         .getActiveAgent(chatId)
-                        .block();
+                        .flatMapMany(stickyAgent -> {
+                            if (stickyAgent.isPresent()) {
+                                log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                if (stickyAgent != null && stickyAgent.isPresent()) {
-                    log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
+                                return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
+                            }
 
-                    return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
-                }
+                            log.info("No command or sticky agent, using basic-prompt from MCP.");
+
+                            return streamBasicPrompt(chatId, message, contextMap, retrievalAugmentationAdvisor, model);
+                        });
             }
 
             log.info("No command or sticky agent, using basic-prompt from MCP.");
