@@ -169,9 +169,11 @@ public class PromptService {
                 .build();
 
         McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-        Prompt prompt = mcpPromptAdapter.toPrompt(getPromptResult);
+        String systemText = mcpPromptAdapter.toSystemText(getPromptResult);
 
-        return chatClient.prompt(prompt)
+        return chatClient.prompt()
+                .system(systemText)
+                .user(message)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )

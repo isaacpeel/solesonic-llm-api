@@ -11,6 +11,7 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
+import org.springframework.ai.rag.preretrieval.query.transformation.QueryTransformer;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -33,6 +34,9 @@ public class VectorStoreService {
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
 
+    @Value("${solesonic.llm.embedding.max-query-chars}")
+    private int maxQueryChars;
+
     public VectorStoreService(VectorStore vectorStore,
                               VectorStoreRepository vectorStoreRepository,
                               UserPreferencesService userPreferencesService) {
@@ -47,6 +51,15 @@ public class VectorStoreService {
         Double similarityThreshold = Optional.ofNullable(userPreferences.getSimilarityThreshold())
                 .orElse(defaultSimilarityThreshold);
 
+        QueryTransformer truncatingTransformer = query -> {
+            String text = query.text();
+            if (text.length() <= maxQueryChars) {
+                return query;
+            }
+            log.warn("Query text truncated from {} to {} characters for embedding", text.length(), maxQueryChars);
+            return query.mutate().text(text.substring(0, maxQueryChars)).build();
+        };
+
         return RetrievalAugmentationAdvisor.builder()
                 .documentRetriever(VectorStoreDocumentRetriever.builder()
                         .similarityThreshold(similarityThreshold)
@@ -55,6 +68,7 @@ public class VectorStoreService {
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
                         .build())
+                .queryTransformers(truncatingTransformer)
                 .build();
     }
 

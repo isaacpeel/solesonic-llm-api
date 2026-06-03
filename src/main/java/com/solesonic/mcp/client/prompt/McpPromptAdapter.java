@@ -15,6 +15,17 @@ import java.util.stream.Collectors;
 @Service
 public class McpPromptAdapter {
 
+    public String toSystemText(McpSchema.GetPromptResult getPromptResult) {
+        if (getPromptResult == null || getPromptResult.messages() == null) {
+            return "";
+        }
+
+        return getPromptResult.messages().stream()
+                .map(promptMessage -> extractText(promptMessage.content()))
+                .filter(Objects::nonNull)
+                .collect(Collectors.joining("\n"));
+    }
+
     /**
      * Converts an MCP GetPromptResult into a Spring AI Prompt.
      */

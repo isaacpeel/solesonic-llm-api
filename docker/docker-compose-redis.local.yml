@@ -1,7 +1,0 @@
-services:
-  redis:
-    network_mode: bridge
-    ports:
-      - "127.0.0.1:6379:6379"
-    command:
-      - "exec redis-server /etc/redis-stack.conf --requirepass $$REDIS_PASSWORD --bind 0.0.0.0 --protected-mode yes --maxmemory 256mb --maxmemory-policy allkeys-lru --rename-command FLUSHALL \"\" --rename-command FLUSHDB \"\" --rename-command DEBUG \"\" --appendonly yes --dir /data"
