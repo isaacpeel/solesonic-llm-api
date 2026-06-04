@@ -20,33 +20,19 @@ public record PromptSlashCommand(String command, String name, String description
 
     public Prompt buildPrompt(McpSchema.GetPromptResult getPromptResult, String userMessage) {
         List<Message> messages = getPromptResult.messages().stream()
-                .map(mcpMessage -> {
-                    if (mcpMessage instanceof McpSchema.PromptMessage(McpSchema.Role role, McpSchema.Content content)) {
-                        return (Message) switch (role) {
-                            case USER -> new UserMessage(userMessage);
-                            case ASSISTANT -> new AssistantMessage(extractText(content));
-                        };
-                    }
-                    throw new IllegalArgumentException("Unexpected message type.");
+                .map(mcpMessage -> (Message) switch (mcpMessage.role()) {
+                    case USER -> new UserMessage(userMessage);
+                    case ASSISTANT -> new AssistantMessage(extractText(mcpMessage.content()));
                 })
                 .toList();
 
         return new Prompt(messages);
     }
 
-    private static String extractText(Object content) {
+    private static String extractText(McpSchema.Content content) {
         return switch (content) {
-            case String text -> text;
             case McpSchema.TextContent textContent -> textContent.text();
             case McpSchema.ImageContent ignored -> "[Image content not supported]";
-            case List<?> contentList -> contentList.stream()
-                    .map(item -> switch (item) {
-                        case McpSchema.TextContent textContent -> textContent.text();
-                        case String text -> text;
-                        default -> "";
-                    })
-                    .filter(entry -> !entry.isEmpty())
-                    .reduce("", (accumulated, next) -> accumulated + "\n" + next);
             default -> "";
         };
     }
