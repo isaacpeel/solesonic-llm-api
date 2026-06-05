@@ -79,6 +79,7 @@ public class SlashCommandService {
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(taskModel)
+                .internalToolExecutionEnabled(false)
                 .build();
 
         OllamaChatModel ollamaChatModel = OllamaChatModel.builder()

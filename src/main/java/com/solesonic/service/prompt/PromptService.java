@@ -8,7 +8,6 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
-import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -16,7 +15,6 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -44,12 +42,11 @@ public class PromptService {
     private final ChatClient chatClient;
     private final UserPreferencesService userPreferencesService;
     private final SlashCommandService slashCommandService;
-    private final VectorStoreService vectorStoreService;
     private final McpSyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
     private final ToolCallService toolCallService;
-    private final Optional<A2AAgentService> a2aAgentService;
-    private final Optional<A2AStickyAgentService> a2aStickyAgentService;
+    private final A2AAgentService a2aAgentService;
+    private final A2AStickyAgentService a2aStickyAgentService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -58,16 +55,14 @@ public class PromptService {
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
             UserPreferencesService userPreferencesService,
             SlashCommandService slashCommandService,
-            VectorStoreService vectorStoreService,
             McpSyncClient mcpClient,
             McpPromptAdapter mcpPromptAdapter,
             ToolCallService toolCallService,
-            Optional<A2AAgentService> a2aAgentService,
-            Optional<A2AStickyAgentService> a2aStickyAgentService) {
+            A2AAgentService a2aAgentService,
+            A2AStickyAgentService a2aStickyAgentService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
-        this.vectorStoreService = vectorStoreService;
         this.mcpClient = mcpClient;
         this.mcpPromptAdapter = mcpPromptAdapter;
         this.toolCallService = toolCallService;
@@ -98,28 +93,20 @@ public class PromptService {
                 CHAT_ID, chatId,
                 PROGRESS_TOKEN, chatId);
 
-        Advisor retrievalAugmentationAdvisor = vectorStoreService.retrievalAugmentationAdvisor(userId);
-
         if (CollectionUtils.isEmpty(commands)) {
-            if (a2aStickyAgentService.isPresent() && a2aAgentService.isPresent()) {
-                return a2aStickyAgentService.get()
-                        .getActiveAgent(chatId)
-                        .flatMapMany(stickyAgent -> {
-                            if (stickyAgent.isPresent()) {
-                                log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
+            return a2aStickyAgentService
+                    .getActiveAgent(chatId)
+                    .flatMapMany(stickyAgent -> {
+                        if (stickyAgent.isPresent()) {
+                            log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                                return a2aAgentService.get().delegate(chatId, stickyAgent.get(), message, authToken);
-                            }
+                            return a2aAgentService.delegate(chatId, stickyAgent.get(), message, authToken);
+                        }
 
-                            log.info("No command or sticky agent, using basic-prompt from MCP.");
+                        log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                            return streamBasicPrompt(chatId, message, contextMap, retrievalAugmentationAdvisor, model);
-                        });
-            }
-
-            log.info("No command or sticky agent, using basic-prompt from MCP.");
-
-            return streamBasicPrompt(chatId, message, contextMap, retrievalAugmentationAdvisor, model);
+                        return streamBasicPrompt(chatId, message, contextMap, model);
+                    });
         }
 
         List<SlashCommand> slashCommands = slashCommandService.commands(commands);
@@ -131,7 +118,6 @@ public class PromptService {
         return switch (slashCommand) {
             case PromptSlashCommand promptCommand -> {
                 log.info("Prompt invoke: {}", promptCommand.name());
-                a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
 
                 McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(promptCommand.name())
                         .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
@@ -140,33 +126,29 @@ public class PromptService {
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
                 Prompt prompt = promptCommand.buildPrompt(getPromptResult, message);
 
-                yield chatClient.prompt(prompt)
-                        .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
-                        .advisors(retrievalAugmentationAdvisor)
-                        .tools(toolSpec -> toolSpec.context(contextMap))
-                        .options(OllamaChatOptions.builder().model(model))
-                        .stream()
-                        .content();
+                yield a2aStickyAgentService.deactivate(chatId)
+                        .thenMany(chatClient.prompt(prompt)
+                                .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
+                                .tools(toolSpec -> toolSpec.context(contextMap))
+                                .options(OllamaChatOptions.builder().model(model))
+                                .stream()
+                                .content());
             }
-            case ToolSlashCommand toolCommand -> {
-                a2aStickyAgentService.ifPresent(stickyService -> stickyService.deactivate(chatId).subscribe());
-                yield toolCallService.stream(chatId, message, toolCommand, contextMap, retrievalAugmentationAdvisor);
-            }
+            case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
+                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
-                A2AAgentService agentService = a2aAgentService.orElseThrow(
-                        () -> new IllegalStateException("A2A agent service is not configured"));
 
-                a2aStickyAgentService.ifPresent(stickyService ->
-                        stickyService.activate(chatId, agentCommand.command()).subscribe());
-
-                yield agentService.delegate(chatId, agentCommand.command(), message, authToken);
+                yield a2aStickyAgentService.activate(chatId, agentCommand.command())
+                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(), message, authToken));
             }
         };
     }
 
-    private Flux<String> streamBasicPrompt(UUID chatId, String message, Map<String, Object> contextMap,
-                                           Advisor retrievalAugmentationAdvisor, String model) {
+    private Flux<String> streamBasicPrompt(UUID chatId,
+                                           String message,
+                                           Map<String, Object> contextMap,
+                                           String model) {
 
         McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
                 .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
@@ -181,7 +163,6 @@ public class PromptService {
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
-                .advisors(retrievalAugmentationAdvisor)
                 .tools(toolSpec -> toolSpec.context(contextMap))
                 .options(OllamaChatOptions.builder().model(model))
                 .stream()

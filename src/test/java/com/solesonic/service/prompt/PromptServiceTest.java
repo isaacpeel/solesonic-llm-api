@@ -83,7 +83,6 @@ class PromptServiceTest {
     private UUID userId;
 
     private PromptService promptService;
-    private PromptService promptServiceWithA2A;
 
     @BeforeEach
     void setUp() {
@@ -91,16 +90,16 @@ class PromptServiceTest {
         userId = UUID.randomUUID();
 
         promptService = new PromptService(
-                chatClient, userPreferencesService, slashCommandService, vectorStoreService,
-                mcpClient, mcpPromptAdapter, toolCallService,
-                Optional.empty(), Optional.empty());
-        ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
+                chatClient,
+                userPreferencesService,
+                slashCommandService,
+                mcpClient,
+                mcpPromptAdapter,
+                toolCallService,
+                a2aAgentService,
+                a2aStickyAgentService);
 
-        promptServiceWithA2A = new PromptService(
-                chatClient, userPreferencesService, slashCommandService, vectorStoreService,
-                mcpClient, mcpPromptAdapter, toolCallService,
-                Optional.of(a2aAgentService), Optional.of(a2aStickyAgentService));
-        ReflectionTestUtils.setField(promptServiceWithA2A, "agentName", "Izzy");
+        ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
 
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
@@ -155,21 +154,6 @@ class PromptServiceTest {
     }
 
     @Test
-    void stream_withNoCommandsAndNoA2AServices_routesToBasicPrompt() {
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of());
-        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
-        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
-        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
-        stubBasicPromptChain(Flux.just("hello"));
-
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
-                .expectNext("hello")
-                .verifyComplete();
-
-        verify(mcpClient).getPrompt(argThat(request -> BASIC_PROMPT.equals(request.name())));
-    }
-
-    @Test
     void stream_withNoCommandsAndStickyAgentPresent_delegatesToA2AAgent() {
         ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
@@ -177,7 +161,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptServiceWithA2A.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -195,7 +179,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptServiceWithA2A.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -216,7 +200,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
         stubPromptChainWithPrompt(Flux.just("answer"));
 
-        StepVerifier.create(promptServiceWithA2A.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("answer")
                 .verifyComplete();
 
@@ -230,15 +214,17 @@ class PromptServiceTest {
         when(mcpTool.description()).thenReturn("Search tool");
         ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
         ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"));
+
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), any()))
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(toolCallService).stream(eq(chatId), anyString(), eq(toolCommand), any(), any());
+        verify(toolCallService).stream(eq(chatId), anyString(), eq(toolCommand), any());
     }
 
     @Test
@@ -250,22 +236,11 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
-        StepVerifier.create(promptServiceWithA2A.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("a2a-result")
                 .verifyComplete();
 
         verify(a2aStickyAgentService).activate(chatId, "weather-agent");
-    }
-
-    @Test
-    void stream_withAgentSlashCommandButNoA2AService_throwsIllegalStateException() {
-        AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
-        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of("weather-agent"));
-        when(slashCommandService.commands(Set.of("weather-agent"))).thenReturn(List.of(agentCommand));
-
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("A2A agent service is not configured");
     }
 
     @Test
