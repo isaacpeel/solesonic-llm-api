@@ -79,16 +79,15 @@ public class SlashCommandService {
 
         OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
                 .model(taskModel)
-                .internalToolExecutionEnabled(false)
                 .build();
 
         OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
                 .ollamaApi(ollamaApi)
-                .defaultOptions(ollamaChatOptions)
+                .options(ollamaChatOptions)
                 .build();
 
         return ChatClient.builder(ollamaChatModel)
-                .defaultTools(toolSpec -> toolSpec.callbacks(identityToolCallback))
+                .defaultTools(identityToolCallback)
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
                         simpleLoggerAdvisor

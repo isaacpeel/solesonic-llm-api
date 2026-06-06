@@ -58,7 +58,7 @@ public class ToolCallService {
         ChatResponse chatResponse = taskClient.prompt(prompt)
                 .user(message)
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
-                .tools(toolSpec -> toolSpec.context(contextMap))
+                .toolContext(contextMap)
                 .call()
                 .chatResponse();
 

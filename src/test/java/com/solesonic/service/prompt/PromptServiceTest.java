@@ -8,7 +8,6 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
-import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -57,8 +56,6 @@ class PromptServiceTest {
     @Mock
     private SlashCommandService slashCommandService;
     @Mock
-    private VectorStoreService vectorStoreService;
-    @Mock
     private McpSyncClient mcpClient;
     @Mock
     private McpPromptAdapter mcpPromptAdapter;
@@ -72,8 +69,6 @@ class PromptServiceTest {
     private Authentication authentication;
     @Mock
     private Jwt jwt;
-    @Mock
-    private Advisor retrievalAugmentationAdvisor;
     @Mock
     private ChatClient.ChatClientRequestSpec requestSpec;
     @Mock
@@ -104,7 +99,6 @@ class PromptServiceTest {
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
         lenient().when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("llama3"));
-        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(userId)).thenReturn(retrievalAugmentationAdvisor);
     }
 
     private UserPreferences preferencesWithModel(String model) {
@@ -120,7 +114,7 @@ class PromptServiceTest {
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(any(Advisor.class))).thenReturn(requestSpec);
-        when(requestSpec.tools(ArgumentMatchers.<Consumer<ChatClient.ToolSpec>>any())).thenReturn(requestSpec);
+        when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
         when(streamResponseSpec.content()).thenReturn(emissions);
@@ -131,7 +125,7 @@ class PromptServiceTest {
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(any(Advisor.class))).thenReturn(requestSpec);
-        when(requestSpec.tools(ArgumentMatchers.<Consumer<ChatClient.ToolSpec>>any())).thenReturn(requestSpec);
+        when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
         when(streamResponseSpec.content()).thenReturn(emissions);

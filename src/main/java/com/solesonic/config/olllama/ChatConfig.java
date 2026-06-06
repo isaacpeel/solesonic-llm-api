@@ -49,7 +49,7 @@ public class ChatConfig {
                 .build();
 
         return ChatClient.builder(chatModel)
-                .defaultTools(toolSpec -> toolSpec.callbacks(mcpToolCallbackProvider))
+                .defaultTools(mcpToolCallbackProvider)
                 .defaultAdvisors(questionAnswerAdvisor, messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
@@ -64,7 +64,7 @@ public class ChatConfig {
                 .build();
 
         return ChatClient.builder(chatModel)
-                .defaultTools(toolSpec -> toolSpec.callbacks(mcpToolCallbackProvider))
+                .defaultTools(mcpToolCallbackProvider)
                 .defaultAdvisors(questionAnswerAdvisor,messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }

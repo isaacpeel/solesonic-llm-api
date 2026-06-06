@@ -129,7 +129,7 @@ public class PromptService {
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(chatClient.prompt(prompt)
                                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
-                                .tools(toolSpec -> toolSpec.context(contextMap))
+                                .toolContext(contextMap)
                                 .options(OllamaChatOptions.builder().model(model))
                                 .stream()
                                 .content());
@@ -163,7 +163,7 @@ public class PromptService {
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
-                .tools(toolSpec -> toolSpec.context(contextMap))
+                .toolContext(contextMap)
                 .options(OllamaChatOptions.builder().model(model))
                 .stream()
                 .content();
