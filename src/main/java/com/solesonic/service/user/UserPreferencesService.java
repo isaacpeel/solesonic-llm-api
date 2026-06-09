@@ -93,7 +93,7 @@ public class UserPreferencesService {
     }
 
     public void update(UUID userId, AtlassianAccessToken atlassianAccessToken) {
-        log.info("Updating atlassian access token");
+        log.debug("Updating atlassian access token");
 
         UserPreferences userPreferences = get(userId);
 

@@ -141,7 +141,7 @@ public class RedisStreamingChatService {
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
-            log.info("Publishing done event to Redis for chat id {}", chatId);
+            log.debug("Publishing done event to Redis for chat id {}", chatId);
 
             redisStreamService.publish(chatId, userId, DONE, solesonicChatResponse)
                     .subscribe();
@@ -198,7 +198,7 @@ public class RedisStreamingChatService {
     }
 
     private void cleanup(UUID chatId, UUID userId) {
-        log.info("Cleaning up Redis stream for chat id: {}", chatId);
+        log.debug("Cleaning up Redis stream for chat id: {}", chatId);
 
         elicitationService.closeChat(chatId);
 
