@@ -32,7 +32,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.0.0-RC1</spring-ai.version>
+        <spring-ai.version>2.0.0-RC2</spring-ai.version>
         <java.version>25</java.version>
         <a2a-java-sdk.version>0.3.3.Final</a2a-java-sdk.version>
     </properties>
