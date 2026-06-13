@@ -1,31 +1,7 @@
 package com.solesonic.service.a2a;
 
-import com.github.dockerjava.api.model.TaskState;
-import com.solesonic.config.a2a.A2AAgentRegistry;
-import com.solesonic.config.a2a.A2AAuthInterceptor;
-import com.solesonic.config.a2a.A2AClientProperties;
-import com.solesonic.service.chat.events.NotificationService;
-import org.a2aproject.sdk.client.MessageEvent;
-import org.a2aproject.sdk.client.TaskUpdateEvent;
-import org.a2aproject.sdk.spec.TextPart;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.FluxSink;
-import reactor.core.publisher.Mono;
-import reactor.test.StepVerifier;
-
-import java.util.List;
-import java.util.Optional;
-import java.util.UUID;
-
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class A2AAgentServiceTest {
