@@ -35,6 +35,7 @@ public class RedisStreamingChatService {
     public static final String CHUNK = "chunk";
     public static final String INIT = "init";
     public static final String DONE = "done";
+    public static final String ERROR = "error";
     public static final String CHAT_CANCELED = "Chat canceled.";
 
     public record ChunkPayload(String content) {
@@ -179,17 +180,20 @@ public class RedisStreamingChatService {
 
                     if (Exceptions.isCancel(unwrapped) || unwrapped instanceof InterruptedException) {
                         log.info("Redis stream cancelled gracefully for chat id {}", chatId);
-                    } else {
-                        log.error("Redis stream error for chat id {}", chatId, error);
-
-                        String userMessage = (unwrapped instanceof TimeoutException)
-                                ? "The request timed out. Please try again."
-                                : "An unexpected error occurred. Please try again.";
-
-                        notificationService.emitFailure(chatId, userMessage);
+                        return Mono.empty();
                     }
 
-                    return Mono.empty();
+                    log.error("Redis stream error for chat id {}", chatId, error);
+
+                    String userMessage = (unwrapped instanceof TimeoutException)
+                            ? "The request timed out. Please try again."
+                            : "An unexpected error occurred. Please try again.";
+
+                    notificationService.emitFailure(chatId, userMessage);
+
+                    return redisStreamService.publish(chatId, userId, ERROR, new ChunkPayload(userMessage))
+                            .then(redisStreamService.publish(chatId, userId, DONE))
+                            .then();
                 })
                 .doFinally(_ -> cleanup(chatId, userId))
                 .subscribe();

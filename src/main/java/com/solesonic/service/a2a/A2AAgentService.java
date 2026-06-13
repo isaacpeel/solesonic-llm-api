@@ -5,10 +5,10 @@ import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
 import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.service.chat.events.NotificationService;
-import io.a2a.client.*;
-import io.a2a.client.transport.jsonrpc.JSONRPCTransport;
-import io.a2a.client.transport.jsonrpc.JSONRPCTransportConfigBuilder;
-import io.a2a.spec.*;
+import org.a2aproject.sdk.client.*;
+import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport;
+import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransportConfigBuilder;
+import org.a2aproject.sdk.spec.*;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,43 +49,38 @@ public class A2AAgentService {
                 .flatMapMany(activeTaskId -> Flux.<String>create(sink -> {
                     Client client;
 
+                    AgentCard agentCard = agentRegistry.card(agentName);
+
+                    BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
+
+                    JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
+                            .addInterceptor(a2aAuthInterceptor);
+
+                    client = Client.builder(agentCard)
+                            .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
+                            .addConsumer(consumer)
+                            .streamingErrorHandler(sink::error)
+                            .build();
+
+                    sink.onDispose(client::close);
+
+                    Message.Builder messageBuilder = Message.builder()
+                            .role(Message.Role.ROLE_USER)
+                            .contextId(chatId.toString())
+                            .messageId(UUID.randomUUID().toString())
+                            .parts(new TextPart(message));
+
+                    if (activeTaskId.isPresent()) {
+                        log.debug("Continuing A2A task '{}' for chat {}", activeTaskId.get(), chatId);
+                        messageBuilder.taskId(activeTaskId.get());
+                    }
+
+                    IdentityToolCallback.setUserTokenContext(userToken);
+
                     try {
-                        AgentCard agentCard = agentRegistry.getCard(agentName);
-
-                        BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
-
-                        JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
-                                .addInterceptor(a2aAuthInterceptor);
-
-                        client = Client.builder(agentCard)
-                                .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
-                                .addConsumer(consumer)
-                                .streamingErrorHandler(sink::error)
-                                .build();
-
-                        sink.onDispose(client::close);
-
-                        Message.Builder messageBuilder = new Message.Builder()
-                                .role(Message.Role.USER)
-                                .contextId(chatId.toString())
-                                .messageId(UUID.randomUUID().toString())
-                                .parts(new TextPart(message));
-
-                        if (activeTaskId.isPresent()) {
-                            log.debug("Continuing A2A task '{}' for chat {}", activeTaskId.get(), chatId);
-                            messageBuilder.taskId(activeTaskId.get());
-                        }
-
-                        IdentityToolCallback.setUserTokenContext(userToken);
-
-                        try {
-                            client.sendMessage(messageBuilder.build(), null);
-                        } finally {
-                            IdentityToolCallback.clearContext();
-                        }
-                    } catch (Exception exception) {
-                        log.error("Failed to send message to A2A agent '{}': {}", agentName, exception.getMessage(), exception);
-                        sink.error(exception);
+                        client.sendMessage(messageBuilder.build(), null);
+                    } finally {
+                        IdentityToolCallback.clearContext();
                     }
                 }))
                 .timeout(Duration.ofSeconds(timeoutSeconds));
@@ -96,24 +91,24 @@ public class A2AAgentService {
             case TaskUpdateEvent taskUpdateEvent -> handleUpdate(chatId, taskUpdateEvent.getUpdateEvent(), sink);
             case TaskEvent taskEvent -> {
                 Task task = taskEvent.getTask();
-                TaskState state = task.getStatus() != null ? task.getStatus().state() : null;
+                TaskState state = task.status().state();
 
-                if (state == TaskState.INPUT_REQUIRED) {
-                    log.debug("A2A agent event handler waiting for input on task '{}' for chat {}", task.getId(), chatId);
+                if (state == TaskState.TASK_STATE_INPUT_REQUIRED) {
+                    log.debug("A2A agent event handler waiting for input on task '{}' for chat {}", task.id(), chatId);
 
-                    a2aStickyAgentService.activateTask(chatId, task.getId())
+                    a2aStickyAgentService.activateTask(chatId, task.id())
                             .subscribe();
 
-                    emitArtifactsIfAny(task.getArtifacts(), sink);
+                    emitArtifactsIfAny(task.artifacts(), sink);
                     sink.complete();
-                } else if (state != null && state.isFinal()) {
+                } else if (state.isFinal()) {
                     a2aStickyAgentService.deactivateTask(chatId).subscribe();
-                    emitArtifactsIfAny(task.getArtifacts(), sink);
+                    emitArtifactsIfAny(task.artifacts(), sink);
                     complete(state, sink);
                 }
             }
             case MessageEvent messageEvent -> {
-                emitParts(messageEvent.getMessage().getParts(), sink);
+                emitParts(messageEvent.getMessage().parts(), sink);
                 sink.complete();
             }
             default -> log.debug("Ignoring unknown A2A event: {}", clientEvent.getClass().getSimpleName());
@@ -122,26 +117,28 @@ public class A2AAgentService {
 
     private void handleUpdate(UUID chatId, UpdateEvent updateEvent, FluxSink<String> sink) {
         switch (updateEvent) {
-            case TaskArtifactUpdateEvent artifactEvent -> emitParts(artifactEvent.getArtifact().parts(), sink);
+            case TaskArtifactUpdateEvent artifactEvent -> emitParts(artifactEvent.artifact().parts(), sink);
             case TaskStatusUpdateEvent statusEvent -> {
-                TaskState state = statusEvent.getStatus().state();
+                TaskState state = statusEvent.status().state();
 
-                if (state == TaskState.INPUT_REQUIRED) {
-                    log.debug("A2A agent waiting for input on task '{}' for chat {}", statusEvent.getTaskId(), chatId);
+                log.info("Event state: {}", state);
 
-                    a2aStickyAgentService.activateTask(chatId, statusEvent.getTaskId())
+                if (state == TaskState.TASK_STATE_INPUT_REQUIRED) {
+                    log.debug("A2A agent waiting for input on task '{}' for chat {}", statusEvent.taskId(), chatId);
+
+                    a2aStickyAgentService.activateTask(chatId, statusEvent.taskId())
                             .subscribe();
 
-                    if (statusEvent.getStatus().message() != null) {
-                        emitParts(statusEvent.getStatus().message().getParts(), sink);
+                    if (statusEvent.status().message() != null) {
+                        emitParts(statusEvent.status().message().parts(), sink);
                     }
                     sink.complete();
                 } else {
-                    if (statusEvent.getStatus().message() != null) {
-                        emitStatusNotification(chatId, statusEvent.getStatus().message(), sink);
+                    if (statusEvent.status().message() != null) {
+                        emitStatusNotification(chatId, statusEvent.status().message(), sink);
                     }
 
-                    if (statusEvent.isFinal()) {
+                    if (statusEvent.isFinal() || state.isFinal()) {
                         a2aStickyAgentService.deactivateTask(chatId).subscribe();
                         complete(state, sink);
                     }
@@ -152,7 +149,7 @@ public class A2AAgentService {
     }
 
     private void emitStatusNotification(UUID chatId, Message a2aMessage, FluxSink<String> sink) {
-        String text = extractText(a2aMessage.getParts());
+        String text = extractText(a2aMessage.parts());
 
         if (text.isEmpty()) {
             return;
@@ -179,9 +176,9 @@ public class A2AAgentService {
 
         for (Part<?> part : parts) {
             if (part instanceof TextPart textPart) {
-                String text = textPart.getText();
+                String text = textPart.text();
 
-                if (text != null && !text.isEmpty()) {
+                if (StringUtils.isNotEmpty(text)) {
                     sink.next(text);
                 }
             }
@@ -195,15 +192,15 @@ public class A2AAgentService {
 
         return parts.stream()
                 .filter(part -> part instanceof TextPart)
-                .map(part -> ((TextPart) part).getText())
+                .map(part -> ((TextPart) part).text())
                 .filter(StringUtils::isNotEmpty)
                 .collect(Collectors.joining("\n"));
     }
 
-    private void complete(TaskState state, reactor.core.publisher.FluxSink<String> sink) {
+    private void complete(TaskState state, FluxSink<String> sink) {
         switch (state) {
-            case FAILED -> sink.error(new IllegalStateException("A2A agent task failed"));
-            case REJECTED -> sink.error(new IllegalStateException("A2A agent task rejected"));
+            case TASK_STATE_FAILED -> sink.error(new IllegalStateException("A2A agent task failed"));
+            case TASK_STATE_REJECTED -> sink.error(new IllegalStateException("A2A agent task rejected"));
             default -> sink.complete();
         }
     }

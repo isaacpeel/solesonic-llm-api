@@ -2,10 +2,10 @@ package com.solesonic.service.chat.events;
 
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
-import io.a2a.spec.Message;
-import io.a2a.spec.Part;
-import io.a2a.spec.TextPart;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.a2aproject.sdk.spec.Message;
+import org.a2aproject.sdk.spec.Part;
+import org.a2aproject.sdk.spec.TextPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
@@ -64,19 +64,19 @@ public class NotificationService {
     public void emitProgress(UUID chatId, Message a2aMessage) {
         log.debug("Emitting a2a notification.");
 
-        List<Part<?>> parts = a2aMessage.getParts();
+        List<Part<?>> parts = a2aMessage.parts();
 
         String messageText = parts.stream()
                 .<String>mapMulti((part, downstream) -> {
                     if (part instanceof TextPart textPart) {
-                        downstream.accept(textPart.getText());
+                        downstream.accept(textPart.text());
                     }
                 })
                 .collect(Collectors.joining());
 
         log.debug("Emitted a2a progress for chat id {} with message: {}", chatId, messageText);
 
-        String progressToken = a2aMessage.getMessageId();
+        String progressToken = a2aMessage.messageId();
 
         NotificationEventMessage notificationEventMessage = new NotificationEventMessage(progressToken, messageText, null, null);
         emitProgress(chatId, notificationEventMessage);

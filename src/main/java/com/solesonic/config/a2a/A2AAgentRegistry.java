@@ -2,8 +2,8 @@ package com.solesonic.config.a2a;
 
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
-import io.a2a.spec.AgentCard;
 import jakarta.annotation.PostConstruct;
+import org.a2aproject.sdk.spec.AgentCard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -72,7 +72,7 @@ public class A2AAgentRegistry {
                 .block();
     }
 
-    public AgentCard getCard(String agentName) {
+    public AgentCard card(String agentName) {
         return agentCards.get(agentName);
     }
 

@@ -27,6 +27,7 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.exc.InvalidTypeIdException;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -36,6 +37,7 @@ import java.util.*;
 public class SlashCommandService {
     private static final Logger log = LoggerFactory.getLogger(SlashCommandService.class);
     private static final String CACHE_KEY = "slash:commands:catalog";
+
     private static final TypeReference<List<SlashCommand>> CATALOG_TYPE_REFERENCE = new TypeReference<>() {
     };
 
@@ -142,8 +144,8 @@ public class SlashCommandService {
         if (StringUtils.isNotBlank(cachedPayload)) {
             try {
                 return jsonMapper.readValue(cachedPayload, CATALOG_TYPE_REFERENCE);
-            } catch (tools.jackson.databind.exc.InvalidTypeIdException exception) {
-                log.warn("Cached slash-commands schema is stale, refreshing: {}", exception.getMessage());
+            } catch (InvalidTypeIdException invalidTypeIdException) {
+                log.warn("Cached slash-commands schema is stale, refreshing: {}", invalidTypeIdException.getMessage());
             }
         }
 
@@ -160,7 +162,7 @@ public class SlashCommandService {
         slashCommands
                 .forEach(slashCommand -> log.debug("Loaded command: {}", slashCommand.name()));
 
-        String serializedPayload = jsonMapper.writeValueAsString(slashCommands);
+        String serializedPayload = jsonMapper.writerFor(CATALOG_TYPE_REFERENCE).writeValueAsString(slashCommands);
 
         redisTemplate.opsForValue()
                 .set(CACHE_KEY, serializedPayload, Duration.ofSeconds(cacheTtlSeconds))

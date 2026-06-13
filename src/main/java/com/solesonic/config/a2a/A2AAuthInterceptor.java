@@ -3,10 +3,10 @@ package com.solesonic.config.a2a;
 import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.security.McpFilterService;
-import io.a2a.client.transport.spi.interceptors.ClientCallContext;
-import io.a2a.client.transport.spi.interceptors.ClientCallInterceptor;
-import io.a2a.client.transport.spi.interceptors.PayloadAndHeaders;
-import io.a2a.spec.AgentCard;
+import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallContext;
+import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallInterceptor;
+import org.a2aproject.sdk.client.transport.spi.interceptors.PayloadAndHeaders;
+import org.a2aproject.sdk.spec.AgentCard;
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,7 +37,7 @@ public class A2AAuthInterceptor extends ClientCallInterceptor {
     public PayloadAndHeaders intercept(@NonNull String methodName,
                                        Object payload,
                                        @NonNull Map<String, String> headers,
-                                       @NonNull AgentCard agentCard,
+                                       AgentCard agentCard,
                                        ClientCallContext clientCallContext) {
         String accessToken = resolveAccessToken();
 
