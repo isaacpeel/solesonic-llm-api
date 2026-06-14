@@ -3,7 +3,8 @@ package com.solesonic.service.a2a;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
-import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.mcp.client.TokenExchangeService;
+import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.events.NotificationService;
 import org.a2aproject.sdk.client.*;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport;
@@ -27,18 +28,21 @@ public class A2AAgentService {
     private static final Logger log = LoggerFactory.getLogger(A2AAgentService.class);
 
     private final A2AAgentRegistry agentRegistry;
-    private final A2AAuthInterceptor a2aAuthInterceptor;
+    private final TokenExchangeService tokenExchangeService;
+    private final McpFilterService mcpFilterService;
     private final NotificationService notificationService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final long timeoutSeconds;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
-                           A2AAuthInterceptor a2aAuthInterceptor,
+                           TokenExchangeService tokenExchangeService,
+                           McpFilterService mcpFilterService,
                            NotificationService notificationService,
                            A2AStickyAgentService a2aStickyAgentService,
                            A2AClientProperties properties) {
         this.agentRegistry = agentRegistry;
-        this.a2aAuthInterceptor = a2aAuthInterceptor;
+        this.tokenExchangeService = tokenExchangeService;
+        this.mcpFilterService = mcpFilterService;
         this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.timeoutSeconds = properties.timeoutSeconds();
@@ -47,16 +51,16 @@ public class A2AAgentService {
     public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
         return a2aStickyAgentService.getActiveTaskId(chatId)
                 .flatMapMany(activeTaskId -> Flux.<String>create(sink -> {
-                    Client client;
-
                     AgentCard agentCard = agentRegistry.card(agentName);
 
                     BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
 
-                    JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
-                            .addInterceptor(a2aAuthInterceptor);
+                    A2AAuthInterceptor authInterceptor = new A2AAuthInterceptor(tokenExchangeService, mcpFilterService, userToken);
 
-                    client = Client.builder(agentCard)
+                    JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
+                            .addInterceptor(authInterceptor);
+
+                    Client client = Client.builder(agentCard)
                             .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
                             .addConsumer(consumer)
                             .streamingErrorHandler(sink::error)
@@ -75,13 +79,7 @@ public class A2AAgentService {
                         messageBuilder.taskId(activeTaskId.get());
                     }
 
-                    IdentityToolCallback.setUserTokenContext(userToken);
-
-                    try {
-                        client.sendMessage(messageBuilder.build(), null);
-                    } finally {
-                        IdentityToolCallback.clearContext();
-                    }
+                    client.sendMessage(messageBuilder.build(), null);
                 }))
                 .timeout(Duration.ofSeconds(timeoutSeconds));
     }
@@ -174,15 +172,11 @@ public class A2AAgentService {
             return;
         }
 
-        for (Part<?> part : parts) {
-            if (part instanceof TextPart textPart) {
-                String text = textPart.text();
-
-                if (StringUtils.isNotEmpty(text)) {
-                    sink.next(text);
-                }
-            }
-        }
+        parts.stream()
+                .filter(part -> part instanceof TextPart)
+                .map(part -> ((TextPart) part).text())
+                .filter(StringUtils::isNotEmpty)
+                .forEach(sink::next);
     }
 
     private String extractText(List<Part<?>> parts) {

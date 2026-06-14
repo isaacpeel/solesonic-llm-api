@@ -45,13 +45,12 @@ public class SlashCommandService {
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
     private final ChatMemory chatMemory;
-    private final OllamaApi ollamaApi;
-    private final String taskModel;
     private final long cacheTtlSeconds;
     private final boolean warmupOnStartup;
     private final Optional<A2AAgentRegistry> a2aAgentRegistry;
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
+    private final OllamaChatModel taskChatModel;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -65,13 +64,20 @@ public class SlashCommandService {
         this.redisTemplate = redisTemplate;
         this.jsonMapper = jsonMapper;
         this.chatMemory = chatMemory;
-        this.ollamaApi = ollamaApi;
-        this.taskModel = taskModel;
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
         this.a2aAgentRegistry = a2aAgentRegistry;
 
         mcpSyncClient = mcpSyncClients.getFirst();
+
+        OllamaChatOptions taskChatOptions = OllamaChatOptions.builder()
+                .model(taskModel)
+                .build();
+
+        taskChatModel = OllamaChatModel.builder()
+                .ollamaApi(ollamaApi)
+                .options(taskChatOptions)
+                .build();
     }
 
     public ChatClient taskClient(ToolCallback toolCallback) {
@@ -79,16 +85,7 @@ public class SlashCommandService {
 
         IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback);
 
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model(taskModel)
-                .build();
-
-        OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
-                .ollamaApi(ollamaApi)
-                .options(ollamaChatOptions)
-                .build();
-
-        return ChatClient.builder(ollamaChatModel)
+        return ChatClient.builder(taskChatModel)
                 .defaultTools(identityToolCallback)
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
@@ -218,6 +215,8 @@ public class SlashCommandService {
 
             toolCommands = listToolsResult.tools().stream()
                     .filter(tool -> StringUtils.isNotBlank(tool.name()))
+                    .filter(tool -> tool.meta() != null)
+                    .filter(tool -> tool.meta().get(SlashCommand.COMMAND) != null)
                     .<SlashCommand>map(ToolSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();

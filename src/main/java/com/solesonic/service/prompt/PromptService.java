@@ -149,23 +149,33 @@ public class PromptService {
                                            String message,
                                            Map<String, Object> contextMap,
                                            String model) {
+        String systemText = loadBasicPromptSystemText(message);
 
-        McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
-                .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
-                .build();
-
-        McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-        String systemText = mcpPromptAdapter.toSystemText(getPromptResult);
-
-        return chatClient.prompt()
-                .system(systemText)
+        var promptSpec = chatClient.prompt()
                 .user(message)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
-                .options(OllamaChatOptions.builder().model(model))
-                .stream()
-                .content();
+                .options(OllamaChatOptions.builder().model(model));
+
+        if (systemText != null) {
+            promptSpec = promptSpec.system(systemText);
+        }
+
+        return promptSpec.stream().content();
+    }
+
+    private String loadBasicPromptSystemText(String message) {
+        try {
+            McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
+                    .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
+                    .build();
+            McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+            return mcpPromptAdapter.toSystemText(getPromptResult);
+        } catch (Exception exception) {
+            log.warn("Could not load '{}' prompt from MCP server, proceeding without system prompt: {}", BASIC_PROMPT, exception.getMessage());
+            return null;
+        }
     }
 }

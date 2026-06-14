@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.net.URI;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,9 +30,12 @@ public class A2AAgentRegistry {
 
     private final Map<String, AgentCard> agentCards = new LinkedHashMap<>();
     private final WebClient webClient;
+    private final Duration timeout;
 
-    public A2AAgentRegistry(@Qualifier(A2A_WEB_CLIENT) WebClient webClient) {
+    public A2AAgentRegistry(@Qualifier(A2A_WEB_CLIENT) WebClient webClient,
+                            A2AClientProperties properties) {
         this.webClient = webClient;
+        this.timeout = Duration.ofSeconds(properties.timeoutSeconds());
     }
 
     @PostConstruct
@@ -51,7 +55,7 @@ public class A2AAgentRegistry {
     }
 
     private List<String> fetchAgentCardUris() {
-        log.info("Getting agent card UIRs.");
+        log.info("Getting agent card URIs.");
 
         return webClient.get()
                 .uri(uriBuilder ->
@@ -61,6 +65,7 @@ public class A2AAgentRegistry {
                 )
                 .retrieve()
                 .bodyToMono(new ParameterizedTypeReference<List<String>>() {})
+                .timeout(timeout)
                 .block();
     }
 
@@ -69,6 +74,7 @@ public class A2AAgentRegistry {
                 .uri(URI.create(agentCardUri))
                 .retrieve()
                 .bodyToMono(AgentCard.class)
+                .timeout(timeout)
                 .block();
     }
 

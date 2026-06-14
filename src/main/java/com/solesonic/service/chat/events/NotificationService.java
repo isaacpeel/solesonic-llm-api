@@ -4,7 +4,6 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.a2aproject.sdk.spec.Message;
-import org.a2aproject.sdk.spec.Part;
 import org.a2aproject.sdk.spec.TextPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,7 +14,6 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -64,14 +62,9 @@ public class NotificationService {
     public void emitProgress(UUID chatId, Message a2aMessage) {
         log.debug("Emitting a2a notification.");
 
-        List<Part<?>> parts = a2aMessage.parts();
-
-        String messageText = parts.stream()
-                .<String>mapMulti((part, downstream) -> {
-                    if (part instanceof TextPart textPart) {
-                        downstream.accept(textPart.text());
-                    }
-                })
+        String messageText = a2aMessage.parts().stream()
+                .filter(part -> part instanceof TextPart)
+                .map(part -> ((TextPart) part).text())
                 .collect(Collectors.joining());
 
         log.debug("Emitted a2a progress for chat id {} with message: {}", chatId, messageText);
@@ -87,7 +80,7 @@ public class NotificationService {
 
         String message = progressNotification.message();
         String progress = progressNotification.progress().toString();
-        String total = progressNotification.total().toString();
+        String total = progressNotification.total() != null ? progressNotification.total().toString() : null;
         String progressToken = progressNotification.progressToken().toString();
 
         NotificationEventMessage notificationEventMessage = new NotificationEventMessage(progressToken, message, progress, total);

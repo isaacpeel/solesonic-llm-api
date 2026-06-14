@@ -18,7 +18,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 
 /**
  * A wrapper around AsyncMcpToolCallback that captures the security context
@@ -78,16 +77,20 @@ public class IdentityToolCallback implements ToolCallback {
     public String call(@NonNull String toolCallInput, @Nullable ToolContext toolContext) {
         log.info("Tool callback wrapper invoked for: {}", delegate.getToolDefinition().name());
 
-        assert toolContext != null;
-        Map<String, Object> toolContextMap = toolContext.getContext();
-        String userToken = toolContextMap.get(USER_TOKEN).toString();
-        @SuppressWarnings("unused")
-        String chatId = toolContextMap.get(CHAT_ID).toString();
-
-        if (StringUtils.isBlank(userToken)) {
-            log.error("No user token found in context");
-            throw new RuntimeException("No user token provided for tool call.");
+        if (toolContext == null) {
+            log.error("Tool context is required but was null for tool call: {}", delegate.getToolDefinition().name());
+            throw new IllegalArgumentException("ToolContext is required but was null for tool call: " + delegate.getToolDefinition().name());
         }
+
+        Map<String, Object> toolContextMap = toolContext.getContext();
+        Object userTokenValue = toolContextMap.get(USER_TOKEN);
+
+        if (userTokenValue == null || StringUtils.isBlank(userTokenValue.toString())) {
+            log.error("No user token found in context for tool call: {}", delegate.getToolDefinition().name());
+            throw new IllegalStateException("No user token provided for tool call: " + delegate.getToolDefinition().name());
+        }
+
+        String userToken = userTokenValue.toString();
 
         log.info("User token added to reactive context.");
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
@@ -120,6 +123,10 @@ public class IdentityToolCallback implements ToolCallback {
                 .collect(Collectors.joining());
     }
 
+    public static boolean hasContext() {
+        return TOOL_CALL_CONTEXT.get() != null;
+    }
+
     /**
      * Gets the reactive context stored in ThreadLocal.
      * This is called by the WebClient filter to access the security context.
@@ -129,20 +136,4 @@ public class IdentityToolCallback implements ToolCallback {
         return context != null ? context : Context.empty();
     }
 
-    /**
-     * Checks if a reactive context is available in ThreadLocal.
-     */
-    public static boolean hasContext() {
-        return TOOL_CALL_CONTEXT.get() != null;
-    }
-
-    public static void setUserTokenContext(String userToken) {
-        Map<String, Object> contextMap = new HashMap<>();
-        contextMap.put(USER_TOKEN, userToken);
-        TOOL_CALL_CONTEXT.set(Context.of(SECURITY_CONTEXT_KEY, contextMap));
-    }
-
-    public static void clearContext() {
-        TOOL_CALL_CONTEXT.remove();
-    }
 }
