@@ -7,18 +7,95 @@ services:
       dockerfile: docker/Dockerfile
     image: solesonic-llm-api:latest
     container_name: solesonic-llm-api
-    network_mode: "host"
+    ports:
+      - "8080:8080"
     restart: unless-stopped
     environment:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - SERVER_PORT=8080
+      - SPRING_DATA_REDIS_HOST=solesonic-llm-api-redis
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://solesonic-llm-api-db:5432/${POSTGRES_DB}
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: ["gpu"]
+    depends_on:
+      solesonic-llm-api-redis:
+        condition: service_healthy
+      solesonic-llm-api-postgres:
+        condition: service_healthy
+    networks:
+      - solesonic-network
+
+  solesonic-llm-api-redis:
+    env_file:
+      - .env
+    image: redis:8.8.0
+    container_name: solesonic-llm-api-redis
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --bind 0.0.0.0
+      --protected-mode yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --rename-command FLUSHALL ""
+      --rename-command FLUSHDB ""
+      --rename-command CONFIG ""
+      --rename-command DEBUG ""
+      --appendonly yes
+    restart: unless-stopped
+    user: "999:999"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - solesonic-llm-api-redis_data:/data
+    networks:
+      - solesonic-network
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  solesonic-llm-api-postgres:
+    env_file:
+      - .env
+    image: pgvector/pgvector:0.8.0-pg17
+    container_name: solesonic-llm-api-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init_schema.sh:/docker-entrypoint-initdb.d/init_schema.sh
+    networks:
+      - solesonic-network
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    command: [ "postgres", "-c", "listen_addresses=*" ]
+
+networks:
+  solesonic-network:
+    driver: bridge
+    name: solesonic-network
+    external: true
+
+volumes:
+  postgres_data:
+  solesonic-llm-api-redis_data:
