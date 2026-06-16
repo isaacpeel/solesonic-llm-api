@@ -1,3 +1,5 @@
+name: solesonic-llm-api
+
 services:
   solesonic-llm-api:
     env_file:
