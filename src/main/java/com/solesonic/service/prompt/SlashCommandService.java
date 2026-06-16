@@ -215,8 +215,6 @@ public class SlashCommandService {
 
             toolCommands = listToolsResult.tools().stream()
                     .filter(tool -> StringUtils.isNotBlank(tool.name()))
-                    .filter(tool -> tool.meta() != null)
-                    .filter(tool -> tool.meta().get(SlashCommand.COMMAND) != null)
                     .<SlashCommand>map(ToolSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();

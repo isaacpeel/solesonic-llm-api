@@ -12,7 +12,7 @@ public record PromptSlashCommand(String command, String name, String description
 
     public PromptSlashCommand(McpSchema.Prompt mcpPrompt) {
         this(
-            mcpPrompt.meta().get(SlashCommand.COMMAND).toString(),
+            mcpPrompt.name(),
             mcpPrompt.name(),
             mcpPrompt.description()
         );
