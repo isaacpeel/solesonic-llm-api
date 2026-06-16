@@ -108,7 +108,7 @@ public class AtlassianTokenBrokerService {
             throw new AtlassianTokenException(exceptionMessage, SERVICE_UNAVAILABLE, true);
         }
 
-        log.info("Token refresh successful");
+        log.debug("Token refresh successful");
 
         return atlassianAccessToken;
 

@@ -1,17 +1,20 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
-import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
-import io.modelcontextprotocol.client.McpAsyncClient;
+import com.solesonic.model.prompt.ToolSlashCommand;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
+import org.springframework.ai.tool.ToolCallback;
 import org.apache.commons.collections4.ListUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.PromptChatMemoryAdvisor;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
@@ -23,66 +26,69 @@ import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.exc.InvalidTypeIdException;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.*;
 
-import static com.solesonic.model.prompt.SlashCommand.*;
-
 @Service
 public class SlashCommandService {
     private static final Logger log = LoggerFactory.getLogger(SlashCommandService.class);
     private static final String CACHE_KEY = "slash:commands:catalog";
+
     private static final TypeReference<List<SlashCommand>> CATALOG_TYPE_REFERENCE = new TypeReference<>() {
     };
-
-    private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
-    private final ChatMemory chatMemory;
-    private final OllamaApi ollamaApi;
 
     private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
+    private final ChatMemory chatMemory;
     private final long cacheTtlSeconds;
     private final boolean warmupOnStartup;
+    private final Optional<A2AAgentRegistry> a2aAgentRegistry;
 
-    public SlashCommandService(ChatMemory chatMemory,
-                               OllamaApi ollamaApi,
-                               List<McpSyncClient> mcpSyncClients,
+    private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
+    private final OllamaChatModel taskChatModel;
+
+    public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
+                               ChatMemory chatMemory,
+                               OllamaApi ollamaApi,
+                               Optional<A2AAgentRegistry> a2aAgentRegistry,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
-                               @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
-        this.chatMemory = chatMemory;
-        this.ollamaApi = ollamaApi;
+                               @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup,
+                               @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
         this.redisTemplate = redisTemplate;
         this.jsonMapper = jsonMapper;
+        this.chatMemory = chatMemory;
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
+        this.a2aAgentRegistry = a2aAgentRegistry;
 
         mcpSyncClient = mcpSyncClients.getFirst();
-    }
 
-    public ChatClient taskClient(String tool) {
-        log.info("Creating task client with tool: {}", tool);
-
-        McpIdentityProvider mcpIdentityProvider = new McpIdentityProvider(mcpSyncClient, tool);
-
-        OllamaChatOptions ollamaChatOptions = OllamaChatOptions.builder()
-                .model("mistral:7b")
+        OllamaChatOptions taskChatOptions = OllamaChatOptions.builder()
+                .model(taskModel)
                 .build();
 
-        OllamaChatModel ollamaChatModel = OllamaChatModel.builder()
+        taskChatModel = OllamaChatModel.builder()
                 .ollamaApi(ollamaApi)
-                .defaultOptions(ollamaChatOptions).build();
+                .options(taskChatOptions)
+                .build();
+    }
 
-        return ChatClient.builder(ollamaChatModel)
-                .defaultToolCallbacks(mcpIdentityProvider)
+    public ChatClient taskClient(ToolCallback toolCallback) {
+        log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
+
+        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback);
+
+        return ChatClient.builder(taskChatModel)
+                .defaultTools(identityToolCallback)
                 .defaultAdvisors(
-                        PromptChatMemoryAdvisor.builder(chatMemory).build(),
+                        MessageChatMemoryAdvisor.builder(chatMemory).build(),
                         simpleLoggerAdvisor
                 )
                 .build();
@@ -101,22 +107,43 @@ public class SlashCommandService {
         return matched;
     }
 
-    public List<SlashCommand> typeAhead(String commandPrefix) {
-        log.info("Type ahead for commands search: {}", commandPrefix);
+    public List<SlashCommand> typeAhead(String searchInput) {
+        log.info("Type ahead for commands search: {}", searchInput);
 
-        return slashCommands().stream()
-                .filter(prompt -> {
-                    String prefix = commandPrefix.toLowerCase();
-                    return StringUtils.isEmpty(prefix) || prompt.command().startsWith(prefix);
+        List<SlashCommand> allCommands = slashCommands();
+
+        if (StringUtils.isEmpty(searchInput)) {
+            return allCommands;
+        }
+
+        String searchTerm = searchInput.toLowerCase();
+
+        List<SlashCommand> matches = allCommands.stream()
+                .filter(slashCommand -> {
+                    String command = slashCommand.command().toLowerCase();
+                    String description = StringUtils.defaultString(slashCommand.description()).toLowerCase();
+                    return command.contains(searchTerm) || description.contains(searchTerm);
                 })
                 .toList();
+
+        if (matches.isEmpty()) {
+            return allCommands;
+        }
+
+        return matches;
     }
 
     public List<SlashCommand> slashCommands() {
-        String cachedPayload = redisTemplate.opsForValue().get(CACHE_KEY).block();
+        String cachedPayload = redisTemplate.opsForValue()
+                .get(CACHE_KEY)
+                .block();
 
         if (StringUtils.isNotBlank(cachedPayload)) {
-            return jsonMapper.readValue(cachedPayload, CATALOG_TYPE_REFERENCE);
+            try {
+                return jsonMapper.readValue(cachedPayload, CATALOG_TYPE_REFERENCE);
+            } catch (InvalidTypeIdException invalidTypeIdException) {
+                log.warn("Cached slash-commands schema is stale, refreshing: {}", invalidTypeIdException.getMessage());
+            }
         }
 
         return refreshSlashCommands();
@@ -130,9 +157,9 @@ public class SlashCommandService {
         }
 
         slashCommands
-                .forEach(slashCommand -> log.info("Loaded command: {}", slashCommand.name()));
+                .forEach(slashCommand -> log.debug("Loaded command: {}", slashCommand.name()));
 
-        String serializedPayload = jsonMapper.writeValueAsString(slashCommands);
+        String serializedPayload = jsonMapper.writerFor(CATALOG_TYPE_REFERENCE).writeValueAsString(slashCommands);
 
         redisTemplate.opsForValue()
                 .set(CACHE_KEY, serializedPayload, Duration.ofSeconds(cacheTtlSeconds))
@@ -166,7 +193,6 @@ public class SlashCommandService {
 
     private List<SlashCommand> loadSlashCommandsFromMcp() {
         McpSchema.ListPromptsResult listPromptsResult = mcpSyncClient.listPrompts();
-        McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
         List<SlashCommand> promptCommands = List.of();
 
@@ -176,26 +202,31 @@ public class SlashCommandService {
             promptCommands = mcpPrompts.stream()
                     .filter(listedPrompt -> StringUtils.isNotBlank(listedPrompt.name()))
                     .filter(listPrompt -> listPrompt.meta() != null)
-                    .filter(listedPrompt -> listedPrompt.meta().get(COMMAND) != null)
-                    .map(SlashCommand::new)
+                    .filter(listedPrompt -> listedPrompt.meta().get(SlashCommand.COMMAND) != null)
+                    .<SlashCommand>map(PromptSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();
         }
 
         List<SlashCommand> toolCommands = List.of();
 
-        if (listToolsResult != null) {
-            List<McpSchema.Tool> tools = listToolsResult.tools();
+        try {
+            McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
-            toolCommands = tools.stream()
-                    .filter(listedTool -> StringUtils.isNotBlank(listedTool.name()))
-                    .filter(listedTool -> listedTool.meta() != null)
-                    .filter(listedTool -> listedTool.meta().get(COMMAND) != null)
-                    .map(SlashCommand::new)
+            toolCommands = listToolsResult.tools().stream()
+                    .filter(tool -> StringUtils.isNotBlank(tool.name()))
+                    .<SlashCommand>map(ToolSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();
+        } catch (IllegalStateException exception) {
+            log.warn("MCP server does not support tools capability; skipping tool commands: {}",
+                    exception.getMessage());
         }
 
-        return ListUtils.union(promptCommands, toolCommands);
+        List<SlashCommand> agentCommands = a2aAgentRegistry
+                .map(A2AAgentRegistry::asSlashCommands)
+                .orElse(List.of());
+
+        return ListUtils.union(ListUtils.union(promptCommands, toolCommands), agentCommands);
     }
 }

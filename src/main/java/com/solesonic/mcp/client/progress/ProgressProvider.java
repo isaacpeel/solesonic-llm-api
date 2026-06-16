@@ -1,6 +1,6 @@
 package com.solesonic.mcp.client.progress;
 
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.NotificationService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,10 +13,10 @@ import java.util.UUID;
 public class ProgressProvider {
     private static final Logger log = LoggerFactory.getLogger(ProgressProvider.class);
 
-    private final ElicitationService elicitationService;
+    private final NotificationService notificationService;
 
-    public ProgressProvider(ElicitationService elicitationService) {
-        this.elicitationService = elicitationService;
+    public ProgressProvider(NotificationService notificationService) {
+        this.notificationService = notificationService;
     }
 
     @SuppressWarnings("unused")
@@ -41,6 +41,6 @@ public class ProgressProvider {
             return;
         }
 
-        elicitationService.emitProgress(chatId, progressNotification);
+        notificationService.emitProgress(chatId, progressNotification);
     }
 }

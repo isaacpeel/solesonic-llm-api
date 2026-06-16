@@ -1,4 +1,4 @@
-package com.solesonic.service.chat;
+package com.solesonic.service.chat.events;
 
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -30,7 +30,8 @@ import static org.mockito.Mockito.*;
 import org.springframework.data.redis.core.ReactiveValueOperations;
 
 @ExtendWith(MockitoExtension.class)
-class ElicitationServiceTest {
+class NotificationServiceTest {
+
     @Mock
     private ChatMessageService chatMessageService;
 
@@ -40,6 +41,7 @@ class ElicitationServiceTest {
     @Mock
     private ReactiveValueOperations<String, String> valueOperations;
 
+    private NotificationService notificationService;
     private ElicitationService elicitationService;
     private JsonMapper jsonMapper;
     private Sinks.Many<String> messageRelay;
@@ -62,9 +64,9 @@ class ElicitationServiceTest {
                     return Mono.just(1L);
                 });
 
+        notificationService = new NotificationService(jsonMapper, chatMessageService, redisTemplate);
         elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate);
     }
-
 
     @Test
     void emitProgressShouldSendProgressEventToRegisteredChatSink() {
@@ -79,9 +81,12 @@ class ElicitationServiceTest {
                     countDownLatch.countDown();
                 });
 
-        McpSchema.ProgressNotification progressNotification = new McpSchema.ProgressNotification(chatId.toString(), 0.5d, 1.0d, "half-way");
+        McpSchema.ProgressNotification progressNotification = McpSchema.ProgressNotification.builder(chatId.toString(), 0.5d)
+                .total(1.0d)
+                .message("half-way")
+                .build();
 
-        elicitationService.emitProgress(chatId, progressNotification);
+        notificationService.emitProgress(chatId, progressNotification);
 
         try {
             boolean eventReceived = countDownLatch.await(Duration.ofSeconds(1).toMillis(), TimeUnit.MILLISECONDS);
@@ -94,7 +99,7 @@ class ElicitationServiceTest {
         ServerSentEvent<?> serverSentEvent = serverSentEventRef.get();
 
         assertThat(serverSentEvent).isNotNull();
-        assertThat(serverSentEvent.event()).isEqualTo(ElicitationService.PROGRESS);
+        assertThat(serverSentEvent.event()).isEqualTo(NotificationService.PROGRESS);
         assertThat(serverSentEvent.data()).isInstanceOf(String.class);
 
         assert serverSentEvent.data() != null;
@@ -102,7 +107,7 @@ class ElicitationServiceTest {
 
         Map<String, Object> eventData = jsonMapper.readValue(data.toString(), new TypeReference<>() {});
 
-        assertThat(eventData).containsEntry(ElicitationService.CHAT_ID, chatId.toString());
+        assertThat(eventData).containsEntry(NotificationService.CHAT_ID, chatId.toString());
     }
 
     private record FixedChannelMessage(String channelName, String messageBody)

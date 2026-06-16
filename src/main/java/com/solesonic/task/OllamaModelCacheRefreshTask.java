@@ -31,7 +31,8 @@ public class OllamaModelCacheRefreshTask {
 
     @Scheduled(initialDelay = 5, fixedRateString = "${solesonic.llm.ollama.cache.refresh-hours:1}", timeUnit = TimeUnit.HOURS)
     public void refresh() {
-        log.info("Refreshing Ollama model cache");
+        log.debug("Refreshing Ollama model cache");
+
         try {
             OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
 
@@ -52,7 +53,7 @@ public class OllamaModelCacheRefreshTask {
                     log.warn("Failed to refresh cache for model {}: {}", modelName, exception.getMessage());
                 }
             }
-            log.info("Ollama model cache refresh complete — {} models cached", listModelResponse.models().size());
+            log.debug("Ollama model cache refresh complete — {} models cached", listModelResponse.models().size());
         } catch (Exception exception) {
             log.warn("Failed to refresh Ollama model cache: {}", exception.getMessage());
         }

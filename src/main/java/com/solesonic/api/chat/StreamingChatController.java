@@ -2,7 +2,7 @@ package com.solesonic.api.chat;
 
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.ChatRequest;
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

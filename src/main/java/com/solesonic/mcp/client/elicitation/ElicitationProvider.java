@@ -1,7 +1,7 @@
 package com.solesonic.mcp.client.elicitation;
 
 import com.solesonic.exception.elicitation.ElicitationException;
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.ElicitationService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -10,7 +10,7 @@
     </parent>
     <groupId>com.solesonic</groupId>
     <artifactId>solesonic-llm-api</artifactId>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <name>solesonic-llm</name>
     <description>solesonic-llm</description>
 
@@ -25,17 +25,16 @@
             <name>Spring Milestones</name>
             <url>https://repo.spring.io/milestone</url>
             <snapshots>
-                <enabled>true</enabled>
+                <enabled>false</enabled>
             </snapshots>
         </repository>
     </repositories>
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.0.0-M5</spring-ai.version>
+        <spring-ai.version>2.0.0</spring-ai.version>
         <java.version>25</java.version>
-        <hibernate.version>7.3.0.Final</hibernate.version>
-        <jackson-bom.version>3.1.0</jackson-bom.version>
+        <a2a-java-sdk.version>1.0.0.Final</a2a-java-sdk.version>
     </properties>
     <dependencies>
         <dependency>
@@ -102,7 +101,7 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
-            <artifactId>spring-ai-advisors-vector-store</artifactId>
+            <artifactId>spring-ai-vector-store-advisor</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.ai</groupId>
@@ -174,7 +173,7 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.18.0</version>
+            <version>3.20.0</version>
         </dependency>
 
         <dependency>
@@ -224,6 +223,27 @@
             <artifactId>task-execution</artifactId>
             <version>0.7.0</version>
             <scope>compile</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.a2aproject.sdk</groupId>
+            <artifactId>a2a-java-sdk-client</artifactId>
+            <version>${a2a-java-sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.a2aproject.sdk</groupId>
+            <artifactId>a2a-java-sdk-client-transport-jsonrpc</artifactId>
+            <version>${a2a-java-sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.a2aproject.sdk</groupId>
+            <artifactId>a2a-java-sdk-http-client</artifactId>
+            <version>${a2a-java-sdk.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.a2aproject.sdk</groupId>
+            <artifactId>a2a-java-sdk-spec</artifactId>
+            <version>${a2a-java-sdk.version}</version>
         </dependency>
     </dependencies>
     <dependencyManagement>

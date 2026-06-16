@@ -6,7 +6,8 @@ import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.ollama.ChatRepository;
-import com.solesonic.service.chat.ElicitationService;
+import com.solesonic.service.chat.events.ElicitationService;
+import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.ollama.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
@@ -22,8 +23,9 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
+import java.util.concurrent.TimeoutException;
 
-import static com.solesonic.service.chat.ElicitationService.CANCEL_ACTION;
+import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
@@ -33,6 +35,7 @@ public class RedisStreamingChatService {
     public static final String CHUNK = "chunk";
     public static final String INIT = "init";
     public static final String DONE = "done";
+    public static final String ERROR = "error";
     public static final String CHAT_CANCELED = "Chat canceled.";
 
     public record ChunkPayload(String content) {
@@ -44,19 +47,22 @@ public class RedisStreamingChatService {
     private final ChatMessageService chatMessageService;
     private final RedisStreamService redisStreamService;
     private final ActiveStreamTracker activeStreamTracker;
+    private final NotificationService notificationService;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
                                      ElicitationService elicitationService,
                                      ChatMessageService chatMessageService,
                                      RedisStreamService redisStreamService,
-                                     ActiveStreamTracker activeStreamTracker) {
+                                     ActiveStreamTracker activeStreamTracker,
+                                     NotificationService notificationService) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
         this.chatMessageService = chatMessageService;
         this.redisStreamService = redisStreamService;
         this.activeStreamTracker = activeStreamTracker;
+        this.notificationService = notificationService;
     }
 
     private Chat save(Chat chat) {
@@ -136,7 +142,7 @@ public class RedisStreamingChatService {
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
-            log.info("Publishing done event to Redis for chat id {}", chatId);
+            log.debug("Publishing done event to Redis for chat id {}", chatId);
 
             redisStreamService.publish(chatId, userId, DONE, solesonicChatResponse)
                     .subscribe();
@@ -174,11 +180,20 @@ public class RedisStreamingChatService {
 
                     if (Exceptions.isCancel(unwrapped) || unwrapped instanceof InterruptedException) {
                         log.info("Redis stream cancelled gracefully for chat id {}", chatId);
-                    } else {
-                        log.error("Redis stream error for chat id {}", chatId, error);
+                        return Mono.empty();
                     }
 
-                    return Mono.empty();
+                    log.error("Redis stream error for chat id {}", chatId, error);
+
+                    String userMessage = (unwrapped instanceof TimeoutException)
+                            ? "The request timed out. Please try again."
+                            : "An unexpected error occurred. Please try again.";
+
+                    notificationService.emitFailure(chatId, userMessage);
+
+                    return redisStreamService.publish(chatId, userId, ERROR, new ChunkPayload(userMessage))
+                            .then(redisStreamService.publish(chatId, userId, DONE))
+                            .then();
                 })
                 .doFinally(_ -> cleanup(chatId, userId))
                 .subscribe();
@@ -187,7 +202,7 @@ public class RedisStreamingChatService {
     }
 
     private void cleanup(UUID chatId, UUID userId) {
-        log.info("Cleaning up Redis stream for chat id: {}", chatId);
+        log.debug("Cleaning up Redis stream for chat id: {}", chatId);
 
         elicitationService.closeChat(chatId);
 

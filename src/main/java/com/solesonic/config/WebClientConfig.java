@@ -1,17 +1,22 @@
 package com.solesonic.config;
 
 import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.mcp.client.McpServerDisconnectedEvent;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.security.McpFilterService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
+import reactor.netty.http.client.PrematureCloseException;
 import reactor.util.context.Context;
 
 import java.util.Map;
@@ -23,10 +28,26 @@ import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 public class WebClientConfig {
     private static final Logger log = LoggerFactory.getLogger(WebClientConfig.class);
 
+    private final ApplicationEventPublisher applicationEventPublisher;
+
+    public WebClientConfig(ApplicationEventPublisher applicationEventPublisher) {
+        this.applicationEventPublisher = applicationEventPublisher;
+    }
+
     @Bean
-    public WebClient.Builder webClientBuilder(TokenExchangeService tokenExchangeService, McpFilterService mcpFilterService) {
-        return WebClient.builder()
-                .filter((request, next) -> Mono.deferContextual(_ -> {
+    public WebClient.Builder webClientBuilder(
+            TokenExchangeService tokenExchangeService,
+            McpFilterService mcpFilterService,
+            @Value("${solesonic.mcp.reconnect.enabled:false}") boolean reconnectEnabled) {
+
+        WebClient.Builder builder = WebClient.builder();
+
+        if (reconnectEnabled) {
+            builder = builder.filter((request, next) -> next.exchange(request)
+                    .onErrorMap(exception -> handleMcpConnectionException(exception, request)));
+        }
+
+        return builder.filter((request, next) -> Mono.deferContextual(_ -> {
 
                     log.debug("Filtering mcp request: {}", request.url().getPath());
                     log.debug("WebClient filter executing - checking for security context");
@@ -60,6 +81,15 @@ public class WebClientConfig {
                                 return next.exchange(newRequest);
                             });
                 }));
+    }
+
+    private Throwable handleMcpConnectionException(Throwable throwable, ClientRequest clientRequest) {
+        if (throwable instanceof WebClientRequestException && throwable.getCause() instanceof PrematureCloseException) {
+            log.warn("MCP server connection lost ({}): {}", clientRequest.url(), throwable.getMessage());
+            applicationEventPublisher.publishEvent(new McpServerDisconnectedEvent(this));
+        }
+
+        return throwable;
     }
 
     private String threadLocalUserToken() {

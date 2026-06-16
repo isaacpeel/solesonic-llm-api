@@ -18,7 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.List;
 
-import static io.modelcontextprotocol.server.transport.HttpServletSseServerTransportProvider.APPLICATION_JSON;
+import static io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider.APPLICATION_JSON;
 
 @Component
 public class TokenBrokerAuthorizationFilter extends OncePerRequestFilter {

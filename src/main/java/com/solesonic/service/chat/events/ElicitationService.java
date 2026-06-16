@@ -1,4 +1,4 @@
-package com.solesonic.service.chat;
+package com.solesonic.service.chat.events;
 
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
@@ -30,7 +30,6 @@ public class ElicitationService {
     public static final String ELICITATION_ID = "elicitationId";
     public static final String CHAT_ID = "chatId";
     public static final String ELICITATION = "elicitation";
-    public static final String PROGRESS = "progress";
     public static final String CANCEL_ACTION = "cancel";
 
     private static final String CLOSE_EVENT = "__close__";
@@ -119,30 +118,6 @@ public class ElicitationService {
         }
 
         log.info("Finished emitting elicitation event for chat {}", chatId);
-    }
-
-    public void emitProgress(UUID chatId, McpSchema.ProgressNotification progressNotification) {
-        log.info("Emitting progress for chat id {} with message: {}", chatId, progressNotification.message());
-
-        try {
-            Map<String, Object> progressJson = jsonMapper.convertValue(progressNotification, new TypeReference<>() {
-            });
-            progressJson.put(CHAT_ID, chatId.toString());
-
-            ChatMessage chatMessage = new ChatMessage();
-            chatMessage.setChatId(chatId);
-            chatMessage.setMessageType(MessageType.SYSTEM);
-            chatMessage.setMessage(progressNotification.message());
-            chatMessage.setProgressData(progressJson);
-            chatMessageService.save(chatMessage);
-
-            String message = serializeEventMessage(PROGRESS, progressJson);
-
-            redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
-                    .subscribe(subscriberCount -> log.debug("Emitted progress event to {} subscribers for chat {}", subscriberCount, chatId));
-        } catch (IllegalArgumentException illegalArgumentException) {
-            log.info("Failed to serialize progress notification for chat {}", chatId, illegalArgumentException);
-        }
     }
 
     public Mono<Boolean> completeFromFrontend(ElicitationProvider.ElicitationActionResult elicitationActionResult) {

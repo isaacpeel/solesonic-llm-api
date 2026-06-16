@@ -266,7 +266,7 @@ The Solesonic LLM API supports interactive elicitation flows initiated from MCP 
 - `com.solesonic.mcp.client.elicitation.ElicitationProvider`
   - Annotated with `@McpElicitation`
   - Entry point for MCP `ElicitRequest`
-- `com.solesonic.service.chat.ElicitationService`
+- `com.solesonic.service.chat.events.ElicitationService`
   - Prepares, emits, and awaits elicitation results
   - Bridges the frontend via SSE and collects responses
 

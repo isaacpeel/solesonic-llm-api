@@ -1,4 +1,7 @@
 /docker/.env
 /.env
+/.env.*
 /target/
 /*.log
+/docker/.env.prod
+/docker/.env.redis
