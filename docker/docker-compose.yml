@@ -100,4 +100,6 @@ networks:
 
 volumes:
   postgres_data:
+    name: docker_postgres_data
   solesonic-llm-api-redis_data:
+    name: docker_solesonic-llm-api-redis_data
