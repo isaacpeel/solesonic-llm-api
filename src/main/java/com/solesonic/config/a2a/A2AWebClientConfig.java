@@ -54,15 +54,7 @@ public class A2AWebClientConfig {
         return WebClient.builder()
                 .baseUrl(a2AClientProperties.baseUri())
                 .apply(oauth2Filter.oauth2Configuration())
-                .filter(loggingFilter())
                 .build();
-    }
-
-    private ExchangeFilterFunction loggingFilter() {
-        return ExchangeFilterFunction.ofRequestProcessor(request -> {
-            log.info("A2A request: {} {}", request.method(), request.url());
-            return reactor.core.publisher.Mono.just(request);
-        });
     }
 
 }

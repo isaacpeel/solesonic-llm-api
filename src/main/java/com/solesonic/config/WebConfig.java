@@ -20,7 +20,7 @@ public class WebConfig {
 
     @Bean
     public WebMvcConfigurer webConfigurer() {
-        log.info("Configuring CORS with allowed origins: {}", String.join(", ", allowedOrigins));
+        log.debug("Configuring CORS with allowed origins: {}", String.join(", ", allowedOrigins));
 
         return new WebMvcConfigurer() {
             @Override
