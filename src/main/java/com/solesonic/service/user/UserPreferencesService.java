@@ -53,7 +53,7 @@ public class UserPreferencesService {
     }
 
     public UserPreferences save(UUID userId, UserPreferences userPreferences) {
-        log.info("Saving user preferences");
+        log.debug("Saving user preferences");
 
         userPreferences.setUserId(userId);
         userPreferences.setCreated(ZonedDateTime.now());
