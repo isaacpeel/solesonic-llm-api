@@ -1,7 +1,5 @@
 package com.solesonic.config.a2a;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -11,13 +9,10 @@ import org.springframework.security.oauth2.client.OAuth2AuthorizedClientProvider
 import org.springframework.security.oauth2.client.OAuth2AuthorizedClientService;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.security.oauth2.client.web.reactive.function.client.ServletOAuth2AuthorizedClientExchangeFilterFunction;
-import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
 
 @Configuration
 public class A2AWebClientConfig {
-
-    private static final Logger log = LoggerFactory.getLogger(A2AWebClientConfig.class);
 
     public static final String A2A_WEB_CLIENT = "a2aWebClient";
     static final String A2A_AUTHORIZED_CLIENT_MANAGER = "a2aAuthorizedClientManager";
