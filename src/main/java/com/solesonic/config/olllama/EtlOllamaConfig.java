@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Configuration;
 public class EtlOllamaConfig {
     public static final String ETL_CHAT_MODEL = "ETL_CHAT_MODEL";
 
-    @Bean
+    @Bean(defaultCandidate = false)
     @Qualifier(ETL_CHAT_MODEL)
     public OllamaChatModel etlChatModel(@Value("${solesonic.llm.etl.ollama.host}") String ollamaBaseUrl,
                                         @Value("${solesonic.llm.etl.model}") String etlModel) {
