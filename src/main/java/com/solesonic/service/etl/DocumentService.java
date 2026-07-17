@@ -12,7 +12,6 @@ import org.springframework.ai.reader.TextReader;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
@@ -110,10 +109,6 @@ public class DocumentService {
 
         var pdfReader = new PagePdfDocumentReader(pdfResource, config);
 
-        var textSplitter = TokenTextSplitter.builder().build();
-
-        List<Document> documents = pdfReader.get();
-
-        return textSplitter.apply(documents);
+        return pdfReader.get();
     }
 }

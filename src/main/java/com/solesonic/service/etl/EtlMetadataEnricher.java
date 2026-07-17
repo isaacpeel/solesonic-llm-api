@@ -8,13 +8,13 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-import static com.solesonic.config.olllama.EtlOllamaConfig.ETL_CHAT_MODEL;
+import static com.solesonic.config.olllama.EtlOllamaConfig.ETL_METADATA_CHAT_MODEL;
 
 @Component
 public class EtlMetadataEnricher {
     private final OllamaChatModel chatModel;
 
-    public EtlMetadataEnricher(@Qualifier(ETL_CHAT_MODEL) OllamaChatModel chatModel) {
+    public EtlMetadataEnricher(@Qualifier(ETL_METADATA_CHAT_MODEL) OllamaChatModel chatModel) {
         this.chatModel = chatModel;
     }
 

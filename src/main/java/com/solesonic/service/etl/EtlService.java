@@ -32,17 +32,16 @@ public class EtlService {
         log.info("Preparing documents");
         trainingDocumentService.update(trainingDocument, DocumentStatus.PREPARING);
 
-        log.info("Keyword enriching documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.KEYWORD_ENRICHING);
-        List<Document> keywordEnriched = etlKeywordEnricher.enrich(documents);
-
-        log.info("Metadata enriched documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.METADATA_ENRICHING);
-        List<Document> metadataEnriched = etlMetadataEnricher.enrich(keywordEnriched);
-
         log.info("Token splitting documents");
         trainingDocumentService.update(trainingDocument, DocumentStatus.TOKEN_SPLITTING);
+        List<Document> splitDocuments = etlTextSplitter.split(documents);
 
-        return etlTextSplitter.split(metadataEnriched);
+        log.info("Keyword enriching documents");
+        trainingDocumentService.update(trainingDocument, DocumentStatus.KEYWORD_ENRICHING);
+        List<Document> keywordEnriched = etlKeywordEnricher.enrich(splitDocuments);
+
+        log.info("Metadata enriching documents");
+        trainingDocumentService.update(trainingDocument, DocumentStatus.METADATA_ENRICHING);
+        return etlMetadataEnricher.enrich(keywordEnriched);
     }
 }
