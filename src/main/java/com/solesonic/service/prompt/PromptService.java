@@ -8,6 +8,7 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -47,6 +48,7 @@ public class PromptService {
     private final ToolCallService toolCallService;
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
+    private final VectorStoreService vectorStoreService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -59,7 +61,8 @@ public class PromptService {
             McpPromptAdapter mcpPromptAdapter,
             ToolCallService toolCallService,
             A2AAgentService a2aAgentService,
-            A2AStickyAgentService a2aStickyAgentService) {
+            A2AStickyAgentService a2aStickyAgentService,
+            VectorStoreService vectorStoreService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
@@ -68,6 +71,7 @@ public class PromptService {
         this.toolCallService = toolCallService;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
+        this.vectorStoreService = vectorStoreService;
     }
 
     public String model(UUID userId) {
@@ -105,7 +109,7 @@ public class PromptService {
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, message, contextMap, model);
+                        return streamBasicPrompt(chatId, userId, message, contextMap, model);
                     });
         }
 
@@ -128,6 +132,7 @@ public class PromptService {
 
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(chatClient.prompt(prompt)
+                                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
                                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                                 .toolContext(contextMap)
                                 .options(OllamaChatOptions.builder().model(model))
@@ -146,6 +151,7 @@ public class PromptService {
     }
 
     private Flux<String> streamBasicPrompt(UUID chatId,
+                                           UUID userId,
                                            String message,
                                            Map<String, Object> contextMap,
                                            String model) {
@@ -153,6 +159,7 @@ public class PromptService {
 
         var promptSpec = chatClient.prompt()
                 .user(message)
+                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )

@@ -8,6 +8,7 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -66,6 +67,8 @@ class PromptServiceTest {
     @Mock
     private A2AStickyAgentService a2aStickyAgentService;
     @Mock
+    private VectorStoreService vectorStoreService;
+    @Mock
     private Authentication authentication;
     @Mock
     private Jwt jwt;
@@ -92,7 +95,8 @@ class PromptServiceTest {
                 mcpPromptAdapter,
                 toolCallService,
                 a2aAgentService,
-                a2aStickyAgentService);
+                a2aStickyAgentService,
+                vectorStoreService);
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
 
