@@ -65,7 +65,7 @@ public class ChatConfig {
 
         return ChatClient.builder(chatModel)
                 .defaultTools(mcpToolCallbackProvider)
-                .defaultAdvisors(questionAnswerAdvisor,messageChatMemoryAdvisor, simpleLoggerAdvisor)
+                .defaultAdvisors(questionAnswerAdvisor, messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
 
