@@ -144,6 +144,16 @@
       "name": "solesonic.llm.etl.ollama.read-timeout",
       "type": "java.time.Duration",
       "description": "Read timeout for the ETL Ollama HTTP client. Must exceed the time to cold-load the ETL model, otherwise the warm-up request aborts with a ReadTimeoutException. Defaults to 5m."
+    },
+    {
+      "name": "solesonic.llm.uri.ingestion.read-timeout",
+      "type": "java.time.Duration",
+      "description": "Read timeout for fetching content from a uri submitted for RAG ingestion. Defaults to 30s."
+    },
+    {
+      "name": "solesonic.llm.uri.ingestion.max-bytes",
+      "type": "org.springframework.util.unit.DataSize",
+      "description": "Maximum response body size accepted when fetching content from a uri submitted for RAG ingestion. Defaults to 20MB."
     }
   ]
 }

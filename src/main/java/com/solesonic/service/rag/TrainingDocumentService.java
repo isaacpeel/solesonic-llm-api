@@ -124,6 +124,14 @@ public class TrainingDocumentService {
     }
 
     @Transactional
+    public List<TrainingDocument> findBySourceUri(String sourceUri) {
+        log.debug("Finding training documents by source uri: {}", sourceUri);
+
+        return trainingDocumentRepository.findBySourceUri(sourceUri)
+                .orElse(List.of());
+    }
+
+    @Transactional
     public TrainingDocument refresh(UUID documentId) {
         log.info("Refreshing training document id: {}", documentId);
 
