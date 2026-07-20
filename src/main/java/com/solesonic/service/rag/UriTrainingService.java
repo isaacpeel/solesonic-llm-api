@@ -36,6 +36,8 @@ public class UriTrainingService {
     }
 
     public TrainingDocument queue(String uri) {
+        log.info("Queueing URI: {}", uri);
+
         String validatedUri = validate(uri);
 
         List<TrainingDocument> existingTrainingDocuments = trainingDocumentService.findBySourceUri(validatedUri);

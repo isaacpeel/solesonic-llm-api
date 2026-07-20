@@ -24,7 +24,7 @@ class UriContentFetcherTest {
         mockRestServiceServer.expect(requestTo(TEST_URI))
                 .andRespond(withSuccess("<html>hello</html>", MediaType.parseMediaType("text/html; charset=utf-8")));
 
-        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder.build(), DataSize.ofMegabytes(20));
+        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder, DataSize.ofMegabytes(20));
 
         UriContentFetcher.FetchedContent fetchedContent = uriContentFetcher.fetch(TEST_URI);
 
@@ -40,7 +40,7 @@ class UriContentFetcherTest {
         mockRestServiceServer.expect(requestTo(TEST_URI))
                 .andRespond(withSuccess("<html>hello</html>", null));
 
-        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder.build(), DataSize.ofMegabytes(20));
+        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder, DataSize.ofMegabytes(20));
 
         UriContentFetcher.FetchedContent fetchedContent = uriContentFetcher.fetch(TEST_URI);
 
@@ -55,7 +55,7 @@ class UriContentFetcherTest {
         mockRestServiceServer.expect(requestTo(TEST_URI))
                 .andRespond(withSuccess("x".repeat(50), MediaType.TEXT_PLAIN));
 
-        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder.build(), DataSize.ofBytes(10));
+        UriContentFetcher uriContentFetcher = new UriContentFetcher(restClientBuilder, DataSize.ofBytes(10));
 
         assertThatThrownBy(() -> uriContentFetcher.fetch(TEST_URI))
                 .isInstanceOf(ChatException.class);

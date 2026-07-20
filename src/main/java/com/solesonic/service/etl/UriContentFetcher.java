@@ -4,15 +4,11 @@ import com.solesonic.exception.ChatException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
-import org.springframework.boot.http.client.HttpClientSettings;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.RestClient;
-
-import java.time.Duration;
 
 import static org.springframework.http.MediaType.TEXT_HTML_VALUE;
 
@@ -23,23 +19,10 @@ public class UriContentFetcher {
     private final RestClient restClient;
     private final DataSize maxBytes;
 
-    public UriContentFetcher(@Value("${solesonic.llm.uri.ingestion.read-timeout:30s}") Duration readTimeout,
+    public UriContentFetcher(RestClient.Builder restClientBuilder,
                              @Value("${solesonic.llm.uri.ingestion.max-bytes:20MB}") DataSize maxBytes) {
-        this(buildRestClient(readTimeout), maxBytes);
-    }
-
-    UriContentFetcher(RestClient restClient, DataSize maxBytes) {
-        this.restClient = restClient;
+        this.restClient = restClientBuilder.build();
         this.maxBytes = maxBytes;
-    }
-
-    private static RestClient buildRestClient(Duration readTimeout) {
-        HttpClientSettings httpClientSettings = HttpClientSettings.defaults()
-                .withReadTimeout(readTimeout);
-
-        return RestClient.builder()
-                .requestFactory(ClientHttpRequestFactoryBuilder.detect().build(httpClientSettings))
-                .build();
     }
 
     public FetchedContent fetch(String uri) {
