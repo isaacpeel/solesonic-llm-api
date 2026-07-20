@@ -19,10 +19,12 @@ public class EtlMetadataEnricher {
     }
 
     public List<Document> enrich(List<Document> documents) {
-        SummaryMetadataEnricher summaryMetadataEnricher = new SummaryMetadataEnricher(chatModel,
+        SummaryMetadataEnricher summaryMetadataEnricher = new SummaryMetadataEnricher(
+                chatModel,
             List.of(SummaryMetadataEnricher.SummaryType.PREVIOUS, 
                    SummaryMetadataEnricher.SummaryType.CURRENT, 
                    SummaryMetadataEnricher.SummaryType.NEXT));
+
         return summaryMetadataEnricher.apply(documents);
     }
 }

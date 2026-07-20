@@ -34,4 +34,13 @@ public interface TrainingDocumentRepository extends JpaRepository<TrainingDocume
         """
         , nativeQuery = true)
     Optional<List<TrainingDocument>> findByConfluenceId(@Param(CONFLUENCE_PAGE_ID) String externalId);
+
+    @Query(value = """
+        SELECT DISTINCT td.metadata->>'CONFLUENCE_PAGE_ID'
+        FROM public.training_document td
+        WHERE td.document_source = 'CONFLUENCE'
+          AND td.metadata->>'CONFLUENCE_PAGE_ID' IS NOT NULL
+        """
+        , nativeQuery = true)
+    List<String> findConfluencePageIds();
 }

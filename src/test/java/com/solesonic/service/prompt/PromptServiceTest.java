@@ -103,6 +103,8 @@ class PromptServiceTest {
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
         lenient().when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("llama3"));
+        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class)))
+                .thenReturn(mock(Advisor.class));
     }
 
     private UserPreferences preferencesWithModel(String model) {
@@ -117,7 +119,7 @@ class PromptServiceTest {
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);
-        lenient().when(requestSpec.advisors(any(Advisor.class))).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
@@ -128,7 +130,7 @@ class PromptServiceTest {
         when(chatClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);
-        lenient().when(requestSpec.advisors(any(Advisor.class))).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);

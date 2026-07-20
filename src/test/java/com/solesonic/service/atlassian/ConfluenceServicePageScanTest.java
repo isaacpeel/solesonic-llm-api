@@ -29,7 +29,9 @@ import static org.mockito.Mockito.*;
 public class ConfluenceServicePageScanTest {
 
     public static final String CONFLUENCE_PAGE_ID_1 = "c_test_id_1";
+    public static final String CONFLUENCE_DELETED_PAGE_ID = "c_deleted_id";
     public static final UUID TRAINING_DOCUMENT_ID_1 = UUID.randomUUID();
+    public static final UUID DELETED_TRAINING_DOCUMENT_ID = UUID.randomUUID();
 
     @Mock
     private TrainingDocumentService trainingDocumentService;
@@ -146,5 +148,67 @@ public class ConfluenceServicePageScanTest {
         verify(vectorStoreService, never()).findByTrainingDocumentId(TRAINING_DOCUMENT_ID_1);
         verify(vectorStoreService, never()).delete(anyList());
         verify(trainingDocumentService, never()).update(any(), eq(DocumentStatus.REPLACED));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    public void test_with_deletion() {
+        ConfluencePagesResponse confluencePagesResponse = new ConfluencePagesResponse();
+        Page page = new Page();
+        page.setId(CONFLUENCE_PAGE_ID_1);
+
+        String pageBody = "Penelope";
+        Body body = new Body();
+        Storage storage = new Storage();
+        storage.setValue(pageBody);
+        body.setStorage(storage);
+
+        page.setBody(body);
+
+        Version version = new Version();
+        version.setNumber(2);
+        page.setVersion(version);
+
+        confluencePagesResponse.setResults(List.of(page));
+
+        //the live page is already tracked at the same version, so the add/update loop is a no-op for it
+        TrainingDocument livePageTrainingDocument = new TrainingDocument();
+        livePageTrainingDocument.setId(TRAINING_DOCUMENT_ID_1);
+
+        Map<String, Object> livePageMetadata = new HashMap<>();
+        livePageMetadata.put(CONFLUENCE_PAGE_VERSION, "2");
+        livePageTrainingDocument.setMetadata(livePageMetadata);
+
+        //a tracked page that no longer exists in confluence
+        TrainingDocument deletedPageTrainingDocument = new TrainingDocument();
+        deletedPageTrainingDocument.setId(DELETED_TRAINING_DOCUMENT_ID);
+
+        when(webClient.get()).thenReturn(requestHeadersUriSpec);
+        when(requestHeadersUriSpec.uri(any(Function.class))).thenReturn(requestHeadersSpec);
+        when(requestHeadersSpec.exchangeToMono(any())).thenReturn(Mono.just(confluencePagesResponse));
+
+        when(trainingDocumentService.findByConfluencePageId(CONFLUENCE_PAGE_ID_1))
+                .thenReturn(List.of(livePageTrainingDocument));
+
+        when(trainingDocumentService.findConfluencePageIds())
+                .thenReturn(List.of(CONFLUENCE_PAGE_ID_1, CONFLUENCE_DELETED_PAGE_ID));
+
+        when(trainingDocumentService.findByConfluencePageId(CONFLUENCE_DELETED_PAGE_ID))
+                .thenReturn(List.of(deletedPageTrainingDocument));
+
+        VectorDocument vectorDocument = new VectorDocument();
+        when(vectorStoreService.findByTrainingDocumentId(DELETED_TRAINING_DOCUMENT_ID))
+                .thenReturn(List.of(vectorDocument));
+
+        assertThatCode(() -> confluenceTrainingService.pageScan()).doesNotThrowAnyException();
+
+        //the deleted page's vectors and training document are removed
+        verify(vectorStoreService, times(1)).findByTrainingDocumentId(DELETED_TRAINING_DOCUMENT_ID);
+        verify(vectorStoreService, times(1)).delete(anyList());
+        verify(trainingDocumentService, times(1)).delete(deletedPageTrainingDocument);
+
+        //the still-live page is left untouched
+        verify(trainingDocumentService, never()).delete(livePageTrainingDocument);
+        verify(vectorStoreService, never()).findByTrainingDocumentId(TRAINING_DOCUMENT_ID_1);
     }
 }

@@ -36,6 +36,7 @@ public class VectorStoreService {
     private static final int RETRIEVAL_TOP_K = 15;
     private static final int RERANK_TOP_N = 5;
     private static final int EXPANSION_QUERIES = 3;
+    private static final String TASK_MODEL_KEEP_ALIVE = "30m";
 
     private final VectorStore vectorStore;
     private final VectorStoreRepository vectorStoreRepository;
@@ -60,6 +61,9 @@ public class VectorStoreService {
         OllamaChatOptions taskOptions = OllamaChatOptions.builder()
                 .model(taskModel)
                 .numCtx(8192)
+                .keepAlive(TASK_MODEL_KEEP_ALIVE)
+                .temperature(0.0)
+                .disableThinking()
                 .build();
 
         this.taskChatModel = OllamaChatModel.builder()
@@ -95,6 +99,8 @@ public class VectorStoreService {
         LlmDocumentReranker documentReranker =
                 new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
 
+        RetrievalLoggingPostProcessor retrievalLoggingPostProcessor = new RetrievalLoggingPostProcessor();
+
         return RetrievalAugmentationAdvisor.builder()
                 .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
                 .queryExpander(multiQueryExpander)
@@ -103,7 +109,7 @@ public class VectorStoreService {
                         .topK(RETRIEVAL_TOP_K)
                         .vectorStore(vectorStore)
                         .build())
-                .documentPostProcessors(documentReranker)
+                .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
                         .build())

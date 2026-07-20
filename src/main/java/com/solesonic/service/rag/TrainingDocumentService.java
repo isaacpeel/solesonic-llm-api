@@ -1,9 +1,11 @@
 package com.solesonic.service.rag;
 
 import com.solesonic.exception.ChatException;
+import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.training.DocumentStatus;
 import com.solesonic.model.training.StatusHistory;
 import com.solesonic.model.training.TrainingDocument;
+import com.solesonic.model.training.VectorDocument;
 import com.solesonic.repository.ollama.StatusHistoryRepository;
 import com.solesonic.repository.ollama.TrainingDocumentRepository;
 import org.slf4j.Logger;
@@ -17,7 +19,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.time.ZonedDateTime;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static com.solesonic.model.training.DocumentStatus.FAILED;
@@ -27,11 +31,14 @@ public class TrainingDocumentService {
     private static final Logger log = LoggerFactory.getLogger(TrainingDocumentService.class);
     private final TrainingDocumentRepository trainingDocumentRepository;
     private final StatusHistoryRepository statusHistoryRepository;
+    private final VectorStoreService vectorStoreService;
 
     public TrainingDocumentService(TrainingDocumentRepository trainingDocumentRepository,
-                                   StatusHistoryRepository statusHistoryRepository) {
+                                   StatusHistoryRepository statusHistoryRepository,
+                                   VectorStoreService vectorStoreService) {
         this.trainingDocumentRepository = trainingDocumentRepository;
         this.statusHistoryRepository = statusHistoryRepository;
+        this.vectorStoreService = vectorStoreService;
     }
 
     public List<TrainingDocument> findAll() {
@@ -65,7 +72,7 @@ public class TrainingDocumentService {
         return trainingDocument;
     }
 
-    public TrainingDocument update(TrainingDocument trainingDocument, DocumentStatus documentStatus) {
+    public TrainingDocument  update(TrainingDocument trainingDocument, DocumentStatus documentStatus) {
         log.info("Updating training document: {}", trainingDocument.getId());
         trainingDocument.setUpdated(ZonedDateTime.now());
 
@@ -109,6 +116,62 @@ public class TrainingDocumentService {
                 .orElse(null);
     }
 
+    @Transactional
+    public List<String> findConfluencePageIds() {
+        log.debug("Finding all tracked confluence page ids.");
+
+        return trainingDocumentRepository.findConfluencePageIds();
+    }
+
+    @Transactional
+    public TrainingDocument refresh(UUID documentId) {
+        log.info("Refreshing training document id: {}", documentId);
+
+        TrainingDocument trainingDocument = trainingDocumentRepository.findById(documentId)
+                .orElseThrow(() -> new ChatException("Error getting training document"));
+
+        backfillMetadata(trainingDocument);
+
+        List<VectorDocument> vectorDocuments = vectorStoreService.findByTrainingDocumentId(documentId);
+        vectorStoreService.delete(vectorDocuments);
+
+        return update(trainingDocument, DocumentStatus.QUEUED);
+    }
+
+    private static void backfillMetadata(TrainingDocument trainingDocument) {
+        if (trainingDocument.getDocumentSource() == null) {
+            trainingDocument.setDocumentSource(DocumentSource.USER);
+        }
+
+        if (trainingDocument.getMetadata() == null) {
+            Map<String, Object> metadata = new HashMap<>();
+            metadata.put(TrainingDocument.ORIGINAL_FILE_NAME, trainingDocument.getFileName());
+            metadata.put(TrainingDocument.FILE_SIZE_BYTES, trainingDocument.getFileData().length);
+            trainingDocument.setMetadata(metadata);
+        }
+    }
+
+    @Transactional
+    public void delete(UUID documentId) {
+        log.info("Deleting training document id: {}", documentId);
+
+        TrainingDocument trainingDocument = trainingDocumentRepository.findById(documentId)
+                .orElseThrow(() -> new ChatException("Error getting training document"));
+
+        List<VectorDocument> vectorDocuments = vectorStoreService.findByTrainingDocumentId(documentId);
+        vectorStoreService.delete(vectorDocuments);
+
+        delete(trainingDocument);
+    }
+
+    @Transactional
+    public void delete(TrainingDocument trainingDocument) {
+        log.info("Deleting training document: {}", trainingDocument.getId());
+
+        statusHistoryRepository.deleteByDocumentId(trainingDocument.getId());
+        trainingDocumentRepository.delete(trainingDocument);
+    }
+
     public TrainingDocument queue(MultipartFile multipartFile) {
         log.debug("Queuing document.");
 
@@ -130,10 +193,16 @@ public class TrainingDocumentService {
     private static TrainingDocument trainingDocument(MultipartFile multipartFile, String fileName, Resource newFileResource) {
         String contentType = multipartFile.getContentType();
 
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put(TrainingDocument.ORIGINAL_FILE_NAME, fileName);
+        metadata.put(TrainingDocument.FILE_SIZE_BYTES, multipartFile.getSize());
+
         TrainingDocument trainingDocument = new TrainingDocument();
         trainingDocument.setDocumentStatus(DocumentStatus.QUEUED);
         trainingDocument.setFileName(fileName);
         trainingDocument.setContentType(contentType);
+        trainingDocument.setDocumentSource(DocumentSource.USER);
+        trainingDocument.setMetadata(metadata);
 
         try (InputStream inputStream = newFileResource.getInputStream()) {
             byte[] fileContent = inputStream.readAllBytes();

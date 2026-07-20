@@ -6,14 +6,14 @@ import java.util.List;
 
 public class ConfluencePagesResponse {
 	@JsonProperty("_links")
-	private Links links;
+	private ResponseLinks links;
 	private List<Page> results;
 
-	public void setLinks(Links links){
+	public void setLinks(ResponseLinks links){
 		this.links = links;
 	}
 
-	public Links getLinks(){
+	public ResponseLinks getLinks(){
 		return links;
 	}
 

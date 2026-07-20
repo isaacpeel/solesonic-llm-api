@@ -127,13 +127,23 @@
     },
     {
       "name": "solesonic.llm.ollama.cache.refresh.enabled",
-      "type": "java.lang.String",
+      "type": "java.lang.Boolean",
       "description": "Enable or diable ollama model cache."
     },
     {
       "name": "solesonic.mcp.reconnect.enabled",
       "type": "java.lang.Boolean",
       "description": "Experimental: enables automatic reconnection to the MCP server after a connection loss, with exponential backoff. Disabled by default."
+    },
+    {
+      "name": "solesonic.llm.etl.ollama.warmup-on-startup",
+      "type": "java.lang.Boolean",
+      "description": "Whether to preload the ETL chat models on application startup so the first scheduled enrichment call does not pay the cold model-load cost."
+    },
+    {
+      "name": "solesonic.llm.etl.ollama.read-timeout",
+      "type": "java.time.Duration",
+      "description": "Read timeout for the ETL Ollama HTTP client. Must exceed the time to cold-load the ETL model, otherwise the warm-up request aborts with a ReadTimeoutException. Defaults to 5m."
     }
   ]
 }

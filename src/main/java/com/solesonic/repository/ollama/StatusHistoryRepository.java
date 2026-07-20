@@ -13,6 +13,8 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
     @Query("SELECT sh.documentStatus FROM StatusHistory sh WHERE sh.documentId = :documentId ORDER BY sh.timestamp DESC")
     List<DocumentStatus> findByDocumentId(@Param("documentId") UUID documentId);
 
+    void deleteByDocumentId(UUID documentId);
+
     @Query("""
                 SELECT d
                 FROM
@@ -23,15 +25,7 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                     SELECT 1
                     FROM StatusHistory d2
                     WHERE d2.documentId = d.documentId
-                      AND d2.documentStatus IN (
-                          com.solesonic.model.training.DocumentStatus.IN_PROGRESS,
-                          com.solesonic.model.training.DocumentStatus.COMPLETED,
-                          com.solesonic.model.training.DocumentStatus.PREPARING,
-                          com.solesonic.model.training.DocumentStatus.KEYWORD_ENRICHING,
-                          com.solesonic.model.training.DocumentStatus.METADATA_ENRICHING,
-                          com.solesonic.model.training.DocumentStatus.TOKEN_SPLITTING,
-                          com.solesonic.model.training.DocumentStatus.FAILED
-                      )
+                      AND d2.timestamp > d.timestamp
                   )
                 AND d.documentId = td.id
                 ORDER BY d.timestamp DESC
@@ -42,20 +36,18 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                 SELECT d
                 FROM
                     StatusHistory d
-                WHERE d.documentStatus = com.solesonic.model.training.DocumentStatus.IN_PROGRESS
+                WHERE d.documentStatus IN (
+                          com.solesonic.model.training.DocumentStatus.IN_PROGRESS,
+                          com.solesonic.model.training.DocumentStatus.PREPARING,
+                          com.solesonic.model.training.DocumentStatus.TOKEN_SPLITTING,
+                          com.solesonic.model.training.DocumentStatus.KEYWORD_ENRICHING,
+                          com.solesonic.model.training.DocumentStatus.METADATA_ENRICHING
+                      )
                   AND NOT EXISTS (
                     SELECT 1
                     FROM StatusHistory d2
                     WHERE d2.documentId = d.documentId
-                      AND d2.documentStatus IN (
-                          com.solesonic.model.training.DocumentStatus.COMPLETED,
-                          com.solesonic.model.training.DocumentStatus.QUEUED,
-                          com.solesonic.model.training.DocumentStatus.PREPARING,
-                          com.solesonic.model.training.DocumentStatus.KEYWORD_ENRICHING,
-                          com.solesonic.model.training.DocumentStatus.METADATA_ENRICHING,
-                          com.solesonic.model.training.DocumentStatus.TOKEN_SPLITTING,
-                          com.solesonic.model.training.DocumentStatus.FAILED
-                      )
+                      AND d2.timestamp > d.timestamp
                   )
                 ORDER BY d.timestamp DESC
             """)

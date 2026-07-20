@@ -7,6 +7,7 @@ import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
 public class ChatConfig {
     public static final String DEFAULT_CHAT_CLIENT = "default_chat_client";
     public static final String TASK_CHAT_CLIENT = "task_chat_client";
+    public static final String KEEP_ALIVE = "30m";
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
     private final McpIdentityProvider mcpToolCallbackProvider;
@@ -37,7 +39,11 @@ public class ChatConfig {
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
+//        OllamaChatOptions.Builder options = OllamaChatOptions.builder()
+//                .keepAlive(KEEP_ALIVE);
+
         return ChatClient.builder(chatModel)
+//                .defaultOptions(options)
                 .defaultTools(mcpToolCallbackProvider)
                 .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
@@ -51,7 +57,11 @@ public class ChatConfig {
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
+        OllamaChatOptions.Builder options = OllamaChatOptions.builder()
+                .keepAlive(KEEP_ALIVE);
+
         return ChatClient.builder(chatModel)
+                .defaultOptions(options)
                 .defaultTools(mcpToolCallbackProvider)
                 .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
