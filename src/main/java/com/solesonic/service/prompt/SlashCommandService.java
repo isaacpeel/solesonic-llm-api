@@ -6,6 +6,7 @@ import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.springframework.ai.tool.ToolCallback;
@@ -48,6 +49,7 @@ public class SlashCommandService {
     private final long cacheTtlSeconds;
     private final boolean warmupOnStartup;
     private final Optional<A2AAgentRegistry> a2aAgentRegistry;
+    private final LocalToolRegistry localToolRegistry;
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
     private final OllamaChatModel taskChatModel;
@@ -58,6 +60,7 @@ public class SlashCommandService {
                                ChatMemory chatMemory,
                                OllamaApi ollamaApi,
                                Optional<A2AAgentRegistry> a2aAgentRegistry,
+                               LocalToolRegistry localToolRegistry,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup,
                                @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
@@ -67,6 +70,7 @@ public class SlashCommandService {
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
         this.a2aAgentRegistry = a2aAgentRegistry;
+        this.localToolRegistry = localToolRegistry;
 
         mcpSyncClient = mcpSyncClients.getFirst();
 
@@ -227,6 +231,10 @@ public class SlashCommandService {
                 .map(A2AAgentRegistry::asSlashCommands)
                 .orElse(List.of());
 
-        return ListUtils.union(ListUtils.union(promptCommands, toolCommands), agentCommands);
+        List<SlashCommand> localToolCommands = localToolRegistry.asSlashCommands();
+
+        return ListUtils.union(
+                ListUtils.union(ListUtils.union(promptCommands, toolCommands), agentCommands),
+                localToolCommands);
     }
 }

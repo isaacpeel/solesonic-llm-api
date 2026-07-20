@@ -8,14 +8,16 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
 @JsonSubTypes({
         @JsonSubTypes.Type(value = PromptSlashCommand.class, name = SlashCommand.PROMPT),
         @JsonSubTypes.Type(value = ToolSlashCommand.class, name = SlashCommand.TOOL),
-        @JsonSubTypes.Type(value = AgentSlashCommand.class, name = SlashCommand.AGENT)
+        @JsonSubTypes.Type(value = AgentSlashCommand.class, name = SlashCommand.AGENT),
+        @JsonSubTypes.Type(value = LocalToolSlashCommand.class, name = SlashCommand.LOCAL_TOOL)
 })
-public sealed interface SlashCommand permits PromptSlashCommand, ToolSlashCommand, AgentSlashCommand {
+public sealed interface SlashCommand permits PromptSlashCommand, ToolSlashCommand, AgentSlashCommand, LocalToolSlashCommand {
 
     String COMMAND = "command";
     String PROMPT = "prompt";
     String TOOL = "tool";
     String AGENT = "agent";
+    String LOCAL_TOOL = "local-tool";
 
     String command();
 

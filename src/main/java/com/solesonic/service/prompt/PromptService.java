@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.AgentSlashCommand;
+import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
@@ -141,6 +142,8 @@ public class PromptService {
             }
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
                     .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
+            case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
+                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap));
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
