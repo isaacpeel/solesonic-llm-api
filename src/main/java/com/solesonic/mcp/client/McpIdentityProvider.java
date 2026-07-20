@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.SyncMcpToolCallback;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -23,9 +25,13 @@ public class McpIdentityProvider implements ToolCallbackProvider {
 
     private final McpSyncClient mcpClient;
     private final List<ToolCallback> toolCallbacks;
+    private final JwtDecoder jwtDecoder;
+    private final JwtAuthenticationConverter jwtAuthenticationConverter;
 
-    public McpIdentityProvider(McpSyncClient mcpClient) {
+    public McpIdentityProvider(McpSyncClient mcpClient, JwtDecoder jwtDecoder, JwtAuthenticationConverter jwtAuthenticationConverter) {
         this.mcpClient = mcpClient;
+        this.jwtDecoder = jwtDecoder;
+        this.jwtAuthenticationConverter = jwtAuthenticationConverter;
         this.toolCallbacks = new ArrayList<>();
         initializeToolCallbacks();
     }
@@ -37,7 +43,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             log.debug("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
             for (ToolCallback rawCallback : rawCallbacks) {
-                toolCallbacks.add(new IdentityToolCallback(rawCallback));
+                toolCallbacks.add(new IdentityToolCallback(rawCallback, jwtDecoder, jwtAuthenticationConverter));
                 log.debug("Wrapped MCP tool: {}", rawCallback.getToolDefinition().name());
             }
         } catch (Exception exception) {

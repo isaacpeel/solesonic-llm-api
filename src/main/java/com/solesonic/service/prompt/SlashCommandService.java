@@ -25,6 +25,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import tools.jackson.core.type.TypeReference;
@@ -53,6 +55,8 @@ public class SlashCommandService {
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
     private final OllamaChatModel taskChatModel;
+    private final JwtDecoder jwtDecoder;
+    private final JwtAuthenticationConverter jwtAuthenticationConverter;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -61,6 +65,8 @@ public class SlashCommandService {
                                OllamaApi ollamaApi,
                                Optional<A2AAgentRegistry> a2aAgentRegistry,
                                LocalToolRegistry localToolRegistry,
+                               JwtDecoder jwtDecoder,
+                               JwtAuthenticationConverter jwtAuthenticationConverter,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup,
                                @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
@@ -71,6 +77,8 @@ public class SlashCommandService {
         this.warmupOnStartup = warmupOnStartup;
         this.a2aAgentRegistry = a2aAgentRegistry;
         this.localToolRegistry = localToolRegistry;
+        this.jwtDecoder = jwtDecoder;
+        this.jwtAuthenticationConverter = jwtAuthenticationConverter;
 
         mcpSyncClient = mcpSyncClients.getFirst();
 
@@ -87,7 +95,7 @@ public class SlashCommandService {
     public ChatClient taskClient(ToolCallback toolCallback) {
         log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
-        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback);
+        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder, jwtAuthenticationConverter);
 
         return ChatClient.builder(taskChatModel)
                 .defaultTools(identityToolCallback)

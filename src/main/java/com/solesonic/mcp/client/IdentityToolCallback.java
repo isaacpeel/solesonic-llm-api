@@ -9,6 +9,12 @@ import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
 import org.springframework.ai.tool.metadata.ToolMetadata;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import reactor.util.context.Context;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
@@ -41,10 +47,14 @@ public class IdentityToolCallback implements ToolCallback {
 
     private final ToolCallback delegate;
     private final ToolMetadata toolMetadata;
+    private final JwtDecoder jwtDecoder;
+    private final JwtAuthenticationConverter jwtAuthenticationConverter;
 
-    public IdentityToolCallback(ToolCallback tool) {
+    public IdentityToolCallback(ToolCallback tool, JwtDecoder jwtDecoder, JwtAuthenticationConverter jwtAuthenticationConverter) {
 
         this.delegate = tool;
+        this.jwtDecoder = jwtDecoder;
+        this.jwtAuthenticationConverter = jwtAuthenticationConverter;
 
         boolean returnDirect = tool.getToolMetadata().returnDirect();
         this.toolMetadata = ToolMetadata.builder()
@@ -104,10 +114,20 @@ public class IdentityToolCallback implements ToolCallback {
         Context reactiveContext = Context.of(SECURITY_CONTEXT_KEY, contextMap);
         TOOL_CALL_CONTEXT.set(reactiveContext);
 
+        Jwt jwt = jwtDecoder.decode(userToken);
+        Authentication authentication = jwtAuthenticationConverter.convert(jwt);
+
+        SecurityContext securityContext = SecurityContextHolder.createEmptyContext();
+        securityContext.setAuthentication(authentication);
+        SecurityContextHolder.setContext(securityContext);
+
+        log.info("Security context authentication restored for tool call: {}", delegate.getToolDefinition().name());
+
         try {
             String rawResult = delegate.call(toolCallInput, filteredToolContext);
             return extractText(rawResult);
         } finally {
+            SecurityContextHolder.clearContext();
             TOOL_CALL_CONTEXT.remove();
         }
     }

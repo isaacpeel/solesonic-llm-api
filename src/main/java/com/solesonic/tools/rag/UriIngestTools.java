@@ -29,7 +29,7 @@ public class UriIngestTools implements LocalTool {
 
     @SuppressWarnings("unused")
     @Tool(name = URI_INGEST, description = "Adds a uri to the RAG ingestion queue so its content can be fetched and embedded into the vector store. Use responsibly and ensure no repeated calls for the same uri.")
-    @PreAuthorize("hasAuthority('ROLE_RAG-ADMIN')")
+    @PreAuthorize("hasAuthority('ROLE_rag-admin')")
     public UriIngestResponse uriIngest(UriIngestRequest request) {
         log.debug("Invoking uri ingest tool");
         log.debug("Uri: {}", request.uri);
