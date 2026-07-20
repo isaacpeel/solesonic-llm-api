@@ -1,6 +1,5 @@
 package com.solesonic.api.ollama;
 
-import com.solesonic.model.training.StatusHistory;
 import com.solesonic.model.training.TrainingDocument;
 import com.solesonic.service.ollama.StatusHistoryService;
 import com.solesonic.service.rag.TrainingDocumentService;
