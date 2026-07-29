@@ -1,11 +1,13 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.util.AttachmentContextFormatter;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +24,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service()
 public class ChatMessageService {
@@ -101,6 +104,15 @@ public class ChatMessageService {
         if(CollectionUtils.isNotEmpty(chatMessages)) {
             List<Message> messages = new ArrayList<>(chatMessages.size());
 
+            // Image context has to be replayed, or a follow-up question about an attached image
+            // reaches the model with no idea an image was ever involved. One query per chat, not
+            // per message; the descriptions were generated when the image was first sent, so this
+            // never calls the vision model.
+            Map<UUID, List<ChatAttachmentDescription>> descriptionsByMessageId = chatAttachmentService
+                    .descriptions(chatId)
+                    .stream()
+                    .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
+
             for(ChatMessage chatMessage : chatMessages) {
                 if (chatMessage.getProgressData() != null) {
                     continue;
@@ -113,7 +125,8 @@ public class ChatMessageService {
                 switch (chatMessage.getMessageType()) {
                     case USER -> {
                         assert messageText != null;
-                        message = new UserMessage(messageText);
+                        message = new UserMessage(AttachmentContextFormatter.prepend(messageText,
+                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of())));
                     }
                     case ASSISTANT -> {
                         assert messageText != null;

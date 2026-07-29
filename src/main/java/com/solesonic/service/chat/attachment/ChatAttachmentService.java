@@ -1,6 +1,7 @@
 package com.solesonic.service.chat.attachment;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
@@ -92,6 +93,45 @@ public class ChatAttachmentService {
     @Transactional(readOnly = true)
     public List<ChatAttachmentSummary> forChat(UUID chatId) {
         return chatAttachmentRepository.findSummariesByChatId(chatId);
+    }
+
+    /**
+     * Loads the attachments named by one send, image bytes included, so they can be described.
+     * <p>
+     * {@code userId} is a parameter rather than read from {@link UserRequestContext} for the same
+     * reason it is on {@link #bind}: this runs on a {@code boundedElastic} thread with no request
+     * scope bound.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachment> attachments(UUID userId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
+
+        return chatAttachmentRepository.findByIdInAndUserIdOrderByCreatedAsc(attachmentIds, userId);
+    }
+
+    /**
+     * Records the generated description in its own short transaction. The vision call that produced
+     * it takes seconds, and must not be made inside a transaction holding a pooled connection.
+     */
+    @Transactional
+    public void saveVisionDescription(UUID attachmentId, String visionDescription, String visionModel) {
+        chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
+            chatAttachment.setVisionDescription(visionDescription);
+            chatAttachment.setVisionModel(visionModel);
+
+            chatAttachmentRepository.save(chatAttachment);
+        });
+    }
+
+    /**
+     * Descriptions of every described attachment bound to a chat, for replaying image context into
+     * earlier turns of the conversation.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentDescription> descriptions(UUID chatId) {
+        return chatAttachmentRepository.findDescriptionsByChatId(chatId);
     }
 
     /**

@@ -10,6 +10,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.service.vision.ImageDescriptionService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,6 +70,8 @@ class PromptServiceTest {
     @Mock
     private VectorStoreService vectorStoreService;
     @Mock
+    private ImageDescriptionService imageDescriptionService;
+    @Mock
     private Authentication authentication;
     @Mock
     private Jwt jwt;
@@ -96,12 +99,17 @@ class PromptServiceTest {
                 toolCallService,
                 a2aAgentService,
                 a2aStickyAgentService,
-                vectorStoreService);
+                vectorStoreService,
+                imageDescriptionService);
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
 
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
+
+        //No attachments in most tests: augment returns the message untouched.
+        lenient().when(imageDescriptionService.augment(any(), any(), anyString(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(2));
         lenient().when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("llama3"));
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class)))
                 .thenReturn(mock(Advisor.class));
@@ -241,6 +249,55 @@ class PromptServiceTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).activate(chatId, "weather-agent");
+    }
+
+    @Test
+    void stream_withAttachments_sendsTheAugmentedMessageToTheModel() {
+        UUID attachmentId = UUID.randomUUID();
+        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(attachmentId));
+        String augmented = "Image 1 — screenshot.png:\na login screen\n\nwhat is this?";
+
+        when(imageDescriptionService.augment(chatId, userId, "what is this?", Set.of(attachmentId)))
+                .thenReturn(augmented);
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
+        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
+        stubBasicPromptChain(Flux.just("that is a login screen"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("that is a login screen")
+                .verifyComplete();
+
+        verify(requestSpec).user(augmented);
+
+        // The MCP prompt template renders from the user's own words, not the description block.
+        verify(mcpClient).getPrompt(argThat(request ->
+                "what is this?".equals(request.arguments().get(PromptService.USER_MESSAGE))));
+    }
+
+    @Test
+    void stream_withToolSlashCommandAndAttachments_sendsTheOriginalMessage() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        when(mcpTool.name()).thenReturn("search");
+        when(mcpTool.description()).thenReturn("Search tool");
+        ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
+        UUID attachmentId = UUID.randomUUID();
+        ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"), Set.of(attachmentId));
+
+        when(imageDescriptionService.augment(chatId, userId, "search for cats", Set.of(attachmentId)))
+                .thenReturn("Image 1 — cat.png:\na cat\n\nsearch for cats");
+        when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+                .thenReturn(Flux.just("tool-result"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("tool-result")
+                .verifyComplete();
+
+        // Image descriptions must not reach a tool's arguments.
+        verify(toolCallService).stream(eq(chatId), eq("search for cats"), eq(toolCommand), any());
     }
 
     @Test

@@ -76,6 +76,12 @@ The `chat_attachment` table (V3_4) stores images attached to chat messages. Imag
 a `bytea` column — deliberately not the `oid` large object used by `training_document`, because
 attachments are routinely deleted and large objects would be orphaned in `pg_largeobject`. A row
 with a null `chat_message_id` is *staged*: uploaded but not yet sent on a message.
+
+`vision_description` and `vision_model` (V3_5) hold the description a vision model produced for the
+image, and the name of the model that produced it. A null `vision_description` means the image has
+not been described yet, which is what makes describing it retryable; the stored text is reused on
+every later turn instead of calling the model again. To re-describe everything after changing models:
+`update public.chat_attachment set vision_description = null where vision_model = '<old model>';`
    - Status history
 
 2. **V2_x**: Schema updates including:

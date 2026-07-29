@@ -97,6 +97,30 @@ Upload size is bounded by `spring.servlet.multipart.max-file-size` rather than a
 | `ATTACHMENT_SWEEP_ENABLED` | Enable the staged-attachment sweep task | `true` | No | Default: false |
 | `ATTACHMENT_SWEEP_CRON` | Sweep schedule | `0 0 * * * *` | No | Default: hourly. Only read when the sweep is enabled |
 
+### Vision Configuration
+
+Image attachments are described by a vision model, and that description is what the chat model sees —
+the image bytes are never sent to it. A description is generated once per attachment and stored, so
+later turns reuse it without another vision call.
+
+The vision model is configured independently of the chat model, so it can run on different hardware.
+Both variables are **required**: the application will not start without them.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `VISION_MODEL` | Ollama model used to describe images | `qwen2.5vl` | Yes | Must be vision-capable. A text-only model produces confident nonsense rather than an error |
+| `VISION_OLLAMA_HOST` | Ollama base URL for the vision model | `http://izzy-bot-spark:11434` | Yes | A **full base URL**, like `ETL_OLLAMA_HOST` — not the bare hostname that `OLLAMA_HOST` holds |
+
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.llm.vision.ollama.read-timeout=5m` — a cold vision-model load outlives the default
+  read timeout.
+- `solesonic.llm.vision.max-image-bytes=5MB` — images above this are left undescribed rather than
+  stalling the turn.
+
+The model is pulled on startup if missing (`WHEN_MISSING`), so the first boot against a host without
+the model will download it before the application becomes ready.
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |

@@ -11,6 +11,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.service.vision.ImageDescriptionService;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.CollectionUtils;
@@ -50,6 +51,7 @@ public class PromptService {
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final VectorStoreService vectorStoreService;
+    private final ImageDescriptionService imageDescriptionService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -63,7 +65,8 @@ public class PromptService {
             ToolCallService toolCallService,
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,
-            VectorStoreService vectorStoreService) {
+            VectorStoreService vectorStoreService,
+            ImageDescriptionService imageDescriptionService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
@@ -73,6 +76,7 @@ public class PromptService {
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.vectorStoreService = vectorStoreService;
+        this.imageDescriptionService = imageDescriptionService;
     }
 
     public String model(UUID userId) {
@@ -84,6 +88,12 @@ public class PromptService {
         String model = model(userId);
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
+
+        // Image attachments reach the model as text: descriptions produced by a separate vision
+        // model, prepended to the user's message. Tool routes keep the original message on purpose
+        // — see the ToolSlashCommand branch below.
+        String augmentedMessage = imageDescriptionService
+                .augment(chatId, userId, message, chatMessage.attachmentIds());
 
         Object principal = authentication.getPrincipal();
 
@@ -105,12 +115,14 @@ public class PromptService {
                         if (stickyAgent.isPresent()) {
                             log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                            return a2aAgentService.delegate(chatId, stickyAgent.get(), message, authToken);
+                            //The remote agent is text-only, so a description is the only way it
+                            //learns that an image was attached at all.
+                            return a2aAgentService.delegate(chatId, stickyAgent.get(), augmentedMessage, authToken);
                         }
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, contextMap, model);
+                        return streamBasicPrompt(chatId, userId, message, augmentedMessage, contextMap, model);
                     });
         }
 
@@ -129,7 +141,10 @@ public class PromptService {
                         .build();
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message);
+
+                //The MCP call above renders a prompt template and wants the user's actual words;
+                //the prompt sent to the model carries the image descriptions too.
+                Prompt prompt = promptCommand.buildPrompt(getPromptResult, augmentedMessage);
 
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(chatClient.prompt(prompt)
@@ -140,6 +155,9 @@ public class PromptService {
                                 .stream()
                                 .content());
             }
+            //Tool routes get the original message, not the augmented one: the task prompt tells the
+            //model to invoke the tool with the exact user message as input, so prepending image
+            //descriptions would put image prose into the tool's arguments.
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
                     .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
             case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
@@ -148,20 +166,25 @@ public class PromptService {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
                 yield a2aStickyAgentService.activate(chatId, agentCommand.command())
-                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(), message, authToken));
+                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(), augmentedMessage, authToken));
             }
         };
     }
 
+    /**
+     * @param message          the user's own words, used to render the MCP prompt template
+     * @param augmentedMessage the same message plus any image descriptions, sent to the model
+     */
     private Flux<String> streamBasicPrompt(UUID chatId,
                                            UUID userId,
                                            String message,
+                                           String augmentedMessage,
                                            Map<String, Object> contextMap,
                                            String model) {
         String systemText = loadBasicPromptSystemText(message);
 
         var promptSpec = chatClient.prompt()
-                .user(message)
+                .user(augmentedMessage)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)

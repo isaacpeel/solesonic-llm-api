@@ -1,6 +1,7 @@
 package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
@@ -15,6 +16,29 @@ import java.util.UUID;
 public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, UUID> {
 
     Optional<ChatAttachment> findByIdAndUserId(UUID attachmentId, UUID userId);
+
+    /**
+     * Loads whole rows — image bytes included — for the attachments named by one send. User-scoped
+     * for the same reason {@link #findByIdAndUserId} is, and ordered so that image numbering in the
+     * prompt is stable across turns; {@code attachmentIds} arrives as an unordered set.
+     */
+    List<ChatAttachment> findByIdInAndUserIdOrderByCreatedAsc(Set<UUID> attachmentIds, UUID userId);
+
+    /**
+     * Filtering on {@code chatId} restricts this to bound rows, and the
+     * {@code chat_attachment_bound_together} check constraint then guarantees a non-null
+     * {@code chatMessageId} — which is what makes grouping by it safe for callers.
+     */
+    @Query("""
+            select new com.solesonic.model.chat.attachment.ChatAttachmentDescription(
+                       attachment.chatMessageId, attachment.fileName,
+                       attachment.description, attachment.visionDescription)
+              from ChatAttachment attachment
+             where attachment.chatId = :chatId
+               and attachment.visionDescription is not null
+             order by attachment.created asc
+           """)
+    List<ChatAttachmentDescription> findDescriptionsByChatId(UUID chatId);
 
     @Query("""
             select new com.solesonic.model.chat.attachment.ChatAttachmentSummary(

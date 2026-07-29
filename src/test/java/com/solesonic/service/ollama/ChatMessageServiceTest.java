@@ -1,5 +1,6 @@
 package com.solesonic.service.ollama;
 
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
@@ -39,7 +40,6 @@ class ChatMessageServiceTest {
     private UserPreferencesRepository userPreferencesRepository;
 
     @Mock
-    @SuppressWarnings("unused")
     private ChatAttachmentService chatAttachmentService;
 
     @InjectMocks
@@ -49,11 +49,16 @@ class ChatMessageServiceTest {
 
     private ChatMessage chatMessage(MessageType messageType, String text) {
         ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setId(UUID.randomUUID());
         chatMessage.setChatId(chatId);
         chatMessage.setMessageType(messageType);
         chatMessage.setMessage(text);
 
         return chatMessage;
+    }
+
+    private ChatAttachmentDescription description(UUID chatMessageId, String visionDescription) {
+        return new ChatAttachmentDescription(chatMessageId, "screenshot.png", null, visionDescription);
     }
 
     @Test
@@ -92,6 +97,62 @@ class ChatMessageServiceTest {
         List<Message> messages = chatMessageService.findByChatId(chatId);
 
         assertThat(messages).isEmpty();
+    }
+
+    @Test
+    void findByChatIdReplaysImageDescriptionsIntoEarlierUserTurns() {
+        ChatMessage withImage = chatMessage(MessageType.USER, "what is this?");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                withImage,
+                chatMessage(MessageType.ASSISTANT, "a login screen")));
+        when(chatAttachmentService.descriptions(chatId))
+                .thenReturn(List.of(description(withImage.getId(), "a login form with two fields")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages.getFirst().getText())
+                .contains("a login form with two fields")
+                .endsWith("what is this?");
+    }
+
+    @Test
+    void findByChatIdLeavesUserTurnsWithoutAttachmentsAlone() {
+        ChatMessage withImage = chatMessage(MessageType.USER, "what is this?");
+        ChatMessage withoutImage = chatMessage(MessageType.USER, "and this?");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                withImage,
+                withoutImage,
+                chatMessage(MessageType.ASSISTANT, "two screens")));
+        when(chatAttachmentService.descriptions(chatId))
+                .thenReturn(List.of(description(withImage.getId(), "a login form")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages.get(1).getText()).isEqualTo("and this?");
+    }
+
+    /**
+     * The in-flight turn's descriptions are injected by the prompt path, not here. If this row were
+     * kept, the current turn's image context would reach the model twice.
+     */
+    @Test
+    void findByChatIdDoesNotReplayDescriptionsForTheInFlightTurn() {
+        ChatMessage inFlight = chatMessage(MessageType.USER, "in-flight question");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                chatMessage(MessageType.USER, "first question"),
+                chatMessage(MessageType.ASSISTANT, "first answer"),
+                inFlight));
+        when(chatAttachmentService.descriptions(chatId))
+                .thenReturn(List.of(description(inFlight.getId(), "a login form")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).hasSize(2);
+        assertThat(messages).extracting(Message::getText)
+                .noneMatch(text -> text != null && text.contains("a login form"));
     }
 
     @Test
