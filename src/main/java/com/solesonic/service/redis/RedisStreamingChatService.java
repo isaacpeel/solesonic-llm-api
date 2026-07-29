@@ -2,6 +2,7 @@ package com.solesonic.service.redis;
 
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.InitPayload;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
@@ -95,14 +96,24 @@ public class RedisStreamingChatService {
             return redisStreamService.subscribe(chatId, userId, lastEventId);
         }
 
-        //Start a chat stream with an init event
+        //Persist the user message, then start a chat stream with an init event carrying its id.
+        //The save has to happen here rather than in publishToRedisStream, which runs after the
+        //init event has already been published.
         return redisStreamService.getLatestOffset(chatId, userId)
-                .flatMap(offset -> redisStreamService.publish(chatId, userId, INIT)
-                        .thenReturn(offset))
-                .flatMapMany(offset -> {
+                .flatMap(offset -> Mono
+                        .fromCallable(() -> chatMessageService.saveUserMessage(chatId, userId, chatRequest))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .map(chatMessage -> new StreamStart(offset, chatMessage)))
+                .flatMap(streamStart -> redisStreamService
+                        .publish(chatId, userId, INIT, new InitPayload(chatId, streamStart.chatMessage().getId()))
+                        .thenReturn(streamStart))
+                .flatMapMany(streamStart -> {
                     publishToRedisStream(chatId, userId, chatRequest, authentication);
-                    return redisStreamService.subscribe(chatId, userId, offset);
+                    return redisStreamService.subscribe(chatId, userId, streamStart.offset());
                 });
+    }
+
+    private record StreamStart(String offset, ChatMessage chatMessage) {
     }
 
     private void publishToRedisStream(UUID chatId,

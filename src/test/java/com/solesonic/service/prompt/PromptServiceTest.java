@@ -147,7 +147,7 @@ class PromptServiceTest {
     @Test
     void stream_withNonJwtPrincipal_throwsIllegalStateException() {
         when(authentication.getPrincipal()).thenReturn("not-a-jwt");
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
 
         assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
@@ -155,7 +155,7 @@ class PromptServiceTest {
 
     @Test
     void stream_withNoCommandsAndStickyAgentPresent_delegatesToA2AAgent() {
-        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of());
+        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of(), Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.of("weather-agent")));
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
@@ -171,7 +171,7 @@ class PromptServiceTest {
 
     @Test
     void stream_withNoCommandsAndNoStickyAgent_routesToBasicPrompt() {
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.empty()));
         McpSchema.GetPromptResult getPromptResult = basicPromptResult();
@@ -189,7 +189,7 @@ class PromptServiceTest {
     @Test
     void stream_withPromptSlashCommand_fetchesMcpPromptAndStreams() {
         PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
-        ChatRequest chatRequest = new ChatRequest("tell me something", Set.of("/ask"));
+        ChatRequest chatRequest = new ChatRequest("tell me something", Set.of("/ask"), Set.of());
         when(slashCommandService.commands(Set.of("/ask"))).thenReturn(List.of(promptCommand));
 
         McpSchema.TextContent userContent = new McpSchema.TextContent(null, "tell me something", null);
@@ -213,7 +213,7 @@ class PromptServiceTest {
         when(mcpTool.name()).thenReturn("search");
         when(mcpTool.description()).thenReturn("Search tool");
         ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
-        ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"));
+        ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"), Set.of());
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
@@ -230,7 +230,7 @@ class PromptServiceTest {
     @Test
     void stream_withAgentSlashCommand_activatesStickyAndDelegates() {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
-        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of("weather-agent"));
+        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of("weather-agent"), Set.of());
         when(slashCommandService.commands(Set.of("weather-agent"))).thenReturn(List.of(agentCommand));
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))

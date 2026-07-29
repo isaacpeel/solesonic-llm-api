@@ -71,6 +71,11 @@ The migrations are organized in major versions:
    - User preferences
    - Vector store
    - Chats and chat messages
+
+The `chat_attachment` table (V3_4) stores images attached to chat messages. Image bytes are held in
+a `bytea` column — deliberately not the `oid` large object used by `training_document`, because
+attachments are routinely deleted and large objects would be orphaned in `pg_largeobject`. A row
+with a null `chat_message_id` is *staged*: uploaded but not yet sent on a message.
    - Status history
 
 2. **V2_x**: Schema updates including:

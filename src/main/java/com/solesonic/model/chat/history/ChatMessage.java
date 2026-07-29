@@ -1,12 +1,14 @@
 package com.solesonic.model.chat.history;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 import org.springframework.ai.chat.messages.MessageType;
 
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -44,6 +46,9 @@ public class ChatMessage {
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> progressData;
+
+    @Transient
+    private List<ChatAttachmentSummary> attachments;
 
     public UUID getId() {
         return id;
@@ -124,5 +129,13 @@ public class ChatMessage {
 
     public void setProgressData(Map<String, Object> progressData) {
         this.progressData = progressData;
+    }
+
+    public List<ChatAttachmentSummary> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<ChatAttachmentSummary> attachments) {
+        this.attachments = attachments;
     }
 }

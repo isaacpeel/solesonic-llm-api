@@ -52,20 +52,39 @@ Both streaming endpoints emit the following SSE event types:
 
 | Event | Description |
 |-------|-------------|
-| `init` | Initialization marker sent at stream start |
+| `init` | Sent at stream start. Payload carries the persisted user message id — see below |
 | `chunk` | Incremental assistant response text |
 | `elicitation` | Interactive form request from an MCP tool |
 | `cancel` | Emitted when a user cancels an elicitation |
 | `done` | Final event containing the structured chat response |
+
+### init Event Payload
+
+```json
+{
+  "chatId": "0a4b...",
+  "messageId": "7f3c..."
+}
+```
+
+`messageId` is the id of the user message persisted at the start of the turn. Clients that
+uploaded attachments (see [Chat Attachments](#chat-attachments)) use it to associate them with the
+rendered message. Clients that ignore the `init` body are unaffected.
 
 ### ChatRequest Body
 
 ```json
 {
   "chatMessage": "Your message here",
-  "model": "qwen2.5:7b"
+  "commands": ["/ask"],
+  "attachmentIds": ["3f9a...", "b721..."]
 }
 ```
+
+- `commands` (optional): slash commands to invoke for this turn.
+- `attachmentIds` (optional): ids returned by `POST /attachments`. Every id must be one the caller
+  uploaded and has not already sent, otherwise the turn is rejected with `409 Conflict` and no
+  message is persisted.
 
 ### Submit Elicitation Response
 
@@ -385,6 +404,61 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 
 ---
 
+## Chat Attachments
+
+Images attached to a chat message. An attachment is uploaded **before** the message exists — it is
+staged against the uploading user, then claimed by a message when the client names its id in
+`ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
+`solesonic.llm.attachment.staged-ttl`.
+
+Accepted content types: `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Upload size is bounded
+by `spring.servlet.multipart.max-file-size`.
+
+### Upload an Attachment
+
+- **Endpoint**: `POST /attachments`
+- **Consumes**: `multipart/form-data`
+- **Form Parameters**:
+  - `file` (required): the image
+  - `description` (optional): free text describing what the image contains
+- **Response**: `201 Created`, `Location` header, and the attachment summary
+
+```json
+{
+  "id": "3f9a...",
+  "chatMessageId": null,
+  "fileName": "screenshot.png",
+  "description": "the login screen",
+  "contentType": "image/png",
+  "fileSizeBytes": 20481
+}
+```
+
+`chatMessageId` stays `null` until a message claims the attachment.
+
+### Download an Attachment
+
+- **Endpoint**: `GET /attachments/{attachmentId}`
+- **Response**: raw image bytes with the stored content type, a strong `ETag`, and a long-lived
+  `Cache-Control` — bytes never change once written, so repeat history loads revalidate rather than
+  re-download.
+
+### Delete an Attachment
+
+- **Endpoint**: `DELETE /attachments/{attachmentId}`
+- **Response**: `204 No Content`
+
+Works whether or not the attachment has been claimed by a message. Deleting a claimed attachment
+leaves the message itself intact.
+
+### Attachments in Chat History
+
+`GET /chats/{chatId}` and `GET /chats/users/{userId}` return each `ChatMessage` with an
+`attachments` array of the same summary shape. Bytes are not included; fetch them from
+`GET /attachments/{attachmentId}`.
+
+---
+
 ## Error Handling
 
 ### Standard HTTP Status Codes
@@ -396,6 +470,9 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 - `401 Unauthorized` - Authentication required or invalid token
 - `403 Forbidden` - Access denied for the requested resource
 - `404 Not Found` - Resource not found
+- `409 Conflict` - An attachment named in `attachmentIds` was already sent on another message
+- `413 Content Too Large` - Upload exceeds the configured multipart limit
+- `415 Unsupported Media Type` - Attachment content type is not an accepted image type
 - `500 Internal Server Error` - Server error
 
 ---

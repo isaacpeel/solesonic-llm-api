@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -44,6 +45,12 @@ public class DatabaseChatMemory implements ChatMemory {
         UUID chatId = UUID.fromString(conversationId);
 
         for (Message message : messages) {
+            // User messages are persisted by the caller before the stream starts, so that their id
+            // is known up front. Saving them again here would duplicate every turn.
+            if (message.getMessageType() == MessageType.USER) {
+                continue;
+            }
+
             String sanitizedText = sanitize(message.getText());
 
             if (sanitizedText == null) {

@@ -1,15 +1,19 @@
 package com.solesonic.service.ollama;
 
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 public class ChatService {
@@ -17,6 +21,7 @@ public class ChatService {
 
     private final ChatRepository chatRepository;
     private final ChatMessageRepository chatMessageRepository;
+    private final ChatAttachmentService chatAttachmentService;
 
     private String removeThinkTags(String message) {
         if (message == null) {
@@ -27,9 +32,11 @@ public class ChatService {
 
     public ChatService(
             ChatRepository chatRepository,
-            ChatMessageRepository chatMessageRepository) {
+            ChatMessageRepository chatMessageRepository,
+            ChatAttachmentService chatAttachmentService) {
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
+        this.chatAttachmentService = chatAttachmentService;
     }
 
     public List<Chat> getByUserId(UUID userId) {
@@ -37,17 +44,7 @@ public class ChatService {
         List<Chat> chats = chatRepository.findByUserId(userId);
 
         for (Chat chat : chats) {
-            List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chat.getId());
-
-            // Remove <think>...</think> tags from each message
-            for (ChatMessage chatMessage : chatMessages) {
-                String message = chatMessage.getMessage();
-                if (message != null) {
-                    chatMessage.setMessage(removeThinkTags(message));
-                }
-            }
-
-            chat.setChatMessages(chatMessages);
+            chat.setChatMessages(chatMessages(chat.getId()));
         }
 
         return chats;
@@ -60,18 +57,29 @@ public class ChatService {
             return null;
         }
 
+        chat.setChatMessages(chatMessages(chatId));
+
+        return chat;
+    }
+
+    private List<ChatMessage> chatMessages(UUID chatId) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 
-        // Remove <think>...</think> tags from each message
+        // One attachment query per chat, not per message.
+        Map<UUID, List<ChatAttachmentSummary>> attachmentsByMessageId = chatAttachmentService.forChat(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+
         for (ChatMessage chatMessage : chatMessages) {
+            // Remove <think>...</think> tags from each message
             String message = chatMessage.getMessage();
             if (message != null) {
                 chatMessage.setMessage(removeThinkTags(message));
             }
+
+            chatMessage.setAttachments(attachmentsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
         }
 
-        chat.setChatMessages(chatMessages);
-
-        return chat;
+        return chatMessages;
     }
 }

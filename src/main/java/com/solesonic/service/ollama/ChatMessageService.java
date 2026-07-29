@@ -1,17 +1,21 @@
 package com.solesonic.service.ollama;
 
+import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -24,14 +28,17 @@ public class ChatMessageService {
     private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
     private final ChatMessageRepository chatMessageRepository;
     private final UserPreferencesRepository userPreferencesRepository;
+    private final ChatAttachmentService chatAttachmentService;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
-                              UserPreferencesRepository userPreferencesRepository) {
+                              UserPreferencesRepository userPreferencesRepository,
+                              ChatAttachmentService chatAttachmentService) {
         this.chatMessageRepository = chatMessageRepository;
         this.userPreferencesRepository = userPreferencesRepository;
+        this.chatAttachmentService = chatAttachmentService;
     }
 
-    public void save(ChatMessage message) {
+    public ChatMessage save(ChatMessage message) {
         UUID chatId = message.getChatId();
 
         log.debug("Saving chat message with id {}", chatId);
@@ -43,7 +50,33 @@ public class ChatMessageService {
         String chatModel = userPreferences.getModel();
         message.setModel(chatModel);
         message.setTimestamp(ZonedDateTime.now());
-        chatMessageRepository.save(message);
+
+        return chatMessageRepository.save(message);
+    }
+
+    /**
+     * Persists the in-flight user message before the stream starts, so its id is known and can be
+     * published on the {@code init} event.
+     * <p>
+     * This is deliberately the caller's job rather than the chat memory advisor's: the advisor never
+     * runs on the A2A route, so user messages were previously not persisted there at all.
+     * {@link com.solesonic.config.olllama.DatabaseChatMemory} skips {@code USER} messages to avoid
+     * saving them twice.
+     */
+    @Transactional
+    public ChatMessage saveUserMessage(UUID chatId, UUID userId, ChatRequest chatRequest) {
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.USER);
+        chatMessage.setMessage(chatRequest.chatMessage());
+
+        ChatMessage saved = save(chatMessage);
+
+        //Inside the transaction on purpose: a turn that cannot claim its attachments must not
+        //persist a message either.
+        chatAttachmentService.bind(userId, chatId, saved.getId(), chatRequest.attachmentIds());
+
+        return saved;
     }
 
     public void updateElicitationResponse(UUID chatId, UUID elicitationId, Map<String, Object> elicitationResponse) {
@@ -56,6 +89,14 @@ public class ChatMessageService {
 
     public List<Message> findByChatId(UUID chatId) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
+
+        // The in-flight user message is persisted before the stream starts, and the chat memory
+        // advisor supplies it again as the live user message. Without dropping it here the model
+        // would see the current turn twice, every turn.
+        if (CollectionUtils.isNotEmpty(chatMessages)
+                && chatMessages.getLast().getMessageType() == MessageType.USER) {
+            chatMessages = chatMessages.subList(0, chatMessages.size() - 1);
+        }
 
         if(CollectionUtils.isNotEmpty(chatMessages)) {
             List<Message> messages = new ArrayList<>(chatMessages.size());
