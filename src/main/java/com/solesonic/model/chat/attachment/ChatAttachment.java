@@ -12,6 +12,7 @@ import org.hibernate.type.SqlTypes;
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
+@SuppressWarnings("unused")
 @Entity
 public class ChatAttachment {
     @Id
