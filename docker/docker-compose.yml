@@ -9,14 +9,13 @@ services:
       dockerfile: docker/Dockerfile
     image: solesonic-llm-api:latest
     container_name: solesonic-llm-api
-    ports:
-      - "8080:8080"
+    network_mode: host
     environment:
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - SERVER_PORT=8080
-      - SPRING_DATA_REDIS_HOST=solesonic-llm-api-redis
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://solesonic-llm-api-db:5432/${POSTGRES_DB}
+      - SPRING_DATA_REDIS_HOST=localhost
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/${POSTGRES_DB}
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
     depends_on:
@@ -24,8 +23,6 @@ services:
         condition: service_healthy
       solesonic-llm-api-postgres:
         condition: service_healthy
-    networks:
-      - solesonic-network
 
   solesonic-llm-api-redis:
     env_file:
