@@ -36,6 +36,7 @@ public class ChatAttachmentController {
     @PostMapping
     public ResponseEntity<ChatAttachmentSummary> upload(@RequestParam MultipartFile file,
                                                         @RequestParam(required = false) String description) {
+        log.info("Uploading attachment.");
         ChatAttachmentSummary chatAttachmentSummary = chatAttachmentService.stage(file, description);
 
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
@@ -48,7 +49,7 @@ public class ChatAttachmentController {
 
     @GetMapping("/{attachmentId}")
     public ResponseEntity<byte[]> download(@PathVariable UUID attachmentId) {
-        log.debug("Downloading attachment {}", attachmentId);
+        log.info("Downloading attachment {}", attachmentId);
 
         ChatAttachment chatAttachment = chatAttachmentService.get(attachmentId);
 
@@ -61,6 +62,7 @@ public class ChatAttachmentController {
 
     @DeleteMapping("/{attachmentId}")
     public ResponseEntity<Void> delete(@PathVariable UUID attachmentId) {
+        log.info("Deleting attachment: {}", attachmentId);
         chatAttachmentService.delete(attachmentId);
 
         return ResponseEntity.noContent().build();
