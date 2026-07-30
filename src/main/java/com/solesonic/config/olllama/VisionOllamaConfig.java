@@ -39,7 +39,7 @@ public class VisionOllamaConfig {
 
         OllamaChatOptions options = OllamaChatOptions.builder()
                 .model(visionModel)
-                .numCtx(4096)
+                .numCtx(16384)
                 .numBatch(512)
                 .keepAlive("30m")
                 .temperature(0.2)
