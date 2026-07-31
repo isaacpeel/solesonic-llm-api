@@ -56,9 +56,44 @@ Both streaming endpoints emit the following SSE event types:
 | `chunk` | Incremental assistant response text |
 | `progress` | A long-running step started — an MCP tool, or the vision pass on one attached image |
 | `attachment` | Terminal outcome for one attached image — see below |
+| `image` | An image generated during this turn, by reference — see below |
 | `elicitation` | Interactive form request from an MCP tool |
 | `cancel` | Emitted when a user cancels an elicitation |
 | `done` | Final event containing the structured chat response |
+
+### image Event Payload
+
+Emitted when a turn generates an image — `/generate_image`, or the model calling the tool itself.
+The payload is a `GeneratedImageSummary`, identical in shape to the `complete` frame of
+[explicit generation](#image-generation):
+
+```json
+{
+  "imageId": "7c2f...",
+  "chatMessageId": null,
+  "imageUrl": "/izzybot/images/7c2f...",
+  "prompt": "a small red lighthouse",
+  "model": "FLUX.1-schnell",
+  "seed": 8339331079448168597,
+  "width": 1024,
+  "height": 1024,
+  "steps": 4,
+  "elapsedSeconds": 6.1,
+  "fileSizeBytes": 1502931,
+  "created": "2026-07-31T16:40:14Z"
+}
+```
+
+Never bytes. The image data stops at the API boundary and is fetched separately from `imageUrl`.
+
+The frame is emitted from the tool result, which lands before the model has written its first word,
+so it always arrives ahead of `chunk` text and well ahead of `done`. `chatMessageId` is `null` here —
+the assistant turn it belongs to has not been written yet — and is filled in by the time the same
+image appears in history.
+
+The same references are repeated on the `done` payload as `message.generatedImages`, so a client
+that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
+De-duplicate by `imageId`.
 
 ### init Event Payload
 
@@ -507,6 +542,129 @@ leaves the message itself intact.
 `described` is the durable half of the `attachment` stream event: it survives a reload, so an old
 conversation can still show that an image the assistant answered around was never actually read.
 
+### Generated Images in Chat History
+
+The same endpoints return each `ChatMessage` with a `generatedImages` array of
+`GeneratedImageSummary` — the durable half of the [`image` stream event](#image-event-payload). An
+assistant turn that generated no images carries an empty array.
+
+This is what makes a reloaded conversation render its images without regenerating them. Bytes are
+not included; fetch them from `GET /images/{imageId}`.
+
+---
+
+## Image Generation
+
+Text-to-image generation, backed by the `generate_image` MCP tool. The prompt is the whole input
+surface: size (1024x1024), step count, and the seed are fixed by the image server and are not
+caller-tunable.
+
+The call travels on the caller's own identity, so the user's JWT must carry the
+`mcp-generate-image` role. A token without it comes back as `FORBIDDEN`.
+
+There are two ways in, and the model never sees an image on either. The tool returns roughly 2MB of
+base64, which the API decodes once, stores, and replaces with a reference; nothing downstream carries
+the bytes.
+
+1. **Explicit** — `POST /images`, below. The model is not involved at all.
+2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
+   itself. The image is intercepted out of the tool result before that result re-enters the model's
+   context, and reaches the client as an [`image` stream event](#image-event-payload) and as
+   `message.generatedImages` on [`done`](#stream-event-types). It is persisted against the assistant
+   turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
+
+### Generate an Image (streaming)
+
+- **Endpoint**: `POST /images`
+- **Produces**: `text/event-stream`
+- **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
+
+The stream carries any number of `progress` frames followed by exactly one terminal frame, either
+`complete` or `error`.
+
+```
+event: progress
+data: {"percent":15,"message":"Queued as 4f1c8e2a-..."}
+
+event: progress
+data: {"percent":85,"message":"Generating…"}
+
+event: complete
+data: {"imageId":"7c2f...","chatMessageId":null,"imageUrl":"/izzybot/images/7c2f...","prompt":"a lighthouse ...",
+       "model":"FLUX.1-schnell","seed":8339331079448168597,"width":1024,"height":1024,"steps":4,
+       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z"}
+```
+
+`percent` is **approximate**. It is monotonic — it never goes backwards — but between 15 and 85 it
+is derived from an expected duration rather than real per-step progress, so it can sit at 85 for a
+while on a slow run. Show the `message` text; treat the number as a hint. It is `null` on a frame
+that carried no total.
+
+Closing the stream does not cancel the generation. The image is still produced and stored, and can
+be fetched by id afterwards.
+
+Typical latency is 5-15 seconds; the hard deadline is 180 seconds.
+
+### Generate an Image (non-streaming)
+
+- **Endpoint**: `POST /images/sync`
+- **Response**: `201 Created`, `Location` header, and the same body as the `complete` frame
+
+For scripts and tests. It blocks for the whole generation and reports failure as a status code
+rather than as an in-band frame. Its own path rather than the streaming one negotiated by `Accept`,
+because a client accepting any media type would match both handlers ambiguously.
+
+### Download a Generated Image
+
+- **Endpoint**: `GET /images/{imageId}`
+- **Auth**: same bearer token as every other endpoint
+- **Response**: raw image bytes, a strong `ETag` (the SHA-256 of the bytes), and a long-lived
+  `Cache-Control` — an image never changes once written
+
+Readable only by the user who generated it. The lookup is user-scoped, so another user's image is
+**`404`, not `403`** — deliberately, so the endpoint does not confirm that an id exists to someone
+who cannot read it.
+
+Because it requires a header, a bare `<img src>` will not work: fetch with the token and hand the
+result to the DOM as a blob URL. There are no pre-signed URLs — these are user-generated from
+free-text prompts, and an unauthenticated URL would be a capability that outlives the session.
+
+`imageUrl` on every payload is **context-relative** (`/izzybot/images/<uuid>`), not absolute, so it
+stays correct behind a proxy that rewrites the host.
+
+### Generated Image Metadata
+
+- **Endpoint**: `GET /images/{imageId}/metadata`
+- **Response**: the same body as the `complete` frame, without the bytes
+
+For rendering an image that arrived long before the current page load. `prompt` and `seed` together
+are the provenance record: the prompt is the image's `alt` text, and the seed is what lets someone
+say *this specific image* when reporting a problem. Every field except `imageId`, `imageUrl`,
+`prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
+text block, and an unparsed field costs a null rather than a failed generation.
+
+### Image Generation Errors
+
+Failures collapse onto a closed set of codes. The message is always user-safe; the underlying detail
+(including the image server's internal prompt id) is logged rather than returned.
+
+| Code | Status on `/images/sync` | Meaning |
+|---|---|---|
+| `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
+| `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
+| `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
+| `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |
+| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the image server's deadline |
+| `INTERNAL` | `500` | Anything else |
+
+On the streaming endpoint the same payload arrives as the terminal `error` frame, since the response
+status is already committed by the time a generation can fail:
+
+```
+event: error
+data: {"code":"GENERATION_TIMEOUT","message":"Image generation is taking longer than expected. Please try again."}
+```
+
 ---
 
 ## Error Handling
@@ -523,7 +681,10 @@ conversation can still show that an image the assistant answered around was neve
 - `409 Conflict` - An attachment named in `attachmentIds` was already sent on another message
 - `413 Content Too Large` - Upload exceeds the configured multipart limit
 - `415 Unsupported Media Type` - Attachment content type is not an accepted image type
+- `429 Too Many Requests` - Too many image generations already in flight
 - `500 Internal Server Error` - Server error
+- `503 Service Unavailable` - The image generation backend is unreachable or failed
+- `504 Gateway Timeout` - Image generation did not finish within the image server's deadline
 
 ---
 

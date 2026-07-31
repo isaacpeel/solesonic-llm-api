@@ -2,6 +2,7 @@ package com.solesonic.service.chat.events;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentEvent;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.a2aproject.sdk.spec.Message;
@@ -25,6 +26,7 @@ public class NotificationService {
     public static final String CHAT_ID = "chatId";
     public static final String PROGRESS = "progress";
     public static final String ATTACHMENT = "attachment";
+    public static final String IMAGE = "image";
 
     private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
     public static final String EVENT = "event";
@@ -78,6 +80,27 @@ public class NotificationService {
         redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
                 .subscribe(subscriberCount ->
                         log.debug("Emitted attachment event to {} subscribers for chat {}", subscriberCount, chatId));
+    }
+
+    /**
+     * Announces an image generated during this turn, on its own event name so the frontend renders
+     * it rather than routing it through progress and printing the JSON as step text.
+     * <p>
+     * Emitted from the tool result, which lands before the model has written a word — so it always
+     * reaches the client ahead of the {@code done} frame that finalises the assistant bubble.
+     * <p>
+     * Like {@link #emitAttachment} this writes no {@code SYSTEM} chat message: the durable half of
+     * the signal is the {@code generated_image} row, replayed onto the assistant message by
+     * {@code ChatService}.
+     */
+    public void emitGeneratedImage(UUID chatId, GeneratedImageSummary generatedImageSummary) {
+        log.info("Emitting generated image {} for chat {}", generatedImageSummary.imageId(), chatId);
+
+        String message = serializeEventMessage(IMAGE, generatedImageSummary);
+
+        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+                .subscribe(subscriberCount ->
+                        log.debug("Emitted image event to {} subscribers for chat {}", subscriberCount, chatId));
     }
 
     public void emitProgress(UUID chatId, Message a2aMessage) {

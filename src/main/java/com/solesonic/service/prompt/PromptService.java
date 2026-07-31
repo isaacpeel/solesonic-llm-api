@@ -34,6 +34,7 @@ import reactor.core.publisher.Flux;
 import java.util.*;
 
 import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
+import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
@@ -112,8 +113,12 @@ public class PromptService {
 
         String authToken = jwt.getTokenValue();
 
+        //userId rides along for tool results that persist something on the user's behalf — a
+        //generated image is owned by whoever asked for it. IdentityToolCallback strips it, like the
+        //token, before the call leaves for the MCP server.
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
+                USER_ID, userId,
                 CHAT_ID, chatId,
                 PROGRESS_TOKEN, chatId);
 

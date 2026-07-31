@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientRequestException;
@@ -34,13 +35,31 @@ public class WebClientConfig {
         this.applicationEventPublisher = applicationEventPublisher;
     }
 
+    /**
+     * @param maxInMemorySize ceiling on a buffered MCP response. The default of 256KB is far too
+     *                        small for this server: {@code generate_image} returns a whole PNG
+     *                        inline as base64, around 2MB. Exceeding the limit does not surface as
+     *                        a clean error — the connection is torn down mid-body (visible as
+     *                        Netty {@code refCnt: 0} warnings) and the JSON-RPC response is never
+     *                        delivered, so the blocking caller parks until its request timeout.
+     *                        <p>
+     *                        It has to be set here rather than through
+     *                        {@code spring.codec.max-in-memory-size}: this builder is created from
+     *                        {@link WebClient#builder()} directly, which bypasses Boot's codec
+     *                        auto-configuration entirely.
+     */
     @Bean
     public WebClient.Builder webClientBuilder(
             TokenExchangeService tokenExchangeService,
             McpFilterService mcpFilterService,
-            @Value("${solesonic.mcp.reconnect.enabled:false}") boolean reconnectEnabled) {
+            @Value("${solesonic.mcp.reconnect.enabled:false}") boolean reconnectEnabled,
+            @Value("${solesonic.mcp.client.max-in-memory-size}") DataSize maxInMemorySize) {
 
-        WebClient.Builder builder = WebClient.builder();
+        log.info("MCP WebClient buffers up to {} per response", maxInMemorySize);
+
+        WebClient.Builder builder = WebClient.builder()
+                .codecs(codecConfigurer -> codecConfigurer.defaultCodecs()
+                        .maxInMemorySize((int) maxInMemorySize.toBytes()));
 
         if (reconnectEnabled) {
             builder = builder.filter((request, next) -> next.exchange(request)

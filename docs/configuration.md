@@ -117,6 +117,39 @@ Fixed in `application.properties` rather than exposed as variables:
   read timeout.
 - `solesonic.llm.vision.max-image-bytes=5MB` — images above this are left undescribed rather than
   stalling the turn.
+
+### Image Generation Configuration
+
+Text-to-image generation calls the `generate_image` MCP tool, which is backed by a single GPU and has
+no admission control of its own — concurrent calls serialize there while each one holds a request
+thread on the MCP server for up to its full deadline. The ceiling is therefore enforced here. Callers
+past the ceiling wait up to `IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
+
+Both variables are **required**: the application will not start without them.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `IMAGE_MAX_CONCURRENT` | Generations this instance will have in flight at once | `2` | Yes | Counted per instance, not per cluster. Above the number of GPUs behind the MCP server it only lengthens queues |
+| `IMAGE_ADMISSION_TIMEOUT` | How long a caller waits for a free slot before being refused | `30s` | Yes | Spring duration. Long enough to absorb a burst, short enough that a refusal beats a stalled request |
+
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.mcp.client.max-in-memory-size=16MB` — ceiling on a buffered MCP response. **Load-bearing
+  for image generation**: the tool returns a whole PNG inline as base64, around 2MB, and the WebClient
+  default of 256KB aborts the connection mid-body. That failure is not clean — the JSON-RPC response
+  is never delivered, so the blocking caller parks until its request timeout and the client sees a
+  stream with no terminal frame. It must be set on the `WebClient.Builder` itself;
+  `spring.codec.max-in-memory-size` has no effect, because that builder is created directly and
+  bypasses Boot's codec auto-configuration.
+
+The MCP request timeout (`spring.ai.mcp.client.request-timeout`, 600s) must stay above the image
+server's own 180s generation deadline, or the API abandons requests the server is still working on.
+Independently of it, a generation stream that hears nothing for 200s ends itself with
+`GENERATION_TIMEOUT` rather than leaving the client waiting on the full request timeout.
+
+No separate credential is configured: generation travels on the calling user's own token, exchanged
+for an on-behalf-of token like every other MCP call. The user's JWT must carry the
+`mcp-generate-image` role — see [docs/api.md](api.md#image-generation).
 - `solesonic.llm.vision.ollama.keep-alive=-1m` — pins the model in Ollama so an idle period does not
   evict it: Ollama reads any negative duration as "keep loaded forever". The unit is mandatory —
   Spring AI sends `keep_alive` as a JSON string, and Ollama rejects a unitless one with

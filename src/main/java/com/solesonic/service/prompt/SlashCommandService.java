@@ -6,6 +6,7 @@ import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -57,6 +58,7 @@ public class SlashCommandService {
     private final OllamaChatModel taskChatModel;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
+    private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -67,6 +69,7 @@ public class SlashCommandService {
                                LocalToolRegistry localToolRegistry,
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
+                               GeneratedImageToolInterceptor generatedImageToolInterceptor,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup,
                                @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
@@ -79,6 +82,7 @@ public class SlashCommandService {
         this.localToolRegistry = localToolRegistry;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
+        this.generatedImageToolInterceptor = generatedImageToolInterceptor;
 
         mcpSyncClient = mcpSyncClients.getFirst();
 
@@ -95,7 +99,8 @@ public class SlashCommandService {
     public ChatClient taskClient(ToolCallback toolCallback) {
         log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
-        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder, jwtAuthenticationConverter);
+        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder,
+                jwtAuthenticationConverter, generatedImageToolInterceptor);
 
         return ChatClient.builder(taskChatModel)
                 .defaultTools(identityToolCallback)

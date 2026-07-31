@@ -90,6 +90,31 @@ the assistant never saw. A successful describe clears it and a failure clears th
 the two columns are mutually exclusive; both null means the image has not been attempted yet. To
 find images worth retrying: `select id from public.chat_attachment where vision_failure_reason =
 'VISION_TIMEOUT';`
+
+The `generated_image` table (V3_7) stores images produced by the `generate_image` MCP tool. Same
+`bytea` shape as `chat_attachment`, and for the same reason. The tool persists nothing and returns
+~2MB of base64 per image; this table is where that base64 stops, so that everything downstream
+carries a reference of a few hundred bytes instead.
+
+`prompt` and `seed` together are the provenance record — without them a stored image is an orphan
+and nobody can say which image a support ticket is about. `sha256` is the digest of `image_data`,
+served as the download endpoint's strong `ETag`; images are *not* deduplicated by it, because with a
+fresh random seed per call, identical bytes from two generations is not a case worth losing
+per-image provenance for. Every metadata column except the digest is nullable: the tool reports its
+metadata as a human-readable text block, so a field the API failed to parse costs a null rather than
+a failed generation.
+
+`chat_id` and `chat_message_id` (V3_8) tie an image generated inside a conversation to the assistant
+turn that produced it, the way `chat_attachment` ties an upload to a user turn. Both stay null for
+explicit generation from `/images`, which has no chat. A row with a `chat_id` but no
+`chat_message_id` is *unbound*: the tool runs mid-turn, so the image exists before the message does,
+and `GeneratedImageRepository.bind` claims it when that message is written.
+
+Rows are never swept. Images are large and cheap to regenerate, so a retention policy is worth
+setting deliberately — `delete from public.generated_image where created < now() - interval '90 days';`
+is the shape of it, but nothing runs it today. Note that deleting an image a conversation references
+leaves that turn rendering a broken reference, so a retention policy and chat retention want to
+agree with each other.
    - Status history
 
 2. **V2_x**: Schema updates including:

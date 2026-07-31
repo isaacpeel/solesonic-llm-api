@@ -9,6 +9,7 @@ import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
+import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.ollama.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
@@ -49,6 +50,7 @@ public class RedisStreamingChatService {
     private final RedisStreamService redisStreamService;
     private final ActiveStreamTracker activeStreamTracker;
     private final NotificationService notificationService;
+    private final GeneratedImageService generatedImageService;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -56,7 +58,8 @@ public class RedisStreamingChatService {
                                      ChatMessageService chatMessageService,
                                      RedisStreamService redisStreamService,
                                      ActiveStreamTracker activeStreamTracker,
-                                     NotificationService notificationService) {
+                                     NotificationService notificationService,
+                                     GeneratedImageService generatedImageService) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -64,6 +67,7 @@ public class RedisStreamingChatService {
         this.redisStreamService = redisStreamService;
         this.activeStreamTracker = activeStreamTracker;
         this.notificationService = notificationService;
+        this.generatedImageService = generatedImageService;
     }
 
     private Chat save(Chat chat) {
@@ -130,6 +134,11 @@ public class RedisStreamingChatService {
         String chatModel = promptService.model(userId);
         StringBuilder assembled = new StringBuilder();
 
+        //Marks the start of this turn, so the done payload can name the images the turn produced.
+        //Time rather than message id because the assistant message is written by the chat memory
+        //advisor, which does not hand its id back here.
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
         Flux<ServerSentEvent<?>> cancelEvents = elicitationFlux
@@ -150,6 +159,10 @@ public class RedisStreamingChatService {
             responseMessage.setMessageType(ASSISTANT);
             responseMessage.setMessage(assembled.toString());
             responseMessage.setModel(chatModel);
+
+            //References, never bytes. A client that missed the image event mid-stream — a reconnect,
+            //a late subscribe — still finalises the turn with the image on it.
+            responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
