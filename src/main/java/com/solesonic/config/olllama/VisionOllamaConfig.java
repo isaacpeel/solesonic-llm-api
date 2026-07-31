@@ -34,14 +34,15 @@ public class VisionOllamaConfig {
     @Qualifier(VISION_CHAT_MODEL)
     public OllamaChatModel visionChatModel(@Value("${solesonic.llm.vision.ollama.host}") String ollamaBaseUrl,
                                            @Value("${solesonic.llm.vision.model}") String visionModel,
-                                           @Value("${solesonic.llm.vision.ollama.read-timeout}") Duration readTimeout) {
+                                           @Value("${solesonic.llm.vision.ollama.read-timeout}") Duration readTimeout,
+                                           @Value("${solesonic.llm.vision.ollama.keep-alive}") String keepAlive) {
         OllamaApi ollamaApi = visionOllamaApi(ollamaBaseUrl, readTimeout);
 
         OllamaChatOptions options = OllamaChatOptions.builder()
                 .model(visionModel)
                 .numCtx(16384)
                 .numBatch(512)
-                .keepAlive("30m")
+                .keepAlive(keepAlive)
                 .temperature(0.2)
                 .numPredict(384)
                 .disableThinking()

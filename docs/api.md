@@ -54,6 +54,8 @@ Both streaming endpoints emit the following SSE event types:
 |-------|-------------|
 | `init` | Sent at stream start. Payload carries the persisted user message id — see below |
 | `chunk` | Incremental assistant response text |
+| `progress` | A long-running step started — an MCP tool, or the vision pass on one attached image |
+| `attachment` | Terminal outcome for one attached image — see below |
 | `elicitation` | Interactive form request from an MCP tool |
 | `cancel` | Emitted when a user cancels an elicitation |
 | `done` | Final event containing the structured chat response |
@@ -70,6 +72,42 @@ Both streaming endpoints emit the following SSE event types:
 `messageId` is the id of the user message persisted at the start of the turn. Clients that
 uploaded attachments (see [Chat Attachments](#chat-attachments)) use it to associate them with the
 rendered message. Clients that ignore the `init` body are unaffected.
+
+### attachment Event Payload
+
+```json
+{
+  "attachmentId": "3f9a...",
+  "chatId": "0a4b...",
+  "described": true,
+  "reason": null
+}
+```
+
+The vision pass opens with a `progress` event per image and closes with an `attachment` event per
+image. Guarantees a client can rely on:
+
+- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including images
+  skipped before any work started, and images the server could not resolve at all. A client never
+  has to interpret a missing event.
+- **Always before `done`**, so the event lands while the assistant message is still streaming.
+
+Nothing else in the turn distinguishes a described image from a skipped one: a skipped image still
+produces a normal answer, just one written as though no image were attached.
+
+When `described` is `false`, `reason` is one of a closed set:
+
+| Reason | Meaning |
+|--------|---------|
+| `VISION_TIMEOUT` | The vision model was reachable but did not answer in time, most often a cold model load |
+| `VISION_UNAVAILABLE` | The vision host could not be reached, or returned an error |
+| `IMAGE_TOO_LARGE` | The image exceeds `solesonic.llm.vision.max-image-bytes` |
+| `IMAGE_UNREADABLE` | The vision model returned nothing usable, or the attachment could not be loaded |
+| `EXCEEDED_IMAGE_LIMIT` | More images were attached to one message than the vision pass describes |
+
+`reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
+`SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment
+summary in chat history.
 
 ### ChatRequest Body
 
@@ -430,11 +468,20 @@ by `spring.servlet.multipart.max-file-size`.
   "fileName": "screenshot.png",
   "description": "the login screen",
   "contentType": "image/png",
-  "fileSizeBytes": 20481
+  "fileSizeBytes": 20481,
+  "described": false,
+  "descriptionFailureReason": null
 }
 ```
 
 `chatMessageId` stays `null` until a message claims the attachment.
+
+`description` is the note the uploader supplied — never model output. `described` says whether the
+vision model produced a description of the image; it is `false` on a freshly staged attachment,
+because the vision pass runs on the turn the attachment is sent. `descriptionFailureReason` carries
+the same closed set of values as the [`attachment` stream event](#attachment-event-payload), and is
+`null` both when the image was described and when it has not been through the vision pass yet. The
+description text itself is not exposed: it is a paragraph of prose per image.
 
 ### Download an Attachment
 
@@ -456,6 +503,9 @@ leaves the message itself intact.
 `GET /chats/{chatId}` and `GET /chats/users/{userId}` return each `ChatMessage` with an
 `attachments` array of the same summary shape. Bytes are not included; fetch them from
 `GET /attachments/{attachmentId}`.
+
+`described` is the durable half of the `attachment` stream event: it survives a reload, so an old
+conversation can still show that an image the assistant answered around was never actually read.
 
 ---
 

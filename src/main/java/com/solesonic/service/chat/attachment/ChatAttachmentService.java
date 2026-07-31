@@ -3,6 +3,7 @@ package com.solesonic.service.chat.attachment;
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
+import com.solesonic.model.chat.attachment.VisionFailureReason;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
 import org.apache.commons.collections4.CollectionUtils;
@@ -120,6 +121,23 @@ public class ChatAttachmentService {
         chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
             chatAttachment.setVisionDescription(visionDescription);
             chatAttachment.setVisionModel(visionModel);
+            chatAttachment.setVisionFailureReason(null);
+
+            chatAttachmentRepository.save(chatAttachment);
+        });
+    }
+
+    /**
+     * Records why an image was left undescribed, so history can explain itself long after the SSE
+     * frame that carried the same reason is gone.
+     * <p>
+     * The description stays null, which is what keeps the work retryable: a later turn naming the
+     * same attachment tries again rather than trusting this row.
+     */
+    @Transactional
+    public void saveVisionFailure(UUID attachmentId, VisionFailureReason visionFailureReason) {
+        chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
+            chatAttachment.setVisionFailureReason(visionFailureReason);
 
             chatAttachmentRepository.save(chatAttachment);
         });
@@ -186,6 +204,8 @@ public class ChatAttachmentService {
                 chatAttachment.getFileName(),
                 chatAttachment.getDescription(),
                 chatAttachment.getContentType(),
-                chatAttachment.getFileSizeBytes());
+                chatAttachment.getFileSizeBytes(),
+                chatAttachment.getVisionDescription() != null,
+                chatAttachment.getVisionFailureReason());
     }
 }

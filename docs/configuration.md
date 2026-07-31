@@ -117,9 +117,22 @@ Fixed in `application.properties` rather than exposed as variables:
   read timeout.
 - `solesonic.llm.vision.max-image-bytes=5MB` — images above this are left undescribed rather than
   stalling the turn.
+- `solesonic.llm.vision.ollama.keep-alive=-1m` — pins the model in Ollama so an idle period does not
+  evict it: Ollama reads any negative duration as "keep loaded forever". The unit is mandatory —
+  Spring AI sends `keep_alive` as a JSON string, and Ollama rejects a unitless one with
+  `400 time: missing unit in duration "-1"`. Set a positive duration such as `30m` instead if the
+  vision host also serves other models and needs the VRAM back.
+- `solesonic.llm.vision.ollama.warmup-on-startup=true` — preloads the model just after startup, on a
+  background thread, so the first image-bearing turn does not pay the cold load.
 
 The model is pulled on startup if missing (`WHEN_MISSING`), so the first boot against a host without
 the model will download it before the application becomes ready.
+
+The last two settings exist because a cold load is what makes the vision pass fail: it can take tens
+of seconds, and a turn whose vision pass times out still answers normally — just as though no image
+were attached. Keeping the model resident makes that rare; the `attachment` SSE event
+([docs/api.md](api.md#attachment-event-payload)) makes it visible when it happens anyway. A skipped
+image is logged at WARN with the attachment id, the elapsed time, and the reason.
 
 ### MCP (Model Context Protocol) Configuration
 

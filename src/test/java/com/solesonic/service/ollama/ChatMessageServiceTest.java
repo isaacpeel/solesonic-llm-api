@@ -99,8 +99,13 @@ class ChatMessageServiceTest {
         assertThat(messages).isEmpty();
     }
 
+    /**
+     * The description is replayed as its own message ahead of the turn it belongs to — the same
+     * shape PromptService builds for the live turn, and the shape that keeps the retrieval advisor
+     * from folding image context into a user message and burying it under retrieved documents.
+     */
     @Test
-    void findByChatIdReplaysImageDescriptionsIntoEarlierUserTurns() {
+    void findByChatIdReplaysImageDescriptionsAsTheirOwnMessage() {
         ChatMessage withImage = chatMessage(MessageType.USER, "what is this?");
 
         when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
@@ -111,9 +116,13 @@ class ChatMessageServiceTest {
 
         List<Message> messages = chatMessageService.findByChatId(chatId);
 
+        assertThat(messages).hasSize(3);
+
         assertThat(messages.getFirst().getText())
                 .contains("a login form with two fields")
-                .endsWith("what is this?");
+                .doesNotContain("what is this?");
+
+        assertThat(messages.get(1).getText()).isEqualTo("what is this?");
     }
 
     @Test
@@ -130,7 +139,12 @@ class ChatMessageServiceTest {
 
         List<Message> messages = chatMessageService.findByChatId(chatId);
 
-        assertThat(messages.get(1).getText()).isEqualTo("and this?");
+        //Context message, the turn it describes, the turn without an image, then the answer.
+        assertThat(messages).extracting(Message::getText)
+                .containsSubsequence("what is this?", "and this?");
+
+        assertThat(messages).extracting(Message::getText)
+                .noneMatch(_ -> false);
     }
 
     /**

@@ -2,6 +2,8 @@ package com.solesonic.service.vision;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentEvent;
+import com.solesonic.model.chat.attachment.VisionFailureReason;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.chat.events.NotificationEventMessage;
 import com.solesonic.service.chat.events.NotificationService;
@@ -24,13 +26,25 @@ import org.springframework.util.MimeType;
 import org.springframework.util.unit.DataSize;
 
 import java.io.IOException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeoutException;
 
 import static com.solesonic.config.olllama.VisionOllamaConfig.VISION_CHAT_MODEL;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_TIMEOUT;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNAVAILABLE;
 
 /**
  * Describes image attachments with a vision model, and folds those descriptions into the text of the
@@ -42,7 +56,9 @@ import static com.solesonic.config.olllama.VisionOllamaConfig.VISION_CHAT_MODEL;
  * question: the vision model is given a fixed instruction plus the user's own note, which is what
  * makes a stored description safe to reuse for every later question about that image.
  * <p>
- * Nothing here can fail a chat turn. Every failure path returns the message unchanged.
+ * Nothing here can fail a chat turn. Every failure path returns the message unchanged — and emits a
+ * {@link ChatAttachmentEvent} saying so, because a turn that answers as though no image was attached
+ * is otherwise indistinguishable from one that never had an image.
  */
 @Service
 public class ImageDescriptionService {
@@ -53,6 +69,12 @@ public class ImageDescriptionService {
      * request. A constant rather than a property — this is a guard, not a tuning knob.
      */
     static final int MAX_IMAGES_PER_MESSAGE = 4;
+
+    /**
+     * Depth bound on the cause walk in {@link #classify}: a malformed exception chain must not turn
+     * a failed describe into a hang.
+     */
+    private static final int MAX_CAUSE_DEPTH = 10;
 
     private final OllamaChatModel visionChatModel;
     private final ChatAttachmentService chatAttachmentService;
@@ -84,23 +106,71 @@ public class ImageDescriptionService {
     }
 
     /**
-     * Returns {@code message} with a described-images block prepended, or unchanged when there are no
-     * attachments, none of them can be described, or the vision model is unreachable.
+     * The outcome of one describe attempt: exactly one of the two components is set.
+     */
+    private record DescribeOutcome(String visionDescription, VisionFailureReason failureReason) {
+
+        static DescribeOutcome described(String visionDescription) {
+            return new DescribeOutcome(visionDescription, null);
+        }
+
+        static DescribeOutcome skipped(VisionFailureReason failureReason) {
+            return new DescribeOutcome(null, failureReason);
+        }
+    }
+
+    /**
+     * Describes every image named by one send, returning the descriptions in send order, or an empty
+     * list when there are no attachments, none of them can be described, or the vision model is
+     * unreachable.
+     * <p>
+     * Callers decide how the descriptions reach the model. On the routes that have a message
+     * structure they become a message of their own, adjacent to the user's, so the retrieval
+     * augmenter — which rewrites only the last user message — cannot absorb them; see
+     * {@link AttachmentContextFormatter}.
+     * <p>
+     * Emits exactly one {@code attachment} event per id in {@code attachmentIds} before returning,
+     * whatever happens in between. The frontend has no other way to tell a described image from a
+     * silently skipped one, and cannot name a failure it never hears about — so an id that reaches
+     * no decision below is reported as undescribed rather than left silent.
      * <p>
      * Blocking, and called from {@code PromptService} on a {@code boundedElastic} thread. It is not
      * {@code @Transactional} on purpose: each repository call is its own short transaction, so no
      * pooled connection is held across a multi-second model call.
      */
-    public String augment(UUID chatId, UUID userId, String message, Set<UUID> attachmentIds) {
+    public List<ChatAttachmentDescription> describe(UUID chatId, UUID userId, Set<UUID> attachmentIds) {
         if (CollectionUtils.isEmpty(attachmentIds)) {
-            return message;
+            return List.of();
         }
 
+        Set<UUID> unsignalled = new LinkedHashSet<>(attachmentIds);
+
+        try {
+            return describeAll(chatId, userId, attachmentIds, unsignalled);
+        } finally {
+            for (UUID attachmentId : Set.copyOf(unsignalled)) {
+                log.warn("No vision outcome was reached for attachment {} on chat {}", attachmentId, chatId);
+
+                signal(chatId, unsignalled, attachmentId, IMAGE_UNREADABLE);
+            }
+        }
+    }
+
+    private List<ChatAttachmentDescription> describeAll(UUID chatId,
+                                                        UUID userId,
+                                                        Set<UUID> attachmentIds,
+                                                        Set<UUID> unsignalled) {
         List<ChatAttachment> attachments = chatAttachmentService.attachments(userId, attachmentIds);
 
         if (attachments.size() > MAX_IMAGES_PER_MESSAGE) {
             log.warn("Describing the first {} of {} attachments on chat {}",
                     MAX_IMAGES_PER_MESSAGE, attachments.size(), chatId);
+
+            for (ChatAttachment beyondLimit : attachments.subList(MAX_IMAGES_PER_MESSAGE, attachments.size())) {
+                chatAttachmentService.saveVisionFailure(beyondLimit.getId(), EXCEEDED_IMAGE_LIMIT);
+
+                signal(chatId, unsignalled, beyondLimit.getId(), EXCEEDED_IMAGE_LIMIT);
+            }
 
             attachments = attachments.subList(0, MAX_IMAGES_PER_MESSAGE);
         }
@@ -108,9 +178,11 @@ public class ImageDescriptionService {
         List<ChatAttachmentDescription> descriptions = new ArrayList<>(attachments.size());
 
         for (ChatAttachment attachment : attachments) {
-            String visionDescription = describe(chatId, attachment);
+            DescribeOutcome describeOutcome = describeOne(chatId, attachment);
 
-            if (visionDescription == null) {
+            signal(chatId, unsignalled, attachment.getId(), describeOutcome.failureReason());
+
+            if (describeOutcome.visionDescription() == null) {
                 continue;
             }
 
@@ -118,31 +190,48 @@ public class ImageDescriptionService {
                     attachment.getChatMessageId(),
                     attachment.getFileName(),
                     attachment.getDescription(),
-                    visionDescription));
+                    describeOutcome.visionDescription()));
         }
 
-        return AttachmentContextFormatter.prepend(message, descriptions);
+        return descriptions;
+    }
+
+    /**
+     * Emits the terminal event for one attachment, at most once per turn.
+     *
+     * @param failureReason null when the image was described
+     */
+    private void signal(UUID chatId, Set<UUID> unsignalled, UUID attachmentId, VisionFailureReason failureReason) {
+        if (!unsignalled.remove(attachmentId)) {
+            return;
+        }
+
+        ChatAttachmentEvent chatAttachmentEvent = (failureReason == null)
+                ? ChatAttachmentEvent.described(chatId, attachmentId)
+                : ChatAttachmentEvent.skipped(chatId, attachmentId, failureReason);
+
+        notificationService.emitAttachment(chatId, chatAttachmentEvent);
     }
 
     /**
      * One image per call: it keeps each request inside the configured context window and makes each
      * description independently reusable. Calls are sequential because concurrent requests to the
      * same host trigger simultaneous cold loads of the same large model and invite read timeouts.
-     *
-     * @return the description, or {@code null} when this image could not be described
      */
-    private String describe(UUID chatId, ChatAttachment attachment) {
+    private DescribeOutcome describeOne(UUID chatId, ChatAttachment attachment) {
         if (attachment.getVisionDescription() != null) {
             log.debug("Reusing the stored description for attachment {}", attachment.getId());
 
-            return attachment.getVisionDescription();
+            return DescribeOutcome.described(attachment.getVisionDescription());
         }
 
         if (attachment.getFileSizeBytes() > maxImageBytes.toBytes()) {
             log.warn("Attachment {} is {} bytes, above the {} vision limit; leaving it undescribed",
                     attachment.getId(), attachment.getFileSizeBytes(), maxImageBytes);
 
-            return null;
+            chatAttachmentService.saveVisionFailure(attachment.getId(), IMAGE_TOO_LARGE);
+
+            return DescribeOutcome.skipped(IMAGE_TOO_LARGE);
         }
 
         notificationService.emitProgress(chatId, new NotificationEventMessage(
@@ -151,17 +240,26 @@ public class ImageDescriptionService {
                 null,
                 null));
 
+        long startedAt = System.nanoTime();
+
         try {
             return callVisionModel(attachment);
-        } catch (RuntimeException exception) {
-            log.warn("Vision model could not describe attachment {}: {}",
-                    attachment.getId(), exception.getMessage());
+        } catch (RuntimeException runtimeException) {
+            VisionFailureReason failureReason = classify(runtimeException);
 
-            return null;
+            //Logged with the elapsed time because how long a describe ran is what tells the two
+            //common failures apart after the fact: a cold model load that outlived the read timeout
+            //looks exactly like an unreachable host until you can see the seconds.
+            log.warn("Vision model could not describe attachment {} after {} ({}): {}",
+                    attachment.getId(), elapsed(startedAt), failureReason, runtimeException.getMessage());
+
+            chatAttachmentService.saveVisionFailure(attachment.getId(), failureReason);
+
+            return DescribeOutcome.skipped(failureReason);
         }
     }
 
-    private String callVisionModel(ChatAttachment attachment) {
+    private DescribeOutcome callVisionModel(ChatAttachment attachment) {
         Media media = Media.builder()
                 .mimeType(MimeType.valueOf(attachment.getContentType()))
                 .data(attachment.getFileData())
@@ -174,26 +272,69 @@ public class ImageDescriptionService {
 
         log.info("Describing attachment {} with vision model {}", attachment.getId(), visionModel);
 
+        long startedAt = System.nanoTime();
+
         ChatResponse chatResponse = visionChatModel.call(new Prompt(userMessage));
         Generation generation = chatResponse.getResult();
 
         if (generation == null) {
-            log.warn("Vision model returned no result for attachment {}", attachment.getId());
+            log.warn("Vision model returned no result for attachment {} after {}",
+                    attachment.getId(), elapsed(startedAt));
 
-            return null;
+            chatAttachmentService.saveVisionFailure(attachment.getId(), IMAGE_UNREADABLE);
+
+            return DescribeOutcome.skipped(IMAGE_UNREADABLE);
         }
 
         String visionDescription = StringUtils.trimToNull(generation.getOutput().getText());
 
         if (visionDescription == null) {
-            log.warn("Vision model returned an empty description for attachment {}", attachment.getId());
+            log.warn("Vision model returned an empty description for attachment {} after {}",
+                    attachment.getId(), elapsed(startedAt));
 
-            return null;
+            chatAttachmentService.saveVisionFailure(attachment.getId(), IMAGE_UNREADABLE);
+
+            return DescribeOutcome.skipped(IMAGE_UNREADABLE);
         }
+
+        log.info("Described attachment {} in {}", attachment.getId(), elapsed(startedAt));
 
         chatAttachmentService.saveVisionDescription(attachment.getId(), visionDescription, visionModel);
 
-        return visionDescription;
+        return DescribeOutcome.described(visionDescription);
+    }
+
+    /**
+     * Maps a failed vision call onto the closed set of reasons the frontend renders copy for. The
+     * distinction worth drawing is timeout versus unreachable: the first is worth retrying once the
+     * model is resident, the second is not.
+     */
+    private static VisionFailureReason classify(RuntimeException runtimeException) {
+        Throwable cause = runtimeException;
+
+        for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
+            if (cause instanceof SocketTimeoutException
+                    || cause instanceof HttpTimeoutException
+                    || cause instanceof TimeoutException) {
+                return VISION_TIMEOUT;
+            }
+
+            if (cause instanceof ConnectException || cause instanceof UnknownHostException) {
+                return VISION_UNAVAILABLE;
+            }
+
+            if (cause == cause.getCause()) {
+                break;
+            }
+
+            cause = cause.getCause();
+        }
+
+        return VISION_UNAVAILABLE;
+    }
+
+    private static Duration elapsed(long startedAt) {
+        return Duration.ofNanos(System.nanoTime() - startedAt);
     }
 
     /**

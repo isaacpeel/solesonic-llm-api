@@ -7,7 +7,7 @@ import org.apache.commons.lang3.StringUtils;
 import java.util.List;
 
 /**
- * Renders vision-model descriptions into the text of a user message.
+ * Renders vision-model descriptions of image attachments.
  * <p>
  * Both the in-flight turn and the replay of earlier turns go through here, so the model sees one
  * format regardless of which path produced it.
@@ -18,22 +18,28 @@ import java.util.List;
  */
 public final class AttachmentContextFormatter {
     private static final String HEADER = """
-            The user attached %d image(s) to this message. You cannot see the images. The descriptions \
-            below were produced by a vision model reading the image bytes; treat them as a faithful \
-            account of what the images show and answer as though you had seen them.
+            The user attached %d image(s) to the message that follows. You cannot see the images. \
+            The descriptions below were produced by a vision model reading the image bytes; treat \
+            them as a faithful account of what the images show and answer as though you had seen them.
             """;
 
     private AttachmentContextFormatter() {
     }
 
     /**
-     * Prepends a described-images block to {@code message}, leaving the user's own words last so the
-     * question is the final thing the model reads. Returns {@code message} untouched when there is
-     * nothing to add.
+     * Renders the described-images block on its own, for callers that carry it as a distinct message
+     * adjacent to the user's, rather than folded into the user's own words.
+     * <p>
+     * Keeping it out of the user message is what stops the RAG advisor from swallowing it: the
+     * retrieval augmenter rewrites only the last user message, wrapping it in retrieved context and
+     * an instruction to answer from that context alone. Image descriptions inside that wrapper read
+     * to the model as more retrieved material and lose to it.
+     *
+     * @return the block, or {@code null} when there is nothing to describe
      */
-    public static String prepend(String message, List<ChatAttachmentDescription> descriptions) {
+    public static String context(List<ChatAttachmentDescription> descriptions) {
         if (CollectionUtils.isEmpty(descriptions)) {
-            return message;
+            return null;
         }
 
         StringBuilder context = new StringBuilder(HEADER.formatted(descriptions.size()));
@@ -50,9 +56,25 @@ public final class AttachmentContextFormatter {
             imageNumber++;
         }
 
-        return context.append(System.lineSeparator())
-                .append(message)
-                .toString();
+        return context.toString();
+    }
+
+    /**
+     * Prepends the described-images block to {@code message}, leaving the user's own words last so
+     * the question is the final thing the model reads. Returns {@code message} untouched when there
+     * is nothing to add.
+     * <p>
+     * For the one route that has no message structure to put a separate block into: a remote A2A
+     * agent takes a single string.
+     */
+    public static String prepend(String message, List<ChatAttachmentDescription> descriptions) {
+        String context = context(descriptions);
+
+        if (context == null) {
+            return message;
+        }
+
+        return context + System.lineSeparator() + message;
     }
 
     private static String heading(int imageNumber, ChatAttachmentDescription description) {

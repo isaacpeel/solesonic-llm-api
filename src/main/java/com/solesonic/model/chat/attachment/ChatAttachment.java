@@ -3,6 +3,8 @@ package com.solesonic.model.chat.attachment;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -39,6 +41,13 @@ public class ChatAttachment {
     private String visionDescription;
 
     private String visionModel;
+
+    /**
+     * Why {@link #visionDescription} is still null. Set when a describe attempt fails, cleared when
+     * one succeeds; both null means no attempt has been made yet.
+     */
+    @Enumerated(EnumType.STRING)
+    private VisionFailureReason visionFailureReason;
 
     private String contentType;
 
@@ -111,6 +120,14 @@ public class ChatAttachment {
 
     public void setVisionModel(String visionModel) {
         this.visionModel = visionModel;
+    }
+
+    public VisionFailureReason getVisionFailureReason() {
+        return visionFailureReason;
+    }
+
+    public void setVisionFailureReason(VisionFailureReason visionFailureReason) {
+        this.visionFailureReason = visionFailureReason;
     }
 
     public String getContentType() {

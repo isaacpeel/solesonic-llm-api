@@ -40,10 +40,17 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
            """)
     List<ChatAttachmentDescription> findDescriptionsByChatId(UUID chatId);
 
+    /**
+     * {@code described} is derived rather than stored: a non-null {@code visionDescription} is the
+     * one authoritative record that the vision pass produced something. The description text is not
+     * selected — it is a paragraph per image, and callers only need the flag.
+     */
     @Query("""
             select new com.solesonic.model.chat.attachment.ChatAttachmentSummary(
                        attachment.id, attachment.chatMessageId, attachment.fileName,
-                       attachment.description, attachment.contentType, attachment.fileSizeBytes)
+                       attachment.description, attachment.contentType, attachment.fileSizeBytes,
+                       case when attachment.visionDescription is not null then true else false end,
+                       attachment.visionFailureReason)
               from ChatAttachment attachment
              where attachment.chatId = :chatId
              order by attachment.created asc

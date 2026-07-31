@@ -125,8 +125,18 @@ public class ChatMessageService {
                 switch (chatMessage.getMessageType()) {
                     case USER -> {
                         assert messageText != null;
-                        message = new UserMessage(AttachmentContextFormatter.prepend(messageText,
-                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of())));
+
+                        // Adjacent to the user message it describes, not merged into it — the same
+                        // shape the live turn builds in PromptService, so a replayed turn and the
+                        // turn that produced it look identical to the model.
+                        String imageContext = AttachmentContextFormatter.context(
+                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+
+                        if (imageContext != null) {
+                            messages.add(new UserMessage(imageContext));
+                        }
+
+                        message = new UserMessage(messageText);
                     }
                     case ASSISTANT -> {
                         assert messageText != null;

@@ -82,6 +82,14 @@ image, and the name of the model that produced it. A null `vision_description` m
 not been described yet, which is what makes describing it retryable; the stored text is reused on
 every later turn instead of calling the model again. To re-describe everything after changing models:
 `update public.chat_attachment set vision_description = null where vision_model = '<old model>';`
+
+`vision_failure_reason` (V3_6) records why an image was left undescribed — one of `VISION_TIMEOUT`,
+`VISION_UNAVAILABLE`, `IMAGE_TOO_LARGE`, `IMAGE_UNREADABLE`, `EXCEEDED_IMAGE_LIMIT`. It is the
+durable form of the `attachment` SSE event, so a reloaded conversation can still explain an image
+the assistant never saw. A successful describe clears it and a failure clears the description, so
+the two columns are mutually exclusive; both null means the image has not been attempted yet. To
+find images worth retrying: `select id from public.chat_attachment where vision_failure_reason =
+'VISION_TIMEOUT';`
    - Status history
 
 2. **V2_x**: Schema updates including:

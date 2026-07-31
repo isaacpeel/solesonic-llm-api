@@ -81,6 +81,27 @@ class AttachmentContextFormatterTest {
                 description("first.png", null, "a bar chart"),
                 description("second.png", null, "a line chart")));
 
-        assertThat(prompt).startsWith("The user attached 2 image(s) to this message.");
+        assertThat(prompt).startsWith("The user attached 2 image(s) to the message that follows.");
+    }
+
+    @Test
+    void contextRendersTheBlockWithoutTheUserMessage() {
+        String context = AttachmentContextFormatter.context(List.of(
+                description("screenshot.png", null, "a login screen")));
+
+        assertThat(context)
+                .contains("Image 1 — screenshot.png:")
+                .contains("a login screen")
+                .doesNotContain("what is this?");
+    }
+
+    /**
+     * Null rather than an empty string: callers use it to decide whether to add a message at all,
+     * and an empty user message would reach the model as a blank turn.
+     */
+    @Test
+    void contextIsNullWithoutDescriptions() {
+        assertThat(AttachmentContextFormatter.context(List.of())).isNull();
+        assertThat(AttachmentContextFormatter.context(null)).isNull();
     }
 }

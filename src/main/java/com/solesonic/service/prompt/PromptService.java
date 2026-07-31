@@ -2,6 +2,7 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
@@ -12,12 +13,15 @@ import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.service.vision.ImageDescriptionService;
+import com.solesonic.util.AttachmentContextFormatter;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -90,10 +94,15 @@ public class PromptService {
         Set<String> commands = chatMessage.commands();
 
         // Image attachments reach the model as text: descriptions produced by a separate vision
-        // model, prepended to the user's message. Tool routes keep the original message on purpose
+        // model. They travel as their own message next to the user's, never folded into it — the
+        // retrieval advisor rewrites the last user message, wrapping it in retrieved documents and
+        // an instruction to answer from those alone, and anything inside that wrapper competes with
+        // the documents instead of standing beside them. Tool routes carry no image context at all
         // — see the ToolSlashCommand branch below.
-        String augmentedMessage = imageDescriptionService
-                .augment(chatId, userId, message, chatMessage.attachmentIds());
+        List<ChatAttachmentDescription> imageDescriptions = imageDescriptionService
+                .describe(chatId, userId, chatMessage.attachmentIds());
+
+        String imageContext = AttachmentContextFormatter.context(imageDescriptions);
 
         Object principal = authentication.getPrincipal();
 
@@ -115,14 +124,16 @@ public class PromptService {
                         if (stickyAgent.isPresent()) {
                             log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                            //The remote agent is text-only, so a description is the only way it
-                            //learns that an image was attached at all.
-                            return a2aAgentService.delegate(chatId, stickyAgent.get(), augmentedMessage, authToken);
+                            //The remote agent takes a single string and has no message structure to
+                            //hold a separate block, so this is the one route that still inlines the
+                            //descriptions — and the only way it learns an image was attached at all.
+                            return a2aAgentService.delegate(chatId, stickyAgent.get(),
+                                    AttachmentContextFormatter.prepend(message, imageDescriptions), authToken);
                         }
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, augmentedMessage, contextMap, model);
+                        return streamBasicPrompt(chatId, userId, message, imageContext, contextMap, model);
                     });
         }
 
@@ -142,9 +153,10 @@ public class PromptService {
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
 
-                //The MCP call above renders a prompt template and wants the user's actual words;
-                //the prompt sent to the model carries the image descriptions too.
-                Prompt prompt = promptCommand.buildPrompt(getPromptResult, augmentedMessage);
+                //The MCP call above renders a prompt template and wants the user's actual words; the
+                //prompt sent to the model carries the image descriptions too, as their own message
+                //ahead of the user's rather than mixed into it.
+                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, imageContext);
 
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(chatClient.prompt(prompt)
@@ -166,31 +178,44 @@ public class PromptService {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
                 yield a2aStickyAgentService.activate(chatId, agentCommand.command())
-                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(), augmentedMessage, authToken));
+                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(),
+                                AttachmentContextFormatter.prepend(message, imageDescriptions), authToken));
             }
         };
     }
 
     /**
-     * @param message          the user's own words, used to render the MCP prompt template
-     * @param augmentedMessage the same message plus any image descriptions, sent to the model
+     * @param message      the user's own words — both the MCP prompt template and the model get these
+     *                     unaltered
+     * @param imageContext the described-images block, or null when no image was attached. Carried as
+     *                     a message of its own, which {@code DefaultChatClientUtils} places between
+     *                     the system text and the user message, and which the retrieval advisor
+     *                     leaves alone because it only ever rewrites the last user message
      */
     private Flux<String> streamBasicPrompt(UUID chatId,
                                            UUID userId,
                                            String message,
-                                           String augmentedMessage,
+                                           String imageContext,
                                            Map<String, Object> contextMap,
                                            String model) {
         String systemText = loadBasicPromptSystemText(message);
 
         var promptSpec = chatClient.prompt()
-                .user(augmentedMessage)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
                 .options(OllamaChatOptions.builder().model(model));
+
+        //A UserMessage rather than a SystemMessage on purpose: MessageChatMemoryAdvisor hoists every
+        //system message to the front of the prompt, which would move this away from the message it
+        //describes and behind the whole conversation history.
+        if (StringUtils.isNotEmpty(imageContext)) {
+            promptSpec = promptSpec.messages(new UserMessage(imageContext));
+        }
+
+        promptSpec = promptSpec.user(message);
 
         if (systemText != null) {
             promptSpec = promptSpec.system(systemText);

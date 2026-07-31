@@ -6,6 +6,7 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public record PromptSlashCommand(String command, String name, String description) implements SlashCommand {
@@ -18,13 +19,26 @@ public record PromptSlashCommand(String command, String name, String description
         );
     }
 
-    public Prompt buildPrompt(McpSchema.GetPromptResult getPromptResult, String userMessage) {
-        List<Message> messages = getPromptResult.messages().stream()
-                .map(mcpMessage -> (Message) switch (mcpMessage.role()) {
-                    case USER -> new UserMessage(userMessage);
-                    case ASSISTANT -> new AssistantMessage(extractText(mcpMessage.content()));
-                })
-                .toList();
+    /**
+     * @param imageContext the described-images block, or null when no image was attached. Inserted
+     *                     ahead of each user message rather than merged into it, so the retrieval
+     *                     advisor — which rewrites only the last user message — cannot absorb it
+     */
+    public Prompt buildPrompt(McpSchema.GetPromptResult getPromptResult, String userMessage, String imageContext) {
+        List<Message> messages = new ArrayList<>(getPromptResult.messages().size());
+
+        for (McpSchema.PromptMessage mcpMessage : getPromptResult.messages()) {
+            switch (mcpMessage.role()) {
+                case USER -> {
+                    if (imageContext != null) {
+                        messages.add(new UserMessage(imageContext));
+                    }
+
+                    messages.add(new UserMessage(userMessage));
+                }
+                case ASSISTANT -> messages.add(new AssistantMessage(extractText(mcpMessage.content())));
+            }
+        }
 
         return new Prompt(messages);
     }
