@@ -7,7 +7,6 @@ import com.solesonic.service.ollama.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.a2aproject.sdk.spec.Message;
 import org.a2aproject.sdk.spec.TextPart;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
