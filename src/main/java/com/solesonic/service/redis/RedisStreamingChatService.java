@@ -87,18 +87,20 @@ public class RedisStreamingChatService {
 
         log.debug("Starting Redis streaming chat with new chat id {}", chatId);
 
-        return update(chatId, userId, chatRequest, null, authentication);
+        return update(chatId, userId, chatRequest, authentication);
     }
 
+    /**
+     * Starts a turn and returns a view of it.
+     * <p>
+     * Resuming an existing turn is deliberately not this method's job — see
+     * {@link StreamResumeService}. A turn runs to completion whether or not anyone is listening,
+     * so replaying one must never re-enter this path.
+     */
     public Flux<ServerSentEvent<?>> update(UUID chatId,
                                            UUID userId,
                                            ChatRequest chatRequest,
-                                           String lastEventId,
                                            Authentication authentication) {
-
-        if(StringUtils.isNotEmpty(lastEventId)) {
-            return redisStreamService.subscribe(chatId, userId, lastEventId);
-        }
 
         //Persist the user message, then start a chat stream with an init event carrying its id.
         //The save has to happen here rather than in publishToRedisStream, which runs after the

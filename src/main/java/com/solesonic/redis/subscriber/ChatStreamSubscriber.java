@@ -13,19 +13,24 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class ChatStreamSubscriber {
     private static final Logger log = LoggerFactory.getLogger(ChatStreamSubscriber.class);
     private static final String DONE_EVENT_TYPE = "done";
+    private static final String KEEPALIVE_COMMENT = "keepalive";
 
     private final ReactiveStringRedisTemplate redisTemplate;
     private final Duration readTimeout;
+    private final Duration keepaliveInterval;
 
     public ChatStreamSubscriber(ReactiveStringRedisTemplate redisTemplate,
-                                @Value("${redis.stream.read-timeout-seconds:5}") long readTimeoutSeconds) {
+                                @Value("${redis.stream.read-timeout-seconds:5}") long readTimeoutSeconds,
+                                @Value("${redis.stream.keepalive-seconds:15}") long keepaliveSeconds) {
         this.redisTemplate = redisTemplate;
         this.readTimeout = Duration.ofSeconds(readTimeoutSeconds);
+        this.keepaliveInterval = Duration.ofSeconds(keepaliveSeconds);
     }
 
     public Flux<ServerSentEvent<?>> subscribe(String streamKey, String lastEventId) {
@@ -41,9 +46,39 @@ public class ChatStreamSubscriber {
         StreamReceiver<String, MapRecord<String, String, String>> receiver =
                 StreamReceiver.create(redisTemplate.getConnectionFactory(), receiverOptions);
 
-        return Flux.from(receiver.receive(offset)
-                .map(this::toServerSentEvent)
-                .takeUntil(sse -> DONE_EVENT_TYPE.equalsIgnoreCase(sse.event())));
+        Flux<ServerSentEvent<?>> events = Flux.from(receiver.receive(offset))
+                .map(this::toServerSentEvent);
+
+        return withKeepalive(events);
+    }
+
+    /**
+     * Puts bytes on the wire while a turn is thinking.
+     * <p>
+     * Between the model call starting and its first token there is nothing to send, and a
+     * {@code text/event-stream} carrying zero bytes is the first thing a mobile radio, a load
+     * balancer or a proxy reaps. An SSE comment costs nothing, is dropped by any spec-compliant
+     * parser, and is the difference between a backgrounded phone resuming a turn and losing it.
+     * <p>
+     * Idle-triggered rather than unconditional: a turn already emitting chunks needs no help.
+     * Keepalives deliberately carry no {@code id:} — they are not frames, and must not move a
+     * client's resume cursor.
+     */
+    Flux<ServerSentEvent<?>> withKeepalive(Flux<ServerSentEvent<?>> events) {
+        AtomicLong lastFrameNanos = new AtomicLong(System.nanoTime());
+
+        Flux<ServerSentEvent<?>> tracked = events
+                .doOnNext(_ -> lastFrameNanos.set(System.nanoTime()));
+
+        Flux<ServerSentEvent<?>> keepalives = Flux.interval(keepaliveInterval, keepaliveInterval)
+                .filter(_ -> System.nanoTime() - lastFrameNanos.get() >= keepaliveInterval.toNanos())
+                .doOnNext(_ -> lastFrameNanos.set(System.nanoTime()))
+                .map(_ -> ServerSentEvent.builder().comment(KEEPALIVE_COMMENT).build());
+
+        //takeUntil on the merged flux, so the done frame both reaches the client and cancels the
+        //interval. Left on the events flux alone, a finished turn would hold the response open.
+        return tracked.mergeWith(keepalives)
+                .takeUntil(serverSentEvent -> DONE_EVENT_TYPE.equalsIgnoreCase(serverSentEvent.event()));
     }
 
     private StreamOffset<String> resolveOffset(String streamKey, String lastEventId) {

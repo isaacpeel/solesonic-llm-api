@@ -1,6 +1,7 @@
 package com.solesonic.redis.service;
 
 import com.solesonic.redis.model.RedisChatEvent;
+import com.solesonic.redis.model.StreamEventId;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
 import com.solesonic.service.redis.RedisStreamingChatService;
@@ -64,6 +65,15 @@ public class RedisStreamService {
     }
 
     /**
+     * The last frame of a stream: its id, and the event type that produced it.
+     * <p>
+     * The type is what tells a resuming client's request apart from a turn still in flight — a
+     * tail of {@code done} means the turn is over and there is nothing more coming.
+     */
+    public record StreamTail(String eventId, String type) {
+    }
+
+    /**
      * This is the offset where to resume the given stream from redis.
      *
      * @param chatId Chat ID to build the stream key from
@@ -71,17 +81,42 @@ public class RedisStreamService {
      * @return The offset of the most recent stream for the stream key
      */
     public Mono<String> getLatestOffset(UUID chatId, UUID userId) {
+        return tail(chatId, userId)
+                .map(StreamTail::eventId)
+                .defaultIfEmpty(StreamEventId.BEGINNING);
+    }
+
+    public Mono<StreamTail> tail(UUID chatId, UUID userId) {
         String streamKey = buildStreamKey(chatId, userId);
 
-        return redisTemplate.opsForStream()
+        return redisTemplate.<String, String>opsForStream()
                 .reverseRange(streamKey, unbounded(), limit().count(1))
                 .next()
-                .map(record -> record.getId().getValue())
-                .defaultIfEmpty("0")
+                .map(record -> new StreamTail(
+                        record.getId().getValue(),
+                        record.getValue().getOrDefault(RedisChatEvent.TYPE, "")))
                 .onErrorResume(_ -> {
-                    log.debug("Stream {} does not exist yet, starting from 0", streamKey);
-                    //If all fails, start the strea from the beginning
-                    return Mono.just("0");
+                    log.debug("Stream {} does not exist yet", streamKey);
+
+                    return Mono.empty();
+                });
+    }
+
+    /**
+     * The id of the oldest frame still retained. A resume cursor older than this one has had the
+     * frames after it trimmed away, which is a gap rather than a resume.
+     */
+    public Mono<String> getEarliestOffset(UUID chatId, UUID userId) {
+        String streamKey = buildStreamKey(chatId, userId);
+
+        return redisTemplate.<String, String>opsForStream()
+                .range(streamKey, unbounded(), limit().count(1))
+                .next()
+                .map(record -> record.getId().getValue())
+                .onErrorResume(_ -> {
+                    log.debug("Stream {} does not exist yet", streamKey);
+
+                    return Mono.empty();
                 });
     }
 

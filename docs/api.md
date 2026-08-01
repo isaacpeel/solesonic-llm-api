@@ -25,14 +25,15 @@ For local development, authentication may be more relaxed depending on configura
 
 All chat creation and continuation happens over Server-Sent Events (SSE). There is no non-streaming chat creation endpoint.
 
+`{userId}` must be the subject of the bearer token, and `{chatId}` must name a chat that user owns —
+otherwise `403`. An unknown `{chatId}` is `404`.
+
 ### Start Streaming Chat
 
 - **Endpoint**: `POST /streaming/chats/users/{userId}`
 - **Produces**: `text/event-stream`
 - **Path Parameters**:
   - `userId` (UUID): The user starting the chat
-- **Request Headers**:
-  - `Last-Event-ID` (optional): Resume the stream from a specific SSE event ID
 - **Request Body**: `ChatRequest`
 
 ### Continue Streaming Chat
@@ -43,8 +44,70 @@ All chat creation and continuation happens over Server-Sent Events (SSE). There 
   - `chatId` (UUID): The existing chat session to continue
   - `userId` (UUID): The user continuing the chat
 - **Request Headers**:
-  - `Last-Event-ID` (optional): Resume from a specific SSE event ID
+  - `Last-Event-ID` (optional, deprecated): Replays instead of starting a turn, exactly as the
+    resume endpoint does, including its status codes. Kept for clients that already do this; new
+    clients should use `GET .../stream`, which needs no request body.
 - **Request Body**: `ChatRequest`
+
+### Resume a Stream
+
+- **Endpoint**: `GET /streaming/chats/{chatId}/users/{userId}/stream`
+- **Produces**: `text/event-stream`
+- **Request Headers**:
+  - `Last-Event-ID` (optional): the `id:` of the last frame the client received. Also accepted as
+    `?lastEventId=` for debuggability; the header wins when both are present. Omitted, or `0`,
+    replays the whole retained stream.
+
+Replays every buffered frame after the cursor — progress frames included, so a client's step log
+survives — then continues live through `done`. Resuming never re-runs a turn: generation and
+persistence are already independent of any listener, so this is purely a second view of work that
+is happening regardless.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Replaying, then live through `done` |
+| `204` | The turn finished and the cursor already covers every frame of it |
+| `400` | `Last-Event-ID` is not a stream id — see the id format below |
+| `403` | The chat is not the caller's |
+| `404` | No such chat |
+| `410` | The buffer expired, or the cursor predates the oldest retained frame (replaying would leave a gap) |
+
+Every non-`200` is decided before the response is committed, so it arrives immediately rather than
+as a stream that never produces anything. On `404` or `410` the fallback is `GET /chats/{chatId}`,
+which returns the persisted turn.
+
+Frames are retained for `redis.stream.retention-seconds` (default 900) past a chat's most recent
+frame, on a sliding expiry.
+
+### Event IDs
+
+Every frame carries an `id:` — a Redis stream entry id of the form
+`<millisecondsSinceEpoch>-<sequence>`, for example `1754062831251-1`. Ids increase monotonically
+within a chat (not just within a turn) and are what `Last-Event-ID` expects back, verbatim.
+
+Treat them as opaque strings. **Do not parse one as an integer** — `parseInt` silently discards the
+sequence half, collapsing every frame emitted in the same millisecond onto one cursor value and
+dropping frames on resume. To compare two ids, split on `-` and compare the halves numerically,
+most significant first.
+
+`0` is the "from the beginning" sentinel and is never the id of a real frame.
+
+### Keepalives
+
+While a stream is in flight and nothing has been sent for `redis.stream.keepalive-seconds`
+(default 15), the server writes an SSE comment:
+
+```
+: keepalive
+
+```
+
+A turn that is still thinking emits no bytes at all, which is what mobile radios, load balancers
+and proxies reap. Per the SSE spec a line beginning with `:` is a comment; keepalives carry no
+`id:` and no `data:`, and must not advance a client's resume cursor.
+
+Streaming responses also set `Cache-Control: no-cache` and `X-Accel-Buffering: no`, the latter so
+an nginx in front of the API does not buffer away the frames whose value is in arriving early.
 
 ### Stream Event Types
 
