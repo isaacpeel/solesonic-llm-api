@@ -38,13 +38,21 @@ public class VisionOllamaConfig {
                                            @Value("${solesonic.llm.vision.ollama.keep-alive}") String keepAlive) {
         OllamaApi ollamaApi = visionOllamaApi(ollamaBaseUrl, readTimeout);
 
+        //The generation budget has to hold the model's reasoning as well as the description.
+        //qwen3-vl's default tag is the thinking variant, and it ignores think=false — the reasoning
+        //comes back in the response's thinking field and the description in content, so a budget
+        //that runs out mid-reasoning yields an empty content and an undescribed image rather than a
+        //truncated one. A text-dense photo (a rack of cartridges, transcribed label by label) spent
+        //5.5k tokens reasoning before writing a 900-character description; at the old 384 it never
+        //reached the description at all, and at 16k context an unbounded run filled the window
+        //first. 32k context leaves room for the image, the reasoning, and the answer.
         OllamaChatOptions options = OllamaChatOptions.builder()
                 .model(visionModel)
-                .numCtx(16384)
+                .numCtx(32768)
                 .numBatch(512)
                 .keepAlive(keepAlive)
                 .temperature(0.2)
-                .numPredict(384)
+                .numPredict(16384)
                 .disableThinking()
                 .build();
 
