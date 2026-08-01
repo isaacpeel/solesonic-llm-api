@@ -1,5 +1,7 @@
 package com.solesonic.redis.model;
 
+import org.jspecify.annotations.NonNull;
+
 import java.util.Optional;
 
 /**
@@ -58,6 +60,7 @@ public record StreamEventId(long milliseconds, long sequence) implements Compara
     }
 
     @Override
+    @NonNull
     public String toString() {
         return milliseconds + "-" + sequence;
     }

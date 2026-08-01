@@ -52,9 +52,9 @@ class StreamResumeServiceTest {
         when(redisStreamService.subscribe(any(), any(), any())).thenReturn(Flux.empty());
     }
 
-    private void tailIs(String eventId, String type) {
+    private void tailIs(String type) {
         when(redisStreamService.tail(CHAT_ID, USER_ID))
-                .thenReturn(Mono.just(new RedisStreamService.StreamTail(eventId, type)));
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail(StreamResumeServiceTest.LAST_FRAME, type)));
     }
 
     private ResponseEntity<Flux<ServerSentEvent<?>>> resume(String lastEventId) {
@@ -63,7 +63,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysFromTheCursorOnALiveTurn() {
-        tailIs(LAST_FRAME, "chunk");
+        tailIs("chunk");
 
         assertThat(resume(MIDDLE_FRAME).getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -72,7 +72,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysWholeTurnWhenTheCursorIsTheBeginning() {
-        tailIs(LAST_FRAME, "done");
+        tailIs("done");
 
         assertThat(resume("0").getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -81,7 +81,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysTailOfAFinishedTurn() {
-        tailIs(LAST_FRAME, "done");
+        tailIs("done");
 
         assertThat(resume(MIDDLE_FRAME).getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -94,7 +94,7 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersNoContentWhenTheClientAlreadyHasTheWholeFinishedTurn() {
-        tailIs(LAST_FRAME, "done");
+        tailIs("done");
 
         assertThat(resume(LAST_FRAME).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
@@ -116,7 +116,7 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersGoneWhenTheCursorPredatesTheOldestRetainedFrame() {
-        tailIs(LAST_FRAME, "chunk");
+        tailIs("chunk");
 
         assertThat(resume("1754062830000-0").getStatusCode()).isEqualTo(HttpStatus.GONE);
 
@@ -130,7 +130,7 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersBadRequestOnACursorThatIsNotAStreamId() {
-        tailIs(LAST_FRAME, "chunk");
+        tailIs("chunk");
 
         assertThat(resume("seven").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 
@@ -159,7 +159,7 @@ class StreamResumeServiceTest {
 
     @Test
     void treatsAMissingCursorAsTheBeginning() {
-        tailIs(LAST_FRAME, "chunk");
+        tailIs("chunk");
 
         assertThat(resume(null).getStatusCode()).isEqualTo(HttpStatus.OK);
 

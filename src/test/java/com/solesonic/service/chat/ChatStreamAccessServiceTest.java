@@ -35,6 +35,7 @@ class ChatStreamAccessServiceTest {
         chatStreamAccessService = new ChatStreamAccessService(chatRepository);
     }
 
+    @SuppressWarnings("DataFlowIssue")
     private static Authentication tokenFor(UUID subject) {
         Jwt jwt = Jwt.withTokenValue("token")
                 .header("alg", "none")
