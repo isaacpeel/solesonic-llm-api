@@ -297,7 +297,32 @@ These endpoints retrieve existing chat history. They do not create or send messa
 - **Endpoint**: `GET /chats/users/{userId}`
 - **Path Parameters**:
   - `userId` (UUID): The user whose chats to retrieve
-- **Response**: Array of chat objects
+- **Query Parameters**:
+  - `page` (int, default `0`): Zero-based page index
+  - `size` (int, default `20`, max `100`): Page size
+- **Response**: A page of chat objects, newest first (`timestamp` descending, `id` as a tiebreaker)
+
+Parameters are bounded rather than rejected: a negative `page` is treated as `0`, a `size` above the
+`spring.data.web.pageable.max-page-size` limit is capped at it, and scrolling past the last page
+returns an empty `content` array instead of an error. A `sort` parameter is accepted by the resolver
+but ignored: the ordering is fixed by the repository query, so that pages cannot overlap or skip a chat.
+
+```json
+{
+  "content": [
+    { "id": "...", "userId": "...", "timestamp": "...", "chatMessages": [] }
+  ],
+  "page": {
+    "size": 20,
+    "number": 0,
+    "totalElements": 137,
+    "totalPages": 7
+  }
+}
+```
+
+For infinite scroll, request `page = 0, 1, 2, …` and stop when `page.number + 1 >= page.totalPages`.
+The ordering is deterministic, so pages never overlap or skip a chat.
 
 ### Get a Specific Chat
 

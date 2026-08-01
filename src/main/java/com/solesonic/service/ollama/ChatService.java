@@ -10,6 +10,8 @@ import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -44,9 +46,9 @@ public class ChatService {
         this.generatedImageService = generatedImageService;
     }
 
-    public List<Chat> getByUserId(UUID userId) {
-        log.info("Getting chats by user id {}", userId);
-        List<Chat> chats = chatRepository.findByUserId(userId);
+    public Page<Chat> getByUserId(UUID userId, Pageable pageable) {
+        log.info("Getting chats by user id {} page {} size {}", userId, pageable.getPageNumber(), pageable.getPageSize());
+        Page<Chat> chats = chatRepository.findByUserId(userId, pageable);
 
         for (Chat chat : chats) {
             chat.setChatMessages(chatMessages(chat.getId()));
