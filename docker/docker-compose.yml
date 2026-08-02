@@ -11,8 +11,6 @@ services:
     container_name: solesonic-llm-api
     network_mode: host
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - SERVER_PORT=8080
       - SPRING_DATA_REDIS_HOST=localhost
       - SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/${POSTGRES_DB}
