@@ -1,5 +1,6 @@
 package com.solesonic.security;
 
+import com.solesonic.config.logging.MdcRequestFilter;
 import com.solesonic.scope.UserRequestContext;
 import jakarta.annotation.Nonnull;
 import jakarta.servlet.FilterChain;
@@ -8,8 +9,10 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
+import org.springframework.security.authentication.InsufficientAuthenticationException;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -54,10 +57,14 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
 
             if (userId != null) {
                 userRequestContext.setUserId(UUID.fromString(userId));
+                MDC.put(MdcRequestFilter.USER_ID, userId);
             }
         } else {
-            //If there is no authentication, always throw an exception
-            throw new IllegalStateException("Anonymous authentication is not allowed.");
+            //If there is no authentication, always throw an exception. An AuthenticationException
+            //rather than an IllegalStateException so that ExceptionTranslationFilter — which this
+            //filter now sits downstream of — answers with the entry point's 401 and its
+            //authn.failure event, instead of letting a 500 escape the chain unlogged.
+            throw new InsufficientAuthenticationException("Anonymous authentication is not allowed.");
         }
 
         filterChain.doFilter(request, response);

@@ -169,11 +169,14 @@ CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://app.yourdomain.com
 
 ### Rate Limiting
 
-While not implemented at the application level, rate limiting should be configured at the infrastructure level:
+Not implemented at the application level. The per-IP budgets live in nginx —
+`limit_req` for request rate and `limit_conn` for the streaming routes, where one long-lived
+connection is not a burst — see [deploy/nginx/solesonic-llm-api.conf](../deploy/nginx/solesonic-llm-api.conf).
 
-- **Load Balancer**: Implement rate limiting per IP/user
-- **API Gateway**: Use AWS API Gateway or similar for rate limiting
-- **Monitoring**: Track usage patterns and detect anomalies
+fail2ban reacts to a pattern over time and does not stop the first hundred requests, so the nginx
+limits are what blunt a burst. An in-app Redis-backed limiter is the remaining piece; it would emit
+`ratelimit.exceeded` (already in `SecurityEvent`) and would survive a direct-to-Tomcat request if
+the loopback bind ever regressed.
 
 ## Threat Model
 
@@ -280,6 +283,63 @@ https://your-issuer/.well-known/jwks.json
 3. **Incident Response**: Maintain incident response procedures
 4. **Security Testing**: Regular penetration testing and security assessments
 5. **Training**: Keep team updated on security best practices
+
+## Security Logging
+
+Two log streams, with two different jobs.
+
+| Stream | Format | Consumer | Path |
+| --- | --- | --- | --- |
+| Application log | ECS JSON | humans, a future log shipper | `/var/log/solesonic-llm-api/solesonic-llm-api.log` |
+| Security log | plain text, fixed grammar | fail2ban | `/var/log/solesonic-llm-api/security.log` |
+
+The application log is JSON via `logging.structured.format.*` in `application.properties` — no
+extra dependency, Boot 4 has it natively. Note that `logback-spring.xml` cannot use Boot's
+`base.xml` for it: `base.xml` includes the *plain* console and file appenders, which ignore
+`logging.structured.format.*`. The structured includes are used instead, selected by profile so the
+console stays human-readable outside prod.
+
+`RequestLoggingFilter` writes one line per request **at completion**, with structured key/value
+pairs (`http.response.status_code`, `event.duration`, `client.ip`, redacted `url.query`).
+`MdcRequestFilter` adds `request.id`, `client.ip`, and `user.id`; `ReactorMdcPropagationConfig`
+carries the MDC across the thread hops the streaming path makes deliberately, so a turn's logs are
+still correlated.
+
+### The security log
+
+```
+2026-08-02T14:03:11.442Z SECURITY event=authn.failure ip=203.0.113.10 method=GET path="/actuator/env" status=401 reason=missing_token route=unknown
+```
+
+Written by `service/security/SecurityEventLogger` — the only place the grammar exists — from the
+closed enums `SecurityEvent` and `SecurityEventReason`. Its format is a machine interface: the jail
+filters in `deploy/fail2ban` match it literally, so changing a field order or the appender pattern
+silently stops a jail from matching rather than breaking a build.
+
+Three properties are load-bearing:
+
+- **The address is never read from a header.** `request.getRemoteAddr()` only —
+  `server.forward-headers-strategy=native` under `prod-nginx` makes Tomcat resolve it, and nginx is
+  configured to *overwrite* `X-Forwarded-For` rather than append. An address an attacker can
+  influence is a remote-controlled firewall.
+- **No free-form input reaches the file.** No `User-Agent`, no header, no body, no query string.
+  The path is the one attacker-influenced field kept, sanitized against an allowlist and truncated,
+  so no request can write a line of its own.
+- **`route=known|unknown` is what makes an aggressive jail safe.** In prod every request is
+  authenticated, so a scanner is turned away with 401 and never reaches a controller — there is no
+  404 to match on. The classification happens at the point of rejection instead, and only the
+  half that fires on paths the application does not serve is banned on one strike.
+
+Events currently emitted: `authn.failure`, `authz.denied`, `broker.denied`, `route.unknown`,
+`method.rejected`. The enum also carries `authn.rejected_subject`, `authn.rejected_issuer`,
+`authn.rejected_audience`, `oauth.state_mismatch`, and `ratelimit.exceeded`, whose emission sites
+arrive with the subject allowlist, the OAuth state check, and a rate limiter respectively.
+
+### What is never logged
+
+Chat message content, prompt content, retrieved document text, and vision descriptions are never
+logged above DEBUG, and never in the security log at all.
+`spring.ai.chat.client.observations.log-prompt` is `false` in every profile.
 
 ## Security Monitoring
 

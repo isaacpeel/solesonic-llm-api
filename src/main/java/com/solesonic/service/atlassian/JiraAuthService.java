@@ -91,7 +91,7 @@ public class JiraAuthService {
                 .build()
                 .toUriString();
 
-        log.info("Jira auth URI: {}", jiraAuthUri);
+        log.info("Built Jira auth URI for user: {}", userId);
         return jiraAuthUri;
     }
 
@@ -147,7 +147,7 @@ public class JiraAuthService {
                 .exchangeToMono(response -> response.bodyToMono(String.class))
                 .block();
 
-        log.info(accessibleResources);
+        log.debug("Retrieved accessible resources");
         return accessibleResources;
     }
 }

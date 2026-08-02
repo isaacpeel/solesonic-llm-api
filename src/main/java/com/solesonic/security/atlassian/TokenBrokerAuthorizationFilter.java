@@ -1,6 +1,8 @@
 package com.solesonic.security.atlassian;
 
 import com.solesonic.config.atlassian.TokenBrokerProperties;
+import com.solesonic.model.security.SecurityEventReason;
+import com.solesonic.service.security.SecurityEventLogger;
 import jakarta.annotation.Nonnull;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -18,6 +20,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.util.List;
 
+import static com.solesonic.model.security.SecurityEvent.BROKER_DENIED;
 import static io.modelcontextprotocol.server.transport.HttpServletStreamableServerTransportProvider.APPLICATION_JSON;
 
 @Component
@@ -29,9 +32,12 @@ public class TokenBrokerAuthorizationFilter extends OncePerRequestFilter {
     public static final String AUD = "aud";
 
     private final TokenBrokerProperties properties;
+    private final SecurityEventLogger securityEventLogger;
 
-    public TokenBrokerAuthorizationFilter(TokenBrokerProperties properties) {
+    public TokenBrokerAuthorizationFilter(TokenBrokerProperties properties,
+                                          SecurityEventLogger securityEventLogger) {
         this.properties = properties;
+        this.securityEventLogger = securityEventLogger;
     }
 
     @Override
@@ -68,6 +74,7 @@ public class TokenBrokerAuthorizationFilter extends OncePerRequestFilter {
         // Check required scope
         if (!hasRequiredScope(jwt)) {
             log.warn("Missing required scope '{}' for token broker access", properties.getRequiredScope());
+            securityEventLogger.log(BROKER_DENIED, request, HttpServletResponse.SC_FORBIDDEN, SecurityEventReason.MISSING_SCOPE);
             sendForbiddenResponse(response, "Missing required scope: " + properties.getRequiredScope());
             return;
         }
@@ -75,6 +82,7 @@ public class TokenBrokerAuthorizationFilter extends OncePerRequestFilter {
         // Check required audience
         if (!hasRequiredAudience(jwt)) {
             log.warn("Missing required audience '{}' for token broker access", properties.getRequiredAudience());
+            securityEventLogger.log(BROKER_DENIED, request, HttpServletResponse.SC_FORBIDDEN, SecurityEventReason.WRONG_AUDIENCE);
             sendForbiddenResponse(response, "Missing required audience: " + properties.getRequiredAudience());
             return;
         }
