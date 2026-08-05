@@ -24,6 +24,13 @@ import static java.util.Objects.requireNonNullElse;
  * <p>
  * Fields are attached as key/value pairs rather than interpolated into a sentence, because the
  * whole point of the ECS JSON application log is that nothing downstream has to re-parse prose.
+ * <p>
+ * {@code client.ip} is deliberately not among them: {@link com.solesonic.config.logging.MdcRequestFilter}
+ * already puts it in the MDC, so it is on every line of the request anyway. Boot's ECS formatter
+ * merges MDC entries and key/value pairs into one nested-pair block, so adding it a second time
+ * makes {@code ContextPairs} throw {@code Duplicate nested pairs added under 'client.ip'} and the
+ * line is dropped by every appender. That only shows up under the prod profiles, which are the
+ * only ones wired to the structured appenders — locally the plain encoder never notices.
  */
 @Component
 public class RequestLoggingFilter extends OncePerRequestFilter {
@@ -43,7 +50,6 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
             log.atInfo()
                     .addKeyValue("http.request.method", request.getMethod())
                     .addKeyValue("url.path", request.getRequestURI())
-                    .addKeyValue("client.ip", request.getRemoteAddr())
                     .log("stream opened");
         }
 
@@ -56,7 +62,6 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
                     .addKeyValue("url.query", requireNonNullElse(Redactor.redactQuery(request.getQueryString()), ""))
                     .addKeyValue("http.response.status_code", response.getStatus())
                     .addKeyValue("event.duration", System.nanoTime() - startedAt)
-                    .addKeyValue("client.ip", request.getRemoteAddr())
                     .log("request completed");
         }
     }
