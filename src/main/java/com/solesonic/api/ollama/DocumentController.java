@@ -1,8 +1,10 @@
 package com.solesonic.api.ollama;
 
 import com.solesonic.model.VectorSearch;
+import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.training.TrainingDocument;
 import com.solesonic.service.rag.TrainingDocumentService;
+import com.solesonic.service.rag.UriTrainingService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.springframework.ai.document.Document;
 import org.springframework.http.ResponseEntity;
@@ -19,11 +21,14 @@ public class DocumentController {
 
     private final VectorStoreService vectorStoreService;
     private final TrainingDocumentService trainingDocumentService;
+    private final UriTrainingService uriTrainingService;
 
     public DocumentController(VectorStoreService vectorStoreService,
-                              TrainingDocumentService trainingDocumentService) {
+                              TrainingDocumentService trainingDocumentService,
+                              UriTrainingService uriTrainingService) {
         this.vectorStoreService = vectorStoreService;
         this.trainingDocumentService = trainingDocumentService;
+        this.uriTrainingService = uriTrainingService;
     }
 
     @PostMapping("/data/search")
@@ -44,5 +49,17 @@ public class DocumentController {
                 .toUri();
 
         return ResponseEntity.created(location).build();
+    }
+
+    @PostMapping("/uri")
+    public ResponseEntity<TrainingDocument> handleUriIngest(@RequestBody UriIngestRequest uriIngestRequest) {
+        TrainingDocument trainingDocument = uriTrainingService.queue(uriIngestRequest.uri());
+
+        URI location = ServletUriComponentsBuilder.fromCurrentContextPath()
+                .path("/trainingdocuments/{id}")
+                .buildAndExpand(trainingDocument.getId())
+                .toUri();
+
+        return ResponseEntity.accepted().location(location).body(trainingDocument);
     }
 }

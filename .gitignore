@@ -3,5 +3,6 @@
 /.env.*
 /target/
 /*.log
+/logs/
 /docker/.env.prod
 /docker/.env.redis

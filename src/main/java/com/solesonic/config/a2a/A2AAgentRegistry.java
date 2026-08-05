@@ -43,19 +43,19 @@ public class A2AAgentRegistry {
         List<String> agentCardUris = fetchAgentCardUris();
 
         agentCardUris.forEach(agentCardUri -> {
-                log.info("Discovering A2A agent from card URI: {}", agentCardUri);
+                log.debug("Discovering A2A agent from card URI: {}", agentCardUri);
 
                 AgentCard agentCard = fetchAgentCard(agentCardUri);
                 agentCards.put(agentCard.name(), agentCard);
 
-                log.info("Registered A2A agent name: '{}'", agentCard.name());
+                log.debug("Registered A2A agent name: '{}'", agentCard.name());
         });
 
         log.info("A2A agent registry initialized with {} agent(s)", agentCards.size());
     }
 
     private List<String> fetchAgentCardUris() {
-        log.info("Getting agent card URIs.");
+        log.debug("Getting agent card URIs.");
 
         return webClient.get()
                 .uri(uriBuilder ->

@@ -1,67 +1,67 @@
 <configuration>
+    <!--
+    Two streams with two jobs.
+
+    The application log is ECS JSON, configured by `logging.structured.*` in
+    application.properties. Note that Boot's own `base.xml` cannot be used for it: base.xml
+    includes the *plain* console and file appenders, which read `${CONSOLE_LOG_PATTERN}` and
+    ignore `logging.structured.format.*` entirely. The structured includes below are the ones
+    that honour it.
+
+    The security log is plain text with a fixed grammar. Its format
+    is an API so treat a change to the
+    appender pattern the way you would treat a change to an endpoint contract.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
     <springProfile name="prod,prod-nginx">
-        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-            <!-- Path to the current log file -->
-            <file>/var/log/solesonic-llm-api/solesonic-llm-api.log</file>
+        <property name="SECURITY_LOG_FILE" value="/var/log/solesonic-llm-api/security.log"/>
+        <property name="SECURITY_LOG_FILE_PATTERN" value="/var/log/solesonic-llm-api/security-%d{yyyy-MM-dd}.log"/>
 
-            <!-- Rolling policy for log rotation -->
-            <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-                <fileNamePattern>/var/log/solesonic-llm-api/solesonic-llm-api-%d{yyyy-MM-dd}.log</fileNamePattern>
-                <maxHistory>7</maxHistory>
-            </rollingPolicy>
+        <include resource="org/springframework/boot/logging/logback/structured-console-appender.xml"/>
+        <include resource="org/springframework/boot/logging/logback/structured-file-appender.xml"/>
 
-            <!-- Encoder for formatting log entries -->
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
-            </encoder>
-        </appender>
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
-            </encoder>
-        </appender>
-
-        <root level="info">
-            <appender-ref ref="FILE"/>
+        <root level="INFO">
             <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
         </root>
     </springProfile>
-    <springProfile name="prod">
-        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-            <!-- Path to the current log file -->
-            <file>/var/log/solesonic-llm-api/solesonic-llm-api.log</file>
 
-            <!-- Rolling policy for log rotation -->
-            <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
-                <fileNamePattern>/var/log/solesonic-llm-api/solesonic-llm-api-%d{yyyy-MM-dd}.log</fileNamePattern>
-                <maxHistory>7</maxHistory>
-            </rollingPolicy>
+    <!--
+    Everything that is not a production profile, including no profile at all. JSON is for shipped
+    logs, not for a terminal, so the console stays human-readable and there is no application log
+    file at all.
+    -->
+    <springProfile name="!prod &amp; !prod-nginx">
+        <property name="SECURITY_LOG_FILE" value="logs/security.log"/>
+        <property name="SECURITY_LOG_FILE_PATTERN" value="logs/security-%d{yyyy-MM-dd}.log"/>
 
-            <!-- Encoder for formatting log entries -->
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
-            </encoder>
-        </appender>
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
-            </encoder>
-        </appender>
-
-        <root level="info">
-            <appender-ref ref="FILE"/>
-            <appender-ref ref="CONSOLE"/>
-        </root>
-    </springProfile>
-    <springProfile name="local">
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder>
-                <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5p %logger{10} %msg%n</pattern>
-            </encoder>
-        </appender>
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
 
         <root level="INFO">
             <appender-ref ref="CONSOLE"/>
         </root>
     </springProfile>
+
+    <appender name="SECURITY" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${SECURITY_LOG_FILE}</file>
+
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${SECURITY_LOG_FILE_PATTERN}</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+
+        <!--
+        The timestamp and the SECURITY marker come from here rather than from the message, so a
+        caller cannot forge them. %msg is last, and nothing before it comes from the request.
+        -->
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSS'Z', UTC} %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- additivity=false: one event, one line, one file, so a jail can never double-count. -->
+    <logger name="security.audit" level="INFO" additivity="false">
+        <appender-ref ref="SECURITY"/>
+    </logger>
 </configuration>

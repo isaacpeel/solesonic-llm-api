@@ -21,12 +21,31 @@ class PromptSlashCommandTest {
         McpSchema.PromptMessage message = new McpSchema.PromptMessage(McpSchema.Role.USER, textContent);
         McpSchema.GetPromptResult result = new McpSchema.GetPromptResult(null, List.of(message), null);
 
-        Prompt prompt = command.buildPrompt(result, "hello");
+        Prompt prompt = command.buildPrompt(result, "hello", null);
 
         List<Message> instructions = prompt.getInstructions();
         assertThat(instructions).hasSize(1);
         assertThat(instructions.getFirst()).isInstanceOf(UserMessage.class);
         assertThat(instructions.getFirst().getText()).isEqualTo("hello");
+    }
+
+    /**
+     * The image block has to stay a message of its own, ahead of the user's words: the retrieval
+     * advisor rewrites the last user message, so anything merged into it is wrapped in retrieved
+     * context and told to answer from that context alone.
+     */
+    @Test
+    void buildPrompt_withImageContext_addsItAsItsOwnMessageBeforeTheUserMessage() {
+        McpSchema.TextContent textContent = new McpSchema.TextContent(null, "original content", null);
+        McpSchema.PromptMessage message = new McpSchema.PromptMessage(McpSchema.Role.USER, textContent);
+        McpSchema.GetPromptResult result = new McpSchema.GetPromptResult(null, List.of(message), null);
+
+        Prompt prompt = command.buildPrompt(result, "what is this?", "Image 1 — screenshot.png:\na login screen");
+
+        List<Message> instructions = prompt.getInstructions();
+        assertThat(instructions).hasSize(2);
+        assertThat(instructions.getFirst().getText()).contains("a login screen");
+        assertThat(instructions.getLast().getText()).isEqualTo("what is this?");
     }
 
     @Test
@@ -35,7 +54,7 @@ class PromptSlashCommandTest {
         McpSchema.PromptMessage message = new McpSchema.PromptMessage(McpSchema.Role.ASSISTANT, textContent);
         McpSchema.GetPromptResult result = new McpSchema.GetPromptResult(null, List.of(message), null);
 
-        Prompt prompt = command.buildPrompt(result, "ignored");
+        Prompt prompt = command.buildPrompt(result, "ignored", null);
 
         List<Message> instructions = prompt.getInstructions();
         assertThat(instructions).hasSize(1);

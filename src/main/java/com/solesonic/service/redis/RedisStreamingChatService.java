@@ -2,12 +2,14 @@ package com.solesonic.service.redis;
 
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.InitPayload;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
+import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.ollama.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
@@ -48,6 +50,7 @@ public class RedisStreamingChatService {
     private final RedisStreamService redisStreamService;
     private final ActiveStreamTracker activeStreamTracker;
     private final NotificationService notificationService;
+    private final GeneratedImageService generatedImageService;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -55,7 +58,8 @@ public class RedisStreamingChatService {
                                      ChatMessageService chatMessageService,
                                      RedisStreamService redisStreamService,
                                      ActiveStreamTracker activeStreamTracker,
-                                     NotificationService notificationService) {
+                                     NotificationService notificationService,
+                                     GeneratedImageService generatedImageService) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -63,6 +67,7 @@ public class RedisStreamingChatService {
         this.redisStreamService = redisStreamService;
         this.activeStreamTracker = activeStreamTracker;
         this.notificationService = notificationService;
+        this.generatedImageService = generatedImageService;
     }
 
     private Chat save(Chat chat) {
@@ -82,27 +87,39 @@ public class RedisStreamingChatService {
 
         log.debug("Starting Redis streaming chat with new chat id {}", chatId);
 
-        return update(chatId, userId, chatRequest, null, authentication);
+        return update(chatId, userId, chatRequest, authentication);
     }
 
+    /**
+     * Starts a turn and returns a view of it.
+     * <p>
+     * Resuming an existing turn is deliberately not this method's job — see
+     * {@link StreamResumeService}. A turn runs to completion whether or not anyone is listening,
+     * so replaying one must never re-enter this path.
+     */
     public Flux<ServerSentEvent<?>> update(UUID chatId,
                                            UUID userId,
                                            ChatRequest chatRequest,
-                                           String lastEventId,
                                            Authentication authentication) {
 
-        if(StringUtils.isNotEmpty(lastEventId)) {
-            return redisStreamService.subscribe(chatId, userId, lastEventId);
-        }
-
-        //Start a chat stream with an init event
+        //Persist the user message, then start a chat stream with an init event carrying its id.
+        //The save has to happen here rather than in publishToRedisStream, which runs after the
+        //init event has already been published.
         return redisStreamService.getLatestOffset(chatId, userId)
-                .flatMap(offset -> redisStreamService.publish(chatId, userId, INIT)
-                        .thenReturn(offset))
-                .flatMapMany(offset -> {
+                .flatMap(offset -> Mono
+                        .fromCallable(() -> chatMessageService.saveUserMessage(chatId, userId, chatRequest))
+                        .subscribeOn(Schedulers.boundedElastic())
+                        .map(chatMessage -> new StreamStart(offset, chatMessage)))
+                .flatMap(streamStart -> redisStreamService
+                        .publish(chatId, userId, INIT, new InitPayload(chatId, streamStart.chatMessage().getId()))
+                        .thenReturn(streamStart))
+                .flatMapMany(streamStart -> {
                     publishToRedisStream(chatId, userId, chatRequest, authentication);
-                    return redisStreamService.subscribe(chatId, userId, offset);
+                    return redisStreamService.subscribe(chatId, userId, streamStart.offset());
                 });
+    }
+
+    private record StreamStart(String offset, ChatMessage chatMessage) {
     }
 
     private void publishToRedisStream(UUID chatId,
@@ -118,6 +135,11 @@ public class RedisStreamingChatService {
 
         String chatModel = promptService.model(userId);
         StringBuilder assembled = new StringBuilder();
+
+        //Marks the start of this turn, so the done payload can name the images the turn produced.
+        //Time rather than message id because the assistant message is written by the chat memory
+        //advisor, which does not hand its id back here.
+        ZonedDateTime turnStarted = ZonedDateTime.now();
 
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
@@ -139,6 +161,10 @@ public class RedisStreamingChatService {
             responseMessage.setMessageType(ASSISTANT);
             responseMessage.setMessage(assembled.toString());
             responseMessage.setModel(chatModel);
+
+            //References, never bytes. A client that missed the image event mid-stream — a reconnect,
+            //a late subscribe — still finalises the turn with the image on it.
+            responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 

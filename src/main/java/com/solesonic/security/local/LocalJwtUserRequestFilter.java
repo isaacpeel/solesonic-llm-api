@@ -1,5 +1,6 @@
 package com.solesonic.security.local;
 
+import com.solesonic.config.logging.MdcRequestFilter;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.user.UserPreferencesService;
@@ -11,6 +12,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.context.annotation.Profile;
 import org.springframework.core.annotation.Order;
 import org.springframework.security.core.Authentication;
@@ -57,6 +59,7 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
         }
 
         userRequestContext.setUserId(userId);
+        MDC.put(MdcRequestFilter.USER_ID, userId.toString());
 
         filterChain.doFilter(request, response);
     }

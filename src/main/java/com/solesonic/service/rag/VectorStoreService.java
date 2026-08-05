@@ -7,11 +7,17 @@ import com.solesonic.repository.ollama.VectorStoreRepository;
 import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.ollama.api.OllamaApi;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
+import org.springframework.ai.rag.preretrieval.query.expansion.MultiQueryExpander;
 import org.springframework.ai.rag.preretrieval.query.transformation.QueryTransformer;
+import org.springframework.ai.rag.preretrieval.query.transformation.RewriteQueryTransformer;
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
@@ -27,9 +33,15 @@ import java.util.UUID;
 public class VectorStoreService {
     private static final Logger log = LoggerFactory.getLogger(VectorStoreService.class);
 
+    private static final int RETRIEVAL_TOP_K = 15;
+    private static final int RERANK_TOP_N = 5;
+    private static final int EXPANSION_QUERIES = 3;
+    private static final String TASK_MODEL_KEEP_ALIVE = "30m";
+
     private final VectorStore vectorStore;
     private final VectorStoreRepository vectorStoreRepository;
     private final UserPreferencesService userPreferencesService;
+    private final OllamaChatModel taskChatModel;
 
     @Value("${spring.ai.similarity-threshold}")
     private Double defaultSimilarityThreshold;
@@ -39,10 +51,25 @@ public class VectorStoreService {
 
     public VectorStoreService(VectorStore vectorStore,
                               VectorStoreRepository vectorStoreRepository,
-                              UserPreferencesService userPreferencesService) {
+                              UserPreferencesService userPreferencesService,
+                              OllamaApi ollamaApi,
+                              @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
         this.vectorStore = vectorStore;
         this.vectorStoreRepository = vectorStoreRepository;
         this.userPreferencesService = userPreferencesService;
+
+        OllamaChatOptions taskOptions = OllamaChatOptions.builder()
+                .model(taskModel)
+                .numCtx(8192)
+                .keepAlive(TASK_MODEL_KEEP_ALIVE)
+                .temperature(0.0)
+                .disableThinking()
+                .build();
+
+        this.taskChatModel = OllamaChatModel.builder()
+                .ollamaApi(ollamaApi)
+                .options(taskOptions)
+                .build();
     }
 
     public Advisor retrievalAugmentationAdvisor(UUID userId) {
@@ -60,15 +87,32 @@ public class VectorStoreService {
             return query.mutate().text(text.substring(0, maxQueryChars)).build();
         };
 
+        RewriteQueryTransformer rewriteQueryTransformer = RewriteQueryTransformer.builder()
+                .chatClientBuilder(ChatClient.builder(taskChatModel))
+                .build();
+
+        MultiQueryExpander multiQueryExpander = MultiQueryExpander.builder()
+                .chatClientBuilder(ChatClient.builder(taskChatModel))
+                .numberOfQueries(EXPANSION_QUERIES)
+                .build();
+
+        LlmDocumentReranker documentReranker =
+                new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
+
+        RetrievalLoggingPostProcessor retrievalLoggingPostProcessor = new RetrievalLoggingPostProcessor();
+
         return RetrievalAugmentationAdvisor.builder()
+                .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
+                .queryExpander(multiQueryExpander)
                 .documentRetriever(VectorStoreDocumentRetriever.builder()
                         .similarityThreshold(similarityThreshold)
+                        .topK(RETRIEVAL_TOP_K)
                         .vectorStore(vectorStore)
                         .build())
+                .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
                         .build())
-                .queryTransformers(truncatingTransformer)
                 .build();
     }
 

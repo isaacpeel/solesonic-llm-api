@@ -1,6 +1,7 @@
 package com.solesonic.mcp.client.config;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -10,6 +11,8 @@ import org.springframework.ai.mcp.customizer.McpClientCustomizer;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.oauth2.jwt.JwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 
 import java.time.Duration;
 import java.util.List;
@@ -28,7 +31,10 @@ public class McpClientConfig {
      * Spring AI auto-configuration will provide the McpAsyncClient beans.
      */
     @Bean
-    public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients) {
+    public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients,
+                                                                                 JwtDecoder jwtDecoder,
+                                                                                 JwtAuthenticationConverter jwtAuthenticationConverter,
+                                                                                 GeneratedImageToolInterceptor generatedImageToolInterceptor) {
 
         if (mcpSyncClients.isEmpty()) {
             log.warn("No MCP clients configured. MCP tools will not be available.");
@@ -53,7 +59,8 @@ public class McpClientConfig {
 
         this.mcpClient = mcpSyncClient;
 
-        return new McpIdentityProvider(mcpSyncClient);
+        return new McpIdentityProvider(mcpSyncClient, jwtDecoder, jwtAuthenticationConverter,
+                generatedImageToolInterceptor);
     }
 
     @Bean

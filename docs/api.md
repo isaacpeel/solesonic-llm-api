@@ -25,14 +25,15 @@ For local development, authentication may be more relaxed depending on configura
 
 All chat creation and continuation happens over Server-Sent Events (SSE). There is no non-streaming chat creation endpoint.
 
+`{userId}` must be the subject of the bearer token, and `{chatId}` must name a chat that user owns —
+otherwise `403`. An unknown `{chatId}` is `404`.
+
 ### Start Streaming Chat
 
 - **Endpoint**: `POST /streaming/chats/users/{userId}`
 - **Produces**: `text/event-stream`
 - **Path Parameters**:
   - `userId` (UUID): The user starting the chat
-- **Request Headers**:
-  - `Last-Event-ID` (optional): Resume the stream from a specific SSE event ID
 - **Request Body**: `ChatRequest`
 
 ### Continue Streaming Chat
@@ -43,8 +44,70 @@ All chat creation and continuation happens over Server-Sent Events (SSE). There 
   - `chatId` (UUID): The existing chat session to continue
   - `userId` (UUID): The user continuing the chat
 - **Request Headers**:
-  - `Last-Event-ID` (optional): Resume from a specific SSE event ID
+  - `Last-Event-ID` (optional, deprecated): Replays instead of starting a turn, exactly as the
+    resume endpoint does, including its status codes. Kept for clients that already do this; new
+    clients should use `GET .../stream`, which needs no request body.
 - **Request Body**: `ChatRequest`
+
+### Resume a Stream
+
+- **Endpoint**: `GET /streaming/chats/{chatId}/users/{userId}/stream`
+- **Produces**: `text/event-stream`
+- **Request Headers**:
+  - `Last-Event-ID` (optional): the `id:` of the last frame the client received. Also accepted as
+    `?lastEventId=` for debuggability; the header wins when both are present. Omitted, or `0`,
+    replays the whole retained stream.
+
+Replays every buffered frame after the cursor — progress frames included, so a client's step log
+survives — then continues live through `done`. Resuming never re-runs a turn: generation and
+persistence are already independent of any listener, so this is purely a second view of work that
+is happening regardless.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Replaying, then live through `done` |
+| `204` | The turn finished and the cursor already covers every frame of it |
+| `400` | `Last-Event-ID` is not a stream id — see the id format below |
+| `403` | The chat is not the caller's |
+| `404` | No such chat |
+| `410` | The buffer expired, or the cursor predates the oldest retained frame (replaying would leave a gap) |
+
+Every non-`200` is decided before the response is committed, so it arrives immediately rather than
+as a stream that never produces anything. On `404` or `410` the fallback is `GET /chats/{chatId}`,
+which returns the persisted turn.
+
+Frames are retained for `redis.stream.retention-seconds` (default 900) past a chat's most recent
+frame, on a sliding expiry.
+
+### Event IDs
+
+Every frame carries an `id:` — a Redis stream entry id of the form
+`<millisecondsSinceEpoch>-<sequence>`, for example `1754062831251-1`. Ids increase monotonically
+within a chat (not just within a turn) and are what `Last-Event-ID` expects back, verbatim.
+
+Treat them as opaque strings. **Do not parse one as an integer** — `parseInt` silently discards the
+sequence half, collapsing every frame emitted in the same millisecond onto one cursor value and
+dropping frames on resume. To compare two ids, split on `-` and compare the halves numerically,
+most significant first.
+
+`0` is the "from the beginning" sentinel and is never the id of a real frame.
+
+### Keepalives
+
+While a stream is in flight and nothing has been sent for `redis.stream.keepalive-seconds`
+(default 15), the server writes an SSE comment:
+
+```
+: keepalive
+
+```
+
+A turn that is still thinking emits no bytes at all, which is what mobile radios, load balancers
+and proxies reap. Per the SSE spec a line beginning with `:` is a comment; keepalives carry no
+`id:` and no `data:`, and must not advance a client's resume cursor.
+
+Streaming responses also set `Cache-Control: no-cache` and `X-Accel-Buffering: no`, the latter so
+an nginx in front of the API does not buffer away the frames whose value is in arriving early.
 
 ### Stream Event Types
 
@@ -52,20 +115,112 @@ Both streaming endpoints emit the following SSE event types:
 
 | Event | Description |
 |-------|-------------|
-| `init` | Initialization marker sent at stream start |
+| `init` | Sent at stream start. Payload carries the persisted user message id — see below |
 | `chunk` | Incremental assistant response text |
+| `progress` | A long-running step started — an MCP tool, or the vision pass on one attached image |
+| `attachment` | Terminal outcome for one attached image — see below |
+| `image` | An image generated during this turn, by reference — see below |
 | `elicitation` | Interactive form request from an MCP tool |
 | `cancel` | Emitted when a user cancels an elicitation |
 | `done` | Final event containing the structured chat response |
+
+### image Event Payload
+
+Emitted when a turn generates an image — `/generate_image`, or the model calling the tool itself.
+The payload is a `GeneratedImageSummary`, identical in shape to the `complete` frame of
+[explicit generation](#image-generation):
+
+```json
+{
+  "imageId": "7c2f...",
+  "chatMessageId": null,
+  "imageUrl": "/izzybot/images/7c2f...",
+  "prompt": "a small red lighthouse",
+  "model": "FLUX.1-schnell",
+  "seed": 8339331079448168597,
+  "width": 1024,
+  "height": 1024,
+  "steps": 4,
+  "elapsedSeconds": 6.1,
+  "fileSizeBytes": 1502931,
+  "created": "2026-07-31T16:40:14Z"
+}
+```
+
+Never bytes. The image data stops at the API boundary and is fetched separately from `imageUrl`.
+
+The frame is emitted from the tool result, which lands before the model has written its first word,
+so it always arrives ahead of `chunk` text and well ahead of `done`. `chatMessageId` is `null` here —
+the assistant turn it belongs to has not been written yet — and is filled in by the time the same
+image appears in history.
+
+The same references are repeated on the `done` payload as `message.generatedImages`, so a client
+that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
+De-duplicate by `imageId`.
+
+### init Event Payload
+
+```json
+{
+  "chatId": "0a4b...",
+  "messageId": "7f3c..."
+}
+```
+
+`messageId` is the id of the user message persisted at the start of the turn. Clients that
+uploaded attachments (see [Chat Attachments](#chat-attachments)) use it to associate them with the
+rendered message. Clients that ignore the `init` body are unaffected.
+
+### attachment Event Payload
+
+```json
+{
+  "attachmentId": "3f9a...",
+  "chatId": "0a4b...",
+  "described": true,
+  "reason": null
+}
+```
+
+The vision pass opens with a `progress` event per image and closes with an `attachment` event per
+image. Guarantees a client can rely on:
+
+- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including images
+  skipped before any work started, and images the server could not resolve at all. A client never
+  has to interpret a missing event.
+- **Always before `done`**, so the event lands while the assistant message is still streaming.
+
+Nothing else in the turn distinguishes a described image from a skipped one: a skipped image still
+produces a normal answer, just one written as though no image were attached.
+
+When `described` is `false`, `reason` is one of a closed set:
+
+| Reason | Meaning |
+|--------|---------|
+| `VISION_TIMEOUT` | The vision model was reachable but did not answer in time, most often a cold model load |
+| `VISION_UNAVAILABLE` | The vision host could not be reached, or returned an error |
+| `IMAGE_TOO_LARGE` | The image exceeds `solesonic.llm.vision.max-image-bytes` |
+| `IMAGE_UNREADABLE` | The vision model returned nothing usable, or the attachment could not be loaded |
+| `EXCEEDED_IMAGE_LIMIT` | More images were attached to one message than the vision pass describes |
+
+`reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
+`SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment
+summary in chat history.
 
 ### ChatRequest Body
 
 ```json
 {
   "chatMessage": "Your message here",
-  "model": "qwen2.5:7b"
+  "commands": ["/ask"],
+  "attachmentIds": ["3f9a...", "b721..."]
 }
 ```
+
+- `commands` (optional): slash commands to invoke for this turn.
+- `attachmentIds` (optional): ids returned by `POST /attachments`. Every id must be one the caller
+  uploaded and has not already sent, otherwise the turn is rejected with `409 Conflict` and no
+  message is persisted.
 
 ### Submit Elicitation Response
 
@@ -142,7 +297,32 @@ These endpoints retrieve existing chat history. They do not create or send messa
 - **Endpoint**: `GET /chats/users/{userId}`
 - **Path Parameters**:
   - `userId` (UUID): The user whose chats to retrieve
-- **Response**: Array of chat objects
+- **Query Parameters**:
+  - `page` (int, default `0`): Zero-based page index
+  - `size` (int, default `20`, max `100`): Page size
+- **Response**: A page of chat objects, newest first (`timestamp` descending, `id` as a tiebreaker)
+
+Parameters are bounded rather than rejected: a negative `page` is treated as `0`, a `size` above the
+`spring.data.web.pageable.max-page-size` limit is capped at it, and scrolling past the last page
+returns an empty `content` array instead of an error. A `sort` parameter is accepted by the resolver
+but ignored: the ordering is fixed by the repository query, so that pages cannot overlap or skip a chat.
+
+```json
+{
+  "content": [
+    { "id": "...", "userId": "...", "timestamp": "...", "chatMessages": [] }
+  ],
+  "page": {
+    "size": 20,
+    "number": 0,
+    "totalElements": 137,
+    "totalPages": 7
+  }
+}
+```
+
+For infinite scroll, request `page = 0, 1, 2, …` and stop when `page.number + 1 >= page.totalPages`.
+The ordering is deterministic, so pages never overlap or skip a chat.
 
 ### Get a Specific Chat
 
@@ -385,6 +565,196 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 
 ---
 
+## Chat Attachments
+
+Images attached to a chat message. An attachment is uploaded **before** the message exists — it is
+staged against the uploading user, then claimed by a message when the client names its id in
+`ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
+`solesonic.llm.attachment.staged-ttl`.
+
+Accepted content types: `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Upload size is bounded
+by `spring.servlet.multipart.max-file-size`.
+
+### Upload an Attachment
+
+- **Endpoint**: `POST /attachments`
+- **Consumes**: `multipart/form-data`
+- **Form Parameters**:
+  - `file` (required): the image
+  - `description` (optional): free text describing what the image contains
+- **Response**: `201 Created`, `Location` header, and the attachment summary
+
+```json
+{
+  "id": "3f9a...",
+  "chatMessageId": null,
+  "fileName": "screenshot.png",
+  "description": "the login screen",
+  "contentType": "image/png",
+  "fileSizeBytes": 20481,
+  "described": false,
+  "descriptionFailureReason": null
+}
+```
+
+`chatMessageId` stays `null` until a message claims the attachment.
+
+`description` is the note the uploader supplied — never model output. `described` says whether the
+vision model produced a description of the image; it is `false` on a freshly staged attachment,
+because the vision pass runs on the turn the attachment is sent. `descriptionFailureReason` carries
+the same closed set of values as the [`attachment` stream event](#attachment-event-payload), and is
+`null` both when the image was described and when it has not been through the vision pass yet. The
+description text itself is not exposed: it is a paragraph of prose per image.
+
+### Download an Attachment
+
+- **Endpoint**: `GET /attachments/{attachmentId}`
+- **Response**: raw image bytes with the stored content type, a strong `ETag`, and a long-lived
+  `Cache-Control` — bytes never change once written, so repeat history loads revalidate rather than
+  re-download.
+
+### Delete an Attachment
+
+- **Endpoint**: `DELETE /attachments/{attachmentId}`
+- **Response**: `204 No Content`
+
+Works whether or not the attachment has been claimed by a message. Deleting a claimed attachment
+leaves the message itself intact.
+
+### Attachments in Chat History
+
+`GET /chats/{chatId}` and `GET /chats/users/{userId}` return each `ChatMessage` with an
+`attachments` array of the same summary shape. Bytes are not included; fetch them from
+`GET /attachments/{attachmentId}`.
+
+`described` is the durable half of the `attachment` stream event: it survives a reload, so an old
+conversation can still show that an image the assistant answered around was never actually read.
+
+### Generated Images in Chat History
+
+The same endpoints return each `ChatMessage` with a `generatedImages` array of
+`GeneratedImageSummary` — the durable half of the [`image` stream event](#image-event-payload). An
+assistant turn that generated no images carries an empty array.
+
+This is what makes a reloaded conversation render its images without regenerating them. Bytes are
+not included; fetch them from `GET /images/{imageId}`.
+
+---
+
+## Image Generation
+
+Text-to-image generation, backed by the `generate_image` MCP tool. The prompt is the whole input
+surface: size (1024x1024), step count, and the seed are fixed by the image server and are not
+caller-tunable.
+
+The call travels on the caller's own identity, so the user's JWT must carry the
+`mcp-generate-image` role. A token without it comes back as `FORBIDDEN`.
+
+There are two ways in, and the model never sees an image on either. The tool returns roughly 2MB of
+base64, which the API decodes once, stores, and replaces with a reference; nothing downstream carries
+the bytes.
+
+1. **Explicit** — `POST /images`, below. The model is not involved at all.
+2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
+   itself. The image is intercepted out of the tool result before that result re-enters the model's
+   context, and reaches the client as an [`image` stream event](#image-event-payload) and as
+   `message.generatedImages` on [`done`](#stream-event-types). It is persisted against the assistant
+   turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
+
+### Generate an Image (streaming)
+
+- **Endpoint**: `POST /images`
+- **Produces**: `text/event-stream`
+- **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
+
+The stream carries any number of `progress` frames followed by exactly one terminal frame, either
+`complete` or `error`.
+
+```
+event: progress
+data: {"percent":15,"message":"Queued as 4f1c8e2a-..."}
+
+event: progress
+data: {"percent":85,"message":"Generating…"}
+
+event: complete
+data: {"imageId":"7c2f...","chatMessageId":null,"imageUrl":"/izzybot/images/7c2f...","prompt":"a lighthouse ...",
+       "model":"FLUX.1-schnell","seed":8339331079448168597,"width":1024,"height":1024,"steps":4,
+       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z"}
+```
+
+`percent` is **approximate**. It is monotonic — it never goes backwards — but between 15 and 85 it
+is derived from an expected duration rather than real per-step progress, so it can sit at 85 for a
+while on a slow run. Show the `message` text; treat the number as a hint. It is `null` on a frame
+that carried no total.
+
+Closing the stream does not cancel the generation. The image is still produced and stored, and can
+be fetched by id afterwards.
+
+Typical latency is 5-15 seconds; the hard deadline is 180 seconds.
+
+### Generate an Image (non-streaming)
+
+- **Endpoint**: `POST /images/sync`
+- **Response**: `201 Created`, `Location` header, and the same body as the `complete` frame
+
+For scripts and tests. It blocks for the whole generation and reports failure as a status code
+rather than as an in-band frame. Its own path rather than the streaming one negotiated by `Accept`,
+because a client accepting any media type would match both handlers ambiguously.
+
+### Download a Generated Image
+
+- **Endpoint**: `GET /images/{imageId}`
+- **Auth**: same bearer token as every other endpoint
+- **Response**: raw image bytes, a strong `ETag` (the SHA-256 of the bytes), and a long-lived
+  `Cache-Control` — an image never changes once written
+
+Readable only by the user who generated it. The lookup is user-scoped, so another user's image is
+**`404`, not `403`** — deliberately, so the endpoint does not confirm that an id exists to someone
+who cannot read it.
+
+Because it requires a header, a bare `<img src>` will not work: fetch with the token and hand the
+result to the DOM as a blob URL. There are no pre-signed URLs — these are user-generated from
+free-text prompts, and an unauthenticated URL would be a capability that outlives the session.
+
+`imageUrl` on every payload is **context-relative** (`/izzybot/images/<uuid>`), not absolute, so it
+stays correct behind a proxy that rewrites the host.
+
+### Generated Image Metadata
+
+- **Endpoint**: `GET /images/{imageId}/metadata`
+- **Response**: the same body as the `complete` frame, without the bytes
+
+For rendering an image that arrived long before the current page load. `prompt` and `seed` together
+are the provenance record: the prompt is the image's `alt` text, and the seed is what lets someone
+say *this specific image* when reporting a problem. Every field except `imageId`, `imageUrl`,
+`prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
+text block, and an unparsed field costs a null rather than a failed generation.
+
+### Image Generation Errors
+
+Failures collapse onto a closed set of codes. The message is always user-safe; the underlying detail
+(including the image server's internal prompt id) is logged rather than returned.
+
+| Code | Status on `/images/sync` | Meaning |
+|---|---|---|
+| `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
+| `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
+| `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
+| `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |
+| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the image server's deadline |
+| `INTERNAL` | `500` | Anything else |
+
+On the streaming endpoint the same payload arrives as the terminal `error` frame, since the response
+status is already committed by the time a generation can fail:
+
+```
+event: error
+data: {"code":"GENERATION_TIMEOUT","message":"Image generation is taking longer than expected. Please try again."}
+```
+
+---
+
 ## Error Handling
 
 ### Standard HTTP Status Codes
@@ -396,7 +766,13 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 - `401 Unauthorized` - Authentication required or invalid token
 - `403 Forbidden` - Access denied for the requested resource
 - `404 Not Found` - Resource not found
+- `409 Conflict` - An attachment named in `attachmentIds` was already sent on another message
+- `413 Content Too Large` - Upload exceeds the configured multipart limit
+- `415 Unsupported Media Type` - Attachment content type is not an accepted image type
+- `429 Too Many Requests` - Too many image generations already in flight
 - `500 Internal Server Error` - Server error
+- `503 Service Unavailable` - The image generation backend is unreachable or failed
+- `504 Gateway Timeout` - Image generation did not finish within the image server's deadline
 
 ---
 

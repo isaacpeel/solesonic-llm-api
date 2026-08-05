@@ -15,6 +15,9 @@ public class TrainingDocument {
     public static final String REPLACED_BY_ID = "REPLACED_BY_ID";
     public static final String CONFLUENCE_PAGE_VERSION = "CONFLUENCE_PAGE_VERSION";
     public static final String CONFLUENCE_PAGE_ID = "CONFLUENCE_PAGE_ID";
+    public static final String ORIGINAL_FILE_NAME = "ORIGINAL_FILE_NAME";
+    public static final String FILE_SIZE_BYTES = "FILE_SIZE_BYTES";
+    public static final String SOURCE_URI = "SOURCE_URI";
 
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)

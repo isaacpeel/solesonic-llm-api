@@ -51,7 +51,11 @@ public class OllamaService {
         List<OllamaModel> enriched = new ArrayList<>();
 
         for (OllamaModel ollamaModel : ollamaModels) {
-            enriched.add(nativeModel(ollamaModel));
+            OllamaModel enrichedOllama = nativeModel(ollamaModel);
+
+            if(enrichedOllama != null) {
+                enriched.add(enrichedOllama);
+            }
         }
 
         log.info("Found {} and enriched models.", enriched.size());
@@ -96,7 +100,9 @@ public class OllamaService {
 
             OllamaModel ollamaModel = nativeModel(modelName);
 
-            ollamaModels.add(ollamaModel);
+            if(ollamaModel != null) {
+                ollamaModels.add(ollamaModel);
+            }
         }
 
         log.info("Found {} installed models.", ollamaModels.size());
@@ -116,6 +122,10 @@ public class OllamaService {
         Map<String, Object> ollamaDetails = ollamaModelCacheService.getModelDetails(modelName)
                 .orElseGet(() -> fetchAndCacheModelDetails(modelName));
 
+        if(ollamaDetails == null) {
+            return null;
+        }
+
         Map<String, Object> ollamaShow = ollamaModelCacheService.getShowModel(modelName)
                 .orElseGet(() -> fetchAndCacheShowModel(modelName));
 
@@ -131,11 +141,16 @@ public class OllamaService {
         OllamaApi.Model nativeModel = listModelResponse.models().stream()
                 .filter(model -> model.model().equals(modelName))
                 .findFirst()
-                .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
+                .orElse(null);
+
+        if(nativeModel == null) {
+            return null;
+        }
 
         String detailsJson = jsonMapper.writeValueAsString(nativeModel);
         Map<String, Object> details = jsonMapper.readerFor(Map.class).readValue(detailsJson);
         ollamaModelCacheService.putModelDetails(modelName, details);
+
         return details;
     }
 

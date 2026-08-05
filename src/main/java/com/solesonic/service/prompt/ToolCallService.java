@@ -1,6 +1,8 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -31,11 +33,14 @@ public class ToolCallService {
 
     private final McpSyncClient mcpClient;
     private final SlashCommandService slashCommandService;
+    private final LocalToolRegistry localToolRegistry;
 
     public ToolCallService(McpSyncClient mcpClient,
-                           SlashCommandService slashCommandService) {
+                           SlashCommandService slashCommandService,
+                           LocalToolRegistry localToolRegistry) {
         this.mcpClient = mcpClient;
         this.slashCommandService = slashCommandService;
+        this.localToolRegistry = localToolRegistry;
     }
 
     public Flux<String> stream(UUID chatId,
@@ -43,13 +48,33 @@ public class ToolCallService {
                                ToolSlashCommand toolCommand,
                                Map<String, Object> contextMap) {
 
-        log.info("Tool invoke: {}", toolCommand.name());
-
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
+
+        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap);
+    }
+
+    public Flux<String> streamLocal(UUID chatId,
+                                    String message,
+                                    LocalToolSlashCommand localToolCommand,
+                                    Map<String, Object> contextMap) {
+
+        ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
+
+        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap);
+    }
+
+    private Flux<String> invoke(UUID chatId,
+                                String message,
+                                String toolName,
+                                ToolCallback toolCallback,
+                                Map<String, Object> contextMap) {
+
+        log.info("Tool invoke: {}", toolName);
+
         ChatClient taskClient = slashCommandService.taskClient(toolCallback);
 
         SystemPromptTemplate taskSystemPromptTemplate = new SystemPromptTemplate(taskPrompt);
-        Prompt prompt = taskSystemPromptTemplate.create(Map.of(TASK_TOOL, toolCommand.name()));
+        Prompt prompt = taskSystemPromptTemplate.create(Map.of(TASK_TOOL, toolName));
 
         ChatResponse chatResponse = taskClient.prompt(prompt)
                 .user(message)
@@ -59,14 +84,14 @@ public class ToolCallService {
                 .chatResponse();
 
         if (chatResponse == null || chatResponse.getResult() == null) {
-            log.warn("No response received for tool: {}", toolCommand.name());
+            log.warn("No response received for tool: {}", toolName);
             return Flux.empty();
         }
 
         String result = chatResponse.getResult().getOutput().getText();
 
         if (StringUtils.isBlank(result)) {
-            log.warn("Empty result for tool: {}", toolCommand.name());
+            log.warn("Empty result for tool: {}", toolName);
             return Flux.empty();
         }
 

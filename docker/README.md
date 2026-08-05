@@ -22,9 +22,9 @@ All commands below assume you are running from the **project root**.
 
 ---
 
-## Standard build (no GPU)
+## Full stack (API, Redis, Postgres)
 
-Uses `Dockerfile` — a plain JRE image with no CUDA dependency. Suitable for local development and CPU-only deployments.
+Uses `Dockerfile` — a plain JRE image. The API needs no GPU of its own: every model call (chat, embedding, ETL, vision, image generation) goes out over HTTP to Ollama or the MCP image server, which run outside this compose file.
 
 **Build and start:**
 ```bash
@@ -39,29 +39,6 @@ docker compose -f docker/docker-compose.yml up -d
 **Stop:**
 ```bash
 docker compose -f docker/docker-compose.yml down
-```
-
----
-
-## NVIDIA GPU build
-
-Uses `Dockerfile.nvidia` — a two-stage build that layers the JRE onto a CUDA runtime base image. Requires an NVIDIA GPU and the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) installed on the host.
-
-The `docker-compose.nvidia-gpu.yml` overlay adds the GPU device reservation and switches the build to `Dockerfile.nvidia`.
-
-**Build and start:**
-```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.nvidia-gpu.yml up --build -d
-```
-
-**Start without rebuilding:**
-```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.nvidia-gpu.yml up -d
-```
-
-**Stop:**
-```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.nvidia-gpu.yml down
 ```
 
 ---

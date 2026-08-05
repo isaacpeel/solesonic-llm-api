@@ -3,21 +3,17 @@ name: solesonic-llm-api
 services:
   solesonic-llm-api:
     env_file:
-      - ${ENV_FILE:-.env}
+      - .env
     build:
       context: ..
       dockerfile: docker/Dockerfile
     image: solesonic-llm-api:latest
     container_name: solesonic-llm-api
-    ports:
-      - "8080:8080"
-    restart: unless-stopped
+    network_mode: host
     environment:
-      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
       - SERVER_PORT=8080
-      - SPRING_DATA_REDIS_HOST=solesonic-llm-api-redis
-      - SPRING_DATASOURCE_URL=jdbc:postgresql://solesonic-llm-api-db:5432/${POSTGRES_DB}
+      - SPRING_DATA_REDIS_HOST=localhost
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://localhost:5432/${POSTGRES_DB}
     volumes:
       - /var/log/solesonic-llm-api:/var/log/solesonic-llm-api
     depends_on:
@@ -25,8 +21,6 @@ services:
         condition: service_healthy
       solesonic-llm-api-postgres:
         condition: service_healthy
-    networks:
-      - solesonic-network
 
   solesonic-llm-api-redis:
     env_file:
@@ -59,7 +53,7 @@ services:
     networks:
       - solesonic-network
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: [ "CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping" ]
       interval: 5s
@@ -83,7 +77,7 @@ services:
     networks:
       - solesonic-network
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER}" ]
       interval: 5s

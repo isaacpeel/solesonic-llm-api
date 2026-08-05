@@ -116,6 +116,21 @@
       "description": "Feature flag for redis."
     },
     {
+      "name": "redis.stream.retention-seconds",
+      "type": "java.lang.Long",
+      "description": "How long a chat's buffered SSE frames survive past their most recent frame, as a sliding expiry. This is the window in which a client backgrounded mid-turn can resume; past it the resume endpoint answers 410 Gone and the client must fall back to polling the persisted chat. Also what bounds Redis memory, since the streams are otherwise never deleted. Defaults to 900."
+    },
+    {
+      "name": "redis.stream.keepalive-seconds",
+      "type": "java.lang.Long",
+      "description": "How long a stream may be silent before an SSE keepalive comment is written. A turn that is still thinking emits no bytes at all, and a text/event-stream carrying nothing is the first thing a mobile radio, load balancer or proxy reaps. Must be comfortably below the shortest read timeout in front of the API. Defaults to 15."
+    },
+    {
+      "name": "redis.stream.lookup-timeout-seconds",
+      "type": "java.lang.Long",
+      "description": "Ceiling on the Redis lookups the resume endpoint makes to decide its status code. These run on the request thread so the status can be sent before the response is committed; exceeding this answers 503 rather than hanging. Defaults to 5."
+    },
+    {
       "name": "solesonic.llm.slash-commands.cache.ttl-seconds",
       "type": "java.lang.Long",
       "description": "Time-to-live for slash-command prompt catalog cache, in seconds."
@@ -127,13 +142,43 @@
     },
     {
       "name": "solesonic.llm.ollama.cache.refresh.enabled",
-      "type": "java.lang.String",
+      "type": "java.lang.Boolean",
       "description": "Enable or diable ollama model cache."
     },
     {
       "name": "solesonic.mcp.reconnect.enabled",
       "type": "java.lang.Boolean",
       "description": "Experimental: enables automatic reconnection to the MCP server after a connection loss, with exponential backoff. Disabled by default."
+    },
+    {
+      "name": "solesonic.llm.etl.ollama.warmup-on-startup",
+      "type": "java.lang.Boolean",
+      "description": "Whether to preload the ETL chat models on application startup so the first scheduled enrichment call does not pay the cold model-load cost."
+    },
+    {
+      "name": "solesonic.llm.etl.ollama.read-timeout",
+      "type": "java.time.Duration",
+      "description": "Read timeout for the ETL Ollama HTTP client. Must exceed the time to cold-load the ETL model, otherwise the warm-up request aborts with a ReadTimeoutException. Defaults to 5m."
+    },
+    {
+      "name": "solesonic.llm.vision.ollama.keep-alive",
+      "type": "java.lang.String",
+      "description": "How long Ollama keeps the vision model resident after a request. A Go duration; the unit is mandatory, since Spring AI sends keep_alive as a JSON string and Ollama rejects a unitless one. Any negative duration ('-1m') pins the model, so the first image-bearing turn after an idle period does not pay a cold model load."
+    },
+    {
+      "name": "solesonic.llm.vision.ollama.warmup-on-startup",
+      "type": "java.lang.Boolean",
+      "description": "Whether to preload the vision model on application startup so the first image attachment does not pay the cold model-load cost while a user waits on the turn."
+    },
+    {
+      "name": "solesonic.llm.uri.ingestion.read-timeout",
+      "type": "java.time.Duration",
+      "description": "Read timeout for fetching content from a uri submitted for RAG ingestion. Defaults to 30s."
+    },
+    {
+      "name": "solesonic.llm.uri.ingestion.max-bytes",
+      "type": "org.springframework.util.unit.DataSize",
+      "description": "Maximum response body size accepted when fetching content from a uri submitted for RAG ingestion. Defaults to 20MB."
     }
   ]
 }

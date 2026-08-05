@@ -1,5 +1,6 @@
 package com.solesonic.service.etl;
 
+import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.training.DocumentStatus;
 import com.solesonic.model.training.TrainingDocument;
 import com.solesonic.service.rag.TrainingDocumentService;
@@ -12,7 +13,6 @@ import org.springframework.ai.reader.TextReader;
 import org.springframework.ai.reader.pdf.PagePdfDocumentReader;
 import org.springframework.ai.reader.pdf.config.PdfDocumentReaderConfig;
 import org.springframework.ai.reader.tika.TikaDocumentReader;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
@@ -30,17 +30,17 @@ public class DocumentService {
     private final VectorStoreService vectorStoreService;
     private final EtlService etlService;
     private final TrainingDocumentService trainingDocumentService;
+    private final UriContentFetcher uriContentFetcher;
 
     public DocumentService(VectorStoreService vectorStoreService,
-                           EtlService etlService, TrainingDocumentService trainingDocumentService) {
+                           EtlService etlService,
+                           TrainingDocumentService trainingDocumentService,
+                           UriContentFetcher uriContentFetcher) {
         this.vectorStoreService = vectorStoreService;
         this.etlService = etlService;
         this.trainingDocumentService = trainingDocumentService;
+        this.uriContentFetcher = uriContentFetcher;
     }
-
-
-
-
 
     /**
      * Stores the given resource to the vector store
@@ -49,6 +49,11 @@ public class DocumentService {
         log.info("Saving resource to the vector store.");
 
         TrainingDocument trainingDocument = trainingDocumentService.get(trainingDocumentId);
+
+        if (trainingDocument.getDocumentSource() == DocumentSource.URI) {
+            fetchUriContent(trainingDocument);
+        }
+
         String contentType = trainingDocument.getContentType();
 
         byte[] fileContent = trainingDocument.getFileData();
@@ -81,6 +86,17 @@ public class DocumentService {
 
     }
 
+    private void fetchUriContent(TrainingDocument trainingDocument) {
+        Object sourceUri = trainingDocument.getMetadata().get(TrainingDocument.SOURCE_URI);
+        assert sourceUri != null;
+
+        UriContentFetcher.FetchedContent fetchedContent = uriContentFetcher.fetch(sourceUri.toString());
+
+        trainingDocument.setFileData(fetchedContent.data());
+        trainingDocument.setContentType(fetchedContent.contentType());
+        trainingDocument.getMetadata().put(TrainingDocument.FILE_SIZE_BYTES, fetchedContent.data().length);
+    }
+
     public List<Document> fromHtml(Resource textResource) {
         TikaDocumentReader tikaDocumentReader = new TikaDocumentReader(textResource);
 
@@ -110,10 +126,6 @@ public class DocumentService {
 
         var pdfReader = new PagePdfDocumentReader(pdfResource, config);
 
-        var textSplitter = TokenTextSplitter.builder().build();
-
-        List<Document> documents = pdfReader.get();
-
-        return textSplitter.apply(documents);
+        return pdfReader.get();
     }
 }

@@ -1,12 +1,15 @@
 package com.solesonic.model.chat.history;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
+import com.solesonic.model.image.GeneratedImageSummary;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 import org.springframework.ai.chat.messages.MessageType;
 
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -44,6 +47,17 @@ public class ChatMessage {
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> progressData;
+
+    @Transient
+    private List<ChatAttachmentSummary> attachments;
+
+    /**
+     * Images this turn generated, by reference only — never bytes. Transient for the same reason
+     * {@link #attachments} is: the rows live in {@code generated_image}, and this is the view of
+     * them that a client rendering the conversation needs.
+     */
+    @Transient
+    private List<GeneratedImageSummary> generatedImages;
 
     public UUID getId() {
         return id;
@@ -124,5 +138,21 @@ public class ChatMessage {
 
     public void setProgressData(Map<String, Object> progressData) {
         this.progressData = progressData;
+    }
+
+    public List<ChatAttachmentSummary> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<ChatAttachmentSummary> attachments) {
+        this.attachments = attachments;
+    }
+
+    public List<GeneratedImageSummary> getGeneratedImages() {
+        return generatedImages;
+    }
+
+    public void setGeneratedImages(List<GeneratedImageSummary> generatedImages) {
+        this.generatedImages = generatedImages;
     }
 }

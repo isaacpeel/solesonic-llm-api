@@ -4,12 +4,10 @@ import com.solesonic.mcp.client.McpIdentityProvider;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -19,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
 public class ChatConfig {
     public static final String DEFAULT_CHAT_CLIENT = "default_chat_client";
     public static final String TASK_CHAT_CLIENT = "task_chat_client";
+    public static final String KEEP_ALIVE = "30m";
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
     private final McpIdentityProvider mcpToolCallbackProvider;
@@ -33,39 +32,38 @@ public class ChatConfig {
     }
 
     @Bean
-    public QuestionAnswerAdvisor questionAnswerAdvisor(VectorStore vectorStore) {
-        return QuestionAnswerAdvisor.builder(vectorStore)
-                .searchRequest(SearchRequest.builder().build())
-                .build();
-    }
-
-    @Bean
     @Qualifier(DEFAULT_CHAT_CLIENT)
     public ChatClient defaultChatClient(ChatMemory chatMemory,
-                                        OllamaChatModel chatModel,
-                                        QuestionAnswerAdvisor questionAnswerAdvisor) {
+                                        OllamaChatModel chatModel) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
+//        OllamaChatOptions.Builder options = OllamaChatOptions.builder()
+//                .keepAlive(KEEP_ALIVE);
+
         return ChatClient.builder(chatModel)
+//                .defaultOptions(options)
                 .defaultTools(mcpToolCallbackProvider)
-                .defaultAdvisors(questionAnswerAdvisor, messageChatMemoryAdvisor, simpleLoggerAdvisor)
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
 
     @Bean
     @Qualifier(TASK_CHAT_CLIENT)
     public ChatClient taskChatClient(ChatMemory chatMemory,
-                                     OllamaChatModel chatModel,
-                                     QuestionAnswerAdvisor questionAnswerAdvisor) {
+                                     OllamaChatModel chatModel) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
 
+        OllamaChatOptions.Builder options = OllamaChatOptions.builder()
+                .keepAlive(KEEP_ALIVE);
+
         return ChatClient.builder(chatModel)
+                .defaultOptions(options)
                 .defaultTools(mcpToolCallbackProvider)
-                .defaultAdvisors(questionAnswerAdvisor,messageChatMemoryAdvisor, simpleLoggerAdvisor)
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
                 .build();
     }
 

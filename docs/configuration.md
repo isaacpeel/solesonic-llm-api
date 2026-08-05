@@ -85,6 +85,88 @@ Slash commands are loaded from the MCP tool catalog and cached in Redis with typ
 | `SOLESONIC_LLM_SLASH_COMMANDS_CACHE_TTL_SECONDS` | TTL for the slash commands cache | `3600` | No | Default: 3600 seconds (1 hour) |
 | `SOLESONIC_LLM_SLASH_COMMANDS_CACHE_WARMUP_ON_STARTUP` | Warm the cache on application startup | `true` | No | Default: true |
 
+### Chat Attachment Configuration
+
+Images attached to chat messages. Attachments are staged at upload and claimed when a message is
+sent; staged attachments that are never sent are swept, which is what bounds attachment storage.
+Upload size is bounded by `spring.servlet.multipart.max-file-size` rather than a separate variable.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `ATTACHMENT_STAGED_TTL` | How long an unsent attachment is kept | `PT24H` | No | Default: PT24H. ISO-8601 duration |
+| `ATTACHMENT_SWEEP_ENABLED` | Enable the staged-attachment sweep task | `true` | No | Default: false |
+| `ATTACHMENT_SWEEP_CRON` | Sweep schedule | `0 0 * * * *` | No | Default: hourly. Only read when the sweep is enabled |
+
+### Vision Configuration
+
+Image attachments are described by a vision model, and that description is what the chat model sees —
+the image bytes are never sent to it. A description is generated once per attachment and stored, so
+later turns reuse it without another vision call.
+
+The vision model is configured independently of the chat model, so it can run on different hardware.
+Both variables are **required**: the application will not start without them.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `VISION_MODEL` | Ollama model used to describe images | `qwen2.5vl` | Yes | Must be vision-capable. A text-only model produces confident nonsense rather than an error |
+| `VISION_OLLAMA_HOST` | Ollama base URL for the vision model | `http://izzy-bot-spark:11434` | Yes | A **full base URL**, like `ETL_OLLAMA_HOST` — not the bare hostname that `OLLAMA_HOST` holds |
+
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.llm.vision.ollama.read-timeout=5m` — a cold vision-model load outlives the default
+  read timeout.
+- `solesonic.llm.vision.max-image-bytes=5MB` — images above this are left undescribed rather than
+  stalling the turn.
+
+### Image Generation Configuration
+
+Text-to-image generation calls the `generate_image` MCP tool, which is backed by a single GPU and has
+no admission control of its own — concurrent calls serialize there while each one holds a request
+thread on the MCP server for up to its full deadline. The ceiling is therefore enforced here. Callers
+past the ceiling wait up to `IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
+
+Both variables are **required**: the application will not start without them.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `IMAGE_MAX_CONCURRENT` | Generations this instance will have in flight at once | `2` | Yes | Counted per instance, not per cluster. Above the number of GPUs behind the MCP server it only lengthens queues |
+| `IMAGE_ADMISSION_TIMEOUT` | How long a caller waits for a free slot before being refused | `30s` | Yes | Spring duration. Long enough to absorb a burst, short enough that a refusal beats a stalled request |
+
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.mcp.client.max-in-memory-size=16MB` — ceiling on a buffered MCP response. **Load-bearing
+  for image generation**: the tool returns a whole PNG inline as base64, around 2MB, and the WebClient
+  default of 256KB aborts the connection mid-body. That failure is not clean — the JSON-RPC response
+  is never delivered, so the blocking caller parks until its request timeout and the client sees a
+  stream with no terminal frame. It must be set on the `WebClient.Builder` itself;
+  `spring.codec.max-in-memory-size` has no effect, because that builder is created directly and
+  bypasses Boot's codec auto-configuration.
+
+The MCP request timeout (`spring.ai.mcp.client.request-timeout`, 600s) must stay above the image
+server's own 180s generation deadline, or the API abandons requests the server is still working on.
+Independently of it, a generation stream that hears nothing for 200s ends itself with
+`GENERATION_TIMEOUT` rather than leaving the client waiting on the full request timeout.
+
+No separate credential is configured: generation travels on the calling user's own token, exchanged
+for an on-behalf-of token like every other MCP call. The user's JWT must carry the
+`mcp-generate-image` role — see [docs/api.md](api.md#image-generation).
+- `solesonic.llm.vision.ollama.keep-alive=-1m` — pins the model in Ollama so an idle period does not
+  evict it: Ollama reads any negative duration as "keep loaded forever". The unit is mandatory —
+  Spring AI sends `keep_alive` as a JSON string, and Ollama rejects a unitless one with
+  `400 time: missing unit in duration "-1"`. Set a positive duration such as `30m` instead if the
+  vision host also serves other models and needs the VRAM back.
+- `solesonic.llm.vision.ollama.warmup-on-startup=true` — preloads the model just after startup, on a
+  background thread, so the first image-bearing turn does not pay the cold load.
+
+The model is pulled on startup if missing (`WHEN_MISSING`), so the first boot against a host without
+the model will download it before the application becomes ready.
+
+The last two settings exist because a cold load is what makes the vision pass fail: it can take tens
+of seconds, and a turn whose vision pass times out still answers normally — just as though no image
+were attached. Keeping the model resident makes that rare; the `attachment` SSE event
+([docs/api.md](api.md#attachment-event-payload)) makes it visible when it happens anyway. A skipped
+image is logged at WARN with the attachment id, the elapsed time, and the reason.
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |

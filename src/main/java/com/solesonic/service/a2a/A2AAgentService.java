@@ -119,7 +119,7 @@ public class A2AAgentService {
             case TaskStatusUpdateEvent statusEvent -> {
                 TaskState state = statusEvent.status().state();
 
-                log.info("Event state: {}", state);
+                log.debug("Event state: {}", state);
 
                 if (state == TaskState.TASK_STATE_INPUT_REQUIRED) {
                     log.debug("A2A agent waiting for input on task '{}' for chat {}", statusEvent.taskId(), chatId);
