@@ -1,6 +1,6 @@
-# MCP Server Integration Guide for Atlassian Token Broker
+# MCP Server Integration Guide for the Token Brokers
 
-This document explains how to integrate with the Solesonic LLM API's Atlassian Token Broker from an MCP (Model Context Protocol) server.
+This document explains how to integrate with the Solesonic LLM API's token brokers from an MCP (Model Context Protocol) server. There are two, built on the same pattern: [Atlassian](#overview) (Jira/Confluence) and [Google](#google-token-broker) (Gmail).
 
 ## Overview
 
@@ -249,9 +249,91 @@ Common error responses:
 5. **API Usage**: MCP server uses access token for Atlassian API calls
 6. **Token Refresh**: Broker automatically handles token rotation
 
+---
+
+## Google Token Broker
+
+The same pattern, for Gmail. A user consents once through the API's own OAuth2 flow; the refresh token is encrypted at rest in Postgres (`user_preferences.google_access_token`, using `ENCRYPTION_PASSWORD`/`ENCRYPTION_SALT`) and never leaves the application. MCP servers ask the broker for a short-lived access token instead.
+
+It is deliberately simpler than the Atlassian broker in two ways: Gmail has no multi-site concept, so there is no `audience`/`siteId` anywhere, and there is exactly one endpoint — no `/token-exchange` alias.
+
+### Base URL
+```
+{API_BASE_URL}/broker/google
+```
+
+### Mint Token
+**Endpoint:** `POST /broker/google/token`
+
+**Authorization:** the caller's JWT must carry the `token-mint-gmail` role.
+
+**Description:** Returns the stored access token, refreshing it against Google first if it has expired.
+
+**Request:**
+```json
+{
+  "subject_token": "user-uuid-here"
+}
+```
+
+**Response:**
+```json
+{
+  "accessToken": "ya29.a0AfB_byC...",
+  "expiresInSeconds": 3599,
+  "issuedAt": "2026-08-11T16:55:00Z",
+  "userId": "user-uuid-here"
+}
+```
+
+### Request Parameters
+
+#### GoogleTokenExchange Object
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `subject_token` | UUID | Yes | The user ID for whom to mint the token |
+
+#### GoogleTokenResponse Object
+| Field | Type | Description |
+|-------|------|-------------|
+| `accessToken` | String | The OAuth2 access token for Gmail APIs |
+| `expiresInSeconds` | Integer | Token lifetime in seconds |
+| `issuedAt` | ZonedDateTime | When the token was issued (ISO 8601) |
+| `userId` | UUID | The user ID the token belongs to |
+
+### Using the token
+
+```
+Authorization: Bearer {accessToken}
+```
+
+against `https://gmail.googleapis.com`, for example `GET /gmail/v1/users/me/profile`.
+
+### Error Handling
+
+Two failures matter, and they need opposite responses:
+
+- **The user must re-consent** — no Google token is stored, or Google answered `invalid_grant` because the grant was revoked or expired. Retrying cannot fix this; send the user through `GET /google/auth/uri` again. Note that while the OAuth consent screen is in Testing mode, Google expires refresh tokens after seven days, so this is a routine occurrence in development, not an edge case.
+- **A transient upstream failure** — anything else Google reports. Retry with exponential backoff.
+
+### Best Practices
+
+- Cache the `GoogleTokenResponse` and check `issuedAt` + `expiresInSeconds` before minting again; the broker refreshes only when the stored token has actually expired, but a mint call is still a round trip.
+- Request a token per user, not per process. Every read is user-scoped.
+- Do not persist the access token beyond its lifetime, and never try to obtain the refresh token — the broker exists so that it stays in one place.
+
+### Example Integration Flow
+
+1. **User Authentication**: user completes the OAuth2 flow via `GET /google/auth/uri` → Google consent → `GET /google/auth/callback`
+2. **Token Storage**: the refresh token is encrypted into `user_preferences`
+3. **MCP Request**: the MCP server calls `POST /broker/google/token` with the user's id
+4. **Token Minting**: the broker returns the stored token, refreshing it first if expired
+5. **API Usage**: the MCP server calls Gmail with that access token
+6. **Re-consent**: if the grant is revoked, the broker reports it and the user is sent back through step 1
+
 ## Environment Configuration
 
-For a complete list of all required environment variables including MCP, Atlassian OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).
+For a complete list of all required environment variables including MCP, Atlassian OAuth2, Google OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).
 
 For getting started with the Solesonic LLM API, see [docs/getting-started.md](getting-started.md).
 

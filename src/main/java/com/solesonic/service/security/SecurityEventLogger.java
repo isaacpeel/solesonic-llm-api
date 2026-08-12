@@ -51,6 +51,7 @@ public class SecurityEventLogger {
             "/slash",
             "/atlassian",
             "/confluence",
+            "/google",
             "/broker");
 
     private static final String ROUTE_KNOWN = "known";

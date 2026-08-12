@@ -399,6 +399,26 @@ These endpoints manage the application's catalog of Ollama model configurations 
 
 User preferences control per-user settings such as which Ollama model to use for chat and the similarity threshold for RAG retrieval.
 
+Stored OAuth tokens are **never serialized** on any of these endpoints. Connection state travels as
+two booleans instead — `atlassianAuthentication` and `googleAuthentication` — which is what a client
+should read to decide whether to show "connected" or a "connect" link:
+
+```json
+{
+  "userId": "user-uuid-here",
+  "model": "qwen3.5:9b",
+  "similarityThreshold": 0.75,
+  "atlassianAuthentication": true,
+  "googleAuthentication": false,
+  "created": "2026-08-11T16:55:00Z",
+  "updated": "2026-08-11T16:55:00Z"
+}
+```
+
+Because tokens cannot round-trip, a `POST` or `PUT` body that omits them does **not** clear them —
+the stored tokens are preserved. Disconnecting is an explicit action
+([`POST /google/auth/revoke`](#revoke-access)), never a side effect of saving preferences.
+
 ### Get Preferences
 
 - **Endpoint**: `GET /users/{userId}/preferences`
@@ -486,6 +506,74 @@ The token broker provides short-lived Atlassian access tokens to MCP servers wit
   "siteId": "site-id-optional"
 }
 ```
+
+See [mcp-integration.md](mcp-integration.md) for the full token broker architecture and integration guide.
+
+---
+
+## Google Authentication
+
+These endpoints handle the OAuth2 authorization code flow for connecting a user's Google account (Gmail).
+
+### Get Authorization URI
+
+- **Endpoint**: `GET /google/auth/uri`
+- **Description**: Builds the Google consent URL. Always requests `access_type=offline` and `prompt=consent`, which is what makes Google return a refresh token.
+- **Response**: `GoogleAuthLinkResponse` containing the URL the user should visit to authorize access
+
+```json
+{
+  "uri": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=..."
+}
+```
+
+### OAuth Callback
+
+- **Endpoint**: `GET /google/auth/callback`
+- **Query Parameters**:
+  - `code` (string): The authorization code returned by Google
+- **Description**: Exchanges the code for tokens and stores them, encrypted, against the authenticated user. If Google returns no refresh token — which it does whenever the grant already existed — the previously stored one is kept rather than overwritten.
+- **Response**: `204 No Content`
+
+### Get Gmail Profile
+
+- **Endpoint**: `GET /google/auth/profile`
+- **Description**: Returns the connected mailbox's own profile. Useful as a post-connect check: a token exchange succeeds even when the Gmail API is not enabled for the project, and that misconfiguration shows up here rather than at connect time.
+- **Response**: JSON string from the Gmail API
+
+### Revoke Access
+
+- **Endpoint**: `POST /google/auth/revoke`
+- **Description**: Revokes the grant at Google and deletes the stored token. Safe to call when nothing is connected.
+- **Response**: `204 No Content`
+
+---
+
+## Google Token Broker
+
+The token broker provides short-lived Google access tokens to MCP servers without exposing long-lived refresh tokens. Callers must hold the `token-mint-gmail` role.
+
+### Mint Token
+
+- **Endpoint**: `POST /broker/google/token`
+- **Authorization**: Requires `token-mint-gmail` role
+- **Request Body**:
+```json
+{
+  "subject_token": "user-uuid-here"
+}
+```
+- **Response**:
+```json
+{
+  "accessToken": "ya29.a0AfB_byC...",
+  "expiresInSeconds": 3599,
+  "issuedAt": "2026-08-11T16:55:00Z",
+  "userId": "user-uuid-here"
+}
+```
+
+A user who has never connected Google, or whose grant has been revoked, produces a message telling them to re-consent — retrying will not fix it.
 
 See [mcp-integration.md](mcp-integration.md) for the full token broker architecture and integration guide.
 

@@ -1,8 +1,11 @@
 package com.solesonic.model.user;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAccessTokenConverter;
+import com.solesonic.model.google.auth.GoogleAccessToken;
+import com.solesonic.model.google.auth.GoogleAccessTokenConverter;
 import jakarta.persistence.*;
 
 import java.time.ZonedDateTime;
@@ -25,9 +28,30 @@ public class UserPreferences {
     @Transient
     private boolean atlassianAuthentication;
 
+    /**
+     * {@code @JsonIgnore} because this entity is serialized straight to the client by
+     * {@code UserController}. Without it, {@code GET /users/{userId}/preferences} answers with the
+     * user's Atlassian access <em>and refresh</em> token in the response body, where it lands in
+     * browser memory, any intermediary cache and every HAR file support ever asks for. The client
+     * learns whether Atlassian is connected from {@link #atlassianAuthentication}.
+     */
+    @JsonIgnore
     @Convert(converter = AtlassianAccessTokenConverter.class)
     @Column(name = "atlassian_access_token", columnDefinition = "bytea")
     private AtlassianAccessToken atlassianAccessToken;
+
+    @Transient
+    private boolean googleAuthentication;
+
+    /**
+     * {@code @JsonIgnore} for the same reason as {@link #atlassianAccessToken}: the client learns
+     * whether Google is connected from {@link #googleAuthentication} and has no reason to ever
+     * receive the tokens themselves.
+     */
+    @JsonIgnore
+    @Convert(converter = GoogleAccessTokenConverter.class)
+    @Column(name = "google_access_token", columnDefinition = "bytea")
+    private GoogleAccessToken googleAccessToken;
 
     public UUID getUserId() {
         return userId;
@@ -85,5 +109,22 @@ public class UserPreferences {
 
     public void setAtlassianAccessToken(AtlassianAccessToken atlassianAccessToken) {
         this.atlassianAccessToken = atlassianAccessToken;
+    }
+
+    @SuppressWarnings("unused")
+    public boolean isGoogleAuthentication() {
+        return googleAuthentication;
+    }
+
+    public void setGoogleAuthentication(boolean googleAuthentication) {
+        this.googleAuthentication = googleAuthentication;
+    }
+
+    public GoogleAccessToken getGoogleAccessToken() {
+        return googleAccessToken;
+    }
+
+    public void setGoogleAccessToken(GoogleAccessToken googleAccessToken) {
+        this.googleAccessToken = googleAccessToken;
     }
 }

@@ -179,6 +179,36 @@
       "name": "solesonic.llm.uri.ingestion.max-bytes",
       "type": "org.springframework.util.unit.DataSize",
       "description": "Maximum response body size accepted when fetching content from a uri submitted for RAG ingestion. Defaults to 20MB."
+    },
+    {
+      "name": "google.oauth.auth-uri",
+      "type": "java.lang.String",
+      "description": "Google's authorization endpoint, where the user is sent to consent."
+    },
+    {
+      "name": "google.oauth.base-uri",
+      "type": "java.lang.String",
+      "description": "Base URI of Google's OAuth2 token and revocation endpoints."
+    },
+    {
+      "name": "google.oauth.client-id",
+      "type": "java.lang.String",
+      "description": "OAuth2 client ID of the Google Cloud project's web application client."
+    },
+    {
+      "name": "google.oauth.client-secret",
+      "type": "java.lang.String",
+      "description": "OAuth2 client secret paired with google.oauth.client-id."
+    },
+    {
+      "name": "google.api.uri",
+      "type": "java.lang.String",
+      "description": "Base URI for the Gmail API."
+    },
+    {
+      "name": "google.api.auth.callback.uri",
+      "type": "java.lang.String",
+      "description": "Redirect URI Google returns the authorization code to. Must match a redirect URI registered on the OAuth client exactly."
     }
   ]
 }

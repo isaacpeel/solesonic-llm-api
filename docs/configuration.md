@@ -31,7 +31,7 @@ This document serves as the single source of truth for all environment variables
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `ENCRYPTION_PASSWORD` | Password used for encrypting stored tokens | `your-strong-password` | Yes | Used to encrypt Atlassian refresh tokens at rest |
+| `ENCRYPTION_PASSWORD` | Password used for encrypting stored tokens | `your-strong-password` | Yes | Used to encrypt Atlassian and Google refresh tokens at rest |
 | `ENCRYPTION_SALT` | Salt used for encryption key derivation | `your-salt-value` | Yes | Must be consistent across restarts |
 
 ### Redis Configuration
@@ -53,6 +53,44 @@ Redis is required for streaming chat (Redis Streams) and for caching (Ollama mod
 | `JIRA_CLOUD_ID_PATH` | Jira cloud ID path for API access | `/your-cloud-id` | No | Required for Jira API calls |
 | `CALLBACK_HOST` | OAuth callback host URL | `https://yourdomain.com/settings` | No | Required for production OAuth flows |
 | `ATLASSIAN_TOKENS_ADMIN_KEY` | Admin user ID for service account token operations | `your_admin_key` | No | Required for token storage operations |
+
+### Google Integration
+
+Three-legged OAuth2 against Google, scoped to Gmail. The user consents once; the refresh token is
+encrypted into `user_preferences.google_access_token` and never leaves the application. MCP servers
+acting on the user's behalf ask the broker (`POST /broker/google/token`) for a short-lived access
+token instead — see [docs/mcp-integration.md](mcp-integration.md).
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth2 client ID of the Google Cloud web application client | `761157506466-....apps.googleusercontent.com` | Yes | From the client secret JSON downloaded in the Google Cloud console |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth2 client secret paired with the client ID | `GOCSPX-...` | Yes | Keep secure; never commit the downloaded client secret JSON |
+| `GOOGLE_AUTH_CALLBACK_URI` | Redirect URI for the `test` profile | `http://localhost:3000/google/auth/callback` | Yes (test) | Must match a redirect URI registered on the OAuth client **exactly** |
+| `GOOGLE_CALLBACK_HOST` | Redirect URI for the `prod` and `prod-nginx` profiles | `https://yourdomain.com/google/auth/callback` | Yes (prod) | Google requires HTTPS for anything other than localhost |
+
+Fixed in `application.properties` rather than exposed as variables, since they are Google's own
+endpoints and identical in every deployment:
+
+- `google.oauth.auth-uri=https://accounts.google.com/o/oauth2/v2/auth`
+- `google.oauth.base-uri=https://oauth2.googleapis.com` — token and revocation endpoints
+- `google.api.uri=https://gmail.googleapis.com`
+
+The `local` profile hard-codes `google.api.auth.callback.uri=http://localhost:3000/google/auth/callback`.
+
+Two things have to be done in the Google Cloud console before any of this works, and neither fails
+at startup — both surface only when a user tries to connect:
+
+1. **Enable the Gmail API** for the project (APIs & Services → Library). Without it the token
+   exchange still succeeds and every Gmail call returns 403. `GET /google/auth/profile` is the
+   cheapest way to find out.
+2. **Register the redirect URI** exactly as configured above. Google compares it character for
+   character, including the trailing path.
+
+The three Gmail scopes requested (`gmail.readonly`, `gmail.send`, `gmail.modify`) are Google
+*restricted* scopes. They work for the listed test users while the consent screen is in Testing
+mode; publishing to general users additionally requires a CASA security assessment. Refresh tokens
+issued by a consent screen in Testing mode expire after seven days, after which the user must
+re-consent.
 
 ### AWS Configuration
 
@@ -240,6 +278,11 @@ ATLASSIAN_OAUTH_TOKEN_URI=https://auth.atlassian.com/oauth/token
 JIRA_CLOUD_ID_PATH=/your-cloud-id
 CALLBACK_HOST=https://yourdomain.com/settings
 ATLASSIAN_TOKENS_ADMIN_KEY=your_admin_key
+
+# Google Integration
+GOOGLE_OAUTH_CLIENT_ID=your_google_client_id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=your_google_client_secret
+GOOGLE_CALLBACK_HOST=https://yourdomain.com/google/auth/callback
 
 # MCP Configuration
 SOLESONIC_MCP_URI=http://localhost:3001/sse
