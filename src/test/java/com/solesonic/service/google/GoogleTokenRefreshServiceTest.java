@@ -29,7 +29,7 @@ class GoogleTokenRefreshServiceTest {
     private GoogleTokenRefreshService googleTokenRefreshService(String responseBody) {
         WebClient webClient = WebClient.builder()
                 .baseUrl("https://oauth2.googleapis.com")
-                .exchangeFunction(request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                .exchangeFunction(_ -> Mono.just(ClientResponse.create(HttpStatus.OK)
                         .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                         .body(responseBody)
                         .build()))
