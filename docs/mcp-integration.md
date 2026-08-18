@@ -313,8 +313,20 @@ against `https://gmail.googleapis.com`, for example `GET /gmail/v1/users/me/prof
 
 Two failures matter, and they need opposite responses:
 
-- **The user must re-consent** — no Google token is stored, or Google answered `invalid_grant` because the grant was revoked or expired. Retrying cannot fix this; send the user through `GET /google/auth/uri` again. Note that while the OAuth consent screen is in Testing mode, Google expires refresh tokens after seven days, so this is a routine occurrence in development, not an edge case.
-- **A transient upstream failure** — anything else Google reports. Retry with exponential backoff.
+- **`400 RECONNECT_REQUIRED`** — no Google token is stored, or Google answered `invalid_grant` because the grant was revoked or expired. Retrying cannot fix this; the user must be sent through `GET /google/auth/uri` again. Note that while the OAuth consent screen is in Testing mode, Google expires refresh tokens after seven days, so this is a routine occurrence in development, not an edge case.
+- **`429 RATE_LIMITED` / `503 UPSTREAM_UNAVAILABLE`** — transient. Retry with exponential backoff.
+
+The body carries a stable `code` alongside a user-safe `message`:
+
+```json
+{
+  "code": "RECONNECT_REQUIRED",
+  "message": "Google access is no longer valid. Reconnect your Google account."
+}
+```
+
+Branch on the status code or on `code` — never on the message text, which is not a contract. See
+[docs/api.md](api.md#google-error-responses) for the full table.
 
 ### Best Practices
 

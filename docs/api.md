@@ -539,13 +539,45 @@ These endpoints handle the OAuth2 authorization code flow for connecting a user'
 
 - **Endpoint**: `GET /google/auth/profile`
 - **Description**: Returns the connected mailbox's own profile. Useful as a post-connect check: a token exchange succeeds even when the Gmail API is not enabled for the project, and that misconfiguration shows up here rather than at connect time.
-- **Response**: JSON string from the Gmail API
+- **Response**: `application/json` — the Gmail API's own profile document, passed through unchanged
+
+```json
+{
+  "emailAddress": "someone@example.com",
+  "messagesTotal": 12043,
+  "threadsTotal": 8871,
+  "historyId": "992144"
+}
+```
 
 ### Revoke Access
 
 - **Endpoint**: `POST /google/auth/revoke`
 - **Description**: Revokes the grant at Google and deletes the stored token. Safe to call when nothing is connected.
 - **Response**: `204 No Content`
+
+### Google Error Responses
+
+Every Google failure — on these endpoints and on the token broker — arrives as a failing status code
+with a stable `code` to branch on. Google's own error text is logged, never returned.
+
+```json
+{
+  "code": "RECONNECT_REQUIRED",
+  "message": "Google access is no longer valid. Reconnect your Google account."
+}
+```
+
+| Code | Status | Meaning |
+|---|---|---|
+| `RECONNECT_REQUIRED` | `400` | No token stored, or Google answered `invalid_grant` (revoked, expired, or a Testing-mode token past seven days). Retrying cannot fix it — send the user through `GET /google/auth/uri` again |
+| `RATE_LIMITED` | `429` | Google is throttling. Back off and retry |
+| `UPSTREAM_UNAVAILABLE` | `503` | Google, or the call to it, failed in a way a retry may fix |
+| `INTERNAL` | `500` | Anything else |
+
+Unlike the Atlassian endpoints, which render a failure as `200 OK` carrying a chat message, these are
+plain REST: a success is `204` and a failure is a 4xx/5xx. A client can branch on the status line
+alone.
 
 ---
 

@@ -2,6 +2,7 @@ package com.solesonic.api.google;
 
 import com.solesonic.model.google.auth.GoogleAuthLinkResponse;
 import com.solesonic.service.google.GoogleAuthService;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,7 +34,12 @@ public class GoogleAuthController {
         return ResponseEntity.noContent().build();
     }
 
-    @GetMapping("/auth/profile")
+    /**
+     * {@code produces} is load-bearing: the body is a JSON string, and without it Spring's
+     * {@code StringHttpMessageConverter} serves it as {@code text/plain}. A client that decides
+     * whether to parse by inspecting the content type then silently receives nothing.
+     */
+    @GetMapping(value = "/auth/profile", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<String> profile() {
         String profile = googleAuthService.profile();
 
