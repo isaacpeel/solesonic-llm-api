@@ -2,11 +2,13 @@ package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
+import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
@@ -30,14 +32,17 @@ import java.util.stream.Collectors;
 public class ChatMessageService {
     private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
     private final ChatMessageRepository chatMessageRepository;
-    private final UserPreferencesRepository userPreferencesRepository;
+    private final ChatRepository chatRepository;
+    private final UserPreferencesService userPreferencesService;
     private final ChatAttachmentService chatAttachmentService;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
-                              UserPreferencesRepository userPreferencesRepository,
+                              ChatRepository chatRepository,
+                              UserPreferencesService userPreferencesService,
                               ChatAttachmentService chatAttachmentService) {
         this.chatMessageRepository = chatMessageRepository;
-        this.userPreferencesRepository = userPreferencesRepository;
+        this.chatRepository = chatRepository;
+        this.userPreferencesService = userPreferencesService;
         this.chatAttachmentService = chatAttachmentService;
     }
 
@@ -46,9 +51,12 @@ public class ChatMessageService {
 
         log.debug("Saving chat message with id {}", chatId);
 
-        UserPreferences userPreferences = userPreferencesRepository
-                .findByChatId(chatId)
-                .orElseThrow(() -> new IllegalStateException("User preferences not found for chatId: " + chatId));
+        Chat chat = chatRepository.findById(chatId)
+                .orElseThrow(() -> new IllegalStateException("Chat not found: " + chatId));
+
+        //Routed through the service, not the repository, so a user's first-ever message
+        //self-heals a missing preferences row instead of throwing.
+        UserPreferences userPreferences = userPreferencesService.get(chat.getUserId());
 
         String chatModel = userPreferences.getModel();
         message.setModel(chatModel);
