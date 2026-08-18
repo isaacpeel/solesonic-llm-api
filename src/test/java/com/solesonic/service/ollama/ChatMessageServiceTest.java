@@ -4,7 +4,9 @@ import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
+import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -37,7 +39,11 @@ class ChatMessageServiceTest {
 
     @Mock
     @SuppressWarnings("unused")
-    private UserPreferencesRepository userPreferencesRepository;
+    private ChatRepository chatRepository;
+
+    @Mock
+    @SuppressWarnings("unused")
+    private UserPreferencesService userPreferencesService;
 
     @Mock
     private ChatAttachmentService chatAttachmentService;
