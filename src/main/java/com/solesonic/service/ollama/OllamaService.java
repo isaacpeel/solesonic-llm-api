@@ -109,6 +109,24 @@ public class OllamaService {
         return ollamaModels;
     }
 
+    public void refreshCache() {
+        log.info("Refreshing Ollama model cache");
+        OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
+
+        for (OllamaApi.Model nativeModel : listModelResponse.models()) {
+            String modelName = nativeModel.model();
+
+            try {
+                cacheModelDetails(nativeModel);
+                fetchAndCacheShowModel(modelName);
+            } catch (Exception exception) {
+                log.warn("Failed to refresh cache for model {}: {}", modelName, exception.getMessage());
+            }
+        }
+
+        log.info("Ollama model cache refresh complete — {} models cached", listModelResponse.models().size());
+    }
+
     private OllamaModel nativeModel(String modelName) {
         OllamaModel ollamaModel = new OllamaModel();
         ollamaModel.setName(modelName);
@@ -147,9 +165,13 @@ public class OllamaService {
             return null;
         }
 
+        return cacheModelDetails(nativeModel);
+    }
+
+    private Map<String, Object> cacheModelDetails(OllamaApi.Model nativeModel) {
         String detailsJson = jsonMapper.writeValueAsString(nativeModel);
         Map<String, Object> details = jsonMapper.readerFor(Map.class).readValue(detailsJson);
-        ollamaModelCacheService.putModelDetails(modelName, details);
+        ollamaModelCacheService.putModelDetails(nativeModel.model(), details);
 
         return details;
     }

@@ -6,6 +6,7 @@ import com.solesonic.service.ollama.OllamaService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -56,5 +57,13 @@ public class OllamaController {
         log.info("Getting Installed Ollama Models");
         List<OllamaModel> models = ollamaService.installed();
         return ResponseEntity.ok(models);
+    }
+
+    @PostMapping("/models/refresh")
+    @PreAuthorize("hasRole('model-admin')")
+    public ResponseEntity<Void> refresh() {
+        log.info("Refreshing Ollama model cache");
+        ollamaService.refreshCache();
+        return ResponseEntity.noContent().build();
     }
 }

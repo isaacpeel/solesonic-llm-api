@@ -22,6 +22,7 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -125,5 +126,13 @@ public class OllamaControllerTest {
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
                 .andExpect(jsonPath("$.name").value("llama3"))
                 .andExpect(jsonPath("$.censored").value(false));
+    }
+
+    @Test
+    void testRefresh() throws Exception {
+        mockMvc.perform(post("/ollama/models/refresh"))
+                .andExpect(status().isNoContent());
+
+        verify(ollamaService).refreshCache();
     }
 }

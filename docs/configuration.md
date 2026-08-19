@@ -104,16 +104,6 @@ re-consent.
 |----------|-------------|---------|----------|--------|
 | `OLLAMA_HOST` | Ollama server hostname | `localhost` | No | Default localhost for local profile; required for production |
 
-### Ollama Model Cache Configuration
-
-The Ollama model cache stores model details and show-model responses in Redis to avoid redundant calls to the Ollama API. A background task keeps the cache warm by refreshing all installed models on a fixed interval.
-
-| Variable | Description | Example | Required | Notes |
-|----------|-------------|---------|----------|--------|
-| `SOLESONIC_LLM_OLLAMA_CACHE_TTL_SECONDS` | TTL for cached model entries | `120` | No | Default: 120 seconds |
-| `SOLESONIC_LLM_OLLAMA_CACHE_REFRESH_ENABLED` | Enable the background cache refresh task | `true` | No | Default: true; set to `false` to disable |
-| `SOLESONIC_LLM_OLLAMA_CACHE_REFRESH_SECONDS` | Interval between background refresh runs | `60` | No | Default: 60 seconds |
-
 ### Slash Commands Cache Configuration
 
 Slash commands are loaded from the MCP tool catalog and cached in Redis with type-ahead search support.
@@ -293,11 +283,6 @@ TOKEN_ENDPOINT=https://your-auth-server/token
 
 # Ollama Configuration
 OLLAMA_HOST=localhost
-
-# Ollama Model Cache (optional overrides)
-SOLESONIC_LLM_OLLAMA_CACHE_TTL_SECONDS=120
-SOLESONIC_LLM_OLLAMA_CACHE_REFRESH_ENABLED=true
-SOLESONIC_LLM_OLLAMA_CACHE_REFRESH_SECONDS=60
 
 # AWS Configuration (optional)
 AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/your-key-id

@@ -16,8 +16,6 @@ public class OllamaModelService {
         this.jsonMapper = jsonMapper1;
     }
 
-
-
     public JsonNode readPath(Map<String, Object> jsonData, String... path) {
         String json = jsonMapper.writeValueAsString(jsonData);
         JsonNode jsonNode = jsonMapper.readTree(json);

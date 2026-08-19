@@ -219,4 +219,68 @@ public class OllamaServiceTest {
         verify(ollamaApi, never()).listModels();
         verify(ollamaApi, never()).showModel(any());
     }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void testRefreshCache() {
+        OllamaApi.Model nativeModel1 = mock(OllamaApi.Model.class);
+        when(nativeModel1.model()).thenReturn("llama3");
+
+        OllamaApi.Model nativeModel2 = mock(OllamaApi.Model.class);
+        when(nativeModel2.model()).thenReturn("mistral");
+
+        OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
+        when(listModelResponse.models()).thenReturn(Arrays.asList(nativeModel1, nativeModel2));
+        when(ollamaApi.listModels()).thenReturn(listModelResponse);
+
+        OllamaApi.ShowModelResponse showModelResponse = mock(OllamaApi.ShowModelResponse.class);
+        when(ollamaApi.showModel(any())).thenReturn(showModelResponse);
+
+        ollamaService.refreshCache();
+
+        // One listModels() for the whole refresh, not one per model
+        verify(ollamaApi, times(1)).listModels();
+        verify(ollamaApi, times(2)).showModel(any());
+        verify(ollamaModelCacheService).putModelDetails(eq("llama3"), any(Map.class));
+        verify(ollamaModelCacheService).putShowModel(eq("llama3"), any(Map.class));
+        verify(ollamaModelCacheService).putModelDetails(eq("mistral"), any(Map.class));
+        verify(ollamaModelCacheService).putShowModel(eq("mistral"), any(Map.class));
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void testRefreshCacheIsolatesFailingModel() {
+        OllamaApi.Model nativeModel1 = mock(OllamaApi.Model.class);
+        when(nativeModel1.model()).thenReturn("llama3");
+
+        OllamaApi.Model nativeModel2 = mock(OllamaApi.Model.class);
+        when(nativeModel2.model()).thenReturn("mistral");
+
+        OllamaApi.ListModelResponse listModelResponse = mock(OllamaApi.ListModelResponse.class);
+        when(listModelResponse.models()).thenReturn(Arrays.asList(nativeModel1, nativeModel2));
+        when(ollamaApi.listModels()).thenReturn(listModelResponse);
+
+        OllamaApi.ShowModelResponse showModelResponse = mock(OllamaApi.ShowModelResponse.class);
+        when(ollamaApi.showModel(any()))
+                .thenThrow(new IllegalStateException("show failed"))
+                .thenReturn(showModelResponse);
+
+        ollamaService.refreshCache();
+
+        // The first model blows up in showModel; the second is still cached
+        verify(ollamaModelCacheService, never()).putShowModel(eq("llama3"), any(Map.class));
+        verify(ollamaModelCacheService).putModelDetails(eq("mistral"), any(Map.class));
+        verify(ollamaModelCacheService).putShowModel(eq("mistral"), any(Map.class));
+    }
+
+    @Test
+    void testRefreshCachePropagatesListModelsFailure() {
+        when(ollamaApi.listModels()).thenThrow(new IllegalStateException("ollama unreachable"));
+
+        assertThatThrownBy(() -> ollamaService.refreshCache())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("ollama unreachable");
+
+        verifyNoInteractions(ollamaModelCacheService);
+    }
 }

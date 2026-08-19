@@ -371,6 +371,13 @@ These endpoints manage the application's catalog of Ollama model configurations 
 - **Description**: Queries the Ollama server for currently installed models, enriched with database metadata
 - **Response**: Array of `OllamaModel` objects
 
+### Refresh Model Cache
+
+- **Endpoint**: `POST /ollama/models/refresh`
+- **Description**: Eagerly refetches all installed models from Ollama and repopulates the Redis cache (model details + show-model responses have no TTL and are only updated via this endpoint, a one-time warmup at startup, or a model record save/update)
+- **Authorization**: Requires `model-admin` role
+- **Response**: `204 No Content`
+
 ---
 
 ## Document and Training Data

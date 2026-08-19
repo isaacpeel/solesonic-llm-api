@@ -141,11 +141,6 @@
       "description": "Whether to pre-populate slash-command prompt catalog cache on application startup."
     },
     {
-      "name": "solesonic.llm.ollama.cache.refresh.enabled",
-      "type": "java.lang.Boolean",
-      "description": "Enable or diable ollama model cache."
-    },
-    {
       "name": "solesonic.mcp.reconnect.enabled",
       "type": "java.lang.Boolean",
       "description": "Experimental: enables automatic reconnection to the MCP server after a connection loss, with exponential backoff. Disabled by default."
