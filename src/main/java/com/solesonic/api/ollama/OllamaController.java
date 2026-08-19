@@ -25,6 +25,7 @@ public class OllamaController {
     }
 
     @GetMapping("/models")
+    @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<List<OllamaModel>> models(@RequestParam(defaultValue = "false") boolean refresh) {
         log.info("Getting all models (refresh={})", refresh);
         if (refresh) {
@@ -35,24 +36,35 @@ public class OllamaController {
     }
 
     @GetMapping("/models/{id}")
+    @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<OllamaModel> model(@PathVariable UUID id) {
         OllamaModel model = ollamaService.get(id);
         return ResponseEntity.ok(model);
     }
 
     @PostMapping("/models")
+    @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<OllamaModel> save(@RequestBody OllamaModel model) {
         model = ollamaService.save(model);
         return ResponseEntity.ok(model);
     }
 
     @PutMapping("/models/{id}")
+    @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<OllamaModel> update(@PathVariable UUID id, @RequestBody OllamaModel model) {
-        model = ollamaService.update(id, model);
+        ollamaService.delete(id);
         return ResponseEntity.ok(model);
     }
 
+    @DeleteMapping("/models/{id}")
+    @PreAuthorize("hasRole('model-admin')")
+    public ResponseEntity<Void> delete(@PathVariable UUID id) {
+        ollamaService.delete(id);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/installed")
+    @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<List<OllamaModel>> installed() {
         log.info("Getting Installed Ollama Models");
         List<OllamaModel> models = ollamaService.installed();

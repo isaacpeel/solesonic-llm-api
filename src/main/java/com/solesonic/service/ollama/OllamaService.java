@@ -90,6 +90,10 @@ public class OllamaService {
         return nativeModel(model);
     }
 
+    public void delete(UUID id) {
+        modelRepository.deleteById(id);
+    }
+
     public List<OllamaModel> installed() {
         log.info("Getting installed models");
         OllamaApi.ListModelResponse listModelResponse = ollamaApi.listModels();
