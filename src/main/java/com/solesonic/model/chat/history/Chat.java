@@ -21,6 +21,8 @@ public class Chat {
 
     private ZonedDateTime timestamp;
 
+    private String name;
+
     @Transient
     private List<ChatMessage> chatMessages;
 
@@ -50,6 +52,14 @@ public class Chat {
 
     public void setUserId(UUID userId) {
         this.userId = userId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public List<ChatMessage> getChatMessages() {

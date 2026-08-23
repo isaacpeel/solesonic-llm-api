@@ -6,13 +6,17 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
@@ -23,10 +27,13 @@ import java.util.stream.Collectors;
 public class ChatService {
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
+    private static final int MAX_NAME_LENGTH = 255;
+
     private final ChatRepository chatRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ChatAttachmentService chatAttachmentService;
     private final GeneratedImageService generatedImageService;
+    private final UserRequestContext userRequestContext;
 
     private String removeThinkTags(String message) {
         if (message == null) {
@@ -39,11 +46,13 @@ public class ChatService {
             ChatRepository chatRepository,
             ChatMessageRepository chatMessageRepository,
             ChatAttachmentService chatAttachmentService,
-            GeneratedImageService generatedImageService) {
+            GeneratedImageService generatedImageService,
+            UserRequestContext userRequestContext) {
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.chatAttachmentService = chatAttachmentService;
         this.generatedImageService = generatedImageService;
+        this.userRequestContext = userRequestContext;
     }
 
     public Page<Chat> getByUserId(UUID userId, Pageable pageable) {
@@ -67,6 +76,35 @@ public class ChatService {
         chat.setChatMessages(chatMessages(chatId));
 
         return chat;
+    }
+
+    /**
+     * Sets a chat's display name, scoped to the caller: {@link UserRequestContext#getUserId()}
+     * comes only from the JWT subject, never from a client-supplied path segment, so a chat owned
+     * by someone else is indistinguishable from one that does not exist.
+     */
+    public Chat rename(UUID chatId, String name) {
+        if (StringUtils.isBlank(name)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Chat name must not be blank");
+        }
+
+        String trimmedName = name.trim();
+
+        if (trimmedName.length() > MAX_NAME_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Chat name must be " + MAX_NAME_LENGTH + " characters or fewer");
+        }
+
+        UUID userId = userRequestContext.getUserId();
+
+        Chat chat = chatRepository.findByIdAndUserId(chatId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId));
+
+        chat.setName(trimmedName);
+
+        log.info("Renaming chat {} for user {}", chatId, userId);
+
+        return chatRepository.save(chat);
     }
 
     private List<ChatMessage> chatMessages(UUID chatId) {

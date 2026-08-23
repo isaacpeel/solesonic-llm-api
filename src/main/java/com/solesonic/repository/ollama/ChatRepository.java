@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.Optional;
 import java.util.UUID;
 
 public interface ChatRepository extends JpaRepository<Chat, UUID> {
@@ -19,4 +20,11 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
             order by chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findByUserId(UUID userId, Pageable pageable);
+
+    /**
+     * User-scoped for the same reason generated image lookups are: a caller must own the chat it
+     * is modifying, and this is what lets a write be rejected at the query rather than trusted from
+     * an id alone.
+     */
+    Optional<Chat> findByIdAndUserId(UUID chatId, UUID userId);
 }

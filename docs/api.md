@@ -331,6 +331,19 @@ The ordering is deterministic, so pages never overlap or skip a chat.
   - `chatId` (UUID): The chat session to retrieve
 - **Response**: Complete chat object with message history
 
+### Rename a Chat
+
+- **Endpoint**: `PUT /chats/{chatId}/name`
+- **Path Parameters**:
+  - `chatId` (UUID): The chat session to rename
+- **Request Body**: `ChatRenameRequest` — `{ "name": "..." }`
+- **Response**: The updated chat object
+
+The caller's identity comes only from the bearer token (`UserRequestContext`, resolved from the JWT
+subject), never from a request parameter, so there is no `userId` to supply or spoof. A chat that
+does not exist, or is not owned by the caller, is `404`. A blank name or one over 255 characters is
+`400`.
+
 ---
 
 ## Ollama Model Management
