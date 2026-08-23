@@ -378,9 +378,13 @@ of the list.
 | `{"position": n}` | Move to index `n`; a position past the end of the placed conversations appends, since a drag into the timestamp-ordered part means "last" |
 | `{"position": null}` | Unplace the conversation — it returns to `timestamp` ordering |
 
-The list is renumbered densely from zero on every move, so `sortOrder` values a client reads back
-are always `0, 1, 2, …` with no gaps. A negative position is `400`. A chat that does not exist, or
-is not owned by the caller, is `404`.
+A move renumbers the placed conversations densely from zero. **Do not treat `sortOrder` as an index
+into the rendered list**: deleting a placed conversation, or moving one out of a group, leaves a gap
+that stays until the next move closes it, so the values can read `0, 1, 3`. Only their relative
+order is meaningful. To place something *after* the chat currently showing `3`, send the target's
+index in the list you are rendering, not `4`.
+
+A negative position is `400`. A chat that does not exist, or is not owned by the caller, is `404`.
 
 A `PUT` because it is idempotent: sending the same position twice leaves the list in the same
 arrangement.
@@ -481,8 +485,9 @@ left describes nothing.
 - **Response**: The updated chat object, carrying its new `groupSortOrder`
 
 The same rules as [Move a Chat](#move-a-chat) — zero-based index among the placed conversations,
-`null` to unplace, dense renumbering, `400` on a negative position — applied to this group's own
-ordering. The conversation's place in the caller's whole list is untouched.
+`null` to unplace, `400` on a negative position, and the same warning against reading
+`groupSortOrder` as an index — applied to this group's own ordering. The conversation's place in the
+caller's whole list is untouched.
 
 A chat that is not in this group is `404`: a position in a group the conversation is not filed under
 describes nothing, and accepting one would leave the client's picture of the sidebar wrong.

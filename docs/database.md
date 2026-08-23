@@ -136,8 +136,10 @@ hand. Two columns rather than one, because a chat appears in two independently o
 user's whole list and, when it is filed, its group's — and a single column would make a move in one
 reshuffle the other. Both are null until a client moves the conversation, and null is what makes the
 ordering fall back to `timestamp desc`: a chat nobody has arranged sorts exactly as it did before
-these columns existed, and a new one still arrives at the top rather than the bottom. Positions are
-dense from zero within each list, and `group_sort_order` is cleared whenever the chat changes group.
+these columns existed, and a new one still arrives at the top rather than the bottom. A move
+renumbers a list densely from zero, but the values are not an index: deleting a placed chat, or
+moving one out of a group, leaves a gap that stays until the next move closes it. Only the relative
+order is meaningful. `group_sort_order` is cleared whenever the chat changes group.
 
 Deleting a conversation is **not** cascaded by the database. Nothing in `chat_message`,
 `chat_attachment`, or `generated_image` carries a foreign key to `chat`, so `DELETE /chats/{chatId}`

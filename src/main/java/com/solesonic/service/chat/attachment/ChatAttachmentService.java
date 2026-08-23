@@ -191,6 +191,7 @@ public class ChatAttachmentService {
         }
     }
 
+    @SuppressWarnings("UnusedReturnValue")
     @Transactional
     public int sweepStaged() {
         ZonedDateTime cutoff = ZonedDateTime.now().minus(stagedTtl);

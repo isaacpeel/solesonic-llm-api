@@ -221,6 +221,10 @@ public class ChatService {
      * per conversation. Which of the two positions is being rewritten is passed in rather than
      * branched on: the arrangement logic is identical for the whole list and for a group, and the
      * only difference is the column.
+     * <p>
+     * Density holds only until something leaves the list without a move — a deleted chat, or one
+     * that changed group — which is why nothing may read a position as an index. Ordering is
+     * relative, and the next move through here closes the gap.
      *
      * @param placed the conversations that already carry a position, in rendered order
      */
