@@ -68,7 +68,7 @@ public class AtlassianRequestAuthorizationFilter implements ExchangeFilterFuncti
 
         AtlassianAccessToken refreshedToken = AtlassianInternalAuthorizationFilter.refreshToken(atlassianAccessToken, authClientId, authClientSecret, atlassianAuthUri);
 
-        log.info("Updating access token for user: {}", userId);
+        log.info("Updating Jira access token for user: {}", userId);
         log.info("Token has expiresIn: {}", refreshedToken.expiresIn() != null);
 
         userPreferences.setAtlassianAccessToken(refreshedToken);

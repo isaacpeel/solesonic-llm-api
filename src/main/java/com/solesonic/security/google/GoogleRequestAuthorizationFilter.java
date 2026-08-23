@@ -45,12 +45,13 @@ public class GoogleRequestAuthorizationFilter implements ExchangeFilterFunction 
     @Override
     @Nonnull
     public Mono<ClientResponse> filter(@Nonnull ClientRequest request, @Nonnull ExchangeFunction next) {
-        log.debug("Filtering {}: {}", request.method().name(), request.url());
+        log.info("Filtering {}: {}", request.method().name(), request.url());
 
         GoogleAccessToken googleAccessToken = googleAccessToken();
+        String accessToken = googleAccessToken.accessToken();
 
         ClientRequest modifiedRequest = ClientRequest.from(request)
-                .header(AUTHORIZATION, BEARER + googleAccessToken.accessToken())
+                .header(AUTHORIZATION, BEARER + accessToken)
                 .build();
 
         return next.exchange(modifiedRequest);
@@ -61,19 +62,18 @@ public class GoogleRequestAuthorizationFilter implements ExchangeFilterFunction 
         UserPreferences userPreferences = userPreferencesService.get(userId);
         GoogleAccessToken googleAccessToken = userPreferences.getGoogleAccessToken();
 
-        if (googleAccessToken == null) {
-            throw new GoogleTokenException("No Google token stored for user " + userId, BAD_REQUEST, false);
-        }
-
         if (!googleAccessToken.isExpired()) {
-            log.debug("Reusing non expired Google access token for user: {}", userId);
+            log.info("Reusing non expired Google access token for user: {}", userId);
             return googleAccessToken;
         }
 
         GoogleAccessToken refreshedToken = googleTokenRefreshService.refresh(googleAccessToken);
 
         log.info("Updating Google access token for user: {}", userId);
-        userPreferencesService.update(userId, refreshedToken);
+        log.info("Token has expiresIn: {}", refreshedToken.expiresIn() != null);
+
+        userPreferences.setGoogleAccessToken(refreshedToken);
+        userPreferencesService.save(userId, userPreferences);
 
         return refreshedToken;
     }
