@@ -87,8 +87,8 @@ public class EtlOllamaConfig {
     /**
      * Builds an {@link OllamaApi} whose underlying HTTP client uses an extended read timeout. Loading a
      * large ETL model cold in Ollama can take minutes, which exceeds the default read timeout and surfaces
-     * as a {@code ReadTimeoutException}. The extended timeout lets the initial (warm-up) request wait for
-     * the cold model load to finish instead of aborting it.
+     * as a {@code ReadTimeoutException}. The extended timeout lets the first request against a cold model
+     * wait for the load to finish instead of aborting it.
      */
     private OllamaApi etlOllamaApi(String ollamaBaseUrl, Duration readTimeout) {
         HttpClientSettings httpClientSettings = HttpClientSettings.defaults()

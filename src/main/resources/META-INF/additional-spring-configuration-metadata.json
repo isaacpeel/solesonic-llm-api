@@ -146,11 +146,6 @@
       "description": "Experimental: enables automatic reconnection to the MCP server after a connection loss, with exponential backoff. Disabled by default."
     },
     {
-      "name": "solesonic.llm.etl.ollama.warmup-on-startup",
-      "type": "java.lang.Boolean",
-      "description": "Whether to preload the ETL chat models on application startup so the first scheduled enrichment call does not pay the cold model-load cost."
-    },
-    {
       "name": "solesonic.llm.etl.ollama.read-timeout",
       "type": "java.time.Duration",
       "description": "Read timeout for the ETL Ollama HTTP client. Must exceed the time to cold-load the ETL model, otherwise the warm-up request aborts with a ReadTimeoutException. Defaults to 5m."
@@ -159,11 +154,6 @@
       "name": "solesonic.llm.vision.ollama.keep-alive",
       "type": "java.lang.String",
       "description": "How long Ollama keeps the vision model resident after a request. A Go duration; the unit is mandatory, since Spring AI sends keep_alive as a JSON string and Ollama rejects a unitless one. Any negative duration ('-1m') pins the model, so the first image-bearing turn after an idle period does not pay a cold model load."
-    },
-    {
-      "name": "solesonic.llm.vision.ollama.warmup-on-startup",
-      "type": "java.lang.Boolean",
-      "description": "Whether to preload the vision model on application startup so the first image attachment does not pay the cold model-load cost while a user waits on the turn."
     },
     {
       "name": "solesonic.llm.uri.ingestion.read-timeout",

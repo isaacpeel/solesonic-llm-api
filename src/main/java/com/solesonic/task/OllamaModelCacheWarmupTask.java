@@ -14,9 +14,9 @@ import java.util.concurrent.CompletableFuture;
  * lookup to pay a cache miss. Cached entries have no TTL: past this, the only refresh is the manual
  * {@code POST /ollama/models/refresh} endpoint or a model record save/update.
  * <p>
- * Off the startup thread, like {@code VisionModelWarmup} and {@code EtlModelWarmup}: the refresh is
- * one HTTP call per installed model, and an Ollama server that is slow or unreachable would
- * otherwise hold up readiness for the length of every one of those timeouts.
+ * Off the startup thread, like other {@link ApplicationReadyEvent} listeners that make outbound
+ * calls: the refresh is one HTTP call per installed model, and an Ollama server that is slow or
+ * unreachable would otherwise hold up readiness for the length of every one of those timeouts.
  * <p>
  * The failure is swallowed here rather than in {@link OllamaService#refreshCache()}, which
  * deliberately propagates so that an admin asking for a refresh is not answered with a silent
