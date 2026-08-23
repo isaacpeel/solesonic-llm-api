@@ -1,0 +1,114 @@
+package com.solesonic.api.chat;
+
+import com.solesonic.model.chat.group.ChatGroup;
+import com.solesonic.model.chat.group.ChatGroupRequest;
+import com.solesonic.model.chat.history.Chat;
+import com.solesonic.service.chat.ChatGroupService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.data.web.PagedModel;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+
+import java.net.URI;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Optional sections a user files conversations under.
+ * <p>
+ * Its own path rather than a segment of {@code /chats}: {@code /chats/{chatId}} takes a UUID, so a
+ * literal segment underneath it would be matched as a chat id and rejected as unconvertible before
+ * ever reaching a handler.
+ * <p>
+ * There is no {@code userId} anywhere in these paths. The caller's identity comes only from the
+ * bearer token, so there is nothing here to supply or spoof.
+ */
+@RestController
+@RequestMapping("/chatgroups")
+public class ChatGroupController {
+    private static final Logger log = LoggerFactory.getLogger(ChatGroupController.class);
+
+    private static final int DEFAULT_PAGE_SIZE = 20;
+
+    private final ChatGroupService chatGroupService;
+
+    public ChatGroupController(ChatGroupService chatGroupService) {
+        this.chatGroupService = chatGroupService;
+    }
+
+    @PostMapping
+    public ResponseEntity<ChatGroup> create(@RequestBody ChatGroupRequest chatGroupRequest) {
+        log.info("Creating chat group");
+        ChatGroup chatGroup = chatGroupService.create(chatGroupRequest.name());
+
+        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
+                .path("/{chatGroupId}")
+                .buildAndExpand(chatGroup.getId())
+                .toUri();
+
+        return ResponseEntity.created(location).body(chatGroup);
+    }
+
+    @GetMapping
+    public ResponseEntity<List<ChatGroup>> get() {
+        log.info("Getting chat groups");
+
+        return ResponseEntity.ok(chatGroupService.get());
+    }
+
+    @GetMapping("/{chatGroupId}")
+    public ResponseEntity<ChatGroup> get(@PathVariable UUID chatGroupId) {
+        log.info("Getting chat group {}", chatGroupId);
+
+        return ResponseEntity.ok(chatGroupService.get(chatGroupId));
+    }
+
+    @GetMapping("/{chatGroupId}/chats")
+    public ResponseEntity<PagedModel<Chat>> chats(
+            @PathVariable UUID chatGroupId,
+            @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
+        // Only the window is taken from the request, for the same reason ChatController does it:
+        // the ordering belongs to the repository query, and a caller-supplied sort appended to it
+        // is either an unknown property or a perturbed ordering that paging cannot rely on.
+        Pageable chatPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+
+        log.info("Getting chats in group {} page {} size {}",
+                chatGroupId, chatPage.getPageNumber(), chatPage.getPageSize());
+        Page<Chat> chats = chatGroupService.chats(chatGroupId, chatPage);
+
+        return ResponseEntity.ok(new PagedModel<>(chats));
+    }
+
+    /**
+     * Idempotent, which is why it is a {@code PUT}: filing a conversation that is already in this
+     * group is a success, not a conflict.
+     */
+    @PutMapping("/{chatGroupId}/chats/{chatId}")
+    public ResponseEntity<Void> addChat(@PathVariable UUID chatGroupId, @PathVariable UUID chatId) {
+        log.info("Adding chat {} to group {}", chatId, chatGroupId);
+        chatGroupService.addChat(chatGroupId, chatId);
+
+        return ResponseEntity.noContent().build();
+    }
+
+    @DeleteMapping("/{chatGroupId}/chats/{chatId}")
+    public ResponseEntity<Void> removeChat(@PathVariable UUID chatGroupId, @PathVariable UUID chatId) {
+        log.info("Removing chat {} from group {}", chatId, chatGroupId);
+        chatGroupService.removeChat(chatGroupId, chatId);
+
+        return ResponseEntity.noContent().build();
+    }
+}

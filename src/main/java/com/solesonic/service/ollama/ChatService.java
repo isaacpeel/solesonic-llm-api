@@ -59,11 +59,20 @@ public class ChatService {
         log.info("Getting chats by user id {} page {} size {}", userId, pageable.getPageNumber(), pageable.getPageSize());
         Page<Chat> chats = chatRepository.findByUserId(userId, pageable);
 
-        for (Chat chat : chats) {
-            chat.setChatMessages(chatMessages(chat.getId()));
-        }
+        return withMessages(chats);
+    }
 
-        return chats;
+    /**
+     * The same page of chats, narrowed to one group. Ownership of the group is the caller's to
+     * establish — {@code ChatGroupService} does it before reaching here — but the chats themselves
+     * are still filtered by user at the query.
+     */
+    public Page<Chat> getByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable) {
+        log.info("Getting chats by user id {} group {} page {} size {}",
+                userId, chatGroupId, pageable.getPageNumber(), pageable.getPageSize());
+        Page<Chat> chats = chatRepository.findByUserIdAndChatGroupId(userId, chatGroupId, pageable);
+
+        return withMessages(chats);
     }
 
     public Chat get(UUID chatId) {
@@ -105,6 +114,14 @@ public class ChatService {
         log.info("Renaming chat {} for user {}", chatId, userId);
 
         return chatRepository.save(chat);
+    }
+
+    private Page<Chat> withMessages(Page<Chat> chats) {
+        for (Chat chat : chats) {
+            chat.setChatMessages(chatMessages(chat.getId()));
+        }
+
+        return chats;
     }
 
     private List<ChatMessage> chatMessages(UUID chatId) {

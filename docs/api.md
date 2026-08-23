@@ -310,7 +310,7 @@ but ignored: the ordering is fixed by the repository query, so that pages cannot
 ```json
 {
   "content": [
-    { "id": "...", "userId": "...", "timestamp": "...", "chatMessages": [] }
+    { "id": "...", "userId": "...", "timestamp": "...", "chatGroupId": null, "chatMessages": [] }
   ],
   "page": {
     "size": 20,
@@ -343,6 +343,79 @@ The caller's identity comes only from the bearer token (`UserRequestContext`, re
 subject), never from a request parameter, so there is no `userId` to supply or spoof. A chat that
 does not exist, or is not owned by the caller, is `404`. A blank name or one over 255 characters is
 `400`.
+
+---
+
+## Conversation Groups
+
+Optional, user-owned sections a conversation can be filed under. Grouping is entirely additive: a
+chat belongs to at most one group, every chat starts ungrouped, and nothing about a conversation
+changes when it is filed or unfiled. Each chat carries its membership as a read-only `chatGroupId`
+wherever a chat is returned — `null` when it is ungrouped.
+
+Like [Rename a Chat](#rename-a-chat), these endpoints take no `userId`: the caller's identity comes
+only from the bearer token. A group or a chat that does not exist, or that belongs to another user,
+is `404` in both cases — the endpoints do not confirm that an id exists to someone who cannot read
+it.
+
+Their own path rather than a segment of `/chats`, because `/chats/{chatId}` takes a UUID and a
+literal segment underneath it would be matched as a chat id.
+
+### Create a Group
+
+- **Endpoint**: `POST /chatgroups`
+- **Request Body**: `ChatGroupRequest` — `{ "name": "..." }`
+- **Response**: `201 Created`, a `Location` header, and the created group
+
+```json
+{
+  "id": "b8f1...",
+  "userId": "0c31...",
+  "name": "Work",
+  "timestamp": "2026-08-23T16:40:14Z"
+}
+```
+
+The name is trimmed. A blank name or one over 255 characters is `400`. Names are not required to be
+unique — two groups may share one, and are ordered against each other by id so a listing never
+reshuffles.
+
+### List Groups
+
+- **Endpoint**: `GET /chatgroups`
+- **Response**: Every group the caller owns, ordered by name
+
+### Get a Group
+
+- **Endpoint**: `GET /chatgroups/{chatGroupId}`
+- **Response**: The group
+
+### Get the Conversations in a Group
+
+- **Endpoint**: `GET /chatgroups/{chatGroupId}/chats`
+- **Query Parameters**:
+  - `page` (int, default `0`): Zero-based page index
+  - `size` (int, default `20`, max `100`): Page size
+- **Response**: A page of chat objects, in the same shape and the same order as
+  [`GET /chats/users/{userId}`](#get-all-chats-for-a-user) — newest first, with messages hydrated.
+  A `sort` parameter is accepted by the resolver but ignored, for the same reason it is there.
+
+### Add a Conversation to a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}/chats/{chatId}`
+- **Response**: `204 No Content`
+
+A `PUT` because it is idempotent: filing a conversation that is already in this group is a success.
+Filing one that is in another group moves it, since a chat carries at most one group.
+
+### Remove a Conversation from a Group
+
+- **Endpoint**: `DELETE /chatgroups/{chatGroupId}/chats/{chatId}`
+- **Response**: `204 No Content`
+
+Ungroups the conversation; the chat and its messages are untouched. A chat that is not in this group
+is `404` rather than a silent success — the client's picture of where the conversation lives is
+wrong, and reporting the removal as done would leave it wrong.
 
 ---
 

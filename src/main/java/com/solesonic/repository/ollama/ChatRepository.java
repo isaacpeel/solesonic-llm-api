@@ -21,6 +21,17 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
             """)
     Page<Chat> findByUserId(UUID userId, Pageable pageable);
 
+    // The same window and the same deterministic ordering as findByUserId, narrowed to one group.
+    // Still filtered by user rather than by group alone: the group has already been checked against
+    // the caller, and repeating the check at the query is what keeps a chat that was filed under a
+    // group and later reassigned from ever leaking through a stale group id.
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId and chat.chatGroupId = :chatGroupId
+            order by chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> findByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable);
+
     /**
      * User-scoped for the same reason generated image lookups are: a caller must own the chat it
      * is modifying, and this is what lets a write be rejected at the query rather than trusted from

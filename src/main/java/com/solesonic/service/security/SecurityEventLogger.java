@@ -42,6 +42,7 @@ public class SecurityEventLogger {
     private static final List<String> KNOWN_ROUTE_PREFIXES = List.of(
             "/streaming/chats",
             "/chats",
+            "/chatgroups",
             "/attachments",
             "/images",
             "/documents",

@@ -115,6 +115,21 @@ setting deliberately — `delete from public.generated_image where created < now
 is the shape of it, but nothing runs it today. Note that deleting an image a conversation references
 leaves that turn rendering a broken reference, so a retention policy and chat retention want to
 agree with each other.
+
+The `chat_group` table (V3_11) holds the optional sections a user files conversations under, and
+`chat.chat_group_id` is the membership. It is a nullable column rather than a join table because a
+chat belongs to at most one group: the group is a property of the conversation, so a chat can be
+read without a second query to find its section. Every chat starts ungrouped and stays that way
+until a client files it — nothing in the chat pipeline writes this column.
+
+The foreign key is `on delete set null`, so deleting a group ungroups its conversations rather than
+deleting them; losing a section of the sidebar must never lose the chats filed under it. To find
+what a group holds, or what is unfiled:
+
+```sql
+select id, name from public.chat where chat_group_id = '<group uuid>' order by timestamp desc;
+select id, name from public.chat where user_id = '<user uuid>' and chat_group_id is null;
+```
    - Status history
 
 2. **V2_x**: Schema updates including:

@@ -69,6 +69,7 @@ class SecurityEventLoggerTest {
         List<String> routes = List.of(
                 "/streaming/chats/users/abc",
                 "/chats",
+                "/chatgroups/abc/chats",
                 "/attachments/abc",
                 "/images/abc/metadata",
                 "/documents",

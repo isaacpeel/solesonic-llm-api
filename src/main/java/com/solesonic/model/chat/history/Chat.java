@@ -23,6 +23,15 @@ public class Chat {
 
     private String name;
 
+    /**
+     * The group this conversation is filed under, or null when it is ungrouped — which is every
+     * chat until a client files it. Read-only on the wire: membership is changed through
+     * {@code /chatgroups/{chatGroupId}/chats/{chatId}}, which checks that the caller owns both the
+     * group and the chat, and never by writing a group id onto a chat.
+     */
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private UUID chatGroupId;
+
     @Transient
     private List<ChatMessage> chatMessages;
 
@@ -60,6 +69,14 @@ public class Chat {
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public UUID getChatGroupId() {
+        return chatGroupId;
+    }
+
+    public void setChatGroupId(UUID chatGroupId) {
+        this.chatGroupId = chatGroupId;
     }
 
     public List<ChatMessage> getChatMessages() {
