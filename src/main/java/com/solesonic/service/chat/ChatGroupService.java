@@ -66,6 +66,58 @@ public class ChatGroupService {
         return saved;
     }
 
+    /**
+     * Renames a group. The caller's ownership is resolved first and the name validated second, so a
+     * bad name sent for a group the caller does not own is a {@code 404} rather than a {@code 400} —
+     * the endpoint must not tell them the difference between "your name was wrong" and "that group
+     * is not yours".
+     * <p>
+     * The same {@link #validName(String)} {@code create} uses, so a rename can never accept a name
+     * that creating one would reject. Names stay non-unique: renaming a group to a name another
+     * group already carries is a success, and the listing already breaks that tie by id.
+     */
+    @Transactional
+    public ChatGroup rename(UUID chatGroupId, String name) {
+        UUID userId = userRequestContext.getUserId();
+
+        ChatGroup chatGroup = chatGroup(chatGroupId, userId);
+        chatGroup.setName(validName(name));
+
+        log.info("Renaming chat group {} for user {}", chatGroupId, userId);
+
+        return chatGroupRepository.save(chatGroup);
+    }
+
+    /**
+     * Deletes a group and ungroups the conversations filed under it.
+     * <p>
+     * Never deletes a conversation. The schema says the same thing from the other side —
+     * {@code chat_chat_group_id_fkey} is {@code on delete set null} — because losing a section of
+     * the sidebar must never lose the chats that were filed under it.
+     * <p>
+     * The chats are cleared explicitly rather than by the constraint: the database would null the
+     * group id but leave {@code groupSortOrder} pointing into a group that no longer exists, and
+     * Hibernate would never learn either had happened. Each chat's {@code sortOrder} — its place in
+     * the user's whole list — is untouched; the two orderings are independent, and a deleted group
+     * says nothing about the sidebar.
+     * <p>
+     * One transaction, so the group is gone and its chats are ungrouped, or nothing happened. A
+     * repeat is a {@code 404} rather than a {@code 204}, matching {@code DELETE /chats/{chatId}}.
+     */
+    @Transactional
+    public void delete(UUID chatGroupId) {
+        UUID userId = userRequestContext.getUserId();
+
+        ChatGroup chatGroup = chatGroup(chatGroupId, userId);
+
+        int ungrouped = chatRepository.clearChatGroup(userId, chatGroup.getId());
+
+        chatGroupRepository.delete(chatGroup);
+
+        log.info("Deleted chat group {} and ungrouped {} chat(s) for user {}",
+                chatGroupId, ungrouped, userId);
+    }
+
     @Transactional(readOnly = true)
     public List<ChatGroup> get() {
         UUID userId = userRequestContext.getUserId();

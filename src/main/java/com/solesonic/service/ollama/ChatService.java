@@ -87,6 +87,21 @@ public class ChatService {
         return withMessages(chats);
     }
 
+    /**
+     * The same page of chats, narrowed to the ones that are not filed under any group.
+     * <p>
+     * A separate method rather than a flag on {@link #getByUserId(UUID, Pageable)}: a boolean at a
+     * call site reads as {@code getByUserId(userId, pageable, true)} and tells a reader nothing. The
+     * controller is the one place that knows the request asked for a filter.
+     */
+    public Page<Chat> getUngroupedByUserId(UUID userId, Pageable pageable) {
+        log.info("Getting ungrouped chats by user id {} page {} size {}",
+                userId, pageable.getPageNumber(), pageable.getPageSize());
+        Page<Chat> chats = chatRepository.findUngroupedByUserId(userId, pageable);
+
+        return withMessages(chats);
+    }
+
     public Chat get(UUID chatId) {
         Chat chat = chatRepository.findById(chatId).orElse(null);
 

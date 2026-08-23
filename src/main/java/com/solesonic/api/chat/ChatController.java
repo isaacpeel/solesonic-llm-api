@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -35,17 +36,33 @@ public class ChatController {
         this.chatService = chatService;
     }
 
+    /**
+     * @param ungrouped when true, only the conversations that are not filed under a group. It
+     *                  defaults to false, which is every chat the user owns - the behaviour every
+     *                  existing client already depends on. It exists because a client rendering
+     *                  group sections above this list would otherwise show every grouped
+     *                  conversation twice, and filtering them out client-side leaves the page
+     *                  metadata describing more rows than the client will render.
+     */
     @GetMapping("/users/{userId}")
     public ResponseEntity<PagedModel<Chat>> getUserChats(
             @PathVariable UUID userId,
+            @RequestParam(defaultValue = "false") boolean ungrouped,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
         // Only the window is taken from the request. Ordering belongs to the repository query, and a
         // sort carried on the Pageable would be appended to it - an unknown ?sort= property throwing
         // PropertyReferenceException, a known one perturbing the ordering that paging depends on.
         Pageable chatPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
-        log.info("Getting chats by user id {} page {} size {}", userId, chatPage.getPageNumber(), chatPage.getPageSize());
-        Page<Chat> chats = chatService.getByUserId(userId, chatPage);
+        log.info("Getting chats by user id {} ungrouped {} page {} size {}",
+                userId, ungrouped, chatPage.getPageNumber(), chatPage.getPageSize());
+
+        // The branch lives here rather than as a boolean on the service: the request is the only
+        // thing that knows a filter was asked for, and getByUserId(userId, pageable, true) tells a
+        // reader at a call site nothing.
+        Page<Chat> chats = ungrouped
+                ? chatService.getUngroupedByUserId(userId, chatPage)
+                : chatService.getByUserId(userId, chatPage);
 
         return ResponseEntity.ok(new PagedModel<>(chats));
     }

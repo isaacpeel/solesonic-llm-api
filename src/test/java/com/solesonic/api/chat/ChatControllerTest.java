@@ -8,18 +8,27 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableHandlerMethodArgumentResolver;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.UUID;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -36,11 +45,61 @@ class ChatControllerTest {
     private ChatController chatController;
 
     private UUID chatId;
+    private UUID userId;
 
     @BeforeEach
     void setUp() {
         chatId = UUID.randomUUID();
-        mockMvc = MockMvcBuilders.standaloneSetup(chatController).build();
+        userId = UUID.randomUUID();
+        mockMvc = MockMvcBuilders.standaloneSetup(chatController)
+                .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
+                .build();
+    }
+
+    /**
+     * The filter is opt-in. Every existing client asks without it and must keep receiving the whole
+     * list, grouped conversations included.
+     */
+    @Test
+    void listsEveryChatWhenTheFilterIsNotAskedFor() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+
+        when(chatService.getByUserId(eq(userId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(chat), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(chatId.toString()));
+
+        verify(chatService, never()).getUngroupedByUserId(any(), any());
+    }
+
+    @Test
+    void listsOnlyUngroupedChatsWhenTheFilterIsAskedFor() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+
+        when(chatService.getUngroupedByUserId(eq(userId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(chat), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("ungrouped", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(chatId.toString()))
+                .andExpect(jsonPath("$.content[0].chatGroupId").doesNotExist());
+
+        verify(chatService, never()).getByUserId(any(), any());
+    }
+
+    @Test
+    void listsEveryChatWhenTheFilterIsAskedForExplicitlyFalse() throws Exception {
+        when(chatService.getByUserId(eq(userId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("ungrouped", "false"))
+                .andExpect(status().isOk());
+
+        verify(chatService, never()).getUngroupedByUserId(any(), any());
     }
 
     @Test

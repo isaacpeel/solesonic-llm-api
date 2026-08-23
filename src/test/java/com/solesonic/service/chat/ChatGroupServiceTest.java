@@ -9,6 +9,7 @@ import com.solesonic.service.ollama.ChatService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Page;
@@ -24,6 +25,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -109,6 +111,103 @@ class ChatGroupServiceTest {
                 .hasMessageContaining("400");
 
         verify(chatGroupRepository, never()).save(any(ChatGroup.class));
+    }
+
+    @Test
+    void renamesAGroupTheCallerOwns() {
+        ChatGroup chatGroup = chatGroup();
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup));
+        when(chatGroupRepository.save(any(ChatGroup.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatGroup renamed = chatGroupService.rename(CHAT_GROUP_ID, "  Personal  ");
+
+        assertThat(renamed.getName()).isEqualTo("Personal");
+    }
+
+    @Test
+    void rejectsABlankRename() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+
+        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "   "))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+
+        verify(chatGroupRepository, never()).save(any(ChatGroup.class));
+    }
+
+    @Test
+    void rejectsARenameOverTheLengthLimit() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+
+        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "x".repeat(256)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+
+        verify(chatGroupRepository, never()).save(any(ChatGroup.class));
+    }
+
+    @Test
+    void doesNotRenameAGroupTheCallerDoesNotOwn() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "Personal"))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404");
+
+        verify(chatGroupRepository, never()).save(any(ChatGroup.class));
+    }
+
+    /**
+     * Ownership is resolved before the name is validated, so a bad name sent for someone else's
+     * group is answered as 404 rather than 400 — the endpoint must not tell the caller the
+     * difference between "your name was wrong" and "that group is not yours".
+     */
+    @Test
+    void reportsAGroupTheCallerDoesNotOwnAsNotFoundEvenWhenTheNameIsInvalid() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "   "))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404");
+    }
+
+    /**
+     * A group is a section, not a container of conversations: deleting one ungroups its chats and
+     * deletes nothing else. The positions inside it go with it, since a place in a group that no
+     * longer exists describes nothing.
+     */
+    @Test
+    void deletesAGroupAndUngroupsItsChats() {
+        ChatGroup chatGroup = chatGroup();
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup));
+        when(chatRepository.clearChatGroup(USER_ID, CHAT_GROUP_ID)).thenReturn(2);
+
+        chatGroupService.delete(CHAT_GROUP_ID);
+
+        InOrder inOrder = inOrder(chatRepository, chatGroupRepository);
+        inOrder.verify(chatRepository).clearChatGroup(USER_ID, CHAT_GROUP_ID);
+        inOrder.verify(chatGroupRepository).delete(chatGroup);
+    }
+
+    @Test
+    void doesNotDeleteAGroupTheCallerDoesNotOwn() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatGroupService.delete(CHAT_GROUP_ID))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404");
+
+        verify(chatRepository, never()).clearChatGroup(any(), any());
+        verify(chatGroupRepository, never()).delete(any(ChatGroup.class));
     }
 
     @Test

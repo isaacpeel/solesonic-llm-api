@@ -4,6 +4,7 @@ import com.solesonic.model.chat.history.Chat;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
@@ -63,6 +64,47 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
             order by chat.groupSortOrder asc, chat.id asc
             """)
     List<Chat> findPlacedByUserIdAndChatGroupId(UUID userId, UUID chatGroupId);
+
+    /**
+     * The same window and the same deterministic ordering as {@link #findByUserId}, narrowed to the
+     * conversations that are not filed under any group.
+     * <p>
+     * It exists so a client rendering group sections above the main list does not have to filter
+     * them out itself — which it can only do after the page has been counted, leaving the page
+     * metadata describing more rows than the client will render, and infinite scroll stalling
+     * whenever a whole page filters away to nothing.
+     */
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId and chat.chatGroupId is null
+            order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> findUngroupedByUserId(UUID userId, Pageable pageable);
+
+    /**
+     * Ungroups every conversation filed under one group, in one statement.
+     * <p>
+     * Both positions are cleared for the same reason {@code ChatGroupService.removeChat} clears
+     * {@code groupSortOrder}: a place inside a group that no longer exists describes nothing.
+     * {@code sortOrder} is deliberately left alone — that is the chat's place in the user's whole
+     * list, which a deleted group says nothing about.
+     * <p>
+     * A bulk update rather than a read-modify-save, because a group holds an unbounded number of
+     * conversations and none of them has to be read in order to be ungrouped. The database would
+     * null the group id on its own — {@code chat_chat_group_id_fkey} is {@code on delete set null} —
+     * but that leaves the position behind and Hibernate never learns it happened, so it is done
+     * here instead of being left to the constraint.
+     * <p>
+     * User-scoped as well as group-scoped, so the statement cannot reach a row the caller does not
+     * own even if a group id were ever resolved without an ownership check.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update Chat chat
+            set chat.chatGroupId = null, chat.groupSortOrder = null
+            where chat.userId = :userId and chat.chatGroupId = :chatGroupId
+            """)
+    int clearChatGroup(UUID userId, UUID chatGroupId);
 
     /**
      * User-scoped for the same reason generated image lookups are: a caller must own the chat it

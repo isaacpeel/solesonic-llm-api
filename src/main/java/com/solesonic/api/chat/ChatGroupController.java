@@ -63,6 +63,36 @@ public class ChatGroupController {
         return ResponseEntity.created(location).body(chatGroup);
     }
 
+    /**
+     * Renames a group. The body is the same {@link ChatGroupRequest} {@code create} takes, and the
+     * same validation runs, so a rename can never accept a name that creating one would reject.
+     */
+    @PutMapping("/{chatGroupId}/name")
+    public ResponseEntity<ChatGroup> rename(@PathVariable UUID chatGroupId,
+                                            @RequestBody ChatGroupRequest chatGroupRequest) {
+        log.info("Renaming chat group {}", chatGroupId);
+        ChatGroup chatGroup = chatGroupService.rename(chatGroupId, chatGroupRequest.name());
+
+        return ResponseEntity.ok(chatGroup);
+    }
+
+    /**
+     * Deletes the section, never the conversations filed under it: each one is ungrouped and kept.
+     * <p>
+     * Not to be confused with {@code DELETE /chatgroups/{chatGroupId}/chats/{chatId}} on the
+     * adjacent path, which unfiles a single conversation and leaves the group standing.
+     * <p>
+     * A repeat is a {@code 404} rather than a {@code 204}, matching {@code DELETE /chats/{chatId}} —
+     * a client whose picture of the sidebar is stale should be told so.
+     */
+    @DeleteMapping("/{chatGroupId}")
+    public ResponseEntity<Void> delete(@PathVariable UUID chatGroupId) {
+        log.info("Deleting chat group {}", chatGroupId);
+        chatGroupService.delete(chatGroupId);
+
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping
     public ResponseEntity<List<ChatGroup>> get() {
         log.info("Getting chat groups");
@@ -119,6 +149,10 @@ public class ChatGroupController {
         return ResponseEntity.ok(chat);
     }
 
+    /**
+     * Unfiles one conversation, leaving the group standing. Not to be confused with
+     * {@code DELETE /chatgroups/{chatGroupId}}, which deletes the group itself.
+     */
     @DeleteMapping("/{chatGroupId}/chats/{chatId}")
     public ResponseEntity<Void> removeChat(@PathVariable UUID chatGroupId, @PathVariable UUID chatId) {
         log.info("Removing chat {} from group {}", chatId, chatGroupId);

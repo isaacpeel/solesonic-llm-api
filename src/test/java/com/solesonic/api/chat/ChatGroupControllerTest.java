@@ -27,12 +27,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -90,6 +92,68 @@ class ChatGroupControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\" \"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void renamesAGroup() throws Exception {
+        ChatGroup renamed = chatGroup();
+        renamed.setName("Personal");
+
+        when(chatGroupService.rename(eq(chatGroupId), any(String.class))).thenReturn(renamed);
+
+        mockMvc.perform(put("/chatgroups/{chatGroupId}/name", chatGroupId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Personal\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(chatGroupId.toString()))
+                .andExpect(jsonPath("$.name").value("Personal"));
+
+        // The body's name reaches the service untouched; trimming and the length rules are its job.
+        ArgumentCaptor<String> nameCaptor = ArgumentCaptor.forClass(String.class);
+        verify(chatGroupService).rename(eq(chatGroupId), nameCaptor.capture());
+
+        assertThat(nameCaptor.getValue()).isEqualTo("Personal");
+    }
+
+    @Test
+    void propagatesNotFoundForRenamingAGroupTheCallerDoesNotOwn() throws Exception {
+        when(chatGroupService.rename(eq(chatGroupId), any(String.class)))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        mockMvc.perform(put("/chatgroups/{chatGroupId}/name", chatGroupId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Personal\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void deletesAGroup() throws Exception {
+        mockMvc.perform(delete("/chatgroups/{chatGroupId}", chatGroupId))
+                .andExpect(status().isNoContent())
+                .andExpect(content().string(""));
+
+        verify(chatGroupService).delete(chatGroupId);
+    }
+
+    /**
+     * The group is deleted, not one conversation in it. The two DELETEs sit on adjacent paths and
+     * are the pair most likely to be confused for each other.
+     */
+    @Test
+    void deletingAGroupDoesNotRemoveASingleChat() throws Exception {
+        mockMvc.perform(delete("/chatgroups/{chatGroupId}", chatGroupId))
+                .andExpect(status().isNoContent());
+
+        verify(chatGroupService, never()).removeChat(any(), any());
+    }
+
+    @Test
+    void propagatesNotFoundForDeletingAGroupTheCallerDoesNotOwn() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+                .when(chatGroupService).delete(chatGroupId);
+
+        mockMvc.perform(delete("/chatgroups/{chatGroupId}", chatGroupId))
+                .andExpect(status().isNotFound());
     }
 
     @Test

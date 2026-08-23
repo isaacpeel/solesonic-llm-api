@@ -14,6 +14,10 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
@@ -103,6 +107,30 @@ class ChatServiceTest {
         verify(chatRepository).saveAll(savedCaptor.capture());
 
         return savedCaptor.getValue();
+    }
+
+    /**
+     * The filtered page is indistinguishable in shape from the unfiltered one — same hydration,
+     * same ordering — so a client can switch the filter on without handling a second shape.
+     */
+    @Test
+    void pagesOnlyTheChatsThatAreNotFiledUnderAGroup() {
+        Pageable pageable = PageRequest.of(0, 20);
+        Chat chat = chatOwnedByTheCaller();
+
+        when(chatRepository.findUngroupedByUserId(USER_ID, pageable))
+                .thenReturn(new PageImpl<>(List.of(chat), pageable, 1));
+        when(chatMessageRepository.findByChatId(CHAT_ID)).thenReturn(List.of());
+        when(chatAttachmentService.forChat(CHAT_ID)).thenReturn(List.of());
+        when(generatedImageService.forChat(CHAT_ID)).thenReturn(List.of());
+
+        Page<Chat> chats = chatService.getUngroupedByUserId(USER_ID, pageable);
+
+        assertThat(chats.getContent()).extracting(Chat::getId).containsExactly(CHAT_ID);
+        assertThat(chats.getContent().getFirst().getChatMessages()).isEmpty();
+
+        // The unfiltered query must not be the one that ran, or the filter would be silently ignored.
+        verify(chatRepository, never()).findByUserId(any(), any());
     }
 
     @Test

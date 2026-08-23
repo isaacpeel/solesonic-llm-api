@@ -300,9 +300,19 @@ These endpoints retrieve existing chat history. They do not create or send messa
 - **Query Parameters**:
   - `page` (int, default `0`): Zero-based page index
   - `size` (int, default `20`, max `100`): Page size
+  - `ungrouped` (boolean, default `false`): Return only the conversations that are not filed under a
+    [group](#conversation-groups)
 - **Response**: A page of chat objects — hand-placed conversations first, in the order the user
   arranged them, then everything else newest first (`timestamp` descending, `id` as a tiebreaker).
   See [Move a Chat](#move-a-chat)
+
+`ungrouped` is opt-in, and omitting it returns every chat the user owns, grouped ones included — what
+every existing client already receives. It exists for a client that renders group sections above this
+list: without it, every grouped conversation appears twice, and filtering them out client-side leaves
+`totalElements` and `totalPages` describing more rows than the client will render, so an infinite
+scroll stalls whenever a whole page filters away to nothing. With `ungrouped=true` the counters cover
+only the ungrouped chats, and the page shape, message hydration, and ordering rule are otherwise
+identical.
 
 Parameters are bounded rather than rejected: a negative `page` is treated as `0`, a `size` above the
 `spring.data.web.pageable.max-page-size` limit is capped at it, and scrolling past the last page
@@ -446,6 +456,22 @@ The name is trimmed. A blank name or one over 255 characters is `400`. Names are
 unique — two groups may share one, and are ordered against each other by id so a listing never
 reshuffles.
 
+### Rename a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}/name`
+- **Request Body**: `ChatGroupRequest` — `{ "name": "..." }`, the same body [Create a
+  Group](#create-a-group) takes
+- **Response**: The updated group
+
+The same validation `create` applies: the name is trimmed, and a blank one or one over 255 characters
+is `400`. Names stay non-unique — renaming a group to a name another group already carries is a
+success, and the listing breaks that tie by id.
+
+Ownership is resolved before the name is validated, so a bad name sent for a group the caller does not
+own is `404` rather than `400`: the endpoint does not tell a caller the difference between "your name
+was wrong" and "that group is not yours". Nothing else about the group changes — membership, both sort
+orders, and `timestamp` are untouched.
+
 ### List Groups
 
 - **Endpoint**: `GET /chatgroups`
@@ -503,7 +529,31 @@ success — the client's picture of where the conversation lives is wrong, and r
 as done would leave it wrong.
 
 To delete the conversation itself rather than unfile it, use
-[`DELETE /chats/{chatId}`](#delete-a-chat).
+[`DELETE /chats/{chatId}`](#delete-a-chat). To delete the group rather than one of its members, use
+[`DELETE /chatgroups/{chatGroupId}`](#delete-a-group) — the two live on adjacent paths and are the
+pair most easily confused.
+
+### Delete a Group
+
+- **Endpoint**: `DELETE /chatgroups/{chatGroupId}`
+- **Path Parameters**:
+  - `chatGroupId` (UUID): The group to delete
+- **Response**: `204 No Content`
+
+**Deletes the section, never the conversations filed under it.** Every chat in the group survives and
+becomes ungrouped: `chatGroupId` and `groupSortOrder` are both cleared, since a position inside a
+group that no longer exists describes nothing. Each chat's `sortOrder` — its place in the caller's
+*whole* list — is left alone; the two orderings are independent, and a deleted group says nothing
+about the sidebar.
+
+All of it is one transaction, so the group is gone and its chats are ungrouped, or nothing happened.
+
+A group that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
+rather than `204` — the same rule [`DELETE /chats/{chatId}`](#delete-a-chat) follows. Other groups are
+unaffected.
+
+Not to be confused with [`DELETE /chatgroups/{chatGroupId}/chats/{chatId}`](#remove-a-conversation-from-a-group),
+which unfiles a single conversation and leaves the group standing.
 
 ---
 
