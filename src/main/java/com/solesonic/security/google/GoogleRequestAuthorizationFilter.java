@@ -1,6 +1,5 @@
 package com.solesonic.security.google;
 
-import com.solesonic.exception.google.GoogleTokenException;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
@@ -19,7 +18,6 @@ import reactor.core.publisher.Mono;
 import java.util.UUID;
 
 import static org.springframework.http.HttpHeaders.AUTHORIZATION;
-import static org.springframework.http.HttpStatus.BAD_REQUEST;
 
 /**
  * Puts the calling user's Google access token on every Gmail request, refreshing it first if it
