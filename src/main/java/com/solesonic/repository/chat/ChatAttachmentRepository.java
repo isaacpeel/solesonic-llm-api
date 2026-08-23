@@ -74,4 +74,16 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
              where attachment.chatMessageId is null and attachment.created < :cutoff
            """)
     int deleteStagedOlderThan(ZonedDateTime cutoff);
+
+    /**
+     * Every attachment bound to one conversation. Deleting a chat has to take these with it: the
+     * rows carry image bytes, and there is no foreign key that would remove them on its own.
+     * Staged attachments are untouched — they have no {@code chatId} yet, and the sweep owns them.
+     */
+    @Modifying
+    @Query("""
+            delete from ChatAttachment attachment
+             where attachment.chatId = :chatId
+           """)
+    int deleteByChatId(UUID chatId);
 }

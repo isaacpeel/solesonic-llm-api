@@ -126,6 +126,23 @@ public class GeneratedImageService {
     }
 
     /**
+     * Discards every image generated inside a conversation that is being deleted.
+     * <p>
+     * Not user-scoped, unlike {@link #get(UUID)}: the caller has already established that the
+     * conversation is theirs, and an image carries a {@code chatId} only when it was generated in
+     * that conversation. It joins the caller's transaction, so a chat and its images go together or
+     * not at all.
+     */
+    @Transactional
+    public void deleteForChat(UUID chatId) {
+        int deleted = generatedImageRepository.deleteByChatId(chatId);
+
+        if (deleted > 0) {
+            log.info("Deleted {} generated image(s) of chat {}", deleted, chatId);
+        }
+    }
+
+    /**
      * Images generated since a turn began — what that turn's {@code done} payload carries.
      */
     @Transactional(readOnly = true)

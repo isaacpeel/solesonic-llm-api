@@ -144,10 +144,13 @@ public class RedisStreamService {
         return jsonMapper.writeValueAsString(payload);
     }
 
-    @SuppressWarnings("unused")
+    /**
+     * Drops a chat's buffer outright, rather than waiting out its retention window. Used when the
+     * conversation itself is deleted: there is nothing left for a resuming client to resume into.
+     */
     public Mono<Boolean> deleteStream(UUID chatId, UUID userId) {
         String streamKey = buildStreamKey(chatId, userId);
-        log.debug("Deleting Redis stream {} before new exchange", streamKey);
+        log.debug("Deleting Redis stream {}", streamKey);
         return redisTemplate.delete(streamKey).map(count -> count > 0);
     }
 }

@@ -6,31 +6,63 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
 public interface ChatRepository extends JpaRepository<Chat, UUID> {
-    // Newest first, with the id as a tiebreaker. Chats created in the same millisecond would
-    // otherwise be ordered arbitrarily per query, which an infinite scroll sees as a row that
-    // repeats on one page and never appears on the next. The order lives here rather than in a
-    // caller-supplied Sort so that no caller can page this without a deterministic ordering.
+    // Hand-placed conversations first, then everything else newest first, with the id as a
+    // tiebreaker. Chats created in the same millisecond would otherwise be ordered arbitrarily per
+    // query, which an infinite scroll sees as a row that repeats on one page and never appears on
+    // the next. The order lives here rather than in a caller-supplied Sort so that no caller can
+    // page this without a deterministic ordering.
+    //
+    // "nulls last" is what makes an unplaced chat keep its old behaviour: a conversation nobody has
+    // arranged sorts by timestamp exactly as it did before ordering existed, and a brand new one
+    // still arrives at the top of that section rather than at the bottom of the list.
     @Query("""
             from Chat chat
             where chat.userId = :userId
-            order by chat.timestamp desc, chat.id desc
+            order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findByUserId(UUID userId, Pageable pageable);
 
-    // The same window and the same deterministic ordering as findByUserId, narrowed to one group.
-    // Still filtered by user rather than by group alone: the group has already been checked against
-    // the caller, and repeating the check at the query is what keeps a chat that was filed under a
-    // group and later reassigned from ever leaking through a stale group id.
+    // The same window and the same deterministic ordering as findByUserId, narrowed to one group
+    // and read off that group's own position column. Still filtered by user rather than by group
+    // alone: the group has already been checked against the caller, and repeating the check at the
+    // query is what keeps a chat that was filed under a group and later reassigned from ever
+    // leaking through a stale group id.
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.chatGroupId = :chatGroupId
-            order by chat.timestamp desc, chat.id desc
+            order by chat.groupSortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable);
+
+    /**
+     * The hand-placed prefix of the user's list, in the order it is rendered — the arrangement a
+     * move is applied to. Unplaced chats are deliberately excluded: they have no position to
+     * renumber, and loading a user's entire history to move one conversation would make the cost of
+     * a drag grow with the size of the sidebar.
+     */
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId and chat.sortOrder is not null
+            order by chat.sortOrder asc, chat.id asc
+            """)
+    List<Chat> findPlacedByUserId(UUID userId);
+
+    /**
+     * The same arrangement, within one group.
+     */
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId
+              and chat.chatGroupId = :chatGroupId
+              and chat.groupSortOrder is not null
+            order by chat.groupSortOrder asc, chat.id asc
+            """)
+    List<Chat> findPlacedByUserIdAndChatGroupId(UUID userId, UUID chatGroupId);
 
     /**
      * User-scoped for the same reason generated image lookups are: a caller must own the chat it

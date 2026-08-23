@@ -153,6 +153,22 @@ class ChatGroupControllerTest {
     }
 
     @Test
+    void movesAChatWithinAGroup() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setChatGroupId(chatGroupId);
+        chat.setGroupSortOrder(1);
+
+        when(chatGroupService.reorderChat(chatGroupId, chatId, 1)).thenReturn(chat);
+
+        mockMvc.perform(put("/chatgroups/{chatGroupId}/chats/{chatId}/order", chatGroupId, chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"position\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.groupSortOrder").value(1));
+    }
+
+    @Test
     void propagatesNotFoundForAGroupTheCallerDoesNotOwn() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
                 .when(chatGroupService).addChat(chatGroupId, chatId);

@@ -130,6 +130,26 @@ what a group holds, or what is unfiled:
 select id, name from public.chat where chat_group_id = '<group uuid>' order by timestamp desc;
 select id, name from public.chat where user_id = '<user uuid>' and chat_group_id is null;
 ```
+
+`chat.sort_order` and `chat.group_sort_order` (V3_12) are where a conversation has been placed by
+hand. Two columns rather than one, because a chat appears in two independently ordered lists — the
+user's whole list and, when it is filed, its group's — and a single column would make a move in one
+reshuffle the other. Both are null until a client moves the conversation, and null is what makes the
+ordering fall back to `timestamp desc`: a chat nobody has arranged sorts exactly as it did before
+these columns existed, and a new one still arrives at the top rather than the bottom. Positions are
+dense from zero within each list, and `group_sort_order` is cleared whenever the chat changes group.
+
+Deleting a conversation is **not** cascaded by the database. Nothing in `chat_message`,
+`chat_attachment`, or `generated_image` carries a foreign key to `chat`, so `DELETE /chats/{chatId}`
+clears all three by hand inside one transaction (`ChatService.delete`). Deleting a `chat` row
+directly in SQL leaves the transcript and the image bytes behind, unreachable but still stored:
+
+```sql
+delete from public.chat_attachment where chat_id = '<chat uuid>';
+delete from public.generated_image where chat_id = '<chat uuid>';
+delete from public.chat_message where chat_id = '<chat uuid>';
+delete from public.chat where id = '<chat uuid>';
+```
    - Status history
 
 2. **V2_x**: Schema updates including:

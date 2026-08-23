@@ -105,10 +105,31 @@ public class ChatGroupService {
         ChatGroup chatGroup = chatGroup(chatGroupId, userId);
         Chat chat = chat(chatId, userId);
 
+        if (!chatGroup.getId().equals(chat.getChatGroupId())) {
+            // A hand-placed position describes a place in the group the chat is leaving, so it does
+            // not survive the move. Filing a chat into the group it is already in is left alone —
+            // the operation is idempotent, and clearing the position would make it destructive.
+            chat.setGroupSortOrder(null);
+        }
+
         chat.setChatGroupId(chatGroup.getId());
         chatRepository.save(chat);
 
         log.info("Added chat {} to group {} for user {}", chatId, chatGroupId, userId);
+    }
+
+    /**
+     * Moves a conversation within one group. Both ids are checked against the caller, and the chat
+     * must actually be in the group — the same rule {@link #removeChat} applies, for the same
+     * reason: a position in a group the conversation is not filed under describes nothing.
+     */
+    @Transactional
+    public Chat reorderChat(UUID chatGroupId, UUID chatId, Integer position) {
+        UUID userId = userRequestContext.getUserId();
+
+        ChatGroup chatGroup = chatGroup(chatGroupId, userId);
+
+        return chatService.reorderWithinGroup(chatGroup.getId(), chatId, position);
     }
 
     /**
@@ -129,6 +150,7 @@ public class ChatGroupService {
         }
 
         chat.setChatGroupId(null);
+        chat.setGroupSortOrder(null);
         chatRepository.save(chat);
 
         log.info("Removed chat {} from group {} for user {}", chatId, chatGroupId, userId);

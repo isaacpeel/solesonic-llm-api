@@ -1,5 +1,6 @@
 package com.solesonic.api.chat;
 
+import com.solesonic.model.chat.ChatOrderRequest;
 import com.solesonic.model.chat.ChatRenameRequest;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.ollama.ChatService;
@@ -11,6 +12,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.data.web.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -62,5 +64,26 @@ public class ChatController {
         Chat chat = chatService.rename(chatId, chatRenameRequest.name());
 
         return ResponseEntity.ok(chat);
+    }
+
+    /**
+     * Moves a conversation within the caller's whole list, independently of any group it is filed
+     * under. A {@code PUT} because it is idempotent: sending the same position twice leaves the
+     * list in the same arrangement.
+     */
+    @PutMapping("/{chatId}/order")
+    public ResponseEntity<Chat> reorder(@PathVariable UUID chatId, @RequestBody ChatOrderRequest chatOrderRequest) {
+        log.info("Moving chat id {} to position {}", chatId, chatOrderRequest.position());
+        Chat chat = chatService.reorder(chatId, chatOrderRequest.position());
+
+        return ResponseEntity.ok(chat);
+    }
+
+    @DeleteMapping("/{chatId}")
+    public ResponseEntity<Void> delete(@PathVariable UUID chatId) {
+        log.info("Deleting chat id {}", chatId);
+        chatService.delete(chatId);
+
+        return ResponseEntity.noContent().build();
     }
 }

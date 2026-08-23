@@ -300,7 +300,9 @@ These endpoints retrieve existing chat history. They do not create or send messa
 - **Query Parameters**:
   - `page` (int, default `0`): Zero-based page index
   - `size` (int, default `20`, max `100`): Page size
-- **Response**: A page of chat objects, newest first (`timestamp` descending, `id` as a tiebreaker)
+- **Response**: A page of chat objects — hand-placed conversations first, in the order the user
+  arranged them, then everything else newest first (`timestamp` descending, `id` as a tiebreaker).
+  See [Move a Chat](#move-a-chat)
 
 Parameters are bounded rather than rejected: a negative `page` is treated as `0`, a `size` above the
 `spring.data.web.pageable.max-page-size` limit is capped at it, and scrolling past the last page
@@ -310,7 +312,16 @@ but ignored: the ordering is fixed by the repository query, so that pages cannot
 ```json
 {
   "content": [
-    { "id": "...", "userId": "...", "timestamp": "...", "chatGroupId": null, "chatMessages": [] }
+    {
+      "id": "...",
+      "userId": "...",
+      "timestamp": "...",
+      "name": "Trip planning",
+      "chatGroupId": null,
+      "sortOrder": null,
+      "groupSortOrder": null,
+      "chatMessages": []
+    }
   ],
   "page": {
     "size": 20,
@@ -343,6 +354,57 @@ The caller's identity comes only from the bearer token (`UserRequestContext`, re
 subject), never from a request parameter, so there is no `userId` to supply or spoof. A chat that
 does not exist, or is not owned by the caller, is `404`. A blank name or one over 255 characters is
 `400`.
+
+### Move a Chat
+
+- **Endpoint**: `PUT /chats/{chatId}/order`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation to move
+- **Request Body**: `ChatOrderRequest` — `{ "position": 0 }`
+- **Response**: The updated chat object, carrying its new `sortOrder`
+
+Moves a conversation within the caller's whole list, independently of any group it is filed under —
+a move here never disturbs a group's ordering, and a move inside a group never disturbs this one.
+
+`position` is a **zero-based index among the conversations that have already been placed by hand**,
+which are the prefix of the list. Everything else follows in `timestamp` order. This is what keeps
+manual ordering additive: a conversation nobody has moved sorts exactly as it did before, and a
+newly created one still appears at the top of the timestamp-ordered part rather than at the bottom
+of the list.
+
+| Body | Effect |
+|---|---|
+| `{"position": 0}` | Move to the head of the list |
+| `{"position": n}` | Move to index `n`; a position past the end of the placed conversations appends, since a drag into the timestamp-ordered part means "last" |
+| `{"position": null}` | Unplace the conversation — it returns to `timestamp` ordering |
+
+The list is renumbered densely from zero on every move, so `sortOrder` values a client reads back
+are always `0, 1, 2, …` with no gaps. A negative position is `400`. A chat that does not exist, or
+is not owned by the caller, is `404`.
+
+A `PUT` because it is idempotent: sending the same position twice leaves the list in the same
+arrangement.
+
+### Delete a Chat
+
+- **Endpoint**: `DELETE /chats/{chatId}`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation to delete
+- **Response**: `204 No Content`
+
+Deletes the conversation and everything stored under it — every message, the attachments bound to
+those messages, and the images generated inside it — as one transaction. Nothing is recoverable
+afterwards, and there is no soft-delete or trash. Attachments the caller uploaded but never sent are
+untouched; they belong to no conversation and are swept on their own schedule.
+
+A chat that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
+rather than `204`. Groups are unaffected: deleting the last conversation in a group leaves an empty
+group, not a deleted one.
+
+Deleting a conversation does not cancel a turn that is already streaming. Generation is deliberately
+independent of any listener, so a turn in flight runs to completion and writes a message that lands
+on a conversation that no longer exists — unreachable from every read path, but written. Wait for
+`done` before deleting.
 
 ---
 
@@ -396,26 +458,47 @@ reshuffles.
 - **Query Parameters**:
   - `page` (int, default `0`): Zero-based page index
   - `size` (int, default `20`, max `100`): Page size
-- **Response**: A page of chat objects, in the same shape and the same order as
-  [`GET /chats/users/{userId}`](#get-all-chats-for-a-user) — newest first, with messages hydrated.
-  A `sort` parameter is accepted by the resolver but ignored, for the same reason it is there.
+- **Response**: A page of chat objects, in the same shape and ordered on the same rule as
+  [`GET /chats/users/{userId}`](#get-all-chats-for-a-user) — hand-placed conversations first, then
+  the rest newest first, with messages hydrated. The position read here is `groupSortOrder`, the
+  group's own ordering, not the `sortOrder` the whole list uses. A `sort` parameter is accepted by
+  the resolver but ignored, for the same reason it is there.
 
 ### Add a Conversation to a Group
 
 - **Endpoint**: `PUT /chatgroups/{chatGroupId}/chats/{chatId}`
 - **Response**: `204 No Content`
 
-A `PUT` because it is idempotent: filing a conversation that is already in this group is a success.
-Filing one that is in another group moves it, since a chat carries at most one group.
+A `PUT` because it is idempotent: filing a conversation that is already in this group is a success,
+and leaves the position it holds there alone. Filing one that is in another group moves it, since a
+chat carries at most one group, and clears its `groupSortOrder` — a position in the group it just
+left describes nothing.
+
+### Move a Conversation within a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}/chats/{chatId}/order`
+- **Request Body**: `ChatOrderRequest` — `{ "position": 0 }`
+- **Response**: The updated chat object, carrying its new `groupSortOrder`
+
+The same rules as [Move a Chat](#move-a-chat) — zero-based index among the placed conversations,
+`null` to unplace, dense renumbering, `400` on a negative position — applied to this group's own
+ordering. The conversation's place in the caller's whole list is untouched.
+
+A chat that is not in this group is `404`: a position in a group the conversation is not filed under
+describes nothing, and accepting one would leave the client's picture of the sidebar wrong.
 
 ### Remove a Conversation from a Group
 
 - **Endpoint**: `DELETE /chatgroups/{chatGroupId}/chats/{chatId}`
 - **Response**: `204 No Content`
 
-Ungroups the conversation; the chat and its messages are untouched. A chat that is not in this group
-is `404` rather than a silent success — the client's picture of where the conversation lives is
-wrong, and reporting the removal as done would leave it wrong.
+Ungroups the conversation; the chat and its messages are untouched, and its `groupSortOrder` is
+cleared along with the membership. A chat that is not in this group is `404` rather than a silent
+success — the client's picture of where the conversation lives is wrong, and reporting the removal
+as done would leave it wrong.
+
+To delete the conversation itself rather than unfile it, use
+[`DELETE /chats/{chatId}`](#delete-a-chat).
 
 ---
 

@@ -16,7 +16,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.UUID;
 
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -64,6 +67,58 @@ class ChatControllerTest {
         mockMvc.perform(put("/chats/{chatId}/name", chatId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Trip planning\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void movesAChat() throws Exception {
+        Chat moved = new Chat();
+        moved.setId(chatId);
+        moved.setSortOrder(2);
+
+        when(chatService.reorder(chatId, 2)).thenReturn(moved);
+
+        mockMvc.perform(put("/chats/{chatId}/order", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"position\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sortOrder").value(2));
+    }
+
+    /**
+     * A null position is the documented way to unplace a conversation, so it has to reach the
+     * service as a null rather than being rejected or defaulted on the way in.
+     */
+    @Test
+    void unplacesAChatOnANullPosition() throws Exception {
+        Chat moved = new Chat();
+        moved.setId(chatId);
+
+        when(chatService.reorder(chatId, null)).thenReturn(moved);
+
+        mockMvc.perform(put("/chats/{chatId}/order", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"position\":null}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sortOrder").doesNotExist());
+
+        verify(chatService).reorder(chatId, null);
+    }
+
+    @Test
+    void deletesAChat() throws Exception {
+        mockMvc.perform(delete("/chats/{chatId}", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(chatService).delete(chatId);
+    }
+
+    @Test
+    void propagatesNotFoundOnDeletingAChatTheCallerDoesNotOwn() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+                .when(chatService).delete(chatId);
+
+        mockMvc.perform(delete("/chats/{chatId}", chatId))
                 .andExpect(status().isNotFound());
     }
 }

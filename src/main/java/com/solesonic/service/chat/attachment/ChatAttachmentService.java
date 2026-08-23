@@ -97,6 +97,22 @@ public class ChatAttachmentService {
     }
 
     /**
+     * Discards every attachment of a conversation that is being deleted.
+     * <p>
+     * Not user-scoped, unlike {@link #delete(UUID)}: the caller has already established that the
+     * conversation is theirs, and an attachment reaches a chat only by being bound to a message of
+     * it. It joins the caller's transaction so that a chat and its images go together or not at all.
+     */
+    @Transactional
+    public void deleteForChat(UUID chatId) {
+        int deleted = chatAttachmentRepository.deleteByChatId(chatId);
+
+        if (deleted > 0) {
+            log.info("Deleted {} attachment(s) of chat {}", deleted, chatId);
+        }
+    }
+
+    /**
      * Loads the attachments named by one send, image bytes included, so they can be described.
      * <p>
      * {@code userId} is a parameter rather than read from {@link UserRequestContext} for the same

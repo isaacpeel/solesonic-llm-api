@@ -1,5 +1,6 @@
 package com.solesonic.api.chat;
 
+import com.solesonic.model.chat.ChatOrderRequest;
 import com.solesonic.model.chat.group.ChatGroup;
 import com.solesonic.model.chat.group.ChatGroupRequest;
 import com.solesonic.model.chat.history.Chat;
@@ -102,6 +103,20 @@ public class ChatGroupController {
         chatGroupService.addChat(chatGroupId, chatId);
 
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Moves a conversation within this group. Its place in the caller's whole list is untouched —
+     * that one is moved through {@code PUT /chats/{chatId}/order}.
+     */
+    @PutMapping("/{chatGroupId}/chats/{chatId}/order")
+    public ResponseEntity<Chat> reorderChat(@PathVariable UUID chatGroupId,
+                                            @PathVariable UUID chatId,
+                                            @RequestBody ChatOrderRequest chatOrderRequest) {
+        log.info("Moving chat {} to position {} in group {}", chatId, chatOrderRequest.position(), chatGroupId);
+        Chat chat = chatGroupService.reorderChat(chatGroupId, chatId, chatOrderRequest.position());
+
+        return ResponseEntity.ok(chat);
     }
 
     @DeleteMapping("/{chatGroupId}/chats/{chatId}")

@@ -184,9 +184,70 @@ class ChatGroupServiceTest {
         verify(chatRepository, never()).save(any(Chat.class));
     }
 
+    /**
+     * A position describes a place in one group's list, so it cannot follow the conversation into
+     * another group.
+     */
+    @Test
+    void clearsThePositionWhenAChatChangesGroup() {
+        Chat chat = chat(UUID.randomUUID());
+        chat.setGroupSortOrder(3);
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+
+        chatGroupService.addChat(CHAT_GROUP_ID, CHAT_ID);
+
+        assertThat(chat.getChatGroupId()).isEqualTo(CHAT_GROUP_ID);
+        assertThat(chat.getGroupSortOrder()).isNull();
+    }
+
+    /**
+     * Re-filing a chat into the group it is already in is idempotent, so it must not quietly throw
+     * away the position the user arranged.
+     */
+    @Test
+    void keepsThePositionWhenAChatIsFiledIntoTheGroupItIsAlreadyIn() {
+        Chat chat = chat(CHAT_GROUP_ID);
+        chat.setGroupSortOrder(3);
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+
+        chatGroupService.addChat(CHAT_GROUP_ID, CHAT_ID);
+
+        assertThat(chat.getGroupSortOrder()).isEqualTo(3);
+    }
+
+    @Test
+    void movesAChatWithinAGroupTheCallerOwns() {
+        Chat chat = chat(CHAT_GROUP_ID);
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+        when(chatService.reorderWithinGroup(CHAT_GROUP_ID, CHAT_ID, 2)).thenReturn(chat);
+
+        assertThat(chatGroupService.reorderChat(CHAT_GROUP_ID, CHAT_ID, 2)).isSameAs(chat);
+    }
+
+    @Test
+    void doesNotMoveAChatInAGroupTheCallerDoesNotOwn() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatGroupService.reorderChat(CHAT_GROUP_ID, CHAT_ID, 2))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("404");
+
+        verify(chatService, never()).reorderWithinGroup(any(), any(), any());
+    }
+
     @Test
     void ungroupsAChat() {
         Chat chat = chat(CHAT_GROUP_ID);
+        chat.setGroupSortOrder(3);
 
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
@@ -195,6 +256,7 @@ class ChatGroupServiceTest {
         chatGroupService.removeChat(CHAT_GROUP_ID, CHAT_ID);
 
         assertThat(chat.getChatGroupId()).isNull();
+        assertThat(chat.getGroupSortOrder()).isNull();
         verify(chatRepository).save(chat);
     }
 

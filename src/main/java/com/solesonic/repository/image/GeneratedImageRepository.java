@@ -69,4 +69,17 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
                and image.chatMessageId is null
            """)
     int bind(UUID chatId, UUID chatMessageId);
+
+    /**
+     * Every image generated inside one conversation, bound or not. Deleting a chat takes these with
+     * it for the same reason it takes attachments: megabytes of bytes per row and no foreign key to
+     * remove them. Images from explicit {@code /images} generation carry no {@code chatId} and are
+     * never matched.
+     */
+    @Modifying
+    @Query("""
+            delete from GeneratedImage image
+             where image.chatId = :chatId
+           """)
+    int deleteByChatId(UUID chatId);
 }
