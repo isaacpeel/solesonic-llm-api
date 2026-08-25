@@ -3,9 +3,11 @@ package com.solesonic.service.chat.attachment;
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
+import com.solesonic.model.chat.attachment.ExtractionFailureReason;
 import com.solesonic.model.chat.attachment.VisionFailureReason;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -20,6 +22,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.IOException;
 import java.time.Duration;
 import java.time.ZonedDateTime;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -28,21 +32,69 @@ import java.util.UUID;
 public class ChatAttachmentService {
     private static final Logger log = LoggerFactory.getLogger(ChatAttachmentService.class);
 
-    static final Set<String> ACCEPTED_CONTENT_TYPES = Set.of(
+    /**
+     * Images are described by the vision model and reach the chat model as prose.
+     */
+    static final Set<String> IMAGE_CONTENT_TYPES = Set.of(
             "image/png",
             "image/jpeg",
             "image/gif",
             "image/webp");
 
+    /**
+     * Documents are extracted to text, split, embedded, and reached through retrieval instead.
+     * Every type here is one the readers already wired into {@code DocumentService} can parse — the
+     * PDF reader, or Tika for the rest — so widening this set is most of what it takes to accept a
+     * new format.
+     */
+    static final Set<String> DOCUMENT_CONTENT_TYPES = Set.of(
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+            "text/html",
+            "text/csv",
+            "text/xml",
+            "application/xml",
+            "application/json",
+            "application/rtf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet");
+
+    static final Set<String> ACCEPTED_CONTENT_TYPES = acceptedContentTypes();
+
+    private static Set<String> acceptedContentTypes() {
+        Set<String> accepted = new HashSet<>(IMAGE_CONTENT_TYPES);
+        accepted.addAll(DOCUMENT_CONTENT_TYPES);
+
+        return Set.copyOf(accepted);
+    }
+
+    /**
+     * Which of the two passes an attachment belongs to. Decided on the stored content type rather
+     * than the file name, which is client-supplied and proves nothing.
+     */
+    public static boolean isImage(String contentType) {
+        return contentType != null && IMAGE_CONTENT_TYPES.contains(contentType.toLowerCase());
+    }
+
     private final ChatAttachmentRepository chatAttachmentRepository;
     private final UserRequestContext userRequestContext;
+    private final VectorStoreService vectorStoreService;
     private final Duration stagedTtl;
 
     public ChatAttachmentService(ChatAttachmentRepository chatAttachmentRepository,
                                  UserRequestContext userRequestContext,
+                                 VectorStoreService vectorStoreService,
                                  @Value("${solesonic.llm.attachment.staged-ttl:PT24H}") Duration stagedTtl) {
         this.chatAttachmentRepository = chatAttachmentRepository;
         this.userRequestContext = userRequestContext;
+        this.vectorStoreService = vectorStoreService;
         this.stagedTtl = stagedTtl;
     }
 
@@ -88,6 +140,10 @@ public class ChatAttachmentService {
 
         log.info("Deleting attachment {}", attachmentId);
 
+        //A document's chunks live in the vector store, which has no foreign key to cascade from.
+        //Left behind they would keep answering questions about a document the user just removed.
+        vectorStoreService.deleteByChatAttachmentId(attachmentId);
+
         chatAttachmentRepository.delete(chatAttachment);
     }
 
@@ -105,6 +161,8 @@ public class ChatAttachmentService {
      */
     @Transactional
     public void deleteForChat(UUID chatId) {
+        vectorStoreService.deleteByChatId(chatId);
+
         int deleted = chatAttachmentRepository.deleteByChatId(chatId);
 
         if (deleted > 0) {
@@ -126,6 +184,52 @@ public class ChatAttachmentService {
         }
 
         return chatAttachmentRepository.findByIdInAndUserIdOrderByCreatedAsc(attachmentIds, userId);
+    }
+
+    /**
+     * Splits the ids named by one send into the two passes that handle them: images are described by
+     * the vision model, everything else is extracted and indexed for retrieval.
+     * <p>
+     * Each pass guarantees exactly one {@code attachment} SSE event per id it is given, so the two
+     * sets must be disjoint and must together cover every requested id — a client cannot tell a
+     * missing event from a failure.
+     * <p>
+     * An id that resolves to no row lands in {@code imageIds}. It has to land somewhere to be
+     * signalled at all, and that is where an unresolvable id was already reported from before
+     * documents existed.
+     * <p>
+     * Not {@code @Transactional}: it is a single read, and it is called from {@code PromptService}
+     * on the reactive path, where holding a transaction open buys nothing and costs a pooled
+     * connection.
+     */
+    public AttachmentPartition partition(UUID userId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return new AttachmentPartition(Set.of(), Set.of());
+        }
+
+        //Starting from every requested id, rather than from the rows, is what puts an id that
+        //resolved to nothing on the image side without needing a separate pass to find them.
+        Set<UUID> imageIds = new LinkedHashSet<>(attachmentIds);
+        Set<UUID> documentIds = new LinkedHashSet<>();
+
+        for (ChatAttachment attachment : chatAttachmentRepository
+                .findByIdInAndUserIdOrderByCreatedAsc(attachmentIds, userId)) {
+            if (isImage(attachment.getContentType())) {
+                continue;
+            }
+
+            imageIds.remove(attachment.getId());
+            documentIds.add(attachment.getId());
+        }
+
+        return new AttachmentPartition(imageIds, documentIds);
+    }
+
+    /**
+     * @param imageIds    ids to describe with the vision model, plus any id that resolved to no row
+     * @param documentIds ids to extract and index for retrieval
+     */
+    public record AttachmentPartition(Set<UUID> imageIds, Set<UUID> documentIds) {
     }
 
     /**
@@ -154,6 +258,35 @@ public class ChatAttachmentService {
     public void saveVisionFailure(UUID attachmentId, VisionFailureReason visionFailureReason) {
         chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
             chatAttachment.setVisionFailureReason(visionFailureReason);
+
+            chatAttachmentRepository.save(chatAttachment);
+        });
+    }
+
+    /**
+     * Records how many chunks a document was indexed as, in its own short transaction for the same
+     * reason {@link #saveVisionDescription} is: the extraction and embedding that produced them run
+     * for seconds and must not hold a pooled connection.
+     */
+    @Transactional
+    public void saveChunkCount(UUID attachmentId, int chunkCount) {
+        chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
+            chatAttachment.setChunkCount(chunkCount);
+            chatAttachment.setExtractionFailureReason(null);
+
+            chatAttachmentRepository.save(chatAttachment);
+        });
+    }
+
+    /**
+     * Records why a document was left unindexed. {@code chunkCount} stays null, which is what keeps
+     * the work retryable: a later turn naming the same attachment tries again rather than trusting
+     * this row.
+     */
+    @Transactional
+    public void saveExtractionFailure(UUID attachmentId, ExtractionFailureReason extractionFailureReason) {
+        chatAttachmentRepository.findById(attachmentId).ifPresent(chatAttachment -> {
+            chatAttachment.setExtractionFailureReason(extractionFailureReason);
 
             chatAttachmentRepository.save(chatAttachment);
         });
@@ -223,6 +356,8 @@ public class ChatAttachmentService {
                 chatAttachment.getContentType(),
                 chatAttachment.getFileSizeBytes(),
                 chatAttachment.getVisionDescription() != null,
-                chatAttachment.getVisionFailureReason());
+                chatAttachment.getVisionFailureReason(),
+                chatAttachment.getChunkCount() != null,
+                chatAttachment.getExtractionFailureReason());
     }
 }

@@ -2,6 +2,7 @@ package com.solesonic.api.ollama;
 
 import com.solesonic.model.VectorSearch;
 import com.solesonic.model.document.UriIngestRequest;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.training.TrainingDocument;
 import com.solesonic.service.rag.TrainingDocumentService;
 import com.solesonic.service.rag.UriTrainingService;
@@ -40,8 +41,9 @@ public class DocumentController {
 
     
     @PostMapping("/data/upload")
-    public ResponseEntity<Void> handleFileUpload(@RequestParam MultipartFile file) {
-        TrainingDocument trainingDocument = trainingDocumentService.queue(file);
+    public ResponseEntity<Void> handleFileUpload(@RequestParam MultipartFile file,
+                                                 @RequestParam(required = false) RetrievalScope scope) {
+        TrainingDocument trainingDocument = trainingDocumentService.queue(file, scope);
 
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}")

@@ -2,6 +2,7 @@ package com.solesonic.model.training;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.document.DocumentSource;
+import com.solesonic.model.rag.RetrievalScope;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -40,6 +41,20 @@ public class TrainingDocument {
 
     @Enumerated(EnumType.STRING)
     private DocumentSource documentSource;
+
+    /**
+     * Who owns this document, when {@link #scope} is {@code USER}. Null at {@code GLOBAL} scope,
+     * which is what every document ingested before scoping existed is.
+     */
+    private UUID userId;
+
+    /**
+     * How widely the chunks of this document may be retrieved. Stamped onto every chunk's metadata
+     * at ingestion, which is where retrieval actually reads it from — this column is the record of
+     * what was intended, so a re-ingest reproduces the same scope.
+     */
+    @Enumerated(EnumType.STRING)
+    private RetrievalScope scope;
 
     @Column(name = "metadata")
     @JdbcTypeCode(SqlTypes.JSON)
@@ -117,6 +132,22 @@ public class TrainingDocument {
 
     public void setDocumentSource(DocumentSource documentSource) {
         this.documentSource = documentSource;
+    }
+
+    public UUID getUserId() {
+        return userId;
+    }
+
+    public void setUserId(UUID userId) {
+        this.userId = userId;
+    }
+
+    public RetrievalScope getScope() {
+        return scope;
+    }
+
+    public void setScope(RetrievalScope scope) {
+        this.scope = scope;
     }
 
     public Map<String, Object> getMetadata() {

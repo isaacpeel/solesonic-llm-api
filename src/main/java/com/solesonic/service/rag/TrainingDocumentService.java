@@ -2,18 +2,22 @@ package com.solesonic.service.rag;
 
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.document.DocumentSource;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.training.DocumentStatus;
 import com.solesonic.model.training.StatusHistory;
 import com.solesonic.model.training.TrainingDocument;
 import com.solesonic.model.training.VectorDocument;
 import com.solesonic.repository.ollama.StatusHistoryRepository;
 import com.solesonic.repository.ollama.TrainingDocumentRepository;
+import com.solesonic.scope.UserRequestContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.io.Resource;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -32,13 +36,16 @@ public class TrainingDocumentService {
     private final TrainingDocumentRepository trainingDocumentRepository;
     private final StatusHistoryRepository statusHistoryRepository;
     private final VectorStoreService vectorStoreService;
+    private final UserRequestContext userRequestContext;
 
     public TrainingDocumentService(TrainingDocumentRepository trainingDocumentRepository,
                                    StatusHistoryRepository statusHistoryRepository,
-                                   VectorStoreService vectorStoreService) {
+                                   VectorStoreService vectorStoreService,
+                                   UserRequestContext userRequestContext) {
         this.trainingDocumentRepository = trainingDocumentRepository;
         this.statusHistoryRepository = statusHistoryRepository;
         this.vectorStoreService = vectorStoreService;
+        this.userRequestContext = userRequestContext;
     }
 
     public List<TrainingDocument> findAll() {
@@ -180,20 +187,48 @@ public class TrainingDocumentService {
         trainingDocumentRepository.delete(trainingDocument);
     }
 
-    public TrainingDocument queue(MultipartFile multipartFile) {
-        log.debug("Queuing document.");
+    /**
+     * Queues an uploaded document for ingestion at the requested scope.
+     * <p>
+     * {@code scope} may be null, which means {@code GLOBAL} — the only behaviour this method had
+     * before scoping existed.
+     * <p>
+     * Reads {@link UserRequestContext}, so this is only callable on a request thread. That is where
+     * its one caller is; the URI ingest path, which also runs from a tool call with no request
+     * bound, deliberately does not come through here.
+     */
+    public TrainingDocument queue(MultipartFile multipartFile, RetrievalScope scope) {
+        RetrievalScope requestedScope = scope == null ? RetrievalScope.GLOBAL : scope;
+
+        if (requestedScope == RetrievalScope.CHAT) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Documents cannot be trained at CHAT scope; attach them to a message instead");
+        }
+
+        log.debug("Queuing document at {} scope.", requestedScope);
 
         Resource newFileResource = multipartFile.getResource();
 
         String fileName = newFileResource.getFilename();
 
-        TrainingDocument existing = findByName(fileName);
+        //Deduplication by file name is only safe between shared documents. Two users uploading
+        //"notes.pdf" mean two different documents, and reusing one row for both would hand the
+        //second uploader the first one's.
+        if (requestedScope == RetrievalScope.GLOBAL) {
+            TrainingDocument existing = findByName(fileName);
 
-        if(existing != null) {
-            return existing;
+            if (existing != null && existing.getScope() != RetrievalScope.USER) {
+                return existing;
+            }
         }
 
         TrainingDocument trainingDocument = trainingDocument(multipartFile, fileName, newFileResource);
+
+        trainingDocument.setScope(requestedScope);
+
+        if (requestedScope == RetrievalScope.USER) {
+            trainingDocument.setUserId(userRequestContext.getUserId());
+        }
 
         return save(trainingDocument);
     }

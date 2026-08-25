@@ -9,6 +9,8 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.etl.ChatDocumentIngestionService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.service.vision.ImageDescriptionService;
@@ -76,6 +78,10 @@ class PromptServiceTest {
     @Mock
     private ImageDescriptionService imageDescriptionService;
     @Mock
+    private ChatAttachmentService chatAttachmentService;
+    @Mock
+    private ChatDocumentIngestionService chatDocumentIngestionService;
+    @Mock
     private Authentication authentication;
     @Mock
     private Jwt jwt;
@@ -104,7 +110,9 @@ class PromptServiceTest {
                 a2aAgentService,
                 a2aStickyAgentService,
                 vectorStoreService,
-                imageDescriptionService);
+                imageDescriptionService,
+                chatAttachmentService,
+                chatDocumentIngestionService);
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
 
@@ -113,8 +121,20 @@ class PromptServiceTest {
 
         //No attachments in most tests: nothing to describe.
         lenient().when(imageDescriptionService.describe(any(), any(), any())).thenReturn(List.of());
+
+        //Every attachment is an image unless a test says otherwise — which is what every test
+        //written before document attachments existed assumes.
+        lenient().when(chatAttachmentService.partition(any(), any())).thenAnswer(invocation -> {
+            Set<UUID> attachmentIds = invocation.getArgument(1);
+
+            return new ChatAttachmentService.AttachmentPartition(
+                    attachmentIds == null ? Set.of() : attachmentIds, Set.of());
+        });
+
+        lenient().when(chatDocumentIngestionService.ingest(any(), any(), any())).thenReturn(List.of());
+
         lenient().when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("llama3"));
-        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class)))
+        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
                 .thenReturn(mock(Advisor.class));
     }
 

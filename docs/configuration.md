@@ -124,6 +124,7 @@ Upload size is bounded by `spring.servlet.multipart.max-file-size` rather than a
 | `ATTACHMENT_STAGED_TTL` | How long an unsent attachment is kept | `PT24H` | No | Default: PT24H. ISO-8601 duration |
 | `ATTACHMENT_SWEEP_ENABLED` | Enable the staged-attachment sweep task | `true` | No | Default: false |
 | `ATTACHMENT_SWEEP_CRON` | Sweep schedule | `0 0 * * * *` | No | Default: hourly. Only read when the sweep is enabled |
+| `ATTACHMENT_DOCUMENT_MAX_SIZE_BYTES` | Largest document attachment that will be indexed for retrieval | `10MB` | No | Default: 10MB. Bounds how long a user waits on the turn the document is sent, not storage. A document past it is still stored and downloadable, just not indexed |
 
 ### Vision Configuration
 

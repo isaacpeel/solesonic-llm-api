@@ -178,22 +178,30 @@ rendered message. Clients that ignore the `init` body are unaffected.
   "attachmentId": "3f9a...",
   "chatId": "0a4b...",
   "described": true,
-  "reason": null
+  "reason": null,
+  "indexed": false,
+  "extractionReason": null,
+  "chunkCount": null
 }
 ```
 
-The vision pass opens with a `progress` event per image and closes with an `attachment` event per
-image. Guarantees a client can rely on:
+One event shape covers both kinds of attachment, because a client renders one attachment chip either
+way. An **image** moves `described`/`reason` and leaves the document fields empty. A **document**
+moves `indexed`/`extractionReason`/`chunkCount` and leaves `described` at `false` with a `null`
+`reason`.
 
-- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including images
-  skipped before any work started, and images the server could not resolve at all. A client never
+The attachment pass opens with a `progress` event per attachment and closes with an `attachment`
+event per attachment. Guarantees a client can rely on:
+
+- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including attachments
+  skipped before any work started, and ones the server could not resolve at all. A client never
   has to interpret a missing event.
 - **Always before `done`**, so the event lands while the assistant message is still streaming.
 
-Nothing else in the turn distinguishes a described image from a skipped one: a skipped image still
-produces a normal answer, just one written as though no image were attached.
+Nothing else in the turn distinguishes a handled attachment from a skipped one: a skipped attachment
+still produces a normal answer, just one written as though nothing were attached.
 
-When `described` is `false`, `reason` is one of a closed set:
+When `described` is `false` on an image, `reason` is one of a closed set:
 
 | Reason | Meaning |
 |--------|---------|
@@ -206,6 +214,18 @@ When `described` is `false`, `reason` is one of a closed set:
 `reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
 `SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment
 summary in chat history.
+
+When `indexed` is `false` on a document, `extractionReason` is one of its own closed set:
+
+| Reason | Meaning |
+|--------|---------|
+| `DOCUMENT_TOO_LARGE` | The document exceeds `solesonic.llm.attachment.document.max-size-bytes` |
+| `DOCUMENT_UNREADABLE` | The file could not be parsed, or parsed to no text — an encrypted PDF, or a scan carrying images rather than text |
+| `EMBEDDING_UNAVAILABLE` | The embedding model could not be reached, so the extracted text could not be indexed |
+| `EXCEEDED_DOCUMENT_LIMIT` | More documents were attached to one message than the extraction pass indexes |
+
+`chunkCount` says how many retrievable chunks the document became, and is `null` whenever `indexed`
+is `false`. The durable form of this signal is `indexed` on the attachment summary in chat history.
 
 ### ChatRequest Body
 
@@ -629,12 +649,35 @@ These endpoints manage the application's catalog of Ollama model configurations 
 
 ## Document and Training Data
 
+### Retrieval scope
+
+Everything in the vector store carries a `scope` in its metadata, and a chat turn searches the three
+scopes in order of precedence — **conversation, then user, then global** — over a shared result
+budget. The most specific scope takes what it can, the next takes what is left. That means a
+document attached to the conversation is both preferentially included and ranked ahead of the shared
+knowledge base, rather than competing with it on similarity alone.
+
+| Scope | Retrievable by | Written by |
+|-------|----------------|------------|
+| `GLOBAL` | every user, in every conversation | `POST /documents/data/upload` (the default), URI ingestion, Confluence ingestion |
+| `USER` | one user, in all of their conversations | `POST /documents/data/upload?scope=USER` |
+| `CHAT` | one conversation | attaching a document to a chat message |
+
+Documents ingested before scoping existed are `GLOBAL`, which is what they already effectively were.
+
 ### Upload a Document
 
 - **Endpoint**: `POST /documents/data/upload`
 - **Request**: `multipart/form-data` with a `file` field
+- **Query Parameters**:
+  - `scope` (optional, default `GLOBAL`): `GLOBAL` to share the document with every user, or `USER`
+    to keep it to the caller. `CHAT` is rejected with `400` — attach the document to a message
+    instead.
 - **Description**: Queues a document for processing and ingestion into the vector store. Supported formats include PDF and plain text.
 - **Response**: `201 Created` with a `Location` header pointing to the queued training document record
+
+De-duplication by file name applies only between `GLOBAL` documents. Two users uploading `notes.pdf`
+at `USER` scope get two separate documents.
 
 ### Vector Search
 
@@ -941,13 +984,28 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 
 ## Chat Attachments
 
-Images attached to a chat message. An attachment is uploaded **before** the message exists — it is
-staged against the uploading user, then claimed by a message when the client names its id in
-`ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
+Images and documents attached to a chat message. An attachment is uploaded **before** the message
+exists — it is staged against the uploading user, then claimed by a message when the client names
+its id in `ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
 `solesonic.llm.attachment.staged-ttl`.
 
-Accepted content types: `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Upload size is bounded
-by `spring.servlet.multipart.max-file-size`.
+Upload size is bounded by `spring.servlet.multipart.max-file-size`. Accepted content types fall into
+two groups, and which group a file lands in decides how the assistant reads it:
+
+**Images** — `image/png`, `image/jpeg`, `image/gif`, `image/webp` — are described by a vision model,
+and the description is put into the prompt as prose.
+
+**Documents** — `application/pdf`, `text/plain`, `text/markdown`, `text/html`, `text/csv`,
+`text/xml`, `application/xml`, `application/json`, `application/rtf`, the Microsoft Office types
+(`application/msword`, `application/vnd.openxmlformats-officedocument.*`,
+`application/vnd.ms-excel`, `application/vnd.ms-powerpoint`) and OpenDocument text/spreadsheet — are
+extracted to text, split, and embedded into the vector store at **conversation scope**. Their
+contents reach the model through retrieval rather than being pasted into the prompt, so a long
+document costs context only for the passages that bear on the question. The model is told which
+documents were attached; it is not shown them in full.
+
+A document is indexed once, on the turn it is first sent, and stays retrievable for the rest of the
+conversation. Deleting the attachment, or the chat, deletes its chunks with it.
 
 ### Upload an Attachment
 
@@ -967,7 +1025,9 @@ by `spring.servlet.multipart.max-file-size`.
   "contentType": "image/png",
   "fileSizeBytes": 20481,
   "described": false,
-  "descriptionFailureReason": null
+  "descriptionFailureReason": null,
+  "indexed": false,
+  "extractionFailureReason": null
 }
 ```
 
@@ -1003,6 +1063,8 @@ leaves the message itself intact.
 
 `described` is the durable half of the `attachment` stream event: it survives a reload, so an old
 conversation can still show that an image the assistant answered around was never actually read.
+`indexed` is the same signal for a document — whether its text is actually retrievable, or whether
+the assistant has been answering without it.
 
 ### Generated Images in Chat History
 

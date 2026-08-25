@@ -58,7 +58,6 @@ public class OllamaServiceTest {
     @Test
     void testGet() {
         when(modelRepository.findById(modelId)).thenReturn(Optional.of(ollamaModel));
-        when(modelRepository.save(any(OllamaModel.class))).thenReturn(ollamaModel);
         when(ollamaModelCacheService.getModelDetails("llama3")).thenReturn(Optional.empty());
         when(ollamaModelCacheService.getShowModel("llama3")).thenReturn(Optional.empty());
 
@@ -78,7 +77,7 @@ public class OllamaServiceTest {
         assertThat(result.getId()).isEqualTo(modelId);
         assertThat(result.getName()).isEqualTo("llama3");
         verify(modelRepository).findById(modelId);
-        verify(modelRepository).save(any(OllamaModel.class));
+        verify(modelRepository, never()).save(any(OllamaModel.class));
         verify(ollamaApi).listModels();
         verify(ollamaApi).showModel(any());
         verify(ollamaModelCacheService).putModelDetails(eq("llama3"), any(Map.class));
@@ -88,7 +87,6 @@ public class OllamaServiceTest {
     @Test
     void testGetUsesCache() {
         when(modelRepository.findById(modelId)).thenReturn(Optional.of(ollamaModel));
-        when(modelRepository.save(any(OllamaModel.class))).thenReturn(ollamaModel);
         when(ollamaModelCacheService.getModelDetails("llama3")).thenReturn(Optional.of(Map.of("model", "llama3")));
         when(ollamaModelCacheService.getShowModel("llama3")).thenReturn(Optional.of(Map.of("modelfile", "FROM llama3")));
 

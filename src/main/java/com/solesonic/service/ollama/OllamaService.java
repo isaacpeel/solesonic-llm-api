@@ -68,7 +68,6 @@ public class OllamaService {
         OllamaModel ollamaModel = modelRepository.findById(id)
                 .orElseThrow(() -> new ChatException("OLLAMA MODEL NOT FOUND"));
 
-        ollamaModel = modelRepository.save(ollamaModel);
         return nativeModel(ollamaModel);
     }
 

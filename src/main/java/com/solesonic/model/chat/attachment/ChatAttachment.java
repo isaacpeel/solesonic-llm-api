@@ -51,6 +51,21 @@ public class ChatAttachment {
 
     private String contentType;
 
+    /**
+     * How many vector store chunks this document was split into. Null until the extraction pass has
+     * run, which is what makes indexing retryable on a later turn — the same idiom
+     * {@link #visionDescription} uses for images. Always null for an image, which is described
+     * rather than indexed.
+     */
+    private Integer chunkCount;
+
+    /**
+     * Why {@link #chunkCount} is still null. Set when an extraction attempt fails, cleared when one
+     * succeeds; both null means no attempt has been made yet.
+     */
+    @Enumerated(EnumType.STRING)
+    private ExtractionFailureReason extractionFailureReason;
+
     @JdbcTypeCode(SqlTypes.VARBINARY)
     private byte[] fileData;
 
@@ -128,6 +143,22 @@ public class ChatAttachment {
 
     public void setVisionFailureReason(VisionFailureReason visionFailureReason) {
         this.visionFailureReason = visionFailureReason;
+    }
+
+    public Integer getChunkCount() {
+        return chunkCount;
+    }
+
+    public void setChunkCount(Integer chunkCount) {
+        this.chunkCount = chunkCount;
+    }
+
+    public ExtractionFailureReason getExtractionFailureReason() {
+        return extractionFailureReason;
+    }
+
+    public void setExtractionFailureReason(ExtractionFailureReason extractionFailureReason) {
+        this.extractionFailureReason = extractionFailureReason;
     }
 
     public String getContentType() {

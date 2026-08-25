@@ -1,6 +1,7 @@
 package com.solesonic.service.rag;
 
 import com.solesonic.model.VectorSearch;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.training.VectorDocument;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.VectorStoreRepository;
@@ -18,16 +19,23 @@ import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugment
 import org.springframework.ai.rag.preretrieval.query.expansion.MultiQueryExpander;
 import org.springframework.ai.rag.preretrieval.query.transformation.QueryTransformer;
 import org.springframework.ai.rag.preretrieval.query.transformation.RewriteQueryTransformer;
-import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+
+import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ID;
+import static com.solesonic.model.rag.RetrievalMetadata.SCOPE;
+import static com.solesonic.model.rag.RetrievalMetadata.USER_ID;
 
 @Service
 public class VectorStoreService {
@@ -72,7 +80,14 @@ public class VectorStoreService {
                 .build();
     }
 
-    public Advisor retrievalAugmentationAdvisor(UUID userId) {
+    /**
+     * Builds the per-request RAG advisor, retrieving at conversation, user and global scope in that
+     * order of precedence.
+     * <p>
+     * {@code chatId} may be null for a call that belongs to no conversation, in which case the
+     * conversation tier is simply absent rather than filtered to nothing.
+     */
+    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
 
         Double similarityThreshold = Optional.ofNullable(userPreferences.getSimilarityThreshold())
@@ -104,16 +119,49 @@ public class VectorStoreService {
         return RetrievalAugmentationAdvisor.builder()
                 .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
                 .queryExpander(multiQueryExpander)
-                .documentRetriever(VectorStoreDocumentRetriever.builder()
-                        .similarityThreshold(similarityThreshold)
-                        .topK(RETRIEVAL_TOP_K)
-                        .vectorStore(vectorStore)
-                        .build())
+                .documentRetriever(new ScopedDocumentRetriever(
+                        vectorStore, similarityThreshold, RETRIEVAL_TOP_K, tiers(userId, chatId)))
                 .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
                         .build())
                 .build();
+    }
+
+    /**
+     * The scope tiers to search, most specific first.
+     * <p>
+     * Built with {@link FilterExpressionBuilder} against the metadata keys every ingestion path
+     * stamps, which pgvector converts to a JSON path predicate over the {@code metadata} column.
+     * The ids are compared as strings because that is how they are written — a UUID serialized into
+     * JSON is a string, and a filter comparing against anything else matches nothing.
+     */
+    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId) {
+        FilterExpressionBuilder filterExpressionBuilder = new FilterExpressionBuilder();
+
+        List<ScopedDocumentRetriever.ScopedTier> tiers = new ArrayList<>(3);
+
+        if (chatId != null) {
+            Filter.Expression chatFilter = filterExpressionBuilder.and(
+                    filterExpressionBuilder.eq(SCOPE, RetrievalScope.CHAT.name()),
+                    filterExpressionBuilder.eq(CHAT_ID, chatId.toString())).build();
+
+            tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT, chatFilter));
+        }
+
+        Filter.Expression userFilter = filterExpressionBuilder.and(
+                filterExpressionBuilder.eq(SCOPE, RetrievalScope.USER.name()),
+                filterExpressionBuilder.eq(USER_ID, userId.toString())).build();
+
+        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER, userFilter));
+
+        Filter.Expression globalFilter = filterExpressionBuilder
+                .eq(SCOPE, RetrievalScope.GLOBAL.name())
+                .build();
+
+        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL, globalFilter));
+
+        return tiers;
     }
 
     public void save(List<Document> documents) {
@@ -146,5 +194,31 @@ public class VectorStoreService {
 
     public void delete(UUID trainingDocumentId) {
         vectorStoreRepository.deleteById(trainingDocumentId);
+    }
+
+    /**
+     * Discards every conversation-scoped chunk of one chat. Joins the caller's transaction so that
+     * a conversation and the documents that were attached to it go together or not at all.
+     */
+    @Transactional
+    public void deleteByChatId(UUID chatId) {
+        int deleted = vectorStoreRepository.deleteByChatId(chatId.toString());
+
+        if (deleted > 0) {
+            log.info("Deleted {} vector store chunk(s) of chat {}", deleted, chatId);
+        }
+    }
+
+    /**
+     * Discards the chunks of one attachment, for a user removing a single document from a
+     * conversation they are keeping.
+     */
+    @Transactional
+    public void deleteByChatAttachmentId(UUID chatAttachmentId) {
+        int deleted = vectorStoreRepository.deleteByChatAttachmentId(chatAttachmentId.toString());
+
+        if (deleted > 0) {
+            log.info("Deleted {} vector store chunk(s) of attachment {}", deleted, chatAttachmentId);
+        }
     }
 }

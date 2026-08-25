@@ -52,8 +52,7 @@ public class OllamaController {
     @PutMapping("/models/{id}")
     @PreAuthorize("hasRole('model-admin')")
     public ResponseEntity<OllamaModel> update(@PathVariable UUID id, @RequestBody OllamaModel model) {
-        ollamaService.delete(id);
-        return ResponseEntity.ok(model);
+        return ResponseEntity.ok(ollamaService.update(id, model));
     }
 
     @DeleteMapping("/models/{id}")

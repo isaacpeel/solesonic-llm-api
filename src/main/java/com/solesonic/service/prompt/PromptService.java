@@ -10,6 +10,8 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.etl.ChatDocumentIngestionService;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.service.vision.ImageDescriptionService;
@@ -57,6 +59,8 @@ public class PromptService {
     private final A2AStickyAgentService a2aStickyAgentService;
     private final VectorStoreService vectorStoreService;
     private final ImageDescriptionService imageDescriptionService;
+    private final ChatAttachmentService chatAttachmentService;
+    private final ChatDocumentIngestionService chatDocumentIngestionService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -71,7 +75,9 @@ public class PromptService {
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,
             VectorStoreService vectorStoreService,
-            ImageDescriptionService imageDescriptionService) {
+            ImageDescriptionService imageDescriptionService,
+            ChatAttachmentService chatAttachmentService,
+            ChatDocumentIngestionService chatDocumentIngestionService) {
         this.chatClient = chatClient;
         this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
@@ -82,6 +88,8 @@ public class PromptService {
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.vectorStoreService = vectorStoreService;
         this.imageDescriptionService = imageDescriptionService;
+        this.chatAttachmentService = chatAttachmentService;
+        this.chatDocumentIngestionService = chatDocumentIngestionService;
     }
 
     public String model(UUID userId) {
@@ -94,16 +102,29 @@ public class PromptService {
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
 
+        // The two kinds of attachment are handled by different passes, and each pass owns the SSE
+        // events for the ids it is given, so the split has to happen before either runs.
+        ChatAttachmentService.AttachmentPartition attachments = chatAttachmentService
+                .partition(userId, chatMessage.attachmentIds());
+
         // Image attachments reach the model as text: descriptions produced by a separate vision
         // model. They travel as their own message next to the user's, never folded into it — the
         // retrieval advisor rewrites the last user message, wrapping it in retrieved documents and
         // an instruction to answer from those alone, and anything inside that wrapper competes with
-        // the documents instead of standing beside them. Tool routes carry no image context at all
-        // — see the ToolSlashCommand branch below.
+        // the documents instead of standing beside them. Tool routes carry no attachment context at
+        // all — see the ToolSlashCommand branch below.
         List<ChatAttachmentDescription> imageDescriptions = imageDescriptionService
-                .describe(chatId, userId, chatMessage.attachmentIds());
+                .describe(chatId, userId, attachments.imageIds());
 
-        String imageContext = AttachmentContextFormatter.context(imageDescriptions);
+        // Documents are indexed rather than inlined. A document does not fit in a prompt the way a
+        // description does, so its text is split and embedded at conversation scope, and reaches
+        // the model through the same retrieval that serves the global knowledge base — only the
+        // passages bearing on the question ever enter the context window. What the model is told
+        // directly is merely that the documents exist.
+        List<String> indexedDocuments = chatDocumentIngestionService
+                .ingest(chatId, userId, attachments.documentIds());
+
+        String attachmentContext = attachmentContext(imageDescriptions, indexedDocuments);
 
         Object principal = authentication.getPrincipal();
 
@@ -138,7 +159,7 @@ public class PromptService {
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, imageContext, contextMap, model);
+                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model);
                     });
         }
 
@@ -161,11 +182,11 @@ public class PromptService {
                 //The MCP call above renders a prompt template and wants the user's actual words; the
                 //prompt sent to the model carries the image descriptions too, as their own message
                 //ahead of the user's rather than mixed into it.
-                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, imageContext);
+                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachmentContext);
 
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(chatClient.prompt(prompt)
-                                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
+                                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                                 .toolContext(contextMap)
                                 .options(OllamaChatOptions.builder().model(model))
@@ -190,23 +211,47 @@ public class PromptService {
     }
 
     /**
+     * Joins what the model is told about this message's attachments into one block, documents
+     * first: the document note only says which files exist, while the image block carries actual
+     * content, and the content reads better closest to the question.
+     *
+     * @return the block, or null when the message carried no attachment either pass could use
+     */
+    private static String attachmentContext(List<ChatAttachmentDescription> imageDescriptions,
+                                            List<String> indexedDocuments) {
+        String imageContext = AttachmentContextFormatter.context(imageDescriptions);
+        String documentContext = AttachmentContextFormatter.documentContext(indexedDocuments);
+
+        if (documentContext == null) {
+            return imageContext;
+        }
+
+        if (imageContext == null) {
+            return documentContext;
+        }
+
+        return documentContext + System.lineSeparator() + imageContext;
+    }
+
+    /**
      * @param message      the user's own words — both the MCP prompt template and the model get these
      *                     unaltered
-     * @param imageContext the described-images block, or null when no image was attached. Carried as
-     *                     a message of its own, which {@code DefaultChatClientUtils} places between
-     *                     the system text and the user message, and which the retrieval advisor
-     *                     leaves alone because it only ever rewrites the last user message
+     * @param attachmentContext the attachment block — described images, named documents, or both —
+     *                     or null when nothing was attached. Carried as a message of its own, which
+     *                     {@code DefaultChatClientUtils} places between the system text and the user
+     *                     message, and which the retrieval advisor leaves alone because it only ever
+     *                     rewrites the last user message
      */
     private Flux<String> streamBasicPrompt(UUID chatId,
                                            UUID userId,
                                            String message,
-                                           String imageContext,
+                                           String attachmentContext,
                                            Map<String, Object> contextMap,
                                            String model) {
         String systemText = loadBasicPromptSystemText(message);
 
         var promptSpec = chatClient.prompt()
-                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId))
+                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                 )
@@ -216,8 +261,8 @@ public class PromptService {
         //A UserMessage rather than a SystemMessage on purpose: MessageChatMemoryAdvisor hoists every
         //system message to the front of the prompt, which would move this away from the message it
         //describes and behind the whole conversation history.
-        if (StringUtils.isNotEmpty(imageContext)) {
-            promptSpec = promptSpec.messages(new UserMessage(imageContext));
+        if (StringUtils.isNotEmpty(attachmentContext)) {
+            promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
         }
 
         promptSpec = promptSpec.user(message);
