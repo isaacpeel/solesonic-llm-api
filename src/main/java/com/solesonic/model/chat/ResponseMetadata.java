@@ -1,0 +1,44 @@
+package com.solesonic.model.chat;
+
+import org.jspecify.annotations.Nullable;
+import org.springframework.ai.chat.metadata.Usage;
+
+import java.time.Duration;
+
+/**
+ * Token usage and timing for one assistant turn, carried on the {@code done} SSE event so a client
+ * can render it once the stream finishes.
+ * <p>
+ * {@code promptTokens}/{@code completionTokens}/{@code totalTokens}/{@code tokensPerSecond} are
+ * {@code null} whenever the turn never went through a {@link Usage}-reporting chat model call — an
+ * A2A agent delegation has no token accounting to report. {@code durationMillis} is wall-clock and
+ * always present, since it is measured around the turn rather than read from model metadata.
+ */
+public record ResponseMetadata(
+        @Nullable Integer promptTokens,
+        @Nullable Integer completionTokens,
+        @Nullable Integer totalTokens,
+        @Nullable Double tokensPerSecond,
+        long durationMillis) {
+
+    public static ResponseMetadata of(@Nullable Usage usage, Duration duration) {
+        long durationMillis = duration.toMillis();
+
+        if (usage == null) {
+            return new ResponseMetadata(null, null, null, null, durationMillis);
+        }
+
+        Integer completionTokens = usage.getCompletionTokens();
+
+        Double tokensPerSecond = (completionTokens != null && durationMillis > 0)
+                ? (completionTokens * 1000.0) / durationMillis
+                : null;
+
+        return new ResponseMetadata(
+                usage.getPromptTokens(),
+                completionTokens,
+                usage.getTotalTokens(),
+                tokensPerSecond,
+                durationMillis);
+    }
+}

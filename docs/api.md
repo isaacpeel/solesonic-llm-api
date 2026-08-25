@@ -122,7 +122,7 @@ Both streaming endpoints emit the following SSE event types:
 | `image` | An image generated during this turn, by reference — see below |
 | `elicitation` | Interactive form request from an MCP tool |
 | `cancel` | Emitted when a user cancels an elicitation |
-| `done` | Final event containing the structured chat response |
+| `done` | Final event containing the structured chat response — see below |
 
 ### image Event Payload
 
@@ -157,6 +157,42 @@ image appears in history.
 The same references are repeated on the `done` payload as `message.generatedImages`, so a client
 that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
 De-duplicate by `imageId`.
+
+### done Event Payload
+
+```json
+{
+  "id": "0a4b...",
+  "message": {
+    "id": "7f3c...",
+    "chatId": "0a4b...",
+    "messageType": "ASSISTANT",
+    "message": "...",
+    "model": "qwen2.5:7b",
+    "generatedImages": []
+  },
+  "responseMetadata": {
+    "promptTokens": 412,
+    "completionTokens": 128,
+    "totalTokens": 540,
+    "tokensPerSecond": 34.7,
+    "durationMillis": 3690
+  }
+}
+```
+
+`responseMetadata` covers the whole turn — from just after the user message is persisted to the
+last byte of the assistant response — not only model inference time. `durationMillis` is wall-clock
+and always present. `promptTokens`/`completionTokens`/`totalTokens`/`tokensPerSecond` are `null`
+whenever the turn never called a token-reporting chat model at all: an A2A agent delegation has
+nothing to report. `tokensPerSecond` is `completionTokens` divided by `durationMillis`, so it is the
+turn's effective throughput, not the model's raw generation speed — time spent on retrieval, tool
+calls, or vision description before the model starts writing lowers it the same as slow generation
+would.
+
+A cancelled turn's `done` carries no `responseMetadata` (`null`): the assistant message it
+accompanies is replaced with a fixed "Chat canceled." notice, and a token count against that
+discarded content would be misleading.
 
 ### init Event Payload
 

@@ -23,7 +23,11 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.AbstractMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -34,6 +38,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
@@ -96,7 +101,14 @@ public class PromptService {
         return userPreferencesService.get(userId).getModel();
     }
 
-    public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication) {
+    /**
+     * @param usageRef receives the turn's token usage once the underlying model call completes.
+     *                 Left unset by routes with no usage to report — an A2A agent delegation — so a
+     *                 caller reading it after the stream finishes must treat {@code null} as "no
+     *                 usage available" rather than a bug.
+     */
+    public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication,
+                               AtomicReference<Usage> usageRef) {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
         String message = chatMessage.chatMessage();
@@ -159,7 +171,7 @@ public class PromptService {
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model);
+                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model, usageRef);
                     });
         }
 
@@ -184,22 +196,24 @@ public class PromptService {
                 //ahead of the user's rather than mixed into it.
                 Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachmentContext);
 
+                Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
+                        .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
+                        .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
+                        .toolContext(contextMap)
+                        .options(OllamaChatOptions.builder().model(model))
+                        .stream()
+                        .chatResponse();
+
                 yield a2aStickyAgentService.deactivate(chatId)
-                        .thenMany(chatClient.prompt(prompt)
-                                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
-                                .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
-                                .toolContext(contextMap)
-                                .options(OllamaChatOptions.builder().model(model))
-                                .stream()
-                                .content());
+                        .thenMany(contentFlux(promptChatResponse, usageRef));
             }
             //Tool routes get the original message, not the augmented one: the task prompt tells the
             //model to invoke the tool with the exact user message as input, so prepending image
             //descriptions would put image prose into the tool's arguments.
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
+                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap, usageRef));
             case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap));
+                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, usageRef));
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
@@ -247,7 +261,8 @@ public class PromptService {
                                            String message,
                                            String attachmentContext,
                                            Map<String, Object> contextMap,
-                                           String model) {
+                                           String model,
+                                           AtomicReference<Usage> usageRef) {
         String systemText = loadBasicPromptSystemText(message);
 
         var promptSpec = chatClient.prompt()
@@ -271,7 +286,27 @@ public class PromptService {
             promptSpec = promptSpec.system(systemText);
         }
 
-        return promptSpec.stream().content();
+        return contentFlux(promptSpec.stream().chatResponse(), usageRef);
+    }
+
+    /**
+     * Equivalent to {@code StreamResponseSpec.content()}, plus capturing each response's usage as it
+     * arrives. Ollama reports usage cumulatively on every chunk, so by the time the flux completes
+     * {@code usageRef} holds the turn's total — this must run over the same stream that produces the
+     * chunks, not a second call, or the model would be invoked twice.
+     */
+    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux, AtomicReference<Usage> usageRef) {
+        return chatResponseFlux
+                .doOnNext(chatResponse -> {
+                    if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
+                        usageRef.set(chatResponse.getMetadata().getUsage());
+                    }
+                })
+                .map(chatResponse -> Optional.ofNullable(chatResponse.getResult())
+                        .map(Generation::getOutput)
+                        .map(AbstractMessage::getText)
+                        .orElse(""))
+                .filter(StringUtils::isNotEmpty);
     }
 
     private String loadBasicPromptSystemText(String message) {

@@ -8,6 +8,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
@@ -19,6 +20,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
@@ -46,28 +48,31 @@ public class ToolCallService {
     public Flux<String> stream(UUID chatId,
                                String message,
                                ToolSlashCommand toolCommand,
-                               Map<String, Object> contextMap) {
+                               Map<String, Object> contextMap,
+                               AtomicReference<Usage> usageRef) {
 
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap, usageRef);
     }
 
     public Flux<String> streamLocal(UUID chatId,
                                     String message,
                                     LocalToolSlashCommand localToolCommand,
-                                    Map<String, Object> contextMap) {
+                                    Map<String, Object> contextMap,
+                                    AtomicReference<Usage> usageRef) {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap, usageRef);
     }
 
     private Flux<String> invoke(UUID chatId,
                                 String message,
                                 String toolName,
                                 ToolCallback toolCallback,
-                                Map<String, Object> contextMap) {
+                                Map<String, Object> contextMap,
+                                AtomicReference<Usage> usageRef) {
 
         log.info("Tool invoke: {}", toolName);
 
@@ -86,6 +91,10 @@ public class ToolCallService {
         if (chatResponse == null || chatResponse.getResult() == null) {
             log.warn("No response received for tool: {}", toolName);
             return Flux.empty();
+        }
+
+        if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
+            usageRef.set(chatResponse.getMetadata().getUsage());
         }
 
         String result = chatResponse.getResult().getOutput().getText();

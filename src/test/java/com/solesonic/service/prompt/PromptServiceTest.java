@@ -25,8 +25,14 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
+import org.springframework.ai.chat.metadata.Usage;
+import org.springframework.ai.chat.model.ChatResponse;
+import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -39,6 +45,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static com.solesonic.service.prompt.PromptService.BASIC_PROMPT;
@@ -155,7 +162,7 @@ class PromptServiceTest {
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
-        when(streamResponseSpec.content()).thenReturn(emissions);
+        when(streamResponseSpec.chatResponse()).thenReturn(chatResponsesOf(emissions));
     }
 
     private void stubPromptChainWithPrompt(Flux<String> emissions) {
@@ -166,7 +173,11 @@ class PromptServiceTest {
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
-        when(streamResponseSpec.content()).thenReturn(emissions);
+        when(streamResponseSpec.chatResponse()).thenReturn(chatResponsesOf(emissions));
+    }
+
+    private static Flux<ChatResponse> chatResponsesOf(Flux<String> emissions) {
+        return emissions.map(text -> new ChatResponse(List.of(new Generation(new AssistantMessage(text)))));
     }
 
     private McpSchema.GetPromptResult basicPromptResult() {
@@ -181,7 +192,7 @@ class PromptServiceTest {
         when(authentication.getPrincipal()).thenReturn("not-a-jwt");
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
 
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -193,7 +204,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -211,11 +222,56 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("hello")
                 .verifyComplete();
 
         verify(mcpClient).getPrompt(argThat(request -> BASIC_PROMPT.equals(request.name())));
+    }
+
+    /**
+     * Each streamed {@link ChatResponse} carries Ollama's cumulative usage-so-far, so the reference
+     * must hold the last chunk's numbers once the flux completes — not the first, and not a sum of
+     * the two.
+     */
+    @Test
+    void stream_withNoCommandsAndNoStickyAgent_capturesFinalUsage() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        when(a2aStickyAgentService.getActiveAgent(chatId))
+                .thenReturn(Mono.just(Optional.empty()));
+        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
+        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
+
+        when(chatClient.prompt()).thenReturn(requestSpec);
+        when(requestSpec.system(anyString())).thenReturn(requestSpec);
+        when(requestSpec.user(anyString())).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
+                .thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);
+        when(requestSpec.toolContext(any())).thenReturn(requestSpec);
+        when(requestSpec.options(any())).thenReturn(requestSpec);
+        when(requestSpec.stream()).thenReturn(streamResponseSpec);
+
+        ChatResponse first = new ChatResponse(List.of(new Generation(new AssistantMessage("hel"))),
+                ChatResponseMetadata.builder()
+                        .usage(new DefaultUsage(10, 1))
+                        .build());
+        ChatResponse last = new ChatResponse(List.of(new Generation(new AssistantMessage("lo"))),
+                ChatResponseMetadata.builder()
+                        .usage(new DefaultUsage(10, 2))
+                        .build());
+        when(streamResponseSpec.chatResponse()).thenReturn(Flux.just(first, last));
+
+        AtomicReference<Usage> usageRef = new AtomicReference<>();
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, usageRef))
+                .expectNext("hel")
+                .expectNext("lo")
+                .verifyComplete();
+
+        assertThat(usageRef.get().getPromptTokens()).isEqualTo(10);
+        assertThat(usageRef.get().getCompletionTokens()).isEqualTo(2);
     }
 
     @Test
@@ -232,7 +288,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
         stubPromptChainWithPrompt(Flux.just("answer"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("answer")
                 .verifyComplete();
 
@@ -249,14 +305,14 @@ class PromptServiceTest {
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), any()))
                 .thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(toolCallService).stream(eq(chatId), anyString(), eq(toolCommand), any());
+        verify(toolCallService).stream(eq(chatId), anyString(), eq(toolCommand), any(), any());
     }
 
     @Test
@@ -268,7 +324,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("a2a-result")
                 .verifyComplete();
 
@@ -295,7 +351,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("that is a login screen"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
@@ -329,7 +385,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("an answer"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("an answer")
                 .verifyComplete();
 
@@ -351,15 +407,15 @@ class PromptServiceTest {
                         UUID.randomUUID(), "cat.png", null, "a cat")));
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), any()))
                 .thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
                 .expectNext("tool-result")
                 .verifyComplete();
 
         // Image descriptions must not reach a tool's arguments.
-        verify(toolCallService).stream(eq(chatId), eq("search for cats"), eq(toolCommand), any());
+        verify(toolCallService).stream(eq(chatId), eq("search for cats"), eq(toolCommand), any(), any());
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.solesonic.service.redis;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.InitPayload;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
@@ -15,6 +16,7 @@ import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -23,9 +25,11 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
@@ -141,6 +145,11 @@ public class RedisStreamingChatService {
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
+        //Set at most once, by whichever route through PromptService actually calls a chat model.
+        //Read only after chunkFlow completes, which the concatWith below guarantees happens-after
+        //every doOnNext that could set it.
+        AtomicReference<Usage> usageRef = new AtomicReference<>();
+
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
         Flux<ServerSentEvent<?>> cancelEvents = elicitationFlux
@@ -148,7 +157,7 @@ public class RedisStreamingChatService {
                 .take(1)
                 .share();
 
-        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication))
+        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication, usageRef))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .doOnNext(assembled::append);
@@ -166,7 +175,9 @@ public class RedisStreamingChatService {
             //a late subscribe — still finalises the turn with the image on it.
             responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
-            SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
+            ResponseMetadata responseMetadata = ResponseMetadata.of(usageRef.get(), Duration.between(turnStarted, ZonedDateTime.now()));
+
+            SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage, responseMetadata);
 
             log.debug("Publishing done event to Redis for chat id {}", chatId);
 
