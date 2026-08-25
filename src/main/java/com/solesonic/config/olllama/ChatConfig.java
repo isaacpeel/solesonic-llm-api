@@ -20,11 +20,6 @@ public class ChatConfig {
     public static final String KEEP_ALIVE = "30m";
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
-    private final McpIdentityProvider mcpToolCallbackProvider;
-
-    public ChatConfig(McpIdentityProvider mcpToolCallbackProvider) {
-        this.mcpToolCallbackProvider = mcpToolCallbackProvider;
-    }
 
     @Bean
     public ChatMemory chatMemory(DatabaseChatMemory databaseChatMemory) {
@@ -34,7 +29,8 @@ public class ChatConfig {
     @Bean
     @Qualifier(DEFAULT_CHAT_CLIENT)
     public ChatClient defaultChatClient(ChatMemory chatMemory,
-                                        OllamaChatModel chatModel) {
+                                        OllamaChatModel chatModel,
+                                        McpIdentityProvider mcpToolCallbackProvider) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
@@ -52,7 +48,8 @@ public class ChatConfig {
     @Bean
     @Qualifier(TASK_CHAT_CLIENT)
     public ChatClient taskChatClient(ChatMemory chatMemory,
-                                     OllamaChatModel chatModel) {
+                                     OllamaChatModel chatModel,
+                                     McpIdentityProvider mcpToolCallbackProvider) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
                 .build();
