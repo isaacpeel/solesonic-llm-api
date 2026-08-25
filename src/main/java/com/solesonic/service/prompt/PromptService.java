@@ -297,9 +297,7 @@ public class PromptService {
      */
     private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux, AtomicReference<Usage> usageRef) {
         return chatResponseFlux
-                .doOnNext(chatResponse -> {
-                    usageRef.set(chatResponse.getMetadata().getUsage());
-                })
+                .doOnNext(chatResponse -> usageRef.set(chatResponse.getMetadata().getUsage()))
                 .map(chatResponse -> Optional.ofNullable(chatResponse.getResult())
                         .map(Generation::getOutput)
                         .map(AbstractMessage::getText)

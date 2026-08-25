@@ -183,7 +183,8 @@ public class RedisStreamingChatService {
             //a late subscribe — still finalises the turn with the image on it.
             responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
-            ResponseMetadata responseMetadata = ResponseMetadata.of(usageRef.get(), Duration.between(turnStarted, ZonedDateTime.now()));
+            Duration turnDuration = Duration.between(turnStarted, ZonedDateTime.now());
+            ResponseMetadata responseMetadata = ResponseMetadata.of(usageRef.get(), timeToFirstTokenMillisRef.get(), turnDuration);
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage, responseMetadata);
 
