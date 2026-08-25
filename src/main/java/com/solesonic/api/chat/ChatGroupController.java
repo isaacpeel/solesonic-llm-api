@@ -64,16 +64,28 @@ public class ChatGroupController {
     }
 
     /**
-     * Renames a group. The body is the same {@link ChatGroupRequest} {@code create} takes, and the
-     * same validation runs, so a rename can never accept a name that creating one would reject.
+     * Updates a group — its name and its place among the caller's sections, which together are
+     * everything about a group a client owns.
+     * <p>
+     * The body is the {@link ChatGroup} itself rather than a request record: the entity already
+     * marks its id, {@code userId} and {@code timestamp} read-only on the wire, so what a client can
+     * send is exactly what an update may write, and a record listing the same two fields would only
+     * be a second place to keep that rule in step.
+     * <p>
+     * A pure update, and a full one: both writable fields are taken as sent, so a body that omits
+     * {@code sortOrder} unplaces the group rather than leaving it where it was. No other group is
+     * written — a client rearranging several sections states each one.
+     * <p>
+     * The same name validation {@code create} applies, so an update can never accept a name that
+     * creating one would reject.
      */
-    @PutMapping("/{chatGroupId}/name")
-    public ResponseEntity<ChatGroup> rename(@PathVariable UUID chatGroupId,
-                                            @RequestBody ChatGroupRequest chatGroupRequest) {
-        log.info("Renaming chat group {}", chatGroupId);
-        ChatGroup chatGroup = chatGroupService.rename(chatGroupId, chatGroupRequest.name());
+    @PutMapping("/{chatGroupId}")
+    public ResponseEntity<ChatGroup> update(@PathVariable UUID chatGroupId,
+                                            @RequestBody ChatGroup chatGroup) {
+        log.info("Updating chat group {}", chatGroupId);
+        ChatGroup updated = chatGroupService.update(chatGroupId, chatGroup);
 
-        return ResponseEntity.ok(chatGroup);
+        return ResponseEntity.ok(updated);
     }
 
     /**

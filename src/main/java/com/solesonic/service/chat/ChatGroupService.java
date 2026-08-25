@@ -67,25 +67,41 @@ public class ChatGroupService {
     }
 
     /**
-     * Renames a group. The caller's ownership is resolved first and the name validated second, so a
-     * bad name sent for a group the caller does not own is a {@code 404} rather than a {@code 400} —
-     * the endpoint must not tell them the difference between "your name was wrong" and "that group
-     * is not yours".
+     * Updates a group: its name and its place among the caller's sections, which is everything about
+     * a group a client owns. A full update rather than a patch — both fields are taken from the body
+     * as sent, so omitting {@code sortOrder} unplaces the group rather than leaving it where it was.
      * <p>
-     * The same {@link #validName(String)} {@code create} uses, so a rename can never accept a name
-     * that creating one would reject. Names stay non-unique: renaming a group to a name another
-     * group already carries is a success, and the listing already breaks that tie by id.
+     * The caller's ownership is resolved first and the body validated second, so a bad name or a
+     * negative rank sent for a group the caller does not own is a {@code 404} rather than a
+     * {@code 400} — the endpoint must not tell them the difference between "your body was wrong" and
+     * "that group is not yours".
+     * <p>
+     * The same {@link #validName(String)} {@code create} uses, so an update can never accept a name
+     * that creating one would reject. Names stay non-unique: giving a group a name another group
+     * already carries is a success, and the listing already breaks that tie by id.
+     * <p>
+     * Only the two writable fields are read off {@code chatGroup}. It arrives deserialized from the
+     * request body, so its id, {@code userId} and {@code timestamp} are whatever Jackson left there —
+     * nothing a client sends, since all three are read-only on the wire. The id that matters is the
+     * path's, and it has already been resolved against the caller.
+     * <p>
+     * Nothing else is touched, and no other row is written: the arrangement is the client's to state
+     * one group at a time, which is what keeps this a pure update rather than the renumbering pass a
+     * chat move runs. See {@link ChatGroup#getSortOrder()} for why gaps and duplicates are legal.
      */
     @Transactional
-    public ChatGroup rename(UUID chatGroupId, String name) {
+    public ChatGroup update(UUID chatGroupId, ChatGroup chatGroup) {
         UUID userId = userRequestContext.getUserId();
 
-        ChatGroup chatGroup = chatGroup(chatGroupId, userId);
-        chatGroup.setName(validName(name));
+        ChatGroup existing = chatGroup(chatGroupId, userId);
 
-        log.info("Renaming chat group {} for user {}", chatGroupId, userId);
+        existing.setName(validName(chatGroup.getName()));
+        existing.setSortOrder(validSortOrder(chatGroup.getSortOrder()));
 
-        return chatGroupRepository.save(chatGroup);
+        log.info("Updating chat group {} to position {} for user {}",
+                chatGroupId, chatGroup.getSortOrder(), userId);
+
+        return chatGroupRepository.save(existing);
     }
 
     /**
@@ -233,5 +249,18 @@ public class ChatGroupService {
         }
 
         return trimmedName;
+    }
+
+    /**
+     * Rejected for the same reason a chat's position is: a negative rank is a client bug, and there
+     * is no arrangement it could describe. Null is not an error — it unplaces the group and returns
+     * it to name ordering.
+     */
+    private Integer validSortOrder(Integer sortOrder) {
+        if (sortOrder != null && sortOrder < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Sort order must not be negative");
+        }
+
+        return sortOrder;
     }
 }

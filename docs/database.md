@@ -141,6 +141,21 @@ renumbers a list densely from zero, but the values are not an index: deleting a 
 moving one out of a group, leaves a gap that stays until the next move closes it. Only the relative
 order is meaningful. `group_sort_order` is cleared whenever the chat changes group.
 
+`chat_group.sort_order` (V3_13) is the same idea one level up: where a *section* has been placed in
+the caller's list of sections. One column, not two, because a group appears in exactly one list. It
+is null until a client places the group, and null falls back to name ordering, so a section nobody
+has arranged sits exactly where it did before the column existed.
+
+Unlike the two columns on `chat`, this one is written exactly as the client sends it — the update is
+a pure update of one row and renumbers nothing — so gaps and duplicates are both normal here rather
+than a transient state. The listing breaks a tie by `name` and then by `id`, which is what keeps two
+groups sharing a rank from swapping places between requests:
+
+```sql
+select id, name, sort_order from public.chat_group where user_id = '<user uuid>'
+order by sort_order asc nulls last, name asc, id asc;
+```
+
 Deleting a conversation is **not** cascaded by the database. Nothing in `chat_message`,
 `chat_attachment`, or `generated_image` carries a foreign key to `chat`, so `DELETE /chats/{chatId}`
 clears all three by hand inside one transaction (`ChatService.delete`). Deleting a `chat` row

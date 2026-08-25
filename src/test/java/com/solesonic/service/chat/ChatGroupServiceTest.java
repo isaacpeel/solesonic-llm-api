@@ -25,6 +25,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -72,6 +73,18 @@ class ChatGroupServiceTest {
         return chatGroup;
     }
 
+    /**
+     * The body of an update: only the two fields a client may write are populated, the shape
+     * Jackson leaves behind for a request that cannot carry the other three.
+     */
+    private ChatGroup update(String name, Integer sortOrder) {
+        ChatGroup chatGroup = new ChatGroup();
+        chatGroup.setName(name);
+        chatGroup.setSortOrder(sortOrder);
+
+        return chatGroup;
+    }
+
     private Chat chat(UUID chatGroupId) {
         Chat chat = new Chat();
         chat.setId(CHAT_ID);
@@ -114,24 +127,84 @@ class ChatGroupServiceTest {
     }
 
     @Test
-    void renamesAGroupTheCallerOwns() {
+    void updatesAGroupTheCallerOwns() {
         ChatGroup chatGroup = chatGroup();
 
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup));
         when(chatGroupRepository.save(any(ChatGroup.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
-        ChatGroup renamed = chatGroupService.rename(CHAT_GROUP_ID, "  Personal  ");
+        ChatGroup updated = chatGroupService.update(CHAT_GROUP_ID, update("  Personal  ", 3));
 
-        assertThat(renamed.getName()).isEqualTo("Personal");
+        assertThat(updated.getName()).isEqualTo("Personal");
+        assertThat(updated.getSortOrder()).isEqualTo(3);
+    }
+
+    /**
+     * The update writes onto the group that was read for the caller, never onto the body. A body
+     * whose read-only fields were somehow populated cannot reassign the group to another user or
+     * rewrite the id the path resolved.
+     */
+    @Test
+    void updatesTheOwnedGroupRatherThanTheSuppliedOne() {
+        ChatGroup chatGroup = chatGroup();
+
+        ChatGroup body = update("Personal", 1);
+        body.setId(UUID.randomUUID());
+        body.setUserId(UUID.randomUUID());
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup));
+        when(chatGroupRepository.save(any(ChatGroup.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatGroup updated = chatGroupService.update(CHAT_GROUP_ID, body);
+
+        assertThat(updated).isSameAs(chatGroup);
+        assertThat(updated.getId()).isEqualTo(CHAT_GROUP_ID);
+        assertThat(updated.getUserId()).isEqualTo(USER_ID);
+    }
+
+    /**
+     * A full update, not a patch: a body with no sort order unplaces the group and returns it to
+     * name ordering rather than leaving the rank it carried.
+     */
+    @Test
+    void unplacesAGroupWhoseUpdateCarriesNoSortOrder() {
+        ChatGroup chatGroup = chatGroup();
+        chatGroup.setSortOrder(4);
+
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup));
+        when(chatGroupRepository.save(any(ChatGroup.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatGroup updated = chatGroupService.update(CHAT_GROUP_ID, update("Work", null));
+
+        assertThat(updated.getSortOrder()).isNull();
+    }
+
+    /**
+     * One group is written, and only one: the arrangement is stated a group at a time, so nothing
+     * here renumbers the sections around it the way a chat move renumbers the list it lands in.
+     */
+    @Test
+    void writesOnlyTheUpdatedGroup() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+        when(chatGroupRepository.save(any(ChatGroup.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        chatGroupService.update(CHAT_GROUP_ID, update("Work", 0));
+
+        verify(chatGroupRepository).save(any(ChatGroup.class));
+        verify(chatGroupRepository, never()).findByUserId(any(UUID.class));
+        verify(chatGroupRepository, never()).saveAll(anyList());
     }
 
     @Test
-    void rejectsABlankRename() {
+    void rejectsABlankNameOnUpdate() {
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
 
-        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "   "))
+        assertThatThrownBy(() -> chatGroupService.update(CHAT_GROUP_ID, update("   ", null)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("400");
 
@@ -139,11 +212,27 @@ class ChatGroupServiceTest {
     }
 
     @Test
-    void rejectsARenameOverTheLengthLimit() {
+    void rejectsANameOverTheLengthLimitOnUpdate() {
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
 
-        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "x".repeat(256)))
+        assertThatThrownBy(() -> chatGroupService.update(CHAT_GROUP_ID, update("x".repeat(256), null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+
+        verify(chatGroupRepository, never()).save(any(ChatGroup.class));
+    }
+
+    /**
+     * A negative rank is a client bug: there is no arrangement it could describe, and it is refused
+     * before anything is written — the same rule a chat's position follows.
+     */
+    @Test
+    void rejectsANegativeSortOrder() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+
+        assertThatThrownBy(() -> chatGroupService.update(CHAT_GROUP_ID, update("Work", -1)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("400");
 
@@ -151,11 +240,11 @@ class ChatGroupServiceTest {
     }
 
     @Test
-    void doesNotRenameAGroupTheCallerDoesNotOwn() {
+    void doesNotUpdateAGroupTheCallerDoesNotOwn() {
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "Personal"))
+        assertThatThrownBy(() -> chatGroupService.update(CHAT_GROUP_ID, update("Personal", 1)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("404");
 
@@ -163,16 +252,16 @@ class ChatGroupServiceTest {
     }
 
     /**
-     * Ownership is resolved before the name is validated, so a bad name sent for someone else's
+     * Ownership is resolved before the body is validated, so a bad name sent for someone else's
      * group is answered as 404 rather than 400 — the endpoint must not tell the caller the
-     * difference between "your name was wrong" and "that group is not yours".
+     * difference between "your body was wrong" and "that group is not yours".
      */
     @Test
-    void reportsAGroupTheCallerDoesNotOwnAsNotFoundEvenWhenTheNameIsInvalid() {
+    void reportsAGroupTheCallerDoesNotOwnAsNotFoundEvenWhenTheBodyIsInvalid() {
         when(userRequestContext.getUserId()).thenReturn(USER_ID);
         when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> chatGroupService.rename(CHAT_GROUP_ID, "   "))
+        assertThatThrownBy(() -> chatGroupService.update(CHAT_GROUP_ID, update("   ", -1)))
                 .isInstanceOf(ResponseStatusException.class)
                 .hasMessageContaining("404");
     }

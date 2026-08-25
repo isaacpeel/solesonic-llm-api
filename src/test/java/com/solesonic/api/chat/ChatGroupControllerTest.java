@@ -95,32 +95,80 @@ class ChatGroupControllerTest {
     }
 
     @Test
-    void renamesAGroup() throws Exception {
-        ChatGroup renamed = chatGroup();
-        renamed.setName("Personal");
+    void updatesAGroup() throws Exception {
+        ChatGroup updated = chatGroup();
+        updated.setName("Personal");
+        updated.setSortOrder(2);
 
-        when(chatGroupService.rename(eq(chatGroupId), any(String.class))).thenReturn(renamed);
+        when(chatGroupService.update(eq(chatGroupId), any(ChatGroup.class))).thenReturn(updated);
 
-        mockMvc.perform(put("/chatgroups/{chatGroupId}/name", chatGroupId)
+        mockMvc.perform(put("/chatgroups/{chatGroupId}", chatGroupId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"name\":\"Personal\"}"))
+                        .content("{\"name\":\"Personal\",\"sortOrder\":2}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(chatGroupId.toString()))
-                .andExpect(jsonPath("$.name").value("Personal"));
+                .andExpect(jsonPath("$.name").value("Personal"))
+                .andExpect(jsonPath("$.sortOrder").value(2));
 
-        // The body's name reaches the service untouched; trimming and the length rules are its job.
-        ArgumentCaptor<String> nameCaptor = ArgumentCaptor.forClass(String.class);
-        verify(chatGroupService).rename(eq(chatGroupId), nameCaptor.capture());
+        // Both writable fields reach the service untouched; trimming, the length rule and the
+        // negative-rank rule are its job.
+        ArgumentCaptor<ChatGroup> chatGroupCaptor = ArgumentCaptor.forClass(ChatGroup.class);
+        verify(chatGroupService).update(eq(chatGroupId), chatGroupCaptor.capture());
 
-        assertThat(nameCaptor.getValue()).isEqualTo("Personal");
+        assertThat(chatGroupCaptor.getValue().getName()).isEqualTo("Personal");
+        assertThat(chatGroupCaptor.getValue().getSortOrder()).isEqualTo(2);
+    }
+
+    /**
+     * The three read-only fields are read-only in both directions: a body that carries an id, a
+     * userId or a timestamp is deserialized without them, so no update can be talked into writing
+     * one. Ownership comes from the JWT subject and the id from the path.
+     */
+    @Test
+    void ignoresTheReadOnlyFieldsOfAnUpdateBody() throws Exception {
+        when(chatGroupService.update(eq(chatGroupId), any(ChatGroup.class))).thenReturn(chatGroup());
+
+        mockMvc.perform(put("/chatgroups/{chatGroupId}", chatGroupId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"id\":\"" + UUID.randomUUID() + "\","
+                                + "\"userId\":\"" + UUID.randomUUID() + "\","
+                                + "\"timestamp\":\"2026-08-23T16:40:14Z\","
+                                + "\"name\":\"Personal\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ChatGroup> chatGroupCaptor = ArgumentCaptor.forClass(ChatGroup.class);
+        verify(chatGroupService).update(eq(chatGroupId), chatGroupCaptor.capture());
+
+        assertThat(chatGroupCaptor.getValue().getId()).isNull();
+        assertThat(chatGroupCaptor.getValue().getUserId()).isNull();
+        assertThat(chatGroupCaptor.getValue().getTimestamp()).isNull();
+    }
+
+    /**
+     * A full update, not a patch: a body with no sortOrder unplaces the group rather than leaving
+     * the rank it carried.
+     */
+    @Test
+    void unplacesAGroupWhoseUpdateOmitsTheSortOrder() throws Exception {
+        when(chatGroupService.update(eq(chatGroupId), any(ChatGroup.class))).thenReturn(chatGroup());
+
+        mockMvc.perform(put("/chatgroups/{chatGroupId}", chatGroupId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Personal\"}"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<ChatGroup> chatGroupCaptor = ArgumentCaptor.forClass(ChatGroup.class);
+        verify(chatGroupService).update(eq(chatGroupId), chatGroupCaptor.capture());
+
+        assertThat(chatGroupCaptor.getValue().getSortOrder()).isNull();
     }
 
     @Test
-    void propagatesNotFoundForRenamingAGroupTheCallerDoesNotOwn() throws Exception {
-        when(chatGroupService.rename(eq(chatGroupId), any(String.class)))
+    void propagatesNotFoundForUpdatingAGroupTheCallerDoesNotOwn() throws Exception {
+        when(chatGroupService.update(eq(chatGroupId), any(ChatGroup.class)))
                 .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
 
-        mockMvc.perform(put("/chatgroups/{chatGroupId}/name", chatGroupId)
+        mockMvc.perform(put("/chatgroups/{chatGroupId}", chatGroupId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"Personal\"}"))
                 .andExpect(status().isNotFound());

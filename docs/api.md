@@ -448,6 +448,7 @@ literal segment underneath it would be matched as a chat id.
   "id": "b8f1...",
   "userId": "0c31...",
   "name": "Work",
+  "sortOrder": null,
   "timestamp": "2026-08-23T16:40:14Z"
 }
 ```
@@ -456,26 +457,48 @@ The name is trimmed. A blank name or one over 255 characters is `400`. Names are
 unique — two groups may share one, and are ordered against each other by id so a listing never
 reshuffles.
 
-### Rename a Group
+A new group starts unplaced — `sortOrder` is `null` — so it is listed by name until a client places
+it with [Update a Group](#update-a-group).
 
-- **Endpoint**: `PUT /chatgroups/{chatGroupId}/name`
-- **Request Body**: `ChatGroupRequest` — `{ "name": "..." }`, the same body [Create a
-  Group](#create-a-group) takes
+### Update a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}`
+- **Request Body**: `ChatGroup` — the group itself, not a request record:
+  `{ "name": "...", "sortOrder": 0 }`
 - **Response**: The updated group
 
-The same validation `create` applies: the name is trimmed, and a blank one or one over 255 characters
-is `400`. Names stay non-unique — renaming a group to a name another group already carries is a
-success, and the listing breaks that tie by id.
+A pure update of the two fields a group's owner controls: its `name` and its `sortOrder`, the rank it
+holds among the caller's sections. The body is the same object the group is returned as, so `id`,
+`userId` and `timestamp` may be sent and are ignored — all three are read-only on the wire, and
+ownership comes from the bearer token while the id comes from the path.
 
-Ownership is resolved before the name is validated, so a bad name sent for a group the caller does not
-own is `404` rather than `400`: the endpoint does not tell a caller the difference between "your name
-was wrong" and "that group is not yours". Nothing else about the group changes — membership, both sort
-orders, and `timestamp` are untouched.
+**A full update, not a patch.** Both writable fields are taken as sent, so a body that omits
+`sortOrder` unplaces the group and returns it to name ordering. Send the group as you want it to end
+up, not the part of it you changed.
+
+`sortOrder` is a **rank, not an index** — it is stored exactly as sent, and unlike a chat's position
+no other row is renumbered. Gaps and duplicates are both legal; a listing breaks a tie by name and
+then by id, so two groups sharing a rank never swap places between requests. A client rearranging
+several sections states each one with its own `PUT`. `null` unplaces the group. A negative rank is
+`400`.
+
+The same name validation `create` applies: the name is trimmed, and a blank one or one over 255
+characters is `400`. Names stay non-unique — giving a group a name another group already carries is a
+success.
+
+Ownership is resolved before the body is validated, so a bad name or a negative rank sent for a group
+the caller does not own is `404` rather than `400`: the endpoint does not tell a caller the difference
+between "your body was wrong" and "that group is not yours". Nothing else about the group changes —
+its membership, the sort orders of the chats filed under it, and its `timestamp` are all untouched.
 
 ### List Groups
 
 - **Endpoint**: `GET /chatgroups`
-- **Response**: Every group the caller owns, ordered by name
+- **Response**: Every group the caller owns — hand-placed sections first by `sortOrder`, then the
+  rest by name, with the id as a final tiebreaker
+
+A group nobody has placed sorts by name exactly as it did before ordering existed, which is what
+keeps a newly created one among those rather than at the top of the arrangement.
 
 ### Get a Group
 
