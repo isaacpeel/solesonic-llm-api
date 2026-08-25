@@ -1,6 +1,7 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
@@ -94,6 +95,23 @@ public class ChatMessageService {
         chatMessageRepository.findByChatIdAndElicitationId(chatId, elicitationId)
                 .ifPresent(chatMessage -> {
                     chatMessage.setElicitationResponse(elicitationResponse);
+                    chatMessageRepository.save(chatMessage);
+                });
+    }
+
+    /**
+     * Attaches token usage and timing to the assistant message {@link com.solesonic.config.olllama.DatabaseChatMemory}
+     * already wrote for this turn. This has to be an update rather than something the advisor sets
+     * directly: {@code responseMetadata} isn't final until the whole stream completes, which is after
+     * that row is saved. {@code since} is the turn's start time, not the message's — the caller has
+     * no other way to name the row it wants, because the advisor never hands the id back.
+     */
+    @Transactional
+    public void updateResponseMetadata(UUID chatId, ZonedDateTime since, ResponseMetadata responseMetadata) {
+        chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setResponseMetadata(responseMetadata);
                     chatMessageRepository.save(chatMessage);
                 });
     }

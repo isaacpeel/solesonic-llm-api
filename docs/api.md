@@ -169,30 +169,39 @@ De-duplicate by `imageId`.
     "messageType": "ASSISTANT",
     "message": "...",
     "model": "qwen2.5:7b",
-    "generatedImages": []
-  },
-  "responseMetadata": {
-    "promptTokens": 412,
-    "completionTokens": 128,
-    "totalTokens": 540,
-    "tokensPerSecond": 34.7,
-    "durationMillis": 3690
+    "generatedImages": [],
+    "responseMetadata": {
+      "promptTokens": 412,
+      "completionTokens": 128,
+      "totalTokens": 540,
+      "tokensPerSecond": 34.7,
+      "timeToFirstTokenMillis": 380,
+      "durationMillis": 3690
+    }
   }
 }
 ```
 
-`responseMetadata` covers the whole turn — from just after the user message is persisted to the
-last byte of the assistant response — not only model inference time. `durationMillis` is wall-clock
-and always present. `promptTokens`/`completionTokens`/`totalTokens`/`tokensPerSecond` are `null`
-whenever the turn never called a token-reporting chat model at all: an A2A agent delegation has
-nothing to report. `tokensPerSecond` is `completionTokens` divided by `durationMillis`, so it is the
-turn's effective throughput, not the model's raw generation speed — time spent on retrieval, tool
-calls, or vision description before the model starts writing lowers it the same as slow generation
-would.
+`responseMetadata` lives on `message`, not on the envelope — like `model`, it is a genuine column on
+`chat_message` (`response_metadata jsonb`), so it persists and comes back on every later read of this
+message, including `GET /chats/{chatId}` history. It covers the whole turn — from just after the user
+message is persisted to the last byte of the assistant response — not only model inference time.
 
-A cancelled turn's `done` carries no `responseMetadata` (`null`): the assistant message it
-accompanies is replaced with a fixed "Chat canceled." notice, and a token count against that
-discarded content would be misleading.
+- `durationMillis` is wall-clock and always present on an `ASSISTANT` message that carries
+  `responseMetadata` at all.
+- `timeToFirstTokenMillis` is the time from turn start to the first chunk of output, regardless of
+  route — tool calls and A2A delegation set this too, since it is measured off the chunk stream
+  itself rather than read from model metadata.
+- `promptTokens`/`completionTokens`/`totalTokens`/`tokensPerSecond` are `null` whenever the turn
+  never called a token-reporting chat model at all — an A2A agent delegation has nothing to report,
+  even though it still reports `durationMillis` and `timeToFirstTokenMillis`.
+- `tokensPerSecond` is `completionTokens` divided by `durationMillis`, so it is the turn's effective
+  throughput, not the model's raw generation speed — time spent on retrieval, tool calls, or vision
+  description before the model starts writing lowers it the same as slow generation would.
+
+`USER` and `SYSTEM` messages never carry `responseMetadata` (`null`) — including the `SYSTEM` message
+a cancelled turn writes in place of an answer, since a token count against discarded content would be
+misleading.
 
 ### init Event Payload
 

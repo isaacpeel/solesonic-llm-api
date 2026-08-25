@@ -185,8 +185,14 @@ public class RedisStreamingChatService {
 
             Duration turnDuration = Duration.between(turnStarted, ZonedDateTime.now());
             ResponseMetadata responseMetadata = ResponseMetadata.of(usageRef.get(), timeToFirstTokenMillisRef.get(), turnDuration);
+            responseMessage.setResponseMetadata(responseMetadata);
 
-            SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage, responseMetadata);
+            //The chat memory advisor already saved this turn's row without responseMetadata, since
+            //the numbers aren't final until the stream completes — this is what makes them durable,
+            //the same way model does, rather than living only on this one done event.
+            chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata);
+
+            SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
             log.debug("Publishing done event to Redis for chat id {}", chatId);
 

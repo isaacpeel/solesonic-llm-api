@@ -1,6 +1,7 @@
 package com.solesonic.model.chat.history;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.image.GeneratedImageSummary;
 import jakarta.persistence.*;
@@ -47,6 +48,16 @@ public class ChatMessage {
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> progressData;
+
+    /**
+     * Token usage and timing for this turn — set only on {@code ASSISTANT} messages, after the chat
+     * memory advisor has already written the row: the numbers aren't final until the whole stream
+     * completes. Persisted, unlike {@link #generatedImages}, because there is no other table to
+     * reconstruct it from.
+     */
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private ResponseMetadata responseMetadata;
 
     @Transient
     private List<ChatAttachmentSummary> attachments;
@@ -138,6 +149,14 @@ public class ChatMessage {
 
     public void setProgressData(Map<String, Object> progressData) {
         this.progressData = progressData;
+    }
+
+    public ResponseMetadata getResponseMetadata() {
+        return responseMetadata;
+    }
+
+    public void setResponseMetadata(ResponseMetadata responseMetadata) {
+        this.responseMetadata = responseMetadata;
     }
 
     public List<ChatAttachmentSummary> getAttachments() {
