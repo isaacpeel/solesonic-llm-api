@@ -93,9 +93,7 @@ public class ToolCallService {
             return Flux.empty();
         }
 
-        if (chatResponse.getMetadata() != null && chatResponse.getMetadata().getUsage() != null) {
-            usageRef.set(chatResponse.getMetadata().getUsage());
-        }
+        usageRef.set(chatResponse.getMetadata().getUsage());
 
         String result = chatResponse.getResult().getOutput().getText();
 

@@ -150,6 +150,11 @@ public class RedisStreamingChatService {
         //every doOnNext that could set it.
         AtomicReference<Usage> usageRef = new AtomicReference<>();
 
+        //Set on the first non-empty chunk regardless of route — tool calls, A2A delegation and every
+        //chat-model path all flow through this same string flux, so measuring here covers all of them
+        //without threading a clock through PromptService and ToolCallService the way usage needed.
+        AtomicReference<Long> timeToFirstTokenMillisRef = new AtomicReference<>();
+
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
         Flux<ServerSentEvent<?>> cancelEvents = elicitationFlux
@@ -160,7 +165,10 @@ public class RedisStreamingChatService {
         Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication, usageRef))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
-                .doOnNext(assembled::append);
+                .doOnNext(chunk -> {
+                    timeToFirstTokenMillisRef.compareAndSet(null, Duration.between(turnStarted, ZonedDateTime.now()).toMillis());
+                    assembled.append(chunk);
+                });
 
         Flux<String> chunkFlow = chunkObjects.takeUntilOther(cancelEvents);
 
