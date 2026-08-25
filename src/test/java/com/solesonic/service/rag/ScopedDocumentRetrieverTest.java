@@ -34,18 +34,22 @@ class ScopedDocumentRetrieverTest {
 
     private final Query query = new Query("what does the contract say?");
 
+    private static final double CHAT_THRESHOLD = 0.5;
+    private static final double USER_THRESHOLD = 0.65;
+    private static final double GLOBAL_THRESHOLD = 0.75;
+
     private List<ScopedDocumentRetriever.ScopedTier> tiers() {
         return List.of(
                 new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT,
-                        filterExpressionBuilder.eq("scope", "CHAT").build()),
+                        filterExpressionBuilder.eq("scope", "CHAT").build(), CHAT_THRESHOLD),
                 new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER,
-                        filterExpressionBuilder.eq("scope", "USER").build()),
+                        filterExpressionBuilder.eq("scope", "USER").build(), USER_THRESHOLD),
                 new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL,
-                        filterExpressionBuilder.eq("scope", "GLOBAL").build()));
+                        filterExpressionBuilder.eq("scope", "GLOBAL").build(), GLOBAL_THRESHOLD));
     }
 
     private ScopedDocumentRetriever retriever() {
-        return new ScopedDocumentRetriever(vectorStore, 0.75, TOP_K, tiers());
+        return new ScopedDocumentRetriever(vectorStore, TOP_K, tiers());
     }
 
     private List<SearchRequest> capturedSearches() {
@@ -127,20 +131,25 @@ class ScopedDocumentRetrieverTest {
                 .containsExactly(TOP_K, TOP_K - 2, TOP_K - 3);
     }
 
+    /**
+     * Each tier applies its own threshold rather than one shared across all three — a CHAT-scope
+     * chunk is already narrowed to this exact conversation, so it can tolerate a looser bar than
+     * USER or GLOBAL, where the threshold is doing real precision work over a much larger pool.
+     */
     @Test
-    void appliesTheSimilarityThresholdToEveryTier() {
+    void appliesEachTiersOwnSimilarityThreshold() {
         when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
 
         retriever().retrieve(query);
 
         assertThat(capturedSearches())
                 .extracting(SearchRequest::getSimilarityThreshold)
-                .containsOnly(0.75);
+                .containsExactly(CHAT_THRESHOLD, USER_THRESHOLD, GLOBAL_THRESHOLD);
     }
 
     @Test
     void searchesNothingWithoutTiers() {
-        ScopedDocumentRetriever retriever = new ScopedDocumentRetriever(vectorStore, 0.75, TOP_K, List.of());
+        ScopedDocumentRetriever retriever = new ScopedDocumentRetriever(vectorStore, TOP_K, List.of());
 
         assertThat(retriever.retrieve(query)).isEmpty();
 

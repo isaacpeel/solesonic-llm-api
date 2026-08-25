@@ -51,8 +51,14 @@ public class VectorStoreService {
     private final UserPreferencesService userPreferencesService;
     private final OllamaChatModel taskChatModel;
 
-    @Value("${spring.ai.similarity-threshold}")
-    private Double defaultSimilarityThreshold;
+    @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")
+    private Double defaultChatSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.user}")
+    private Double defaultUserSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.global}")
+    private Double defaultGlobalSimilarityThreshold;
 
     @Value("${solesonic.llm.embedding.max-query-chars}")
     private int maxQueryChars;
@@ -90,9 +96,6 @@ public class VectorStoreService {
     public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
 
-        Double similarityThreshold = Optional.ofNullable(userPreferences.getSimilarityThreshold())
-                .orElse(defaultSimilarityThreshold);
-
         QueryTransformer truncatingTransformer = query -> {
             String text = query.text();
             if (text.length() <= maxQueryChars) {
@@ -120,7 +123,7 @@ public class VectorStoreService {
                 .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
                 .queryExpander(multiQueryExpander)
                 .documentRetriever(new ScopedDocumentRetriever(
-                        vectorStore, similarityThreshold, RETRIEVAL_TOP_K, tiers(userId, chatId)))
+                        vectorStore, RETRIEVAL_TOP_K, tiers(userId, chatId, userPreferences)))
                 .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
@@ -136,7 +139,7 @@ public class VectorStoreService {
      * The ids are compared as strings because that is how they are written — a UUID serialized into
      * JSON is a string, and a filter comparing against anything else matches nothing.
      */
-    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId) {
+    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId, UserPreferences userPreferences) {
         FilterExpressionBuilder filterExpressionBuilder = new FilterExpressionBuilder();
 
         List<ScopedDocumentRetriever.ScopedTier> tiers = new ArrayList<>(3);
@@ -146,20 +149,29 @@ public class VectorStoreService {
                     filterExpressionBuilder.eq(SCOPE, RetrievalScope.CHAT.name()),
                     filterExpressionBuilder.eq(CHAT_ID, chatId.toString())).build();
 
-            tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT, chatFilter));
+            Double chatSimilarityThreshold = Optional.ofNullable(userPreferences.getChatSimilarityThreshold())
+                    .orElse(defaultChatSimilarityThreshold);
+
+            tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT, chatFilter, chatSimilarityThreshold));
         }
 
         Filter.Expression userFilter = filterExpressionBuilder.and(
                 filterExpressionBuilder.eq(SCOPE, RetrievalScope.USER.name()),
                 filterExpressionBuilder.eq(USER_ID, userId.toString())).build();
 
-        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER, userFilter));
+        Double userSimilarityThreshold = Optional.ofNullable(userPreferences.getUserSimilarityThreshold())
+                .orElse(defaultUserSimilarityThreshold);
+
+        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER, userFilter, userSimilarityThreshold));
 
         Filter.Expression globalFilter = filterExpressionBuilder
                 .eq(SCOPE, RetrievalScope.GLOBAL.name())
                 .build();
 
-        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL, globalFilter));
+        Double globalSimilarityThreshold = Optional.ofNullable(userPreferences.getGlobalSimilarityThreshold())
+                .orElse(defaultGlobalSimilarityThreshold);
+
+        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL, globalFilter, globalSimilarityThreshold));
 
         return tiers;
     }

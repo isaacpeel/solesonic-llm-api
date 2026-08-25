@@ -21,8 +21,14 @@ public class UserPreferencesService {
     @Value("${spring.ai.ollama.chat.model}")
     private String chatModel;
 
-    @Value("${spring.ai.similarity-threshold}")
-    private Double similarityThreshold;
+    @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")
+    private Double chatSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.user}")
+    private Double userSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.global}")
+    private Double globalSimilarityThreshold;
 
     @Value("${atlassian.service.account.user.id}")
     private UUID serviceAccountUserId;
@@ -49,7 +55,9 @@ public class UserPreferencesService {
         UserPreferences newPreferences = new UserPreferences();
         newPreferences.setUserId(userId);
         newPreferences.setModel(chatModel);
-        newPreferences.setSimilarityThreshold(similarityThreshold);
+        newPreferences.setChatSimilarityThreshold(chatSimilarityThreshold);
+        newPreferences.setUserSimilarityThreshold(userSimilarityThreshold);
+        newPreferences.setGlobalSimilarityThreshold(globalSimilarityThreshold);
         newPreferences.setCreated(ZonedDateTime.now());
         newPreferences.setUpdated(ZonedDateTime.now());
 

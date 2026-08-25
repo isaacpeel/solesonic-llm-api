@@ -23,7 +23,11 @@ public class UserPreferences {
 
     private String model;
 
-    private Double similarityThreshold;
+    private Double chatSimilarityThreshold;
+
+    private Double userSimilarityThreshold;
+
+    private Double globalSimilarityThreshold;
 
     @Transient
     private boolean atlassianAuthentication;
@@ -95,12 +99,28 @@ public class UserPreferences {
         this.atlassianAuthentication = atlassianAuthentication;
     }
 
-    public Double getSimilarityThreshold() {
-        return similarityThreshold;
+    public Double getChatSimilarityThreshold() {
+        return chatSimilarityThreshold;
     }
 
-    public void setSimilarityThreshold(Double similarityThreshold) {
-        this.similarityThreshold = similarityThreshold;
+    public void setChatSimilarityThreshold(Double chatSimilarityThreshold) {
+        this.chatSimilarityThreshold = chatSimilarityThreshold;
+    }
+
+    public Double getUserSimilarityThreshold() {
+        return userSimilarityThreshold;
+    }
+
+    public void setUserSimilarityThreshold(Double userSimilarityThreshold) {
+        this.userSimilarityThreshold = userSimilarityThreshold;
+    }
+
+    public Double getGlobalSimilarityThreshold() {
+        return globalSimilarityThreshold;
+    }
+
+    public void setGlobalSimilarityThreshold(Double globalSimilarityThreshold) {
+        this.globalSimilarityThreshold = globalSimilarityThreshold;
     }
 
     public AtlassianAccessToken getAtlassianAccessToken() {

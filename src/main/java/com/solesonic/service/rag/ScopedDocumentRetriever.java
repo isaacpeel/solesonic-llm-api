@@ -36,22 +36,24 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
     private static final Logger log = LoggerFactory.getLogger(ScopedDocumentRetriever.class);
 
     private final VectorStore vectorStore;
-    private final Double similarityThreshold;
     private final int topK;
     private final List<ScopedTier> tiers;
 
     /**
-     * One scope's filter, plus the scope itself for logging.
+     * One scope's filter and similarity threshold, plus the scope itself for logging.
+     * <p>
+     * The threshold lives per tier rather than shared across all of them: a CHAT-scope chunk is
+     * already narrowed to this exact conversation by its filter, which is a much stronger relevance
+     * signal than "somewhere in the global corpus," so it can tolerate a looser bar than USER or
+     * GLOBAL, where the threshold is doing real precision work over a much larger pool.
      */
-    public record ScopedTier(RetrievalScope scope, Filter.Expression filterExpression) {
+    public record ScopedTier(RetrievalScope scope, Filter.Expression filterExpression, Double similarityThreshold) {
     }
 
     public ScopedDocumentRetriever(VectorStore vectorStore,
-                                   Double similarityThreshold,
                                    int topK,
                                    List<ScopedTier> tiers) {
         this.vectorStore = vectorStore;
-        this.similarityThreshold = similarityThreshold;
         this.topK = topK;
         this.tiers = List.copyOf(tiers);
     }
@@ -71,7 +73,7 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
 
             List<Document> tierDocuments = VectorStoreDocumentRetriever.builder()
                     .vectorStore(vectorStore)
-                    .similarityThreshold(similarityThreshold)
+                    .similarityThreshold(tier.similarityThreshold())
                     .topK(remaining)
                     .filterExpression(tier.filterExpression())
                     .build()

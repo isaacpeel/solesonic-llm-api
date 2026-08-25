@@ -694,7 +694,10 @@ at `USER` scope get two separate documents.
 
 ## User Preferences
 
-User preferences control per-user settings such as which Ollama model to use for chat and the similarity threshold for RAG retrieval.
+User preferences control per-user settings such as which Ollama model to use for chat and the
+similarity thresholds for RAG retrieval — one per retrieval tier (`chatSimilarityThreshold`,
+`userSimilarityThreshold`, `globalSimilarityThreshold`), each optional: a null value falls back to
+that tier's system default.
 
 Stored OAuth tokens are **never serialized** on any of these endpoints. Connection state travels as
 two booleans instead — `atlassianAuthentication` and `googleAuthentication` — which is what a client
@@ -704,7 +707,9 @@ should read to decide whether to show "connected" or a "connect" link:
 {
   "userId": "user-uuid-here",
   "model": "qwen3.5:9b",
-  "similarityThreshold": 0.75,
+  "chatSimilarityThreshold": 0.5,
+  "userSimilarityThreshold": 0.75,
+  "globalSimilarityThreshold": 0.75,
   "atlassianAuthentication": true,
   "googleAuthentication": false,
   "created": "2026-08-11T16:55:00Z",
