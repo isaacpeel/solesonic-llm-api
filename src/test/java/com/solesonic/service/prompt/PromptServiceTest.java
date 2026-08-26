@@ -2,6 +2,8 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
@@ -28,9 +30,8 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.metadata.DefaultUsage;
-import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -41,11 +42,11 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static com.solesonic.service.prompt.PromptService.BASIC_PROMPT;
@@ -192,7 +193,7 @@ class PromptServiceTest {
         when(authentication.getPrincipal()).thenReturn("not-a-jwt");
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
 
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()).blockFirst())
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
     }
 
@@ -204,7 +205,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -222,7 +223,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -230,12 +231,12 @@ class PromptServiceTest {
     }
 
     /**
-     * Each streamed {@link ChatResponse} carries Ollama's cumulative usage-so-far, so the reference
-     * must hold the last chunk's numbers once the flux completes — not the first, and not a sum of
-     * the two.
+     * Ollama reports counts and durations only on the response it marks done; every earlier chunk
+     * carries none. The capture must therefore end up holding the terminal chunk's numbers and
+     * ignore the chunks before it entirely.
      */
     @Test
-    void stream_withNoCommandsAndNoStickyAgent_capturesFinalUsage() {
+    void stream_withNoCommandsAndNoStickyAgent_capturesTerminalResponseMetadata() {
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.empty()));
@@ -255,23 +256,40 @@ class PromptServiceTest {
 
         ChatResponse first = new ChatResponse(List.of(new Generation(new AssistantMessage("hel"))),
                 ChatResponseMetadata.builder()
-                        .usage(new DefaultUsage(10, 1))
                         .build());
-        ChatResponse last = new ChatResponse(List.of(new Generation(new AssistantMessage("lo"))),
+        ChatResponse last = new ChatResponse(
+                List.of(new Generation(new AssistantMessage("lo"),
+                        ChatGenerationMetadata.builder().finishReason("stop").build())),
                 ChatResponseMetadata.builder()
-                        .usage(new DefaultUsage(10, 2))
+                        .model("llama3.2")
+                        .keyValue("done", Boolean.TRUE)
+                        .keyValue("prompt-eval-count", 10)
+                        .keyValue("eval-count", 2)
+                        .keyValue("total-duration", Duration.ofNanos(10706818083L))
+                        .keyValue("load-duration", Duration.ofNanos(6338219291L))
+                        .keyValue("prompt-eval-duration", Duration.ofNanos(130079000L))
+                        .keyValue("eval-duration", Duration.ofNanos(4232710000L))
                         .build());
         when(streamResponseSpec.chatResponse()).thenReturn(Flux.just(first, last));
 
-        AtomicReference<Usage> usageRef = new AtomicReference<>();
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, usageRef))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, responseMetadataCapture))
                 .expectNext("hel")
                 .expectNext("lo")
                 .verifyComplete();
 
-        assertThat(usageRef.get().getPromptTokens()).isEqualTo(10);
-        assertThat(usageRef.get().getCompletionTokens()).isEqualTo(2);
+        ResponseMetadata responseMetadata = responseMetadataCapture.metadata();
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.model()).isEqualTo("llama3.2");
+        assertThat(responseMetadata.doneReason()).isEqualTo("stop");
+        assertThat(responseMetadata.promptEvalCount()).isEqualTo(10);
+        assertThat(responseMetadata.evalCount()).isEqualTo(2);
+        assertThat(responseMetadata.totalDurationNanos()).isEqualTo(10706818083L);
+        assertThat(responseMetadata.loadDurationNanos()).isEqualTo(6338219291L);
+        assertThat(responseMetadata.promptEvalDurationNanos()).isEqualTo(130079000L);
+        assertThat(responseMetadata.evalDurationNanos()).isEqualTo(4232710000L);
     }
 
     @Test
@@ -288,7 +306,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
         stubPromptChainWithPrompt(Flux.just("answer"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("answer")
                 .verifyComplete();
 
@@ -308,7 +326,7 @@ class PromptServiceTest {
         when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), any()))
                 .thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("tool-result")
                 .verifyComplete();
 
@@ -324,7 +342,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("a2a-result")
                 .verifyComplete();
 
@@ -351,7 +369,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("that is a login screen"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
@@ -385,7 +403,7 @@ class PromptServiceTest {
         when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("an answer"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("an answer")
                 .verifyComplete();
 
@@ -410,7 +428,7 @@ class PromptServiceTest {
         when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), any()))
                 .thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new AtomicReference<>()))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("tool-result")
                 .verifyComplete();
 

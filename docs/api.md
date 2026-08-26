@@ -168,40 +168,54 @@ De-duplicate by `imageId`.
     "chatId": "0a4b...",
     "messageType": "ASSISTANT",
     "message": "...",
-    "model": "qwen2.5:7b",
     "generatedImages": [],
     "responseMetadata": {
-      "promptTokens": 412,
-      "completionTokens": 128,
-      "totalTokens": 540,
-      "tokensPerSecond": 34.7,
-      "timeToFirstTokenMillis": 380,
-      "durationMillis": 3690
+      "model": "qwen2.5:7b",
+      "createdAt": "2023-08-04T19:22:45.499127Z",
+      "doneReason": "stop",
+      "totalDurationNanos": 10706818083,
+      "loadDurationNanos": 6338219291,
+      "promptEvalCount": 26,
+      "promptEvalDurationNanos": 130079000,
+      "evalCount": 259,
+      "evalDurationNanos": 4232710000
     }
   }
 }
 ```
 
-`responseMetadata` lives on `message`, not on the envelope — like `model`, it is a genuine column on
-`chat_message` (`response_metadata jsonb`), so it persists and comes back on every later read of this
-message, including `GET /chats/{chatId}` history. It covers the whole turn — from just after the user
-message is persisted to the last byte of the assistant response — not only model inference time.
+`responseMetadata` lives on `message`, not on the envelope — it is a genuine column on `chat_message`
+(`response_metadata jsonb`), so it persists and comes back on every later read of this message,
+including `GET /chats/{chatId}` history.
 
-- `durationMillis` is wall-clock and always present on an `ASSISTANT` message that carries
-  `responseMetadata` at all.
-- `timeToFirstTokenMillis` is the time from turn start to the first chunk of output, regardless of
-  route — tool calls and A2A delegation set this too, since it is measured off the chunk stream
-  itself rather than read from model metadata.
-- `promptTokens`/`completionTokens`/`totalTokens`/`tokensPerSecond` are `null` whenever the turn
-  never called a token-reporting chat model at all — an A2A agent delegation has nothing to report,
-  even though it still reports `durationMillis` and `timeToFirstTokenMillis`.
-- `tokensPerSecond` is `completionTokens` divided by `durationMillis`, so it is the turn's effective
-  throughput, not the model's raw generation speed — time spent on retrieval, tool calls, or vision
-  description before the model starts writing lowers it the same as slow generation would.
+Every field is Ollama's own accounting for the turn, copied verbatim from the terminal `/api/chat`
+response and named after the field it comes from. Nothing here is measured or derived by this API, so
+these are the model server's numbers, not an approximation of them — see Ollama's
+[API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion)
+for their exact meaning.
 
-`USER` and `SYSTEM` messages never carry `responseMetadata` (`null`) — including the `SYSTEM` message
-a cancelled turn writes in place of an answer, since a token count against discarded content would be
-misleading.
+- `model` is the model that actually answered, as Ollama named it. **A message no longer carries a
+  top-level `model` field** — that column held the user's configured preference at save time, which
+  is what was asked for rather than what ran, and it was stamped even onto messages no model
+  produced. Read `responseMetadata.model` instead.
+- The four `*Nanos` fields are nanoseconds, as Ollama reports them. `totalDurationNanos` covers the
+  model call only — not retrieval, vision description, or anything else the turn did around it.
+- `promptEvalCount`/`evalCount` are input and output token counts. There is no total: add them if you
+  want one.
+- `loadDurationNanos` is time spent loading the model, and is large on the first request against a
+  cold model.
+- `doneReason` is why generation stopped — `stop` for a normal completion.
+
+`responseMetadata` is `null` on any message Ollama never reported on:
+
+- `USER` and `SYSTEM` messages, including the `SYSTEM` message a cancelled turn writes in place of an
+  answer.
+- `ASSISTANT` messages for turns that never called a chat model — an A2A agent delegation is handled
+  entirely by the remote agent, which has no token accounting to report.
+- `ASSISTANT` messages for turns that ended before Ollama's terminal response arrived.
+
+Treat the whole object as optional, and every field within it as nullable — a model that reports less
+than the documented set leaves the missing fields out.
 
 ### init Event Payload
 

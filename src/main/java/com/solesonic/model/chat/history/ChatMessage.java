@@ -33,8 +33,6 @@ public class ChatMessage {
     @Column(columnDefinition = "TEXT")
     private String message;
 
-    private String model;
-
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Set<String> commands;
@@ -50,10 +48,15 @@ public class ChatMessage {
     private Map<String, Object> progressData;
 
     /**
-     * Token usage and timing for this turn — set only on {@code ASSISTANT} messages, after the chat
-     * memory advisor has already written the row: the numbers aren't final until the whole stream
-     * completes. Persisted, unlike {@link #generatedImages}, because there is no other table to
-     * reconstruct it from.
+     * What Ollama reported about this turn, including which model answered it — set only on
+     * {@code ASSISTANT} messages, after the chat memory advisor has already written the row, because
+     * Ollama does not report any of it until its terminal response. Stays null for a turn Ollama
+     * never answered, an A2A delegation above all. Persisted, unlike {@link #generatedImages},
+     * because there is no other table to reconstruct it from.
+     * <p>
+     * This is the only place a message records its model. The former {@code model} column held the
+     * user's configured preference at save time, which is what was asked for rather than what
+     * actually ran; {@link ResponseMetadata#model()} is Ollama's own answer to the same question.
      */
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
@@ -109,14 +112,6 @@ public class ChatMessage {
 
     public void setChatId(UUID chatId) {
         this.chatId = chatId;
-    }
-
-    public String getModel() {
-        return model;
-    }
-
-    public void setModel(String model) {
-        this.model = model;
     }
 
     public Set<String> getCommands() {

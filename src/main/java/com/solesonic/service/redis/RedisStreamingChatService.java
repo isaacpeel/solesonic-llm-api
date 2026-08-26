@@ -4,6 +4,7 @@ import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.InitPayload;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
@@ -16,7 +17,6 @@ import com.solesonic.service.prompt.PromptService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -25,11 +25,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
@@ -137,7 +135,6 @@ public class RedisStreamingChatService {
                     .subscribe();
         }
 
-        String chatModel = promptService.model(userId);
         StringBuilder assembled = new StringBuilder();
 
         //Marks the start of this turn, so the done payload can name the images the turn produced.
@@ -145,15 +142,11 @@ public class RedisStreamingChatService {
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
-        //Set at most once, by whichever route through PromptService actually calls a chat model.
+        //Filled at most once, by whichever route through PromptService actually calls a chat model,
+        //and only from the response Ollama marks done — nothing here is measured or derived locally.
         //Read only after chunkFlow completes, which the concatWith below guarantees happens-after
-        //every doOnNext that could set it.
-        AtomicReference<Usage> usageRef = new AtomicReference<>();
-
-        //Set on the first non-empty chunk regardless of route — tool calls, A2A delegation and every
-        //chat-model path all flow through this same string flux, so measuring here covers all of them
-        //without threading a clock through PromptService and ToolCallService the way usage needed.
-        AtomicReference<Long> timeToFirstTokenMillisRef = new AtomicReference<>();
+        //every doOnNext that could fill it.
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
 
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
@@ -162,13 +155,10 @@ public class RedisStreamingChatService {
                 .take(1)
                 .share();
 
-        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication, usageRef))
+        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication, responseMetadataCapture))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
-                .doOnNext(chunk -> {
-                    timeToFirstTokenMillisRef.compareAndSet(null, Duration.between(turnStarted, ZonedDateTime.now()).toMillis());
-                    assembled.append(chunk);
-                });
+                .doOnNext(assembled::append);
 
         Flux<String> chunkFlow = chunkObjects.takeUntilOther(cancelEvents);
 
@@ -177,20 +167,22 @@ public class RedisStreamingChatService {
             responseMessage.setChatId(chatId);
             responseMessage.setMessageType(ASSISTANT);
             responseMessage.setMessage(assembled.toString());
-            responseMessage.setModel(chatModel);
 
             //References, never bytes. A client that missed the image event mid-stream — a reconnect,
             //a late subscribe — still finalises the turn with the image on it.
             responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
-            Duration turnDuration = Duration.between(turnStarted, ZonedDateTime.now());
-            ResponseMetadata responseMetadata = ResponseMetadata.of(usageRef.get(), timeToFirstTokenMillisRef.get(), turnDuration);
+            //Null whenever Ollama never reported anything — an A2A delegation calls no chat model,
+            //and a turn that ends before the terminal response has nothing to report either.
+            ResponseMetadata responseMetadata = responseMetadataCapture.metadata();
             responseMessage.setResponseMetadata(responseMetadata);
 
             //The chat memory advisor already saved this turn's row without responseMetadata, since
-            //the numbers aren't final until the stream completes — this is what makes them durable,
-            //the same way model does, rather than living only on this one done event.
-            chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata);
+            //Ollama does not report the numbers until the stream completes — this is what makes them
+            //durable, the same way model does, rather than living only on this one done event.
+            if (responseMetadata != null) {
+                chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata);
+            }
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 
@@ -208,7 +200,6 @@ public class RedisStreamingChatService {
             responseMessage.setChatId(chatId);
             responseMessage.setMessageType(SYSTEM);
             responseMessage.setMessage(assembled.toString());
-            responseMessage.setModel(chatModel);
             chatMessageService.save(responseMessage);
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);

@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.tools.LocalToolRegistry;
@@ -8,7 +9,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.SystemPromptTemplate;
@@ -20,7 +20,6 @@ import reactor.core.publisher.Flux;
 
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
@@ -49,22 +48,22 @@ public class ToolCallService {
                                String message,
                                ToolSlashCommand toolCommand,
                                Map<String, Object> contextMap,
-                               AtomicReference<Usage> usageRef) {
+                               ResponseMetadataCapture responseMetadataCapture) {
 
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap, usageRef);
+        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap, responseMetadataCapture);
     }
 
     public Flux<String> streamLocal(UUID chatId,
                                     String message,
                                     LocalToolSlashCommand localToolCommand,
                                     Map<String, Object> contextMap,
-                                    AtomicReference<Usage> usageRef) {
+                                    ResponseMetadataCapture responseMetadataCapture) {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap, usageRef);
+        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap, responseMetadataCapture);
     }
 
     private Flux<String> invoke(UUID chatId,
@@ -72,7 +71,7 @@ public class ToolCallService {
                                 String toolName,
                                 ToolCallback toolCallback,
                                 Map<String, Object> contextMap,
-                                AtomicReference<Usage> usageRef) {
+                                ResponseMetadataCapture responseMetadataCapture) {
 
         log.info("Tool invoke: {}", toolName);
 
@@ -93,7 +92,7 @@ public class ToolCallService {
             return Flux.empty();
         }
 
-        usageRef.set(chatResponse.getMetadata().getUsage());
+        responseMetadataCapture.accept(chatResponse);
 
         String result = chatResponse.getResult().getOutput().getText();
 

@@ -2,6 +2,7 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
@@ -25,7 +26,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.AbstractMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.metadata.Usage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -38,7 +38,6 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.util.*;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
@@ -102,13 +101,14 @@ public class PromptService {
     }
 
     /**
-     * @param usageRef receives the turn's token usage once the underlying model call completes.
-     *                 Left unset by routes with no usage to report — an A2A agent delegation — so a
-     *                 caller reading it after the stream finishes must treat {@code null} as "no
-     *                 usage available" rather than a bug.
+     * @param responseMetadataCapture receives what Ollama reported about the turn, once the
+     *                                underlying model call reaches its terminal response. Left unset
+     *                                by routes that call no chat model — an A2A agent delegation —
+     *                                so a caller reading it after the stream finishes must treat
+     *                                {@code null} as "no metadata available" rather than a bug.
      */
     public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication,
-                               AtomicReference<Usage> usageRef) {
+                               ResponseMetadataCapture responseMetadataCapture) {
         log.info("Streaming prompt for chat id {}", chatId);
         String model = model(userId);
         String message = chatMessage.chatMessage();
@@ -171,7 +171,7 @@ public class PromptService {
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model, usageRef);
+                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model, responseMetadataCapture);
                     });
         }
 
@@ -205,15 +205,15 @@ public class PromptService {
                         .chatResponse();
 
                 yield a2aStickyAgentService.deactivate(chatId)
-                        .thenMany(contentFlux(promptChatResponse, usageRef));
+                        .thenMany(contentFlux(promptChatResponse, responseMetadataCapture));
             }
             //Tool routes get the original message, not the augmented one: the task prompt tells the
             //model to invoke the tool with the exact user message as input, so prepending image
             //descriptions would put image prose into the tool's arguments.
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap, usageRef));
+                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap, responseMetadataCapture));
             case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, usageRef));
+                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, responseMetadataCapture));
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
@@ -262,7 +262,7 @@ public class PromptService {
                                            String attachmentContext,
                                            Map<String, Object> contextMap,
                                            String model,
-                                           AtomicReference<Usage> usageRef) {
+                                           ResponseMetadataCapture responseMetadataCapture) {
         String systemText = loadBasicPromptSystemText(message);
 
         var promptSpec = chatClient.prompt()
@@ -286,18 +286,19 @@ public class PromptService {
             promptSpec = promptSpec.system(systemText);
         }
 
-        return contentFlux(promptSpec.stream().chatResponse(), usageRef);
+        return contentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture);
     }
 
     /**
-     * Equivalent to {@code StreamResponseSpec.content()}, plus capturing each response's usage as it
-     * arrives. Ollama reports usage cumulatively on every chunk, so by the time the flux completes
-     * {@code usageRef} holds the turn's total — this must run over the same stream that produces the
-     * chunks, not a second call, or the model would be invoked twice.
+     * Equivalent to {@code StreamResponseSpec.content()}, plus offering each response to the capture
+     * on the way past. Only the terminal response carries Ollama's counts and durations, and the
+     * capture takes only that one — this must run over the same stream that produces the chunks, not
+     * a second call, or the model would be invoked twice.
      */
-    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux, AtomicReference<Usage> usageRef) {
+    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux,
+                                            ResponseMetadataCapture responseMetadataCapture) {
         return chatResponseFlux
-                .doOnNext(chatResponse -> usageRef.set(chatResponse.getMetadata().getUsage()))
+                .doOnNext(responseMetadataCapture::accept)
                 .map(chatResponse -> Optional.ofNullable(chatResponse.getResult())
                         .map(Generation::getOutput)
                         .map(AbstractMessage::getText)

@@ -5,7 +5,6 @@ import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
@@ -56,11 +55,11 @@ public class ChatMessageService {
                 .orElseThrow(() -> new IllegalStateException("Chat not found: " + chatId));
 
         //Routed through the service, not the repository, so a user's first-ever message
-        //self-heals a missing preferences row instead of throwing.
-        UserPreferences userPreferences = userPreferencesService.get(chat.getUserId());
+        //self-heals a missing preferences row instead of throwing. The result is unused — which
+        //model actually answered is Ollama's to report, on responseMetadata — but the row still has
+        //to exist before the turn goes on to read it.
+        userPreferencesService.get(chat.getUserId());
 
-        String chatModel = userPreferences.getModel();
-        message.setModel(chatModel);
         message.setTimestamp(ZonedDateTime.now());
 
         return chatMessageRepository.save(message);

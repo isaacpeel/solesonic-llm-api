@@ -9,7 +9,6 @@ import java.util.UUID;
 @Component
 public class UserRequestContext {
     private UUID userId;
-    private String chatModel;
     private UUID chatId;
 
     public UUID getUserId() {
@@ -18,14 +17,6 @@ public class UserRequestContext {
 
     public void setUserId(UUID userId) {
         this.userId = userId;
-    }
-
-    public String getChatModel() {
-        return chatModel;
-    }
-
-    public void setChatModel(String chatModel) {
-        this.chatModel = chatModel;
     }
 
     public UUID getChatId() {
