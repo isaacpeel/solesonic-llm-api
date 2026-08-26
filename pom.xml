@@ -153,6 +153,21 @@
             <scope>compile</scope>
         </dependency>
 
+        <!--
+        Jackson 2 databind reaches the runtime classpath transitively (tika-parser-cad-module, via
+        spring-ai-tika-document-reader) even though the app's own JSON stack is Jackson 3
+        (JacksonConfig). Hibernate's jsonb (de)serialization is unaware of that app-level config: it
+        builds its own bare Jackson 2 ObjectMapper and auto-discovers modules for it via
+        ObjectMapper.findModules() (ServiceLoader), so without this module on the classpath that
+        mapper has no java.time support and throws serializing ResponseMetadata.createdAt (an
+        Instant). This has to track jackson-databind's resolved version, not jackson-annotations'.
+        -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>2.21.2</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-devtools</artifactId>
