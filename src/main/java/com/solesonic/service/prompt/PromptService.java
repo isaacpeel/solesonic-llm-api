@@ -29,7 +29,7 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.ollama.api.OllamaChatOptions;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
@@ -200,7 +200,7 @@ public class PromptService {
                         .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                         .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                         .toolContext(contextMap)
-                        .options(OllamaChatOptions.builder().model(model))
+                        .options(OpenAiChatOptions.builder().model(model))
                         .stream()
                         .chatResponse();
 
@@ -271,7 +271,7 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
-                .options(OllamaChatOptions.builder().model(model));
+                .options(OpenAiChatOptions.builder().model(model));
 
         //A UserMessage rather than a SystemMessage on purpose: MessageChatMemoryAdvisor hoists every
         //system message to the front of the prompt, which would move this away from the message it

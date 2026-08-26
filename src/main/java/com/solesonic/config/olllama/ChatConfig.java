@@ -1,5 +1,6 @@
 package com.solesonic.config.olllama;
 
+import com.solesonic.config.openai.ChatOpenAiConfig;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
@@ -8,6 +9,7 @@ import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.ollama.OllamaChatModel;
 import org.springframework.ai.ollama.api.OllamaApi;
 import org.springframework.ai.ollama.api.OllamaChatOptions;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -29,7 +31,7 @@ public class ChatConfig {
     @Bean
     @Qualifier(DEFAULT_CHAT_CLIENT)
     public ChatClient defaultChatClient(ChatMemory chatMemory,
-                                        OllamaChatModel chatModel,
+                                        @Qualifier(ChatOpenAiConfig.CHAT_CHAT_MODEL) OpenAiChatModel chatModel,
                                         McpIdentityProvider mcpToolCallbackProvider) {
 
         MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)

@@ -126,6 +126,27 @@ Upload size is bounded by `spring.servlet.multipart.max-file-size` rather than a
 | `ATTACHMENT_SWEEP_CRON` | Sweep schedule | `0 0 * * * *` | No | Default: hourly. Only read when the sweep is enabled |
 | `ATTACHMENT_DOCUMENT_MAX_SIZE_BYTES` | Largest document attachment that will be indexed for retrieval | `10MB` | No | Default: 10MB. Bounds how long a user waits on the turn the document is sent, not storage. A document past it is still stored and downloadable, just not indexed |
 
+### Chat Configuration
+
+Main chat is served by a llama.cpp `llama-server` instance over its OpenAI-compatible API, pinned to
+a URI dedicated to chat inference — separate from the Ollama host that backs ETL, vision, RAG
+query-rewrite, and slash-command tool routing.
+
+The variable is **required**: the application will not start without it.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `CHAT_OPENAI_HOST` | Base URL for the llama.cpp OpenAI-compatible chat endpoint | `http://izzy-bot-chat:8080/v1` | Yes | A **full base URL** including the `/v1` path, matching the shape `spring.ai.openai.base-url`/OpenAI itself expects — not the bare hostname `OLLAMA_HOST` holds |
+
+The llama.cpp instance runs with no API key enforcement — the client is wired in Spring AI's no-auth
+mode, so no `Authorization` header is sent.
+
+Fixed in `application*.properties` rather than exposed as a variable:
+
+- `solesonic.llm.chat.model` — the model name `llama-server` was started with. `llama-server` serves
+  whichever single model it was launched with regardless of what's requested, so this mainly seeds a
+  new user's default model preference.
+
 ### Vision Configuration
 
 Image attachments are described by a vision model, and that description is what the chat model sees —
