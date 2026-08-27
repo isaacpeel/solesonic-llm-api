@@ -105,27 +105,27 @@ Every LLM interaction in this application talks to an **OpenAI-compatible** serv
 `spring-ai-starter-model-ollama` dependency, all `Ollama*` types, and Ollama-only concepts
 (keep-alive, pull-on-missing) were removed.
 
-Six interactions are configured **independently**, each with its own host, so each can be pointed at
-whichever hardware suits it:
+Six interactions are configured **independently**, so each can be pointed at whichever hardware
+suits it:
 
-| Interaction | Host variable | Model property | What it does |
+| Interaction | Host variable | Model variable | What it does |
 |---|---|---|---|
-| Chat | `CHAT_OPENAI_HOST` | `solesonic.llm.chat.model` | The conversational model |
-| ETL | `ETL_OPENAI_HOST` | `solesonic.llm.etl.model` (`ETL_MODEL`) | Keyword + metadata enrichment during document ingestion |
-| Vision | `VISION_OPENAI_HOST` | `solesonic.llm.vision.model` (`VISION_MODEL`) | Describing image attachments |
-| Embedding | `EMBEDDING_OPENAI_HOST` | `solesonic.llm.embedding.model` | Vectors for the pgvector store |
-| RAG task | `RAG_TASK_OPENAI_HOST` | `solesonic.llm.rag-task.model` | Query rewrite, multi-query expansion, reranking |
-| Tool-call task | `TOOL_CALL_OPENAI_HOST` | `solesonic.llm.tool-call.model` | Slash-command tool-call routing |
+| Chat | `CHAT_OPENAI_HOST` (`spring.ai.openai.base-url`) | `DEFAULT_CHAT_MODEL` | The conversational model |
+| Embedding | `CHAT_OPENAI_HOST` | `EMBEDDING_MODEL` | Vectors for the pgvector store |
+| ETL | `ETL_OPENAI_HOST` | `ETL_MODEL` | Keyword + metadata enrichment during document ingestion |
+| Vision | `VISION_OPENAI_HOST` | `VISION_MODEL` | Describing image attachments |
+| RAG task | `solesonic.llm.rag-task.openai.host` (`CHAT_OPENAI_HOST`) | `solesonic.llm.rag-task.model` (`DEFAULT_CHAT_MODEL`) | Query rewrite, multi-query expansion, reranking |
+| Tool-call task | `solesonic.llm.tool-call.openai.host` (`CHAT_OPENAI_HOST`) | `solesonic.llm.tool-call.model` (`DEFAULT_CHAT_MODEL`) | Slash-command tool-call routing |
 
-Every `*_OPENAI_HOST` is a **full base URL including the `/v1` path** (`http://host:port/v1`) and
-every one is **required** — none carries a masking default, so a missing one fails startup with a
-clear placeholder error rather than silently falling back. Nothing requires them to be six different
-hosts; pointing several at one server is fine.
+Every host is a **full base URL including the `/v1` path** (`http://host:port/v1`) and every one is
+**required** — none carries a masking default, so a missing one fails startup with a clear
+placeholder error rather than silently falling back. Nothing requires them to be six different
+hosts; the properties files point chat, embedding, RAG task and tool-call routing at
+`CHAT_OPENAI_HOST` and only ETL and vision at hosts of their own.
 
-The model-name properties live in `application-{local,test,prod,prod-nginx}.properties` rather than
-being exposed as variables, because a `llama-server`-style process serves whichever single model it
-was launched with regardless of what is requested. On such a server the model name mainly seeds a
-new user's default model preference and labels the request.
+Model names are environment variables as well, because a `llama-server`-style process serves
+whichever single model it was launched with regardless of what is requested. On such a server the
+model name mainly seeds a new user's default model preference and labels the request.
 
 Each server is expected to run with no API key enforcement — the client is wired in Spring AI's
 no-auth mode, so no `Authorization` header is sent.
@@ -136,12 +136,16 @@ count and GPU placement are flags on the target server (`--ctx-size`, `--batch-s
 has to be launched with a context large enough to hold an image, the model's reasoning and the
 description — 32k was the working figure.
 
-**Both Spring AI auto-configurations are disabled** (`spring.ai.model.chat=none`,
-`spring.ai.model.embedding=none`). Every model here is hand-built in `config/openai`, and the
-embedding one has to be the sole unqualified `EmbeddingModel` bean in the context because Spring
-AI's own `PgVectorStoreAutoConfiguration.vectorStore(EmbeddingModel, ...)` takes an unqualified
-parameter there is no way to add a qualifier to. Left enabled, the starter's own
-`openAiEmbeddingModel` would be a second candidate and the context would fail to start.
+**Chat and embedding come from Spring AI's OpenAI auto-configuration** (`spring.ai.model.chat=openai`,
+with embedding left at its default), driven by `spring.ai.openai.base-url`, `spring.ai.openai.model`
+and `spring.ai.openai.embedding.model`. The auto-configured `EmbeddingModel` is what backs pgvector,
+because Spring AI's own `PgVectorStoreAutoConfiguration.vectorStore(EmbeddingModel, ...)` takes an
+unqualified parameter there is no way to add a qualifier to — so nothing else may be a default
+candidate. The remaining four models are hand-built in `config/openai` as
+`@Bean(defaultCandidate = false)` with a `@Qualifier`, and must be injected by qualifier only.
+
+`spring.ai.openai.api-key=none` is set because each server is expected to run with no API key
+enforcement.
 
 ### Slash Commands Cache Configuration
 
@@ -176,12 +180,7 @@ The variable is **required**: the application will not start without it.
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
 | `CHAT_OPENAI_HOST` | Base URL for the OpenAI-compatible chat endpoint | `http://izzy-bot-chat:8080/v1` | Yes | A **full base URL** including the `/v1` path, matching the shape `spring.ai.openai.base-url`/OpenAI itself expects |
-
-Fixed in `application*.properties` rather than exposed as a variable:
-
-- `solesonic.llm.chat.model` — the model name the server was started with. A `llama-server`-style
-  process serves whichever single model it was launched with regardless of what's requested, so this
-  mainly seeds a new user's default model preference.
+| `DEFAULT_CHAT_MODEL` | Model name the chat server was started with | `qwen2.5:32b` | Yes | Also backs the RAG task and tool-call routing models. A `llama-server`-style process serves whichever single model it was launched with regardless of what's requested, so this mainly seeds a new user's default model preference |
 
 ### ETL Configuration
 
@@ -208,11 +207,15 @@ Vectors for the pgvector store.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `EMBEDDING_OPENAI_HOST` | Base URL for the OpenAI-compatible embedding endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+| `EMBEDDING_MODEL` | Model used to embed documents and queries | `mxbai-embed-large` | Yes | Maps to `spring.ai.openai.embedding.model` |
 
-The model name is fixed per profile as `solesonic.llm.embedding.model`. **Changing it changes the
-vectors**, so an existing corpus has to be re-ingested rather than mixed — a store holding two
-models' embeddings ranks incoherently.
+Embeddings are served from `CHAT_OPENAI_HOST`: Spring AI's OpenAI auto-configuration gives the
+embedding client the same `spring.ai.openai.base-url` as chat, and there is no separate host
+variable. Dimensions are pinned at 1024 in `spring.ai.openai.embedding.dimensions` and
+`spring.ai.vectorstore.pgvector.dimensions`; the two must agree.
+
+**Changing the model changes the vectors**, so an existing corpus has to be re-ingested rather than
+mixed — a store holding two models' embeddings ranks incoherently.
 
 ### RAG and Tool-Call Task Configuration
 
@@ -222,12 +225,11 @@ call. They are configured separately because they are asked for completely diffe
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `RAG_TASK_OPENAI_HOST` | Base URL for the RAG task endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
-| `TOOL_CALL_OPENAI_HOST` | Base URL for the tool-call routing endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+| `CHAT_OPENAI_HOST` | Base URL both tasks run against | `http://izzy-bot-chat:8080/v1` | Yes | The properties files point `solesonic.llm.rag-task.openai.host` and `solesonic.llm.tool-call.openai.host` at it |
+| `DEFAULT_CHAT_MODEL` | Model both tasks run | `qwen2.5:32b` | Yes | The properties files point `solesonic.llm.rag-task.model` and `solesonic.llm.tool-call.model` at it |
 
-The model names are fixed per profile as `solesonic.llm.rag-task.model` and
-`solesonic.llm.tool-call.model`. Both are required in every profile — neither carries a Java-side
-default any more. The RAG task model runs at temperature 0 so a rewritten query and a rerank verdict
+Both host and model properties are required in every profile — none carries a Java-side default. Point
+them at hosts of their own by overriding the four properties directly. The RAG task model runs at temperature 0 so a rewritten query and a rerank verdict
 are reproducible for the same input; the tool-call model needs to be one that calls tools reliably.
 
 ### Vision Configuration
@@ -308,6 +310,12 @@ logged at WARN with the attachment id, the elapsed time, and the reason.
 | `MCP_ISSUER_URI` | OAuth2 issuer URI for the MCP auth server | `https://your-auth-server` | No | Required for MCP client credentials flow |
 | `TOKEN_ENDPOINT` | Token exchange endpoint URL | `https://your-auth-server/token` | No | Used for MCP token exchange |
 
+### A2A (Agent-to-Agent) Configuration
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `A2A_BASE_URI` | Base URI of the remote A2A agent host | `https://agents.yourdomain.com` | Yes | Maps to `solesonic.a2a.base-uri`; no default, so a missing value fails startup. The request timeout is fixed at `solesonic.a2a.timeout-seconds=300` |
+
 ### CORS Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -336,6 +344,22 @@ JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 
 # CORS (adjust for your frontend)
 CORS_ALLOWED_ORIGINS=http://localhost:3000
+
+# Model servers (required — full base URLs including /v1)
+CHAT_OPENAI_HOST=http://localhost:8080/v1
+DEFAULT_CHAT_MODEL=qwen2.5:32b
+EMBEDDING_MODEL=mxbai-embed-large
+ETL_OPENAI_HOST=http://localhost:8080/v1
+ETL_MODEL=llama3.1:8b
+VISION_OPENAI_HOST=http://localhost:8080/v1
+VISION_MODEL=qwen2.5vl
+
+# Image generation admission control (required)
+IMAGE_MAX_CONCURRENT=2
+IMAGE_ADMISSION_TIMEOUT=30s
+
+# A2A (required)
+A2A_BASE_URI=https://agents.yourdomain.com
 ```
 
 ### Full Configuration (.env)
@@ -384,16 +408,22 @@ MCP_CLIENT_SECRET=your_mcp_client_secret
 MCP_ISSUER_URI=https://your-auth-server
 TOKEN_ENDPOINT=https://your-auth-server/token
 
-# Model Server Configuration — six OpenAI-compatible endpoints, each a full base URL
-# including /v1. All six are required; several may point at the same server.
+# Model Server Configuration — OpenAI-compatible endpoints, each a full base URL
+# including /v1. All are required; several may point at the same server.
 CHAT_OPENAI_HOST=http://localhost:8080/v1
+DEFAULT_CHAT_MODEL=qwen2.5:32b
+EMBEDDING_MODEL=mxbai-embed-large
 ETL_OPENAI_HOST=http://localhost:8080/v1
 ETL_MODEL=llama3.1:8b
 VISION_OPENAI_HOST=http://localhost:8080/v1
 VISION_MODEL=qwen2.5vl
-EMBEDDING_OPENAI_HOST=http://localhost:8080/v1
-RAG_TASK_OPENAI_HOST=http://localhost:8080/v1
-TOOL_CALL_OPENAI_HOST=http://localhost:8080/v1
+
+# Image Generation Configuration
+IMAGE_MAX_CONCURRENT=2
+IMAGE_ADMISSION_TIMEOUT=30s
+
+# A2A Configuration
+A2A_BASE_URI=https://agents.yourdomain.com
 
 # AWS Configuration (optional)
 AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/your-key-id
