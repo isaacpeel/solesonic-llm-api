@@ -74,6 +74,9 @@ public class PromptService {
     @Value("classpath:prompts/basic-system-prompt.st")
     private Resource basicSystemPrompt;
 
+    @Value("${spring.ai.openai.model}")
+    private String defaultChatModel;
+
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
             UserPreferencesService userPreferencesService,
@@ -102,7 +105,7 @@ public class PromptService {
     }
 
     public String model(UUID userId) {
-        return userPreferencesService.get(userId).getModel();
+        return defaultChatModel;
     }
 
     /**
