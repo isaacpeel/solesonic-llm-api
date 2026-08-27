@@ -29,9 +29,11 @@ import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.chat.prompt.PromptTemplate;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.Resource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
@@ -39,7 +41,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.*;
 
-import static com.solesonic.config.olllama.ChatConfig.DEFAULT_CHAT_CLIENT;
+import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
@@ -68,6 +70,9 @@ public class PromptService {
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
+
+    @Value("classpath:prompts/basic-system-prompt.st")
+    private Resource basicSystemPrompt;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -114,25 +119,12 @@ public class PromptService {
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
 
-        // The two kinds of attachment are handled by different passes, and each pass owns the SSE
-        // events for the ids it is given, so the split has to happen before either runs.
         ChatAttachmentService.AttachmentPartition attachments = chatAttachmentService
                 .partition(userId, chatMessage.attachmentIds());
 
-        // Image attachments reach the model as text: descriptions produced by a separate vision
-        // model. They travel as their own message next to the user's, never folded into it — the
-        // retrieval advisor rewrites the last user message, wrapping it in retrieved documents and
-        // an instruction to answer from those alone, and anything inside that wrapper competes with
-        // the documents instead of standing beside them. Tool routes carry no attachment context at
-        // all — see the ToolSlashCommand branch below.
         List<ChatAttachmentDescription> imageDescriptions = imageDescriptionService
                 .describe(chatId, userId, attachments.imageIds());
 
-        // Documents are indexed rather than inlined. A document does not fit in a prompt the way a
-        // description does, so its text is split and embedded at conversation scope, and reaches
-        // the model through the same retrieval that serves the global knowledge base — only the
-        // passages bearing on the question ever enter the context window. What the model is told
-        // directly is merely that the documents exist.
         List<String> indexedDocuments = chatDocumentIngestionService
                 .ingest(chatId, userId, attachments.documentIds());
 
@@ -146,9 +138,6 @@ public class PromptService {
 
         String authToken = jwt.getTokenValue();
 
-        //userId rides along for tool results that persist something on the user's behalf — a
-        //generated image is owned by whoever asked for it. IdentityToolCallback strips it, like the
-        //token, before the call leaves for the MCP server.
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
                 USER_ID, userId,
@@ -162,9 +151,6 @@ public class PromptService {
                         if (stickyAgent.isPresent()) {
                             log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-                            //The remote agent takes a single string and has no message structure to
-                            //hold a separate block, so this is the one route that still inlines the
-                            //descriptions — and the only way it learns an image was attached at all.
                             return a2aAgentService.delegate(chatId, stickyAgent.get(),
                                     AttachmentContextFormatter.prepend(message, imageDescriptions), authToken);
                         }
@@ -191,9 +177,6 @@ public class PromptService {
 
                 McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
 
-                //The MCP call above renders a prompt template and wants the user's actual words; the
-                //prompt sent to the model carries the image descriptions too, as their own message
-                //ahead of the user's rather than mixed into it.
                 Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachmentContext);
 
                 Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
@@ -207,13 +190,13 @@ public class PromptService {
                 yield a2aStickyAgentService.deactivate(chatId)
                         .thenMany(contentFlux(promptChatResponse, responseMetadataCapture));
             }
-            //Tool routes get the original message, not the augmented one: the task prompt tells the
-            //model to invoke the tool with the exact user message as input, so prepending image
-            //descriptions would put image prose into the tool's arguments.
+
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
                     .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap, responseMetadataCapture));
+
             case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
                     .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, responseMetadataCapture));
+
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
@@ -263,9 +246,20 @@ public class PromptService {
                                            Map<String, Object> contextMap,
                                            String model,
                                            ResponseMetadataCapture responseMetadataCapture) {
-        String systemText = loadBasicPromptSystemText(message);
+        Map<String, Object> promptContext = Map.of(
+                AGENT_NAME, agentName
+        );
+
+        PromptTemplate promptTemplate = PromptTemplate.builder()
+                .resource(basicSystemPrompt)
+                .variables(promptContext)
+                .build();
+
+        Prompt systemPrompt = promptTemplate.create();
 
         var promptSpec = chatClient.prompt()
+                .system(systemPrompt.getContents())
+                .user(message)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -273,17 +267,8 @@ public class PromptService {
                 .toolContext(contextMap)
                 .options(OpenAiChatOptions.builder().model(model));
 
-        //A UserMessage rather than a SystemMessage on purpose: MessageChatMemoryAdvisor hoists every
-        //system message to the front of the prompt, which would move this away from the message it
-        //describes and behind the whole conversation history.
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
-        }
-
-        promptSpec = promptSpec.user(message);
-
-        if (systemText != null) {
-            promptSpec = promptSpec.system(systemText);
         }
 
         return contentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture);
@@ -311,7 +296,9 @@ public class PromptService {
             McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
                     .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
                     .build();
+
             McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
+
             return mcpPromptAdapter.toSystemText(getPromptResult);
         } catch (Exception exception) {
             log.warn("Could not load '{}' prompt from MCP server, proceeding without system prompt: {}", BASIC_PROMPT, exception.getMessage());

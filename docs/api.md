@@ -188,31 +188,34 @@ De-duplicate by `imageId`.
 (`response_metadata jsonb`), so it persists and comes back on every later read of this message,
 including `GET /chats/{chatId}` history.
 
-Every field is Ollama's own accounting for the turn, copied verbatim from the terminal `/api/chat`
-response and named after the field it comes from. Nothing here is measured or derived by this API, so
-these are the model server's numbers, not an approximation of them — see Ollama's
-[API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion)
-for their exact meaning.
+Every field is the model server's own accounting for the turn, copied verbatim from the terminal
+response and named after the field it comes from. Nothing here is measured or derived by this API,
+so these are the server's numbers, not an approximation of them.
 
-- `model` is the model that actually answered, as Ollama named it. **A message no longer carries a
-  top-level `model` field** — that column held the user's configured preference at save time, which
+> **The shape is Ollama's, and the reader still looks for Ollama's metadata keys.** Chat now runs
+> against an OpenAI-compatible server, which reports a different (and smaller) set — so in practice
+> most of these fields come back `null` today. Treat every one of them as nullable; a client must
+> not assume any field is present. Mapping this onto the OpenAI response shape is outstanding work.
+
+- `model` is the model that actually answered, as the server named it. **A message no longer carries
+  a top-level `model` field** — that column held the user's configured preference at save time, which
   is what was asked for rather than what ran, and it was stamped even onto messages no model
   produced. Read `responseMetadata.model` instead.
-- The four `*Nanos` fields are nanoseconds, as Ollama reports them. `totalDurationNanos` covers the
-  model call only — not retrieval, vision description, or anything else the turn did around it.
+- The four `*Nanos` fields are nanoseconds. `totalDurationNanos` covers the model call only — not
+  retrieval, vision description, or anything else the turn did around it.
 - `promptEvalCount`/`evalCount` are input and output token counts. There is no total: add them if you
   want one.
 - `loadDurationNanos` is time spent loading the model, and is large on the first request against a
   cold model.
 - `doneReason` is why generation stopped — `stop` for a normal completion.
 
-`responseMetadata` is `null` on any message Ollama never reported on:
+`responseMetadata` is `null` on any message the model server never reported on:
 
 - `USER` and `SYSTEM` messages, including the `SYSTEM` message a cancelled turn writes in place of an
   answer.
 - `ASSISTANT` messages for turns that never called a chat model — an A2A agent delegation is handled
   entirely by the remote agent, which has no token accounting to report.
-- `ASSISTANT` messages for turns that ended before Ollama's terminal response arrived.
+- `ASSISTANT` messages for turns that ended before the terminal response arrived.
 
 Treat the whole object as optional, and every field within it as nullable — a model that reports less
 than the documented set leaves the missing fields out.
@@ -659,49 +662,50 @@ which unfiles a single conversation and leaves the group standing.
 
 ---
 
-## Ollama Model Management
+## Model Catalog Management
 
-These endpoints manage the application's catalog of Ollama model configurations stored in the database, and can also query which models are currently installed in Ollama.
+These endpoints manage the application's catalog of model configurations stored in the database —
+the set a user's model preference draws its options from. It is a plain CRUD catalog: nothing here
+queries a model server. An OpenAI-compatible server serves whichever single model it was launched
+with, so "which models are installed" is a deployment fact rather than a live query.
+
+Every endpoint requires the `model-admin` role.
+
+> **Breaking change.** These endpoints moved from `/ollama/models` to `/models`, and
+> `GET /ollama/installed` and `POST /ollama/models/refresh` were removed outright along with the
+> Redis model cache that backed them.
 
 ### List All Models
 
-- **Endpoint**: `GET /ollama/models`
-- **Query Parameters**:
-  - `refresh` (boolean, default `false`): When `true`, evicts the Redis model cache before returning results
-- **Response**: Array of `OllamaModel` objects
+- **Endpoint**: `GET /models`
+- **Response**: Array of `LlmModel` objects
 
 ### Get a Specific Model
 
-- **Endpoint**: `GET /ollama/models/{id}`
+- **Endpoint**: `GET /models/{id}`
 - **Path Parameters**:
   - `id` (UUID): The model record ID
-- **Response**: `OllamaModel` object
+- **Response**: `LlmModel` object
 
 ### Create a Model Record
 
-- **Endpoint**: `POST /ollama/models`
-- **Request Body**: `OllamaModel`
-- **Response**: The created `OllamaModel`
+- **Endpoint**: `POST /models`
+- **Request Body**: `LlmModel`
+- **Response**: The created `LlmModel`
 
 ### Update a Model Record
 
-- **Endpoint**: `PUT /ollama/models/{id}`
+- **Endpoint**: `PUT /models/{id}`
 - **Path Parameters**:
   - `id` (UUID): The model record to update
-- **Request Body**: `OllamaModel`
-- **Response**: The updated `OllamaModel`
+- **Request Body**: `LlmModel`
+- **Response**: The updated `LlmModel`
 
-### List Installed Ollama Models
+### Delete a Model Record
 
-- **Endpoint**: `GET /ollama/installed`
-- **Description**: Queries the Ollama server for currently installed models, enriched with database metadata
-- **Response**: Array of `OllamaModel` objects
-
-### Refresh Model Cache
-
-- **Endpoint**: `POST /ollama/models/refresh`
-- **Description**: Eagerly refetches all installed models from Ollama and repopulates the Redis cache (model details + show-model responses have no TTL and are only updated via this endpoint, a one-time warmup at startup, or a model record save/update)
-- **Authorization**: Requires `model-admin` role
+- **Endpoint**: `DELETE /models/{id}`
+- **Path Parameters**:
+  - `id` (UUID): The model record to delete
 - **Response**: `204 No Content`
 
 ---
@@ -753,7 +757,7 @@ at `USER` scope get two separate documents.
 
 ## User Preferences
 
-User preferences control per-user settings such as which Ollama model to use for chat and the
+User preferences control per-user settings such as which catalog model to use for chat and the
 similarity thresholds for RAG retrieval — one per retrieval tier (`chatSimilarityThreshold`,
 `userSimilarityThreshold`, `globalSimilarityThreshold`), each optional: a null value falls back to
 that tier's system default.

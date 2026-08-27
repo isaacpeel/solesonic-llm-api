@@ -71,7 +71,7 @@ public class ChatMessageService {
      * <p>
      * This is deliberately the caller's job rather than the chat memory advisor's: the advisor never
      * runs on the A2A route, so user messages were previously not persisted there at all.
-     * {@link com.solesonic.config.olllama.DatabaseChatMemory} skips {@code USER} messages to avoid
+     * {@link com.solesonic.config.chat.DatabaseChatMemory} skips {@code USER} messages to avoid
      * saving them twice.
      */
     @Transactional
@@ -99,7 +99,7 @@ public class ChatMessageService {
     }
 
     /**
-     * Attaches token usage and timing to the assistant message {@link com.solesonic.config.olllama.DatabaseChatMemory}
+     * Attaches token usage and timing to the assistant message {@link com.solesonic.config.chat.DatabaseChatMemory}
      * already wrote for this turn. This has to be an update rather than something the advisor sets
      * directly: {@code responseMetadata} isn't final until the whole stream completes, which is after
      * that row is saved. {@code since} is the turn's start time, not the message's — the caller has

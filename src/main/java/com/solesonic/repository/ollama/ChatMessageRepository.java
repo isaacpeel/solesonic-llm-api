@@ -23,7 +23,7 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
 
     /**
      * The row the chat memory advisor just wrote for this turn — found by timing, not id, because
-     * {@link com.solesonic.config.olllama.DatabaseChatMemory} never hands the id back to the caller
+     * {@link com.solesonic.config.chat.DatabaseChatMemory} never hands the id back to the caller
      * that knows the turn's {@code responseMetadata}. Mirrors how
      * {@link com.solesonic.service.image.GeneratedImageService#forChatSince} locates this turn's
      * images.

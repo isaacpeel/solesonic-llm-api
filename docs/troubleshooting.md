@@ -215,9 +215,15 @@ Rate limit exceeded for Atlassian API
 2. Monitor API usage patterns
 3. Consider using multiple API credentials if available
 
-## Ollama Integration Issues
+## Model Server Issues
 
-### Ollama Connection Problems
+Six interactions each talk to their own OpenAI-compatible server — chat, ETL, vision, embedding, RAG
+task and tool-call — configured by `CHAT_OPENAI_HOST`, `ETL_OPENAI_HOST`, `VISION_OPENAI_HOST`,
+`EMBEDDING_OPENAI_HOST`, `RAG_TASK_OPENAI_HOST` and `TOOL_CALL_OPENAI_HOST`. The first question on
+any model failure is *which one* — a broken embedding host breaks retrieval while chat keeps
+answering, and a broken RAG task host breaks query rewriting while embeddings are fine.
+
+### Connection Problems
 
 #### Service Not Available
 ```
@@ -225,48 +231,61 @@ ConnectException: Connection refused (Connection refused)
 ```
 
 **Solutions:**
-1. **Check Ollama service**:
+1. **Check the server is up and serving the OpenAI surface**:
    ```bash
-   # Verify Ollama is running
-   ollama list
-   
-   # Start Ollama if not running
-   ollama serve
+   # Every configured host should answer this. Substitute each *_OPENAI_HOST in turn.
+   curl -s http://your-host:8080/v1/models
    ```
+   A `llama-server` answers with the single model it was launched with. Anything else — connection
+   refused, an HTML page, a 404 — means either the process is down or the URL is missing its `/v1`.
 
-2. **Check base URL configuration**:
-   - Default: `http://localhost:11434`
-   - Verify `spring.ai.ollama.base-url` property
+2. **Check the URL shape**: every `*_OPENAI_HOST` is a **full base URL including `/v1`**
+   (`http://host:port/v1`). A bare hostname or a URL without `/v1` produces a 404 on every call.
 
-3. **Network issues**:
-   ```bash
-   # Test connectivity
-   curl -v http://localhost:11434/api/tags
-   ```
+3. **Check the server's own logs**. Model-side failures (a model that failed to load, an out-of-memory
+   abort, a request larger than the launched context) are visible there and nowhere else — the
+   application only sees the resulting HTTP error.
+
+#### Timeout on the first request after an idle period
+```
+SocketTimeoutException / HttpTimeoutException
+```
+
+A cold model load can outlive a default read timeout, which surfaces as a timeout on the first
+request rather than a wait. `solesonic.llm.etl.openai.read-timeout` and
+`solesonic.llm.vision.openai.read-timeout` (both `5m`) exist for exactly this. There is no
+keep-alive setting to raise — that was an Ollama-only idle-unload timer, and a `llama-server`-style
+process holds its one model for its lifetime anyway.
+
+#### Empty or truncated vision description
+
+The vision model's reasoning and its description share one generation budget, and the server's
+context window has to hold the image as well. If descriptions come back empty, the server was
+launched with too small a `--ctx-size` — 32k is the working figure. This is a server-launch flag,
+not an application setting.
 
 #### Model Not Found
 ```
-Model 'qwen2.5:7b' not found
+model 'qwen2.5:7b' not found
 ```
 
-**Solutions:**
-1. **Pull required models**:
-   ```bash
-   # Chat model
-   ollama pull qwen2.5:7b
-   
-   # Embedding model
-   ollama pull twine/mxbai-embed-xsmall-v1:latest
-   ```
+An OpenAI-compatible server serves whichever model it was launched with; there is nothing to pull
+from the client side. Either launch the server with the model the application is configured for, or
+change the configured name to match what the server reports:
 
-2. **Check available models**:
-   ```bash
-   ollama list
-   ```
+```bash
+curl -s http://your-host:8080/v1/models
+```
 
-3. **Verify model configuration**:
-   - Check `solesonic.llm.chat.model` property
-   - Check `solesonic.llm.embedding.model` property
+The names live in `application-{local,test,prod,prod-nginx}.properties` as
+`solesonic.llm.chat.model`, `solesonic.llm.embedding.model`, `solesonic.llm.rag-task.model` and
+`solesonic.llm.tool-call.model`, and in `ETL_MODEL` / `VISION_MODEL`.
+
+### Retrieval returns nothing after changing the embedding model
+
+Changing `solesonic.llm.embedding.model` changes the vectors. Existing rows in `vector_store` were
+embedded with the old model and no longer sit near new queries, so retrieval quietly returns nothing
+useful. The fix is to re-ingest the corpus, not to tune the similarity thresholds.
 
 ## Application Startup Issues
 
@@ -369,7 +388,7 @@ Long query execution times
 
 #### LLM Response Times
 ```
-Slow responses from Ollama
+Slow responses from a model server
 ```
 
 **Solutions:**

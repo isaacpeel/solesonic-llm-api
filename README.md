@@ -7,7 +7,7 @@
 
 ## Features
 
-- **LLM Integration** - Uses Ollama for chat and embedding models with intelligent response generation
+- **LLM Integration** - Six independently-configured OpenAI-compatible model servers (chat, ETL, vision, embedding, RAG task, tool-call), each pointed at whichever hardware suits it
 - **Intent-Based Prompts** - Automatically classifies user messages and selects appropriate tools and prompts
 - **MCP Server Integration** - Connects to Model Context Protocol (MCP) servers with secure OAuth2 authentication
 - **Interactive Elicitation** - Real-time, structured user input during streaming chats via SSE with accept/decline/cancel actions
@@ -15,7 +15,6 @@
 - **Vector Storage** - Uses pgvector for efficient vector embeddings storage and similarity search
 - **RAG (Retrieval Augmented Generation)** - Enhances LLM responses with relevant contextual information
 - **Slash Commands** - Type-ahead command system backed by the MCP tool catalog with Redis caching
-- **Ollama Model Caching** - Redis-backed model metadata cache with configurable TTL and background refresh
 - **User Management** - Supports user-specific chat history, preferences, and personalized model selection
 - **Atlassian Integration** - Seamless connectivity with Jira and Confluence for product management workflows
 - **OAuth2 Token Broker** - Secure 3-legged OAuth2 authentication with automatic refresh token rotation
@@ -27,7 +26,7 @@
 
 - **Java 25** or later
 - **Docker and Docker Compose**
-- **Ollama** (for LLM services)
+- **An OpenAI-compatible model server** (llama.cpp `llama-server` or equivalent) for LLM services
 - **Redis** (for streaming and caching)
 
 ### 1. Start Database

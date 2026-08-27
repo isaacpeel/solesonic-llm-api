@@ -23,7 +23,11 @@ The application supports a `prod` profile optimized for production environments 
 
 ### External Dependencies
 - **PostgreSQL 12+** with pgvector extension
-- **Ollama service** (can be external)
+- **Six OpenAI-compatible model endpoints** (all external) — chat, ETL, vision, embedding, RAG task
+  and tool-call, configured by `CHAT_OPENAI_HOST`, `ETL_OPENAI_HOST`, `VISION_OPENAI_HOST`,
+  `EMBEDDING_OPENAI_HOST`, `RAG_TASK_OPENAI_HOST` and `TOOL_CALL_OPENAI_HOST`. Several may point at
+  one server; all six variables are required and the application will not start without them. See
+  [docs/configuration.md](configuration.md#model-server-configuration)
 - **OAuth2 Provider**
 - **Load Balancer** (optional, recommended for HA)
 

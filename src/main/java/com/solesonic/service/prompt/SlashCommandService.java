@@ -19,9 +19,8 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.ollama.OllamaChatModel;
-import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.ollama.api.OllamaChatOptions;
+import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
@@ -36,6 +35,8 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.*;
+
+import static com.solesonic.config.openai.ToolCallOpenAiConfig.TOOL_CALL_CHAT_MODEL;
 
 @Service
 public class SlashCommandService {
@@ -55,7 +56,7 @@ public class SlashCommandService {
     private final LocalToolRegistry localToolRegistry;
 
     private final SimpleLoggerAdvisor simpleLoggerAdvisor = new SimpleLoggerAdvisor();
-    private final OllamaChatModel taskChatModel;
+    private final OpenAiChatModel taskChatModel;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
     private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
@@ -64,15 +65,14 @@ public class SlashCommandService {
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
                                ChatMemory chatMemory,
-                               OllamaApi ollamaApi,
+                               @Qualifier(TOOL_CALL_CHAT_MODEL) OpenAiChatModel taskChatModel,
                                Optional<A2AAgentRegistry> a2aAgentRegistry,
                                LocalToolRegistry localToolRegistry,
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
                                GeneratedImageToolInterceptor generatedImageToolInterceptor,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
-                               @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup,
-                               @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
+                               @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
         this.redisTemplate = redisTemplate;
         this.jsonMapper = jsonMapper;
         this.chatMemory = chatMemory;
@@ -83,17 +83,9 @@ public class SlashCommandService {
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
         this.generatedImageToolInterceptor = generatedImageToolInterceptor;
+        this.taskChatModel = taskChatModel;
 
         mcpSyncClient = mcpSyncClients.getFirst();
-
-        OllamaChatOptions taskChatOptions = OllamaChatOptions.builder()
-                .model(taskModel)
-                .build();
-
-        taskChatModel = OllamaChatModel.builder()
-                .ollamaApi(ollamaApi)
-                .options(taskChatOptions)
-                .build();
     }
 
     public ChatClient taskClient(ToolCallback toolCallback) {

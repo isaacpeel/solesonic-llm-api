@@ -1,4 +1,4 @@
-package com.solesonic.config.olllama;
+package com.solesonic.config.chat;
 
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.image.GeneratedImageService;

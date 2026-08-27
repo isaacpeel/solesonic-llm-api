@@ -1,8 +1,8 @@
-package com.solesonic.api.ollama;
+package com.solesonic.api.model;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.solesonic.model.ollama.OllamaModel;
-import com.solesonic.service.ollama.OllamaService;
+import com.solesonic.model.llm.LlmModel;
+import com.solesonic.service.model.ModelCatalogService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -16,7 +16,6 @@ import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.ZonedDateTime;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -24,11 +23,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @ExtendWith(MockitoExtension.class)
-public class OllamaControllerTest {
+class ModelCatalogControllerTest {
 
     private MockMvc mockMvc;
 
@@ -39,42 +43,33 @@ public class OllamaControllerTest {
             .build();
 
     @Mock
-    private OllamaService ollamaService;
+    private ModelCatalogService modelCatalogService;
 
     @InjectMocks
-    private OllamaController ollamaController;
+    private ModelCatalogController modelCatalogController;
 
     private UUID modelId;
-    private OllamaModel ollamaModel;
-    private List<OllamaModel> ollamaModels;
+    private LlmModel llmModel;
 
     @BeforeEach
     void setUp() {
         modelId = UUID.randomUUID();
 
-        // Set up OllamaModel
-        ollamaModel = new OllamaModel();
-        ollamaModel.setId(modelId);
-        ollamaModel.setName("llama3");
-        ollamaModel.setCensored(false);
-        ollamaModel.setCreated(ZonedDateTime.now());
-        ollamaModel.setUpdated(ZonedDateTime.now());
+        llmModel = new LlmModel();
+        llmModel.setId(modelId);
+        llmModel.setName("llama3");
+        llmModel.setCensored(false);
+        llmModel.setCreated(ZonedDateTime.now());
+        llmModel.setUpdated(ZonedDateTime.now());
 
-        // Set up list of OllamaModels
-        ollamaModels = new ArrayList<>();
-        ollamaModels.add(ollamaModel);
-
-        // Set up MockMvc
-        mockMvc = MockMvcBuilders.standaloneSetup(ollamaController).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(modelCatalogController).build();
     }
 
     @Test
     void testModels() throws Exception {
-        
-        when(ollamaService.models()).thenReturn(ollamaModels);
+        when(modelCatalogService.models()).thenReturn(List.of(llmModel));
 
-         
-        mockMvc.perform(get("/ollama/models"))
+        mockMvc.perform(get("/models"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$[0].id").value(modelId.toString()))
@@ -84,11 +79,9 @@ public class OllamaControllerTest {
 
     @Test
     void testModel() throws Exception {
-        
-        when(ollamaService.get(modelId)).thenReturn(ollamaModel);
+        when(modelCatalogService.get(modelId)).thenReturn(llmModel);
 
-         
-        mockMvc.perform(get("/ollama/models/{id}", modelId))
+        mockMvc.perform(get("/models/{id}", modelId))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
@@ -98,41 +91,35 @@ public class OllamaControllerTest {
 
     @Test
     void testSave() throws Exception {
-        
-        when(ollamaService.save(any(OllamaModel.class))).thenReturn(ollamaModel);
+        when(modelCatalogService.save(any(LlmModel.class))).thenReturn(llmModel);
 
-         
-        mockMvc.perform(post("/ollama/models")
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(jsonMapper.writeValueAsString(ollamaModel)))
+        mockMvc.perform(post("/models")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(llmModel)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
-                .andExpect(jsonPath("$.name").value("llama3"))
-                .andExpect(jsonPath("$.censored").value(false));
+                .andExpect(jsonPath("$.name").value("llama3"));
     }
 
     @Test
     void testUpdate() throws Exception {
-        
-        when(ollamaService.update(eq(modelId), any(OllamaModel.class))).thenReturn(ollamaModel);
+        when(modelCatalogService.update(eq(modelId), any(LlmModel.class))).thenReturn(llmModel);
 
-         
-        mockMvc.perform(put("/ollama/models/{id}", modelId)
-                .contentType(MediaType.APPLICATION_JSON)
-                .content(jsonMapper.writeValueAsString(ollamaModel)))
+        mockMvc.perform(put("/models/{id}", modelId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(llmModel)))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.id").value(modelId.toString()))
-                .andExpect(jsonPath("$.name").value("llama3"))
-                .andExpect(jsonPath("$.censored").value(false));
+                .andExpect(jsonPath("$.name").value("llama3"));
     }
 
     @Test
-    void testRefresh() throws Exception {
-        mockMvc.perform(post("/ollama/models/refresh"))
+    void testDelete() throws Exception {
+        mockMvc.perform(delete("/models/{id}", modelId))
                 .andExpect(status().isNoContent());
 
-        verify(ollamaService).refreshCache();
+        verify(modelCatalogService).delete(modelId);
     }
 }

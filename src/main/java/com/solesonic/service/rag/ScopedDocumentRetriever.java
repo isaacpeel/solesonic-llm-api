@@ -37,7 +37,7 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
 
     private final VectorStore vectorStore;
     private final int topK;
-    private final List<ScopedTier> tiers;
+    private final List<ScopedTier> scopedTiers;
 
     /**
      * One scope's filter and similarity threshold, plus the scope itself for logging.
@@ -52,34 +52,33 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
 
     public ScopedDocumentRetriever(VectorStore vectorStore,
                                    int topK,
-                                   List<ScopedTier> tiers) {
+                                   List<ScopedTier> scopedTiers) {
         this.vectorStore = vectorStore;
         this.topK = topK;
-        this.tiers = List.copyOf(tiers);
+        this.scopedTiers = List.copyOf(scopedTiers);
     }
 
     @Override
     public List<Document> retrieve(Query query) {
         List<Document> retrieved = new ArrayList<>(topK);
 
-        for (ScopedTier tier : tiers) {
+        for (ScopedTier scopedTier : scopedTiers) {
             int remaining = topK - retrieved.size();
 
             if (remaining <= 0) {
-                log.debug("Retrieval budget of {} spent before reaching scope {}", topK, tier.scope());
-
+                log.debug("Retrieval budget of {} spent before reaching scope {}", topK, scopedTier.scope());
                 break;
             }
 
             List<Document> tierDocuments = VectorStoreDocumentRetriever.builder()
                     .vectorStore(vectorStore)
-                    .similarityThreshold(tier.similarityThreshold())
+                    .similarityThreshold(scopedTier.similarityThreshold())
                     .topK(remaining)
-                    .filterExpression(tier.filterExpression())
+                    .filterExpression(scopedTier.filterExpression())
                     .build()
                     .retrieve(query);
 
-            log.debug("Retrieved {} document(s) at scope {}", tierDocuments.size(), tier.scope());
+            log.debug("Retrieved {} document(s) at scope {}", tierDocuments.size(), scopedTier.scope());
 
             retrieved.addAll(tierDocuments);
         }

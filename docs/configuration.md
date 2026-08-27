@@ -36,7 +36,7 @@ This document serves as the single source of truth for all environment variables
 
 ### Redis Configuration
 
-Redis is required for streaming chat (Redis Streams) and for caching (Ollama models, slash commands). In the local profile, it defaults to `localhost:6379` without authentication. In production, set the following variables.
+Redis is required for streaming chat (Redis Streams) and for caching the slash-command catalog. In the local profile, it defaults to `localhost:6379` without authentication. In production, set the following variables.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
@@ -98,11 +98,50 @@ re-consent.
 |----------|-------------|---------|----------|--------|
 | `AWS_KMS_KEY_ID` | AWS KMS key ID for encryption | `arn:aws:kms:us-east-1:123456789012:key/...` | No | Optional for enhanced security |
 
-### Ollama Configuration
+### Model Server Configuration
 
-| Variable | Description | Example | Required | Notes |
-|----------|-------------|---------|----------|--------|
-| `OLLAMA_HOST` | Ollama server hostname | `localhost` | No | Default localhost for local profile; required for production |
+Every LLM interaction in this application talks to an **OpenAI-compatible** server (llama.cpp
+`llama-server` or anything else that speaks the same protocol). There is no Ollama anywhere: the
+`spring-ai-starter-model-ollama` dependency, all `Ollama*` types, and Ollama-only concepts
+(keep-alive, pull-on-missing) were removed.
+
+Six interactions are configured **independently**, each with its own host, so each can be pointed at
+whichever hardware suits it:
+
+| Interaction | Host variable | Model property | What it does |
+|---|---|---|---|
+| Chat | `CHAT_OPENAI_HOST` | `solesonic.llm.chat.model` | The conversational model |
+| ETL | `ETL_OPENAI_HOST` | `solesonic.llm.etl.model` (`ETL_MODEL`) | Keyword + metadata enrichment during document ingestion |
+| Vision | `VISION_OPENAI_HOST` | `solesonic.llm.vision.model` (`VISION_MODEL`) | Describing image attachments |
+| Embedding | `EMBEDDING_OPENAI_HOST` | `solesonic.llm.embedding.model` | Vectors for the pgvector store |
+| RAG task | `RAG_TASK_OPENAI_HOST` | `solesonic.llm.rag-task.model` | Query rewrite, multi-query expansion, reranking |
+| Tool-call task | `TOOL_CALL_OPENAI_HOST` | `solesonic.llm.tool-call.model` | Slash-command tool-call routing |
+
+Every `*_OPENAI_HOST` is a **full base URL including the `/v1` path** (`http://host:port/v1`) and
+every one is **required** — none carries a masking default, so a missing one fails startup with a
+clear placeholder error rather than silently falling back. Nothing requires them to be six different
+hosts; pointing several at one server is fine.
+
+The model-name properties live in `application-{local,test,prod,prod-nginx}.properties` rather than
+being exposed as variables, because a `llama-server`-style process serves whichever single model it
+was launched with regardless of what is requested. On such a server the model name mainly seeds a
+new user's default model preference and labels the request.
+
+Each server is expected to run with no API key enforcement — the client is wired in Spring AI's
+no-auth mode, so no `Authorization` header is sent.
+
+**What is a server-launch concern rather than app configuration.** Context size, batch size, thread
+count and GPU placement are flags on the target server (`--ctx-size`, `--batch-size`, `--threads`,
+`--n-gpu-layers` on `llama-server`), not per-request client options. In particular the vision server
+has to be launched with a context large enough to hold an image, the model's reasoning and the
+description — 32k was the working figure.
+
+**Both Spring AI auto-configurations are disabled** (`spring.ai.model.chat=none`,
+`spring.ai.model.embedding=none`). Every model here is hand-built in `config/openai`, and the
+embedding one has to be the sole unqualified `EmbeddingModel` bean in the context because Spring
+AI's own `PgVectorStoreAutoConfiguration.vectorStore(EmbeddingModel, ...)` takes an unqualified
+parameter there is no way to add a qualifier to. Left enabled, the starter's own
+`openAiEmbeddingModel` would be a second candidate and the context would fail to start.
 
 ### Slash Commands Cache Configuration
 
@@ -128,24 +167,68 @@ Upload size is bounded by `spring.servlet.multipart.max-file-size` rather than a
 
 ### Chat Configuration
 
-Main chat is served by a llama.cpp `llama-server` instance over its OpenAI-compatible API, pinned to
-a URI dedicated to chat inference — separate from the Ollama host that backs ETL, vision, RAG
-query-rewrite, and slash-command tool routing.
+Main chat is served by its own OpenAI-compatible server, pinned to a URI dedicated to chat inference
+— separate from the hosts that back ETL, vision, embeddings, RAG query-rewrite, and slash-command
+tool routing. See [Model Server Configuration](#model-server-configuration) for the whole set.
 
 The variable is **required**: the application will not start without it.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `CHAT_OPENAI_HOST` | Base URL for the llama.cpp OpenAI-compatible chat endpoint | `http://izzy-bot-chat:8080/v1` | Yes | A **full base URL** including the `/v1` path, matching the shape `spring.ai.openai.base-url`/OpenAI itself expects — not the bare hostname `OLLAMA_HOST` holds |
-
-The llama.cpp instance runs with no API key enforcement — the client is wired in Spring AI's no-auth
-mode, so no `Authorization` header is sent.
+| `CHAT_OPENAI_HOST` | Base URL for the OpenAI-compatible chat endpoint | `http://izzy-bot-chat:8080/v1` | Yes | A **full base URL** including the `/v1` path, matching the shape `spring.ai.openai.base-url`/OpenAI itself expects |
 
 Fixed in `application*.properties` rather than exposed as a variable:
 
-- `solesonic.llm.chat.model` — the model name `llama-server` was started with. `llama-server` serves
-  whichever single model it was launched with regardless of what's requested, so this mainly seeds a
-  new user's default model preference.
+- `solesonic.llm.chat.model` — the model name the server was started with. A `llama-server`-style
+  process serves whichever single model it was launched with regardless of what's requested, so this
+  mainly seeds a new user's default model preference.
+
+### ETL Configuration
+
+Uploaded documents are split, then enriched with keywords and summary metadata before being embedded.
+Enrichment makes an LLM call per chunk, so it runs against its own host and can be sized for
+throughput rather than latency.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `ETL_OPENAI_HOST` | Base URL for the OpenAI-compatible enrichment endpoint | `http://izzy-bot-spark:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+| `ETL_MODEL` | Model used for keyword and metadata enrichment | `llama3.1:8b` | Yes | Small and fast beats large here — it is one call per chunk |
+
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.llm.etl.openai.read-timeout=5m` — a cold model load outlives the default read timeout
+  and surfaces as a timeout on the first ingest rather than a wait.
+
+Note that chat *document attachments* deliberately bypass this path entirely: they are split and
+embedded inline on the turn they are sent, with no enrichment, because the user is waiting.
+
+### Embedding Configuration
+
+Vectors for the pgvector store.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `EMBEDDING_OPENAI_HOST` | Base URL for the OpenAI-compatible embedding endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+
+The model name is fixed per profile as `solesonic.llm.embedding.model`. **Changing it changes the
+vectors**, so an existing corpus has to be re-ingested rather than mixed — a store holding two
+models' embeddings ranks incoherently.
+
+### RAG and Tool-Call Task Configuration
+
+Two small models that never talk to the user: one runs the RAG pipeline's own prompts (query
+rewrite, multi-query expansion, LLM reranking), the other turns a slash command into a single tool
+call. They are configured separately because they are asked for completely different things.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `RAG_TASK_OPENAI_HOST` | Base URL for the RAG task endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+| `TOOL_CALL_OPENAI_HOST` | Base URL for the tool-call routing endpoint | `http://izzy-bot:8080/v1` | Yes | A **full base URL** including the `/v1` path |
+
+The model names are fixed per profile as `solesonic.llm.rag-task.model` and
+`solesonic.llm.tool-call.model`. Both are required in every profile — neither carries a Java-side
+default any more. The RAG task model runs at temperature 0 so a rewritten query and a rerank verdict
+are reproducible for the same input; the tool-call model needs to be one that calls tools reliably.
 
 ### Vision Configuration
 
@@ -158,15 +241,20 @@ Both variables are **required**: the application will not start without them.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `VISION_MODEL` | Ollama model used to describe images | `qwen2.5vl` | Yes | Must be vision-capable. A text-only model produces confident nonsense rather than an error |
-| `VISION_OLLAMA_HOST` | Ollama base URL for the vision model | `http://izzy-bot-spark:11434` | Yes | A **full base URL**, like `ETL_OLLAMA_HOST` — not the bare hostname that `OLLAMA_HOST` holds |
+| `VISION_MODEL` | Model used to describe images | `qwen2.5vl` | Yes | Must be vision-capable. A text-only model produces confident nonsense rather than an error |
+| `VISION_OPENAI_HOST` | Base URL for the OpenAI-compatible vision endpoint | `http://izzy-bot-spark:8080/v1` | Yes | A **full base URL** including the `/v1` path |
 
 Fixed in `application.properties` rather than exposed as variables:
 
-- `solesonic.llm.vision.ollama.read-timeout=5m` — a cold vision-model load outlives the default
-  read timeout.
+- `solesonic.llm.vision.openai.read-timeout=5m` — a cold vision-model load outlives the default
+  read timeout and surfaces as a timeout on the first image rather than a wait.
 - `solesonic.llm.vision.max-image-bytes=5MB` — images above this are left undescribed rather than
   stalling the turn.
+
+The vision server must be **launched** with a context window large enough for an image, the model's
+reasoning and the description — 32k is the working figure. That is a `--ctx-size` flag on the
+server, not something this application can set per request. A budget that runs out mid-reasoning
+yields an empty description rather than a truncated one.
 
 ### Image Generation Configuration
 
@@ -200,22 +288,15 @@ Independently of it, a generation stream that hears nothing for 200s ends itself
 No separate credential is configured: generation travels on the calling user's own token, exchanged
 for an on-behalf-of token like every other MCP call. The user's JWT must carry the
 `mcp-generate-image` role — see [docs/api.md](api.md#image-generation).
-- `solesonic.llm.vision.ollama.keep-alive=-1m` — pins the model in Ollama so an idle period does not
-  evict it: Ollama reads any negative duration as "keep loaded forever". The unit is mandatory —
-  Spring AI sends `keep_alive` as a JSON string, and Ollama rejects a unitless one with
-  `400 time: missing unit in duration "-1"`. Set a positive duration such as `30m` instead if the
-  vision host also serves other models and needs the VRAM back.
-- `solesonic.llm.vision.ollama.warmup-on-startup=true` — preloads the model just after startup, on a
-  background thread, so the first image-bearing turn does not pay the cold load.
 
-The model is pulled on startup if missing (`WHEN_MISSING`), so the first boot against a host without
-the model will download it before the application becomes ready.
-
-The last two settings exist because a cold load is what makes the vision pass fail: it can take tens
-of seconds, and a turn whose vision pass times out still answers normally — just as though no image
-were attached. Keeping the model resident makes that rare; the `attachment` SSE event
-([docs/api.md](api.md#attachment-event-payload)) makes it visible when it happens anyway. A skipped
-image is logged at WARN with the attachment id, the elapsed time, and the reason.
+Keeping a model resident is no longer something this application asks for: Ollama's `keep_alive` and
+pull-on-missing have no OpenAI-protocol equivalent, and a `llama-server`-style process loads its one
+model at startup and holds it for its lifetime anyway — which is exactly the behaviour those
+settings were emulating. What remains is the read timeout, which is what lets a first request
+survive a slow load rather than aborting it. A turn whose vision pass fails still answers normally,
+just as though no image were attached; the `attachment` SSE event
+([docs/api.md](api.md#attachment-event-payload)) is what makes that visible. A skipped image is
+logged at WARN with the attachment id, the elapsed time, and the reason.
 
 ### MCP (Model Context Protocol) Configuration
 
@@ -303,8 +384,16 @@ MCP_CLIENT_SECRET=your_mcp_client_secret
 MCP_ISSUER_URI=https://your-auth-server
 TOKEN_ENDPOINT=https://your-auth-server/token
 
-# Ollama Configuration
-OLLAMA_HOST=localhost
+# Model Server Configuration — six OpenAI-compatible endpoints, each a full base URL
+# including /v1. All six are required; several may point at the same server.
+CHAT_OPENAI_HOST=http://localhost:8080/v1
+ETL_OPENAI_HOST=http://localhost:8080/v1
+ETL_MODEL=llama3.1:8b
+VISION_OPENAI_HOST=http://localhost:8080/v1
+VISION_MODEL=qwen2.5vl
+EMBEDDING_OPENAI_HOST=http://localhost:8080/v1
+RAG_TASK_OPENAI_HOST=http://localhost:8080/v1
+TOOL_CALL_OPENAI_HOST=http://localhost:8080/v1
 
 # AWS Configuration (optional)
 AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/your-key-id
@@ -338,5 +427,7 @@ The application supports different profiles with varying configuration requireme
 3. **CORS errors**: Add your frontend URL to `CORS_ALLOWED_ORIGINS`
 4. **Redis connection failures**: Verify Redis is running and that `REDIS_HOST` (note the double-D) is set correctly for non-local environments
 5. **MCP integration issues**: Verify `SOLESONIC_MCP_URI`, `MCP_CLIENT_ID`, `MCP_CLIENT_SECRET`, and `MCP_ISSUER_URI` are all configured
+6. **Startup fails on a missing placeholder**: all six `*_OPENAI_HOST` variables are required and none has a default. The error names the property; set it to a full base URL including `/v1`
+7. **`required a single bean, but 2 were found` for `EmbeddingModel`**: `spring.ai.model.embedding` is not `none`, so the OpenAI starter's own auto-configured embedding bean is competing with the hand-built one for pgvector's unqualified injection point
 
 For more troubleshooting guidance, see [docs/troubleshooting.md](troubleshooting.md).

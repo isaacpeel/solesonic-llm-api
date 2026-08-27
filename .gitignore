@@ -1,6 +1,7 @@
 /docker/.env
 /.env
 /.env.*
+!/.env.example
 /target/
 /*.log
 /logs/

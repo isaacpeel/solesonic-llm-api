@@ -74,7 +74,7 @@ class SecurityEventLoggerTest {
                 "/images/abc/metadata",
                 "/documents",
                 "/trainingdocuments/abc",
-                "/ollama/installed",
+                "/models/abc",
                 "/users/abc",
                 "/slash/commands",
                 "/atlassian/auth",

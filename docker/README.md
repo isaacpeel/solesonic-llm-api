@@ -24,7 +24,7 @@ All commands below assume you are running from the **project root**.
 
 ## Full stack (API, Redis, Postgres)
 
-Uses `Dockerfile` — a plain JRE image. The API needs no GPU of its own: every model call (chat, embedding, ETL, vision, image generation) goes out over HTTP to Ollama or the MCP image server, which run outside this compose file.
+Uses `Dockerfile` — a plain JRE image. The API needs no GPU of its own: every model call (chat, embedding, ETL, vision, RAG task, tool-call, image generation) goes out over HTTP to an OpenAI-compatible model server or the MCP image server, all of which run outside this compose file.
 
 **Build and start:**
 ```bash

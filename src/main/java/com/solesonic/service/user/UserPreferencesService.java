@@ -18,7 +18,7 @@ public class UserPreferencesService {
     private static final Logger log = LoggerFactory.getLogger(UserPreferencesService.class);
     private final UserPreferencesRepository userPreferencesRepository;
 
-    @Value("${solesonic.llm.chat.model}")
+    @Value("${spring.ai.openai.model}")
     private String chatModel;
 
     @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")

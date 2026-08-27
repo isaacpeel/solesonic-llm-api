@@ -16,7 +16,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.client.ResourceAccessException;
@@ -56,7 +56,7 @@ class ImageDescriptionServiceTest {
     private static final String VISION_MODEL = "qwen2.5vl";
 
     @Mock
-    private OllamaChatModel visionChatModel;
+    private OpenAiChatModel visionChatModel;
 
     @Mock
     private ChatAttachmentService chatAttachmentService;
@@ -187,7 +187,7 @@ class ImageDescriptionServiceTest {
         Set<UUID> attachmentIds = Set.of(chatAttachment.getId());
 
         when(chatAttachmentService.attachments(userId, attachmentIds)).thenReturn(List.of(chatAttachment));
-        when(visionChatModel.call(any(Prompt.class))).thenThrow(new IllegalStateException("ollama is down"));
+        when(visionChatModel.call(any(Prompt.class))).thenThrow(new IllegalStateException("the vision server is down"));
 
         String augmented = augmented("what is this?", attachmentIds);
 

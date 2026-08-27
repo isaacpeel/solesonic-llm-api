@@ -20,4 +20,13 @@ Your primary role is to provide direct, helpful, and intelligent responses acros
 
 ---
 
-User Request: {userMessage}
+### AVAILABLE TOOLS
+The following tools are currently loaded in your environment. Use them as needed to provide the best possible response:
+weather_lookup
+web_search
+web_extract_content
+web_search_news
+web_search_advanced
+get_current_date
+get_current_time
+get_current_date_time

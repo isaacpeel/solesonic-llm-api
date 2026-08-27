@@ -38,8 +38,9 @@ Thank you for your interest in contributing to the Solesonic LLM API! This docum
    # Start PostgreSQL database with pgvector
    docker compose -f docker/docker-compose-db.yml up -d
    
-   # Ensure Ollama is running (install separately)
-   ollama serve
+   # Ensure an OpenAI-compatible model server is running (install separately) and that every
+   # *_OPENAI_HOST in .env points at one — all six are required to start the application.
+   curl -s http://localhost:8080/v1/models
    ```
 
 4. **Build and Test**

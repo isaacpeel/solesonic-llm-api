@@ -47,7 +47,7 @@ public class SecurityEventLogger {
             "/images",
             "/documents",
             "/trainingdocuments",
-            "/ollama",
+            "/models",
             "/users",
             "/slash",
             "/atlassian",

@@ -2,19 +2,19 @@ package com.solesonic.service.etl;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.model.transformer.KeywordMetadataEnricher;
-import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-import static com.solesonic.config.olllama.EtlOllamaConfig.ETL_KEYWORD_CHAT_MODEL;
+import static com.solesonic.config.openai.EtlOpenAiConfig.ETL_KEYWORD_CHAT_MODEL;
 
 @Component
 public class EtlKeywordEnricher {
-    private final OllamaChatModel chatModel;
+    private final OpenAiChatModel chatModel;
 
-    public EtlKeywordEnricher(@Qualifier(ETL_KEYWORD_CHAT_MODEL) OllamaChatModel chatModel) {
+    public EtlKeywordEnricher(@Qualifier(ETL_KEYWORD_CHAT_MODEL) OpenAiChatModel chatModel) {
         this.chatModel = chatModel;
     }
 

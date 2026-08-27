@@ -22,16 +22,14 @@ public class RetrievalLoggingPostProcessor implements DocumentPostProcessor {
 
     @Override
     public List<Document> process(Query query, List<Document> documents) {
-        if (log.isInfoEnabled()) {
-            log.info("Retrieved {} documents for query \"{}\"", documents.size(), query.text());
+        log.info("Retrieved {} documents for query \"{}\"", documents.size(), query.text());
 
-            for (Document document : documents) {
-                Object trainingDocumentId = document.getMetadata().get(TRAINING_DOCUMENT_ID);
-                Object distance = document.getMetadata().get(DocumentMetadata.DISTANCE.value());
+        for (Document document : documents) {
+            Object trainingDocumentId = document.getMetadata().get(TRAINING_DOCUMENT_ID);
+            Object distance = document.getMetadata().get(DocumentMetadata.DISTANCE.value());
 
-                log.info("Retrieved document id={} trainingDocumentId={} distance={}",
-                        document.getId(), trainingDocumentId, distance);
-            }
+            log.info("Retrieved document id={} trainingDocumentId={} distance={}",
+                    document.getId(), trainingDocumentId, distance);
         }
 
         return documents;

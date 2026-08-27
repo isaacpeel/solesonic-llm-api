@@ -1,19 +1,26 @@
-package com.solesonic.model.ollama;
+package com.solesonic.model.llm;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import jakarta.persistence.*;
-import org.hibernate.annotations.Formula;
-import org.hibernate.annotations.JdbcTypeCode;
-import org.hibernate.type.SqlTypes;
-import org.springframework.ai.ollama.api.OllamaApi;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 
 import java.time.ZonedDateTime;
-import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
+/**
+ * One entry in the model catalog — the set of models a user may pick between in their preferences.
+ * <p>
+ * {@code @Table} is pinned explicitly because the Java name no longer matches the table name: the
+ * type was renamed away from Ollama, the production table was not. Renaming the table itself is a
+ * data migration for a cosmetic win, so it is deliberately left alone.
+ */
 @Entity
-public class OllamaModel {
+@Table(name = "ollama_model")
+public class LlmModel {
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -23,12 +30,6 @@ public class OllamaModel {
     private String name;
 
     private boolean censored;
-
-    @Transient
-    private Map<String, Object> ollamaModel;
-
-    @Transient
-    private Map<String, Object> ollamaShow;
 
     private ZonedDateTime created;
 
@@ -73,21 +74,5 @@ public class OllamaModel {
 
     public void setCreated(ZonedDateTime created) {
         this.created = created;
-    }
-
-    public Map<String, Object> getOllamaModel() {
-        return ollamaModel;
-    }
-
-    public void setOllamaModel(Map<String, Object> ollamaModel) {
-        this.ollamaModel = ollamaModel;
-    }
-
-    public Map<String, Object> getOllamaShow() {
-        return ollamaShow;
-    }
-
-    public void setOllamaShow(Map<String, Object> ollamaShow) {
-        this.ollamaShow = ollamaShow;
     }
 }
