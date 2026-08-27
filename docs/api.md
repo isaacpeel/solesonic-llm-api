@@ -170,15 +170,16 @@ De-duplicate by `imageId`.
     "message": "...",
     "generatedImages": [],
     "responseMetadata": {
-      "model": "qwen2.5:7b",
-      "createdAt": "2023-08-04T19:22:45.499127Z",
-      "doneReason": "stop",
-      "totalDurationNanos": 10706818083,
-      "loadDurationNanos": 6338219291,
-      "promptEvalCount": 26,
-      "promptEvalDurationNanos": 130079000,
-      "evalCount": 259,
-      "evalDurationNanos": 4232710000
+      "model": "qwen3-8b",
+      "id": "chatcmpl-abc123",
+      "createdAt": "2026-08-27T19:22:45Z",
+      "finishReason": "stop",
+      "modelCalls": 1,
+      "promptTokens": 1042,
+      "completionTokens": 259,
+      "totalTokens": 1301,
+      "promptMillis": 130.079,
+      "predictedMillis": 4232.71
     }
   }
 }
@@ -188,26 +189,31 @@ De-duplicate by `imageId`.
 (`response_metadata jsonb`), so it persists and comes back on every later read of this message,
 including `GET /chats/{chatId}` history.
 
-Every field is the model server's own accounting for the turn, copied verbatim from the terminal
-response and named after the field it comes from. Nothing here is measured or derived by this API,
-so these are the server's numbers, not an approximation of them.
-
-> **The shape is Ollama's, and the reader still looks for Ollama's metadata keys.** Chat now runs
-> against an OpenAI-compatible server, which reports a different (and smaller) set — so in practice
-> most of these fields come back `null` today. Treat every one of them as nullable; a client must
-> not assume any field is present. Mapping this onto the OpenAI response shape is outstanding work.
+Every field is the model server's own accounting for the turn, copied verbatim and named after the
+field it comes from. Nothing here is measured or derived by this API, so these are the server's
+numbers, not an approximation of them.
 
 - `model` is the model that actually answered, as the server named it. **A message no longer carries
   a top-level `model` field** — that column held the user's configured preference at save time, which
   is what was asked for rather than what ran, and it was stamped even onto messages no model
   produced. Read `responseMetadata.model` instead.
-- The four `*Nanos` fields are nanoseconds. `totalDurationNanos` covers the model call only — not
-  retrieval, vision description, or anything else the turn did around it.
-- `promptEvalCount`/`evalCount` are input and output token counts. There is no total: add them if you
-  want one.
-- `loadDurationNanos` is time spent loading the model, and is large on the first request against a
-  cold model.
-- `doneReason` is why generation stopped — `stop` for a normal completion.
+- `id` is the server's own completion id, and `createdAt` its timestamp for the response.
+- `finishReason` is why generation stopped — `stop` for a normal completion, `tool_calls` for a turn
+  that ended by calling a tool, `length` for one cut off at the token limit. It is the *last* model
+  call's reason, which is the turn's.
+- **The counts are the whole turn's, not one model call's.** A turn that calls a tool runs the model
+  again after every tool result, and each of those round trips reports its own usage; what you get is
+  the sum, with `modelCalls` saying how many went into it. `modelCalls` is 1 for an ordinary turn.
+- `promptTokens` and `completionTokens` are input and output tokens; `totalTokens` is the server's
+  own total, not necessarily the sum of the other two — a server that reports cached or reasoning
+  tokens counts them there.
+- `promptMillis` and `predictedMillis` are milliseconds spent on prompt evaluation and on generation.
+  **These two are a llama.cpp extension**, taken from the non-standard `timings` object llama-server
+  adds to its final response; against any other OpenAI-compatible server they are simply absent.
+  Neither covers retrieval, vision description, or anything else the turn did around the model call.
+- There is no tokens-per-second: a single rate would be meaningless across several round trips, and
+  this API does not compute what the server did not report. Divide `completionTokens` by
+  `predictedMillis / 1000` if you want one.
 
 `responseMetadata` is `null` on any message the model server never reported on:
 
@@ -215,10 +221,11 @@ so these are the server's numbers, not an approximation of them.
   answer.
 - `ASSISTANT` messages for turns that never called a chat model — an A2A agent delegation is handled
   entirely by the remote agent, which has no token accounting to report.
-- `ASSISTANT` messages for turns that ended before the terminal response arrived.
+- `ASSISTANT` messages for turns that ended before the model reported any usage.
 
-Treat the whole object as optional, and every field within it as nullable — a model that reports less
-than the documented set leaves the missing fields out.
+Treat the whole object as optional, and every field within it as nullable — a model server that
+reports less than the documented set leaves the missing fields out, and messages persisted before
+this shape existed carry only what could be carried forward.
 
 ### init Event Payload
 

@@ -32,9 +32,11 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -42,24 +44,23 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
-import static com.solesonic.service.prompt.PromptService.BASIC_PROMPT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -124,6 +125,13 @@ class PromptServiceTest {
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
 
+        //Both are @Value-injected, so constructing the service directly leaves them null and every
+        //route through streamBasicPrompt dies on "resource cannot be null" before reaching what the
+        //test is actually about.
+        ReflectionTestUtils.setField(promptService, "basicSystemPrompt",
+                new ClassPathResource("prompts/basic-system-prompt.st"));
+        ReflectionTestUtils.setField(promptService, "defaultChatModel", "qwen3-8b");
+
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
 
@@ -141,15 +149,9 @@ class PromptServiceTest {
 
         lenient().when(chatDocumentIngestionService.ingest(any(), any(), any())).thenReturn(List.of());
 
-        lenient().when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("llama3"));
+        lenient().when(userPreferencesService.get(userId)).thenReturn(new UserPreferences());
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
                 .thenReturn(mock(Advisor.class));
-    }
-
-    private UserPreferences preferencesWithModel(String model) {
-        UserPreferences preferences = new UserPreferences();
-        preferences.setModel(model);
-        return preferences;
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {
@@ -179,13 +181,6 @@ class PromptServiceTest {
 
     private static Flux<ChatResponse> chatResponsesOf(Flux<String> emissions) {
         return emissions.map(text -> new ChatResponse(List.of(new Generation(new AssistantMessage(text)))));
-    }
-
-    private McpSchema.GetPromptResult basicPromptResult() {
-        McpSchema.TextContent textContent = new McpSchema.TextContent(null, "You are Izzy", null);
-        McpSchema.PromptMessage promptMessage =
-                new McpSchema.PromptMessage(McpSchema.Role.USER, textContent);
-        return new McpSchema.GetPromptResult(null, List.of(promptMessage), null);
     }
 
     @Test
@@ -218,31 +213,28 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.empty()));
-        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
-        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
-        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("hello"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
                 .expectNext("hello")
                 .verifyComplete();
 
-        verify(mcpClient).getPrompt(argThat(request -> BASIC_PROMPT.equals(request.name())));
+        //The basic prompt is a classpath template, not an MCP fetch — the MCP round trip that used to
+        //happen here is gone, and a regression that reinstated it would cost every turn a call.
+        verify(requestSpec).system(anyString());
+        verifyNoInteractions(mcpClient);
     }
 
     /**
-     * Ollama reports counts and durations only on the response it marks done; every earlier chunk
-     * carries none. The capture must therefore end up holding the terminal chunk's numbers and
-     * ignore the chunks before it entirely.
+     * The counts arrive on the stream's last chunk, which carries no text and no finish reason of its
+     * own. The capture has to end up holding both halves, over the same stream that produced the
+     * chunks — a second model call to fetch them would answer the question twice.
      */
     @Test
-    void stream_withNoCommandsAndNoStickyAgent_capturesTerminalResponseMetadata() {
+    void stream_withNoCommandsAndNoStickyAgent_capturesResponseMetadataAcrossTheStream() {
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.empty()));
-        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
-        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
-        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
 
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
@@ -259,18 +251,20 @@ class PromptServiceTest {
                         .build());
         ChatResponse last = new ChatResponse(
                 List.of(new Generation(new AssistantMessage("lo"),
-                        ChatGenerationMetadata.builder().finishReason("stop").build())),
+                        ChatGenerationMetadata.builder().finishReason("STOP").build())),
                 ChatResponseMetadata.builder()
-                        .model("llama3.2")
-                        .keyValue("done", Boolean.TRUE)
-                        .keyValue("prompt-eval-count", 10)
-                        .keyValue("eval-count", 2)
-                        .keyValue("total-duration", Duration.ofNanos(10706818083L))
-                        .keyValue("load-duration", Duration.ofNanos(6338219291L))
-                        .keyValue("prompt-eval-duration", Duration.ofNanos(130079000L))
-                        .keyValue("eval-duration", Duration.ofNanos(4232710000L))
+                        .model("qwen3-8b")
+                        .id("chatcmpl-1")
                         .build());
-        when(streamResponseSpec.chatResponse()).thenReturn(Flux.just(first, last));
+        //choices: [] on the real thing, which is why this one has no generations at all.
+        ChatResponse usage = new ChatResponse(List.of(),
+                ChatResponseMetadata.builder()
+                        .model("qwen3-8b")
+                        .id("chatcmpl-1")
+                        .usage(new DefaultUsage(10, 2, 12))
+                        .keyValue("timings", Map.of("prompt_ms", 130.079, "predicted_ms", 4232.71))
+                        .build());
+        when(streamResponseSpec.chatResponse()).thenReturn(Flux.just(first, last, usage));
 
         ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
 
@@ -282,14 +276,15 @@ class PromptServiceTest {
         ResponseMetadata responseMetadata = responseMetadataCapture.metadata();
 
         assertThat(responseMetadata).isNotNull();
-        assertThat(responseMetadata.model()).isEqualTo("llama3.2");
-        assertThat(responseMetadata.doneReason()).isEqualTo("stop");
-        assertThat(responseMetadata.promptEvalCount()).isEqualTo(10);
-        assertThat(responseMetadata.evalCount()).isEqualTo(2);
-        assertThat(responseMetadata.totalDurationNanos()).isEqualTo(10706818083L);
-        assertThat(responseMetadata.loadDurationNanos()).isEqualTo(6338219291L);
-        assertThat(responseMetadata.promptEvalDurationNanos()).isEqualTo(130079000L);
-        assertThat(responseMetadata.evalDurationNanos()).isEqualTo(4232710000L);
+        assertThat(responseMetadata.model()).isEqualTo("qwen3-8b");
+        assertThat(responseMetadata.id()).isEqualTo("chatcmpl-1");
+        assertThat(responseMetadata.finishReason()).isEqualTo("stop");
+        assertThat(responseMetadata.modelCalls()).isEqualTo(1);
+        assertThat(responseMetadata.promptTokens()).isEqualTo(10);
+        assertThat(responseMetadata.completionTokens()).isEqualTo(2);
+        assertThat(responseMetadata.totalTokens()).isEqualTo(12);
+        assertThat(responseMetadata.promptMillis()).isEqualTo(130.079);
+        assertThat(responseMetadata.predictedMillis()).isEqualTo(4232.71);
     }
 
     @Test
@@ -364,9 +359,6 @@ class PromptServiceTest {
                 .thenReturn(List.of(new ChatAttachmentDescription(
                         UUID.randomUUID(), "screenshot.png", null, "a login screen")));
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
-        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
-        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
-        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("that is a login screen"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
@@ -388,9 +380,9 @@ class PromptServiceTest {
         //front of the prompt, which would strand this behind the whole conversation history.
         assertThat(imageContextMessage).isInstanceOf(UserMessage.class);
 
-        // The MCP prompt template renders from the user's own words, not the description block.
-        verify(mcpClient).getPrompt(argThat(request ->
-                "what is this?".equals(request.arguments().get(PromptService.USER_MESSAGE))));
+        //The system prompt is rendered from a classpath template, so the description block reaches the
+        //model only as its own message -- never folded into the user's words.
+        verify(requestSpec).system(anyString());
     }
 
     @Test
@@ -398,9 +390,6 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("plain question", Set.of(), Set.of());
 
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
-        McpSchema.GetPromptResult getPromptResult = basicPromptResult();
-        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
-        when(mcpPromptAdapter.toSystemText(getPromptResult)).thenReturn("You are Izzy");
         stubBasicPromptChain(Flux.just("an answer"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication, new ResponseMetadataCapture()))
@@ -436,12 +425,14 @@ class PromptServiceTest {
         verify(toolCallService).stream(eq(chatId), eq("search for cats"), eq(toolCommand), any(), any());
     }
 
+    /**
+     * The model is a deployment fact, not a per-user preference: an OpenAI-compatible server serves
+     * one model for its lifetime, so the configured default is what answers regardless of who asked.
+     */
     @Test
-    void model_returnsModelFromUserPreferences() {
-        when(userPreferencesService.get(userId)).thenReturn(preferencesWithModel("mistral"));
-
+    void model_returnsTheConfiguredDefaultRatherThanAUserPreference() {
         String model = promptService.model(userId);
 
-        assertThat(model).isEqualTo("mistral");
+        assertThat(model).isEqualTo("qwen3-8b");
     }
 }

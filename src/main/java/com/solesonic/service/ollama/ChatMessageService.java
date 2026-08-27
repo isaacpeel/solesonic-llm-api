@@ -1,6 +1,7 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.Chat;
@@ -56,8 +57,8 @@ public class ChatMessageService {
 
         //Routed through the service, not the repository, so a user's first-ever message
         //self-heals a missing preferences row instead of throwing. The result is unused — which
-        //model actually answered is Ollama's to report, on responseMetadata — but the row still has
-        //to exist before the turn goes on to read it.
+        //model actually answered is the server's to report, on responseMetadata — but the row still
+        //has to exist before the turn goes on to read it.
         userPreferencesService.get(chat.getUserId());
 
         message.setTimestamp(ZonedDateTime.now());
@@ -104,13 +105,20 @@ public class ChatMessageService {
      * directly: {@code responseMetadata} isn't final until the whole stream completes, which is after
      * that row is saved. {@code since} is the turn's start time, not the message's — the caller has
      * no other way to name the row it wants, because the advisor never hands the id back.
+     * <p>
+     * The totals and the per-call breakdown are two columns and are written together, in the one
+     * transaction, so a reader can never see a total without the calls that produced it.
      */
     @Transactional
-    public void updateResponseMetadata(UUID chatId, ZonedDateTime since, ResponseMetadata responseMetadata) {
+    public void updateResponseMetadata(UUID chatId,
+                                       ZonedDateTime since,
+                                       ResponseMetadata responseMetadata,
+                                       List<ModelCallMetadata> responseMetadataCalls) {
         chatMessageRepository
                 .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
                 .ifPresent(chatMessage -> {
                     chatMessage.setResponseMetadata(responseMetadata);
+                    chatMessage.setResponseMetadataCalls(responseMetadataCalls);
                     chatMessageRepository.save(chatMessage);
                 });
     }

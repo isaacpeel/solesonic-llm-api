@@ -1,6 +1,8 @@
 package com.solesonic.model.chat.history;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.image.GeneratedImageSummary;
@@ -48,19 +50,35 @@ public class ChatMessage {
     private Map<String, Object> progressData;
 
     /**
-     * What Ollama reported about this turn, including which model answered it — set only on
-     * {@code ASSISTANT} messages, after the chat memory advisor has already written the row, because
-     * Ollama does not report any of it until its terminal response. Stays null for a turn Ollama
-     * never answered, an A2A delegation above all. Persisted, unlike {@link #generatedImages},
-     * because there is no other table to reconstruct it from.
+     * What the model server reported about this turn, including which model answered it — set only on
+     * {@code ASSISTANT} messages, and only after the chat memory advisor has already written the row.
+     * That ordering is forced: the token counts arrive on the final, generation-less chunk of the
+     * stream, which is long after the advisor saves. Stays null for a turn no chat model answered, an
+     * A2A delegation above all. Persisted, unlike {@link #generatedImages}, because there is no other
+     * table to reconstruct it from.
      * <p>
      * This is the only place a message records its model. The former {@code model} column held the
      * user's configured preference at save time, which is what was asked for rather than what
-     * actually ran; {@link ResponseMetadata#model()} is Ollama's own answer to the same question.
+     * actually ran; {@link ResponseMetadata#model()} is the server's own answer to the same question.
      */
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private ResponseMetadata responseMetadata;
+
+    /**
+     * The per-model-call breakdown behind {@link #responseMetadata}'s summed totals — one entry per
+     * round trip, so a tool-calling turn has several.
+     * <p>
+     * Persisted but never published: {@code @JsonIgnore} is what keeps it off the wire, since this
+     * entity is serialized straight to the client by {@code SolesonicChatResponse} and by chat
+     * history. It is a column of its own rather than a component of {@link ResponseMetadata} for the
+     * same reason — that record is both the persisted value and the returned one, and no annotation
+     * can hide a field from one without hiding it from the other.
+     */
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @JsonIgnore
+    private List<ModelCallMetadata> responseMetadataCalls;
 
     @Transient
     private List<ChatAttachmentSummary> attachments;
@@ -152,6 +170,14 @@ public class ChatMessage {
 
     public void setResponseMetadata(ResponseMetadata responseMetadata) {
         this.responseMetadata = responseMetadata;
+    }
+
+    public List<ModelCallMetadata> getResponseMetadataCalls() {
+        return responseMetadataCalls;
+    }
+
+    public void setResponseMetadataCalls(List<ModelCallMetadata> responseMetadataCalls) {
+        this.responseMetadataCalls = responseMetadataCalls;
     }
 
     public List<ChatAttachmentSummary> getAttachments() {

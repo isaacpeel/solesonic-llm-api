@@ -1,8 +1,9 @@
 package com.solesonic.service.ollama;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.ModelCallMetadata;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.repository.ollama.ChatMessageRepository;
 import com.solesonic.repository.ollama.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
@@ -17,10 +18,15 @@ import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
 
+import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -182,5 +188,53 @@ class ChatMessageServiceTest {
         List<Message> messages = chatMessageService.findByChatId(chatId);
 
         assertThat(messages).isEmpty();
+    }
+
+    /**
+     * The totals and the breakdown are two columns, and a reader must never find one without the
+     * other — so both are written on the single row this locates, in the one transaction.
+     */
+    @Test
+    void updateResponseMetadataWritesTotalsAndBreakdownTogether() {
+        ChatMessage assistantMessage = chatMessage(MessageType.ASSISTANT, "the answer");
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.of(assistantMessage));
+
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null),
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null));
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", null, "stop", calls);
+
+        chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata, calls);
+
+        assertThat(assistantMessage.getResponseMetadata()).isEqualTo(responseMetadata);
+        assertThat(assistantMessage.getResponseMetadataCalls()).isEqualTo(calls);
+        verify(chatMessageRepository).save(assistantMessage);
+    }
+
+    /**
+     * A turn whose assistant row cannot be located must not throw: the answer has already streamed to
+     * the user, and losing its token accounting is not worth failing the turn over.
+     */
+    @Test
+    void updateResponseMetadataIsSilentWhenNoAssistantRowMatches() {
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.empty());
+
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null));
+
+        chatMessageService.updateResponseMetadata(chatId, turnStarted,
+                ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls), calls);
+
+        verify(chatMessageRepository, never()).save(any(ChatMessage.class));
     }
 }

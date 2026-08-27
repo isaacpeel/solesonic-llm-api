@@ -2,91 +2,109 @@ package com.solesonic.model.chat;
 
 import com.fasterxml.jackson.annotation.JsonFormat;
 import org.jspecify.annotations.Nullable;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 
-import java.time.Duration;
 import java.time.Instant;
-import java.util.Optional;
+import java.util.List;
+import java.util.function.Function;
 
 /**
- * What Ollama itself reported about one assistant turn, carried on the {@code done} SSE event and
+ * What the model server reported about one assistant turn, carried on the {@code done} SSE event and
  * persisted on the message row.
  * <p>
- * Every field is copied verbatim out of Ollama's terminal {@code /api/chat} response — nothing here
- * is measured or derived by this application, so a client reading it sees the model server's own
- * accounting rather than an approximation of it. Ollama populates these only on the response where
- * {@code done} is true; earlier streamed chunks carry none of them, which is why
- * {@link ResponseMetadataCapture} waits for that one response before recording anything.
+ * Every field is the server's own accounting, copied verbatim — nothing here is measured or derived
+ * by this application, so a client reading it sees the model server's numbers rather than an
+ * approximation of them. The one qualification is that the counts and durations are <em>sums</em>: a
+ * tool-calling turn runs the model once per tool result and each round trip reports separately, so
+ * these are the turn's totals and {@link #modelCalls()} says how many calls went into them. The
+ * per-call breakdown is persisted next to this on {@code chat_message.response_metadata_calls} as
+ * {@link ModelCallMetadata}, and is deliberately not published to clients.
  * <p>
- * The whole record is {@code null} on a message for any turn Ollama never answered: an A2A agent
- * delegation, which never reaches a chat model at all, and a turn cancelled before the terminal
- * response arrived.
+ * {@link #promptMillis()} and {@link #predictedMillis()} come from llama.cpp's non-standard
+ * {@code timings} object, which Spring AI passes through as an unrecognised top-level property. A
+ * model server that does not send one leaves them null; the token counts are the portable part.
+ * <p>
+ * The whole record is {@code null} on a message for any turn no chat model answered: an A2A agent
+ * delegation, which never reaches a chat model at all, and a turn cancelled before any usage was
+ * reported.
  */
 public record ResponseMetadata(
         @Nullable String model,
-        //Pinned to a string so it goes back out in the ISO-8601 form Ollama sent, rather than the
-        //numeric timestamp a mapper left to its own defaults could choose.
+        @Nullable String id,
+        //Pinned to a string so it goes back out in ISO-8601 form rather than the numeric timestamp a
+        //mapper left to its own defaults could choose.
         @JsonFormat(shape = JsonFormat.Shape.STRING)
         @Nullable Instant createdAt,
-        @Nullable String doneReason,
-        @Nullable Long totalDurationNanos,
-        @Nullable Long loadDurationNanos,
-        @Nullable Integer promptEvalCount,
-        @Nullable Long promptEvalDurationNanos,
-        @Nullable Integer evalCount,
-        @Nullable Long evalDurationNanos) {
-
-    static final String DONE = "done";
-    static final String CREATED_AT = "created-at";
-    static final String TOTAL_DURATION = "total-duration";
-    static final String LOAD_DURATION = "load-duration";
-    static final String PROMPT_EVAL_COUNT = "prompt-eval-count";
-    static final String PROMPT_EVAL_DURATION = "prompt-eval-duration";
-    static final String EVAL_COUNT = "eval-count";
-    static final String EVAL_DURATION = "eval-duration";
+        @Nullable String finishReason,
+        //Nullable like everything else, because a row persisted under an older shape has no count to
+        //read back and a primitive would fail the whole record rather than come back unknown.
+        @Nullable Integer modelCalls,
+        @Nullable Integer promptTokens,
+        @Nullable Integer completionTokens,
+        @Nullable Integer totalTokens,
+        @Nullable Double promptMillis,
+        @Nullable Double predictedMillis) {
 
     /**
-     * Spring AI's {@code OllamaChatModel} parses Ollama's raw fields into a string-keyed metadata
-     * map rather than a typed Ollama-specific class, so the keys above are the only way to reach
-     * them. They mirror that class's own private constants.
+     * Folds one turn's calls into its totals, or returns {@code null} when the turn reported none.
      * <p>
-     * The durations arrive as {@link Duration}, having been parsed from the nanoseconds Ollama
-     * actually sends. They are put back on that footing here — a lossless unit change, not a
-     * measurement — so the persisted and published shape is the one Ollama documents, and carries no
-     * dependency on how Jackson happens to be configured to render a {@code Duration}.
+     * There is deliberately no top-level tokens-per-second: a single rate means nothing across
+     * several round trips, and this record does not compute what the server did not report. It stays
+     * on {@link ModelCallMetadata}, and a client wanting one for the turn divides
+     * {@code completionTokens} by {@code predictedMillis / 1000}.
      */
-    public static ResponseMetadata from(ChatResponse chatResponse) {
-        ChatResponseMetadata chatResponseMetadata = chatResponse.getMetadata();
-
-        String doneReason = Optional.ofNullable(chatResponse.getResult())
-                .map(Generation::getMetadata)
-                .map(ChatGenerationMetadata::getFinishReason)
-                .orElse(null);
-
-        Instant createdAt = chatResponseMetadata.get(CREATED_AT);
-        Integer promptEvalCount = chatResponseMetadata.get(PROMPT_EVAL_COUNT);
-        Integer evalCount = chatResponseMetadata.get(EVAL_COUNT);
-
-        return new ResponseMetadata(
-                chatResponseMetadata.getModel(),
-                createdAt,
-                doneReason,
-                nanos(chatResponseMetadata.get(TOTAL_DURATION)),
-                nanos(chatResponseMetadata.get(LOAD_DURATION)),
-                promptEvalCount,
-                nanos(chatResponseMetadata.get(PROMPT_EVAL_DURATION)),
-                evalCount,
-                nanos(chatResponseMetadata.get(EVAL_DURATION)));
-    }
-
-    private static @Nullable Long nanos(@Nullable Duration duration) {
-        if (duration == null) {
+    public static @Nullable ResponseMetadata of(@Nullable String model,
+                                                @Nullable String id,
+                                                @Nullable Instant createdAt,
+                                                @Nullable String finishReason,
+                                                List<ModelCallMetadata> calls) {
+        if (calls.isEmpty()) {
             return null;
         }
 
-        return duration.toNanos();
+        return new ResponseMetadata(
+                model,
+                id,
+                createdAt,
+                finishReason,
+                calls.size(),
+                sumIntegers(calls, ModelCallMetadata::promptTokens),
+                sumIntegers(calls, ModelCallMetadata::completionTokens),
+                sumIntegers(calls, ModelCallMetadata::totalTokens),
+                sumDoubles(calls, ModelCallMetadata::promptMillis),
+                sumDoubles(calls, ModelCallMetadata::predictedMillis));
+    }
+
+    /**
+     * Null when no call reported the field at all, rather than a zero — a zero would read as "the
+     * model used no tokens" when what happened is that the server never said.
+     */
+    private static @Nullable Integer sumIntegers(List<ModelCallMetadata> calls,
+                                                 Function<ModelCallMetadata, @Nullable Integer> field) {
+        Integer total = null;
+
+        for (ModelCallMetadata call : calls) {
+            Integer value = field.apply(call);
+
+            if (value != null) {
+                total = total == null ? value : total + value;
+            }
+        }
+
+        return total;
+    }
+
+    private static @Nullable Double sumDoubles(List<ModelCallMetadata> calls,
+                                               Function<ModelCallMetadata, @Nullable Double> field) {
+        Double total = null;
+
+        for (ModelCallMetadata call : calls) {
+            Double value = field.apply(call);
+
+            if (value != null) {
+                total = total == null ? value : total + value;
+            }
+        }
+
+        return total;
     }
 }

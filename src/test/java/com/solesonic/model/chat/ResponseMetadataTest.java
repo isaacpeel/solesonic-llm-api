@@ -2,17 +2,11 @@ package com.solesonic.model.chat;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
-import org.springframework.ai.chat.metadata.ChatResponseMetadata;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.MapperFeature;
 import tools.jackson.databind.json.JsonMapper;
 
-import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
@@ -20,7 +14,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ResponseMetadataTest {
 
-    private static final Instant CREATED_AT = Instant.parse("2023-08-04T19:22:45.499127Z");
+    private static final Instant CREATED_AT = Instant.parse("2026-08-27T19:22:45Z");
 
     /**
      * Mirrors {@code JacksonConfig}, so the round-trip below exercises the same mapper settings the
@@ -32,58 +26,78 @@ class ResponseMetadataTest {
             .enable(MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS)
             .build();
 
-    private static ChatResponse terminalChatResponse() {
-        return new ChatResponse(
-                List.of(new Generation(new AssistantMessage("done"),
-                        ChatGenerationMetadata.builder().finishReason("stop").build())),
-                ChatResponseMetadata.builder()
-                        .model("llama3.2")
-                        .keyValue("done", Boolean.TRUE)
-                        .keyValue("created-at", CREATED_AT)
-                        .keyValue("total-duration", Duration.ofNanos(10706818083L))
-                        .keyValue("load-duration", Duration.ofNanos(6338219291L))
-                        .keyValue("prompt-eval-count", 26)
-                        .keyValue("prompt-eval-duration", Duration.ofNanos(130079000L))
-                        .keyValue("eval-count", 259)
-                        .keyValue("eval-duration", Duration.ofNanos(4232710000L))
-                        .build());
+    private static ModelCallMetadata call(int promptTokens, int completionTokens, double promptMillis, double predictedMillis) {
+        return new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "stop",
+                promptTokens, completionTokens, promptTokens + completionTokens,
+                promptMillis, predictedMillis, 61.2);
+    }
+
+    private static ResponseMetadata singleCallMetadata() {
+        return ResponseMetadata.of("qwen3-8b", "chatcmpl-1", CREATED_AT, "stop",
+                List.of(call(1042, 259, 130.079, 4232.71)));
     }
 
     @Test
-    void copiesEveryOllamaReportedFieldVerbatim() {
-        ResponseMetadata responseMetadata = ResponseMetadata.from(terminalChatResponse());
+    void copiesEveryReportedFieldVerbatimForASingleCall() {
+        ResponseMetadata responseMetadata = singleCallMetadata();
 
-        assertThat(responseMetadata.model()).isEqualTo("llama3.2");
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.model()).isEqualTo("qwen3-8b");
+        assertThat(responseMetadata.id()).isEqualTo("chatcmpl-1");
         assertThat(responseMetadata.createdAt()).isEqualTo(CREATED_AT);
-        assertThat(responseMetadata.doneReason()).isEqualTo("stop");
-        assertThat(responseMetadata.totalDurationNanos()).isEqualTo(10706818083L);
-        assertThat(responseMetadata.loadDurationNanos()).isEqualTo(6338219291L);
-        assertThat(responseMetadata.promptEvalCount()).isEqualTo(26);
-        assertThat(responseMetadata.promptEvalDurationNanos()).isEqualTo(130079000L);
-        assertThat(responseMetadata.evalCount()).isEqualTo(259);
-        assertThat(responseMetadata.evalDurationNanos()).isEqualTo(4232710000L);
+        assertThat(responseMetadata.finishReason()).isEqualTo("stop");
+        assertThat(responseMetadata.modelCalls()).isEqualTo(1);
+        assertThat(responseMetadata.promptTokens()).isEqualTo(1042);
+        assertThat(responseMetadata.completionTokens()).isEqualTo(259);
+        assertThat(responseMetadata.totalTokens()).isEqualTo(1301);
+        assertThat(responseMetadata.promptMillis()).isEqualTo(130.079);
+        assertThat(responseMetadata.predictedMillis()).isEqualTo(4232.71);
     }
 
     /**
-     * A response Ollama never populated must map to nulls rather than throwing — the same record has
-     * to survive a model that reports less than the documented set.
+     * A tool-calling turn runs the model once per tool result. What a client is shown has to be the
+     * turn's cost, not the last round trip's, or every tool call under-reports.
      */
     @Test
-    void mapsAbsentFieldsToNull() {
-        ChatResponse bare = new ChatResponse(
-                List.of(new Generation(new AssistantMessage("hi"))),
-                ChatResponseMetadata.builder().build());
+    void sumsCountsAndDurationsAcrossEveryCallInTheTurn() {
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", CREATED_AT, "stop",
+                List.of(call(1042, 88, 130.0, 900.0),
+                        call(1380, 165, 150.5, 2100.25),
+                        call(1758, 259, 109.5, 5300.0)));
 
-        ResponseMetadata responseMetadata = ResponseMetadata.from(bare);
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.modelCalls()).isEqualTo(3);
+        assertThat(responseMetadata.promptTokens()).isEqualTo(4180);
+        assertThat(responseMetadata.completionTokens()).isEqualTo(512);
+        assertThat(responseMetadata.totalTokens()).isEqualTo(4692);
+        assertThat(responseMetadata.promptMillis()).isEqualTo(390.0);
+        assertThat(responseMetadata.predictedMillis()).isEqualTo(8300.25);
+    }
 
+    /**
+     * A turn that called no chat model has nothing to report, and must come out as a whole absent
+     * record rather than a hollow one full of zeroes.
+     */
+    @Test
+    void isNullWhenNoCallReported() {
+        assertThat(ResponseMetadata.of("qwen3-8b", "chatcmpl-3", CREATED_AT, "stop", List.of())).isNull();
+    }
+
+    /**
+     * A plain OpenAI server sends no timings at all. The counts still have to survive, and the
+     * durations have to be absent rather than zero — zero would read as "it took no time".
+     */
+    @Test
+    void leavesUnreportedFieldsNullRatherThanZero() {
+        ResponseMetadata responseMetadata = ResponseMetadata.of("gpt-oss", "chatcmpl-4", null, "stop",
+                List.of(new ModelCallMetadata("gpt-oss", "chatcmpl-4", null, "stop",
+                        10, 2, 12, null, null, null)));
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.totalTokens()).isEqualTo(12);
         assertThat(responseMetadata.createdAt()).isNull();
-        assertThat(responseMetadata.doneReason()).isNull();
-        assertThat(responseMetadata.totalDurationNanos()).isNull();
-        assertThat(responseMetadata.loadDurationNanos()).isNull();
-        assertThat(responseMetadata.promptEvalCount()).isNull();
-        assertThat(responseMetadata.promptEvalDurationNanos()).isNull();
-        assertThat(responseMetadata.evalCount()).isNull();
-        assertThat(responseMetadata.evalDurationNanos()).isNull();
+        assertThat(responseMetadata.promptMillis()).isNull();
+        assertThat(responseMetadata.predictedMillis()).isNull();
     }
 
     /**
@@ -92,7 +106,7 @@ class ResponseMetadataTest {
      */
     @Test
     void survivesJacksonRoundTrip() {
-        ResponseMetadata responseMetadata = ResponseMetadata.from(terminalChatResponse());
+        ResponseMetadata responseMetadata = singleCallMetadata();
 
         String json = JSON_MAPPER.writeValueAsString(responseMetadata);
         ResponseMetadata roundTripped = JSON_MAPPER.readValue(json, ResponseMetadata.class);
@@ -101,40 +115,48 @@ class ResponseMetadataTest {
     }
 
     /**
-     * The values must go back out exactly as Ollama sent them: nanosecond durations as plain
-     * integers, and the timestamp in the ISO-8601 form it arrived in rather than a numeric epoch.
+     * The values must go back out as the server reported them: counts as plain integers, and the
+     * timestamp in ISO-8601 form rather than a numeric epoch.
      */
     @Test
-    void serializesValuesInOllamasOwnForm() {
-        String json = JSON_MAPPER.writeValueAsString(ResponseMetadata.from(terminalChatResponse()));
+    void serializesValuesInTheServersOwnForm() {
+        String json = JSON_MAPPER.writeValueAsString(singleCallMetadata());
         JsonNode root = JSON_MAPPER.readTree(json);
 
-        assertThat(root.get("totalDurationNanos").isIntegralNumber()).isTrue();
-        assertThat(root.get("totalDurationNanos").asLong()).isEqualTo(10706818083L);
-        assertThat(root.get("loadDurationNanos").asLong()).isEqualTo(6338219291L);
-        assertThat(root.get("promptEvalDurationNanos").asLong()).isEqualTo(130079000L);
-        assertThat(root.get("evalDurationNanos").asLong()).isEqualTo(4232710000L);
-        assertThat(root.get("promptEvalCount").asLong()).isEqualTo(26L);
-        assertThat(root.get("evalCount").asLong()).isEqualTo(259L);
+        assertThat(root.get("promptTokens").isIntegralNumber()).isTrue();
+        assertThat(root.get("promptTokens").asLong()).isEqualTo(1042L);
+        assertThat(root.get("completionTokens").asLong()).isEqualTo(259L);
+        assertThat(root.get("totalTokens").asLong()).isEqualTo(1301L);
+        assertThat(root.get("modelCalls").asLong()).isEqualTo(1L);
+        assertThat(root.get("promptMillis").asDouble()).isEqualTo(130.079);
 
         assertThat(root.get("createdAt").isString()).isTrue();
-        assertThat(root.get("createdAt").asString()).isEqualTo("2023-08-04T19:22:45.499127Z");
+        assertThat(root.get("createdAt").asString()).isEqualTo("2026-08-27T19:22:45Z");
     }
 
     /**
-     * Rows written before this record changed shape carry fields it no longer declares. Reading one
-     * back must not fail — the mapper ignores what it does not recognise.
+     * Rows written before this record changed shape carry fields it no longer declares — both the
+     * original derived shape and V3_18's Ollama one. Reading either back must not fail; V3_20 is what
+     * carries their numbers forward, not the mapper.
      */
     @Test
-    void ignoresFieldsFromTheOlderPersistedShape() {
+    void ignoresFieldsFromOlderPersistedShapes() {
         String legacyJson = """
-                {"promptTokens":10,"completionTokens":2,"totalTokens":12,\
-                "tokensPerSecond":34.7,"timeToFirstTokenMillis":380,"durationMillis":3690}""";
+                {
+                  "promptTokens": 10, "completionTokens": 2, "totalTokens": 12,
+                  "tokensPerSecond": 34.7, "timeToFirstTokenMillis": 380, "durationMillis": 3690,
+                  "doneReason": "stop", "promptEvalCount": 26, "evalCount": 259,
+                  "totalDurationNanos": 10706818083, "loadDurationNanos": 6338219291,
+                  "promptEvalDurationNanos": 130079000, "evalDurationNanos": 4232710000
+                }""";
 
         ResponseMetadata roundTripped = JSON_MAPPER.readValue(legacyJson, ResponseMetadata.class);
 
-        assertThat(roundTripped.promptEvalCount()).isNull();
-        assertThat(roundTripped.evalCount()).isNull();
-        assertThat(roundTripped.totalDurationNanos()).isNull();
+        assertThat(roundTripped.promptTokens()).isEqualTo(10);
+        assertThat(roundTripped.completionTokens()).isEqualTo(2);
+        assertThat(roundTripped.totalTokens()).isEqualTo(12);
+        assertThat(roundTripped.finishReason()).isNull();
+        assertThat(roundTripped.promptMillis()).isNull();
+        assertThat(roundTripped.predictedMillis()).isNull();
     }
 }

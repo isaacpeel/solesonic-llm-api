@@ -142,8 +142,10 @@ public class RedisStreamingChatService {
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
-        //Filled at most once, by whichever route through PromptService actually calls a chat model,
-        //and only from the response Ollama marks done — nothing here is measured or derived locally.
+        //Filled by whichever route through PromptService actually calls a chat model, from what the
+        //server itself reports — nothing here is measured or derived locally. It accumulates rather
+        //than snapshotting one response, because under the OpenAI protocol the token counts arrive on
+        //a final chunk that carries no text, and a tool-calling turn reports once per round trip.
         //Read only after chunkFlow completes, which the concatWith below guarantees happens-after
         //every doOnNext that could fill it.
         ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
@@ -172,16 +174,18 @@ public class RedisStreamingChatService {
             //a late subscribe — still finalises the turn with the image on it.
             responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
 
-            //Null whenever Ollama never reported anything — an A2A delegation calls no chat model,
-            //and a turn that ends before the terminal response has nothing to report either.
+            //Null whenever the server never reported anything — an A2A delegation calls no chat
+            //model, and a turn that ends before the first usage chunk has nothing to report either.
             ResponseMetadata responseMetadata = responseMetadataCapture.metadata();
             responseMessage.setResponseMetadata(responseMetadata);
 
             //The chat memory advisor already saved this turn's row without responseMetadata, since
-            //Ollama does not report the numbers until the stream completes — this is what makes them
-            //durable, the same way model does, rather than living only on this one done event.
+            //the counts do not arrive until the stream completes — this is what makes them durable
+            //rather than living only on this one done event. The per-call breakdown is persisted with
+            //them but deliberately left off responseMessage, so it never reaches a client.
             if (responseMetadata != null) {
-                chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata);
+                chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata,
+                        responseMetadataCapture.calls());
             }
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);

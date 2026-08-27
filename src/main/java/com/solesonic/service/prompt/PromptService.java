@@ -109,11 +109,12 @@ public class PromptService {
     }
 
     /**
-     * @param responseMetadataCapture receives what Ollama reported about the turn, once the
-     *                                underlying model call reaches its terminal response. Left unset
-     *                                by routes that call no chat model — an A2A agent delegation —
-     *                                so a caller reading it after the stream finishes must treat
-     *                                {@code null} as "no metadata available" rather than a bug.
+     * @param responseMetadataCapture receives what the model server reports about the turn, response
+     *                                by response, for as many model calls as the turn makes. Left
+     *                                unset by routes that call no chat model — an A2A agent
+     *                                delegation — so a caller reading it after the stream finishes
+     *                                must treat {@code null} as "no metadata available" rather than
+     *                                a bug.
      */
     public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication,
                                ResponseMetadataCapture responseMetadataCapture) {
@@ -186,7 +187,7 @@ public class PromptService {
                         .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                         .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                         .toolContext(contextMap)
-                        .options(OpenAiChatOptions.builder().model(model))
+                        .options(chatOptions(model))
                         .stream()
                         .chatResponse();
 
@@ -268,7 +269,7 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
-                .options(OpenAiChatOptions.builder().model(model));
+                .options(chatOptions(model));
 
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
@@ -278,10 +279,28 @@ public class PromptService {
     }
 
     /**
-     * Equivalent to {@code StreamResponseSpec.content()}, plus offering each response to the capture
-     * on the way past. Only the terminal response carries Ollama's counts and durations, and the
-     * capture takes only that one — this must run over the same stream that produces the chunks, not
-     * a second call, or the model would be invoked twice.
+     * Asks the server for {@code stream_options.include_usage}, which is what puts the turn's token
+     * counts on the stream's final chunk at all.
+     * <p>
+     * Pinning it rather than relying on the default is deliberate. Spring AI only defaults it to true
+     * while no stream options are set: the moment anything sets one,
+     * {@code OpenAiChatModel.createRequest} reads {@code includeUsage} out of it and a null there
+     * becomes {@code false}. Setting any unrelated stream option elsewhere would otherwise silently
+     * take the token counts away again.
+     */
+    private static OpenAiChatOptions.Builder chatOptions(String model) {
+        return OpenAiChatOptions.builder()
+                .model(model)
+                .streamUsage(true);
+    }
+
+    /**
+     * Equivalent to {@code StreamResponseSpec.content()}, plus offering <em>every</em> response to
+     * the capture on the way past. No single response holds the turn's accounting: the model name and
+     * finish reason ride the chunk that carries the text, the token counts arrive on a later chunk
+     * with no text at all, and a tool-calling turn repeats both once per round trip. This must run
+     * over the same stream that produces the chunks, not a second call, or the model would be invoked
+     * twice.
      */
     private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux,
                                             ResponseMetadataCapture responseMetadataCapture) {
