@@ -542,7 +542,7 @@ correctness bug — and it is preferable to duplicating every turn. Worth an exp
 test.
 
 **New scheduled task.** `task/ChatAttachmentSweepTask`, following the existing
-`TrainingSchedulingTask` / `OllamaModelCacheRefreshTask` pattern: delete rows where
+`TrainingSchedulingTask` pattern: delete rows where
 `chat_message_id is null and created < now() - staged-ttl`. Served by the partial
 index from §3.
 

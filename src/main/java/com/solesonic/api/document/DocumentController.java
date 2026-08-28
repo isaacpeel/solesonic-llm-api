@@ -1,4 +1,4 @@
-package com.solesonic.api.ollama;
+package com.solesonic.api.document;
 
 import com.solesonic.model.VectorSearch;
 import com.solesonic.model.document.UriIngestRequest;
@@ -39,7 +39,6 @@ public class DocumentController {
         return ResponseEntity.ok().body(similarDocuments.stream().map(Document::getText).toList());
     }
 
-    
     @PostMapping("/data/upload")
     public ResponseEntity<Void> handleFileUpload(@RequestParam MultipartFile file,
                                                  @RequestParam(required = false) RetrievalScope scope) {

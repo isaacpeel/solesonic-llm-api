@@ -1,7 +1,7 @@
 package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.history.Chat;
-import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.repository.chat.ChatRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.Authentication;

@@ -1,4 +1,4 @@
-package com.solesonic.repository.ollama;
+package com.solesonic.repository.training;
 
 import com.solesonic.model.training.TrainingDocument;
 import org.springframework.data.jpa.repository.JpaRepository;

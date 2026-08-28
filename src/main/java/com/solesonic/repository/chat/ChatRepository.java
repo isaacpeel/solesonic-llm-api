@@ -1,4 +1,4 @@
-package com.solesonic.repository.ollama;
+package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.history.Chat;
 import org.springframework.data.domain.Page;

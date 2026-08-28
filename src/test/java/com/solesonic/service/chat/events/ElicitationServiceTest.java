@@ -1,6 +1,6 @@
 package com.solesonic.service.chat.events;
 
-import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.chat.ChatMessageService;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;

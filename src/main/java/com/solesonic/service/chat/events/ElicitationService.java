@@ -2,7 +2,7 @@ package com.solesonic.service.chat.events;
 
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.chat.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

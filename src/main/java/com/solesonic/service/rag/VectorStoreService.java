@@ -4,7 +4,7 @@ import com.solesonic.model.VectorSearch;
 import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.training.VectorDocument;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.repository.ollama.VectorStoreRepository;
+import com.solesonic.repository.rag.VectorStoreRepository;
 import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

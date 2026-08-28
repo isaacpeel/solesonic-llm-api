@@ -101,9 +101,7 @@ re-consent.
 ### Model Server Configuration
 
 Every LLM interaction in this application talks to an **OpenAI-compatible** server (llama.cpp
-`llama-server` or anything else that speaks the same protocol). There is no Ollama anywhere: the
-`spring-ai-starter-model-ollama` dependency, all `Ollama*` types, and Ollama-only concepts
-(keep-alive, pull-on-missing) were removed.
+`llama-server` or anything else that speaks the same protocol).
 
 Six interactions are configured **independently**, so each can be pointed at whichever hardware
 suits it:
@@ -291,10 +289,9 @@ No separate credential is configured: generation travels on the calling user's o
 for an on-behalf-of token like every other MCP call. The user's JWT must carry the
 `mcp-generate-image` role — see [docs/api.md](api.md#image-generation).
 
-Keeping a model resident is no longer something this application asks for: Ollama's `keep_alive` and
-pull-on-missing have no OpenAI-protocol equivalent, and a `llama-server`-style process loads its one
-model at startup and holds it for its lifetime anyway — which is exactly the behaviour those
-settings were emulating. What remains is the read timeout, which is what lets a first request
+Keeping a model resident is not an application concern: there is no keep-alive or pull-on-missing
+option in the OpenAI protocol, and a `llama-server`-style process loads its one model at startup and
+holds it for its lifetime anyway. What remains is the read timeout, which is what lets a first request
 survive a slow load rather than aborting it. A turn whose vision pass fails still answers normally,
 just as though no image were attached; the `attachment` SSE event
 ([docs/api.md](api.md#attachment-event-payload)) is what makes that visible. A skipped image is

@@ -18,18 +18,14 @@ import java.time.Duration;
  * Both beans share a host and a model and differ only in sampling: keyword extraction wants a
  * deterministic short answer, metadata summarisation a longer and slightly freer one.
  * <p>
- * Three things from the Ollama configuration this replaced have no OpenAI-protocol equivalent and
- * are deliberately absent:
- * <ul>
- *     <li>{@code pullModelStrategy(WHEN_MISSING)} — an OpenAI-compatible server loads one model at
- *     process start; there is nothing for a client to pull.</li>
- *     <li>{@code keepAlive} — Ollama's own idle-unload timer, which no other server exposes.</li>
- *     <li>{@code numCtx}/{@code numBatch} — server-launch flags ({@code --ctx-size},
- *     {@code --batch-size} on {@code llama-server}), not per-request options. Whoever runs the ETL
- *     server has to have launched it with a context large enough for a chunk plus its answer.</li>
- * </ul>
- * {@code repeatPenalty}, {@code topK} and {@code minP} are gone for a different reason: OpenAI's
- * {@code frequency_penalty} is an additive penalty on a different scale to Ollama's multiplicative
+ * There is nothing here to pull a model on demand, keep it resident after an idle period, or size
+ * its context per request: an OpenAI-compatible server loads one model at process start, and
+ * {@code --ctx-size}/{@code --batch-size} are server-launch flags, not per-request options. Whoever
+ * runs the ETL server has to have launched it with a context large enough for a chunk plus its
+ * answer.
+ * <p>
+ * {@code repeatPenalty}, {@code topK} and {@code minP} are absent for a different reason: OpenAI's
+ * {@code frequency_penalty} is an additive penalty on a different scale to a multiplicative
  * {@code repeat_penalty} — carrying the number across would change sampling rather than preserve
  * it — and the other two are dropped from the request by Spring AI's OpenAI model entirely.
  */
@@ -50,7 +46,6 @@ public class EtlOpenAiConfig {
                                                @Value("${solesonic.llm.etl.model}") String etlModel,
                                                @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .apiKey(apiKey)
                 .apiKey(apiKey)
                 .model(etlModel)
                 .timeout(readTimeout)

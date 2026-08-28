@@ -6,20 +6,14 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.Table;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
 /**
  * One entry in the model catalog — the set of models a user may pick between in their preferences.
- * <p>
- * {@code @Table} is pinned explicitly because the Java name no longer matches the table name: the
- * type was renamed away from Ollama, the production table was not. Renaming the table itself is a
- * data migration for a cosmetic win, so it is deliberately left alone.
  */
 @Entity
-@Table(name = "ollama_model")
 public class LlmModel {
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)

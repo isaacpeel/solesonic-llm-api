@@ -1,4 +1,4 @@
-package com.solesonic.api.ollama;
+package com.solesonic.api.document;
 
 import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.training.TrainingDocument;

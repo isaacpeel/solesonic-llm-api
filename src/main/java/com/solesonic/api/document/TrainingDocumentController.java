@@ -1,8 +1,8 @@
-package com.solesonic.api.ollama;
+package com.solesonic.api.document;
 
 import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.ollama.StatusHistoryService;
 import com.solesonic.service.rag.TrainingDocumentService;
+import com.solesonic.service.training.StatusHistoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;

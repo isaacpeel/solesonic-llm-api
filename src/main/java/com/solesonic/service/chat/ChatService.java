@@ -1,12 +1,12 @@
-package com.solesonic.service.ollama;
+package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.repository.ollama.ChatMessageRepository;
+import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.redis.service.RedisStreamService;
-import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;

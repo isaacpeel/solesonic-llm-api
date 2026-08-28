@@ -2,7 +2,7 @@ package com.solesonic.config.chat;
 
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.image.GeneratedImageService;
-import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.chat.ChatMessageService;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;

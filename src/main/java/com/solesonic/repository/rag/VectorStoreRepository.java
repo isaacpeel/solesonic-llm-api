@@ -1,4 +1,4 @@
-package com.solesonic.repository.ollama;
+package com.solesonic.repository.rag;
 
 import com.solesonic.model.training.VectorDocument;
 import org.springframework.data.jpa.repository.JpaRepository;

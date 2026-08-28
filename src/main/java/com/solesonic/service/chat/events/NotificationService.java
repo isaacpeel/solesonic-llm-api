@@ -3,7 +3,7 @@ package com.solesonic.service.chat.events;
 import com.solesonic.model.chat.attachment.ChatAttachmentEvent;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.GeneratedImageSummary;
-import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.chat.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.a2aproject.sdk.spec.Message;
 import org.a2aproject.sdk.spec.TextPart;

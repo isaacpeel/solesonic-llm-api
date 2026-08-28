@@ -678,10 +678,6 @@ with, so "which models are installed" is a deployment fact rather than a live qu
 
 Every endpoint requires the `model-admin` role.
 
-> **Breaking change.** These endpoints moved from `/ollama/models` to `/models`, and
-> `GET /ollama/installed` and `POST /ollama/models/refresh` were removed outright along with the
-> Redis model cache that backed them.
-
 ### List All Models
 
 - **Endpoint**: `GET /models`

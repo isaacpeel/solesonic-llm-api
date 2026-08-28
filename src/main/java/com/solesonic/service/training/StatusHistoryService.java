@@ -1,9 +1,9 @@
-package com.solesonic.service.ollama;
+package com.solesonic.service.training;
 
 import com.solesonic.model.training.DocumentStatus;
 import com.solesonic.model.training.StatusHistory;
 import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.repository.ollama.StatusHistoryRepository;
+import com.solesonic.repository.training.StatusHistoryRepository;
 import com.solesonic.service.etl.DocumentService;
 import com.solesonic.service.rag.TrainingDocumentService;
 import org.apache.commons.collections4.CollectionUtils;

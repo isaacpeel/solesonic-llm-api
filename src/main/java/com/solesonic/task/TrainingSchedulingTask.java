@@ -1,6 +1,6 @@
 package com.solesonic.task;
 
-import com.solesonic.service.ollama.StatusHistoryService;
+import com.solesonic.service.training.StatusHistoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;

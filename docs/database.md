@@ -66,8 +66,8 @@ The migrations are organized in major versions:
 
 1. **V1_x**: Initial schema setup with tables for:
    - Jira access tokens
-   - The model catalog (`ollama_model` — the table name predates the move off Ollama; the entity is
-     now `LlmModel` and pins `@Table(name = "ollama_model")` so no data migration was needed)
+   - The model catalog (`llm_model`, entity `LlmModel`; the table was renamed from its original
+     name in `V3_21`)
    - Training documents
    - User preferences
    - Vector store

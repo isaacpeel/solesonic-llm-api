@@ -3,7 +3,7 @@ package com.solesonic.api.chat;
 import com.solesonic.model.chat.ChatOrderRequest;
 import com.solesonic.model.chat.ChatRenameRequest;
 import com.solesonic.model.chat.history.Chat;
-import com.solesonic.service.ollama.ChatService;
+import com.solesonic.service.chat.ChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;

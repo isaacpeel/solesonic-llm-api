@@ -254,7 +254,7 @@ SocketTimeoutException / HttpTimeoutException
 A cold model load can outlive a default read timeout, which surfaces as a timeout on the first
 request rather than a wait. `solesonic.llm.etl.openai.read-timeout` and
 `solesonic.llm.vision.openai.read-timeout` (both `5m`) exist for exactly this. There is no
-keep-alive setting to raise — that was an Ollama-only idle-unload timer, and a `llama-server`-style
+keep-alive setting to raise — idle unloading is a server-side concern, and a `llama-server`-style
 process holds its one model for its lifetime anyway.
 
 #### Empty or truncated vision description

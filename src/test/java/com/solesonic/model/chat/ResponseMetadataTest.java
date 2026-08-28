@@ -136,7 +136,7 @@ class ResponseMetadataTest {
 
     /**
      * Rows written before this record changed shape carry fields it no longer declares — both the
-     * original derived shape and V3_18's Ollama one. Reading either back must not fail; V3_20 is what
+     * original derived shape and V3_18's predecessor. Reading either back must not fail; V3_20 is what
      * carries their numbers forward, not the mapper.
      */
     @Test

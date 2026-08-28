@@ -1,4 +1,4 @@
-package com.solesonic.service.ollama;
+package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
@@ -6,8 +6,8 @@ import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.repository.ollama.ChatMessageRepository;
-import com.solesonic.repository.ollama.ChatRepository;
+import com.solesonic.repository.chat.ChatMessageRepository;
+import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;

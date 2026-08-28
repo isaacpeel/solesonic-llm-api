@@ -15,11 +15,9 @@ import java.util.UUID;
  * The model catalog: a static, database-backed list of the models a user may choose between in
  * their preferences.
  * <p>
- * It is a catalog and nothing more. It used to enrich each row by asking Ollama what it had
- * installed and what each model could do, which an OpenAI-compatible server has no comparable
- * endpoint for — and no need of either, since a {@code llama-server}-style process serves one
- * fixed model for its whole lifetime, making "discover what is installed" a deployment fact rather
- * than a live query.
+ * It is a catalog and nothing more: nothing queries a model server, because a
+ * {@code llama-server}-style process serves one fixed model for its whole lifetime, making "what is
+ * installed" a deployment fact rather than a live query.
  */
 @Service
 public class ModelCatalogService {

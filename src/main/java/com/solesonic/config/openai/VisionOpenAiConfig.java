@@ -26,7 +26,7 @@ public class VisionOpenAiConfig {
      * <p>
      * The matching context window is a server-launch concern here rather than a per-request option
      * — {@code --ctx-size} on {@code llama-server} — and needs to be large enough to hold the
-     * image, that reasoning and the answer. 32k was the figure that worked under Ollama.
+     * image, that reasoning and the answer. 32k is the figure that works.
      */
     private static final int MAX_DESCRIPTION_TOKENS = 16384;
 

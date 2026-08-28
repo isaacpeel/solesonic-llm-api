@@ -1,7 +1,7 @@
 package com.solesonic.api.chat;
 
 import com.solesonic.model.chat.history.Chat;
-import com.solesonic.service.ollama.ChatService;
+import com.solesonic.service.chat.ChatService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
