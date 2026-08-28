@@ -54,7 +54,6 @@ public class UserControllerTest {
         // Set up UserPreferences
         userPreferences = new UserPreferences();
         userPreferences.setUserId(userId);
-        userPreferences.setModel("llama3");
         userPreferences.setChatSimilarityThreshold(0.5);
         userPreferences.setUserSimilarityThreshold(0.7);
         userPreferences.setGlobalSimilarityThreshold(0.7);
@@ -75,7 +74,6 @@ public class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))
-                .andExpect(jsonPath("$.model").value("llama3"))
                 .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
                 .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
                 .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));
@@ -92,7 +90,6 @@ public class UserControllerTest {
                 .content(jsonMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isCreated())
                 .andExpect(header().exists("Location"))
-                .andExpect(jsonPath("$.model").value("llama3"))
                 .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
                 .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
                 .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));
@@ -110,7 +107,6 @@ public class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))
-                .andExpect(jsonPath("$.model").value("llama3"))
                 .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
                 .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
                 .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));

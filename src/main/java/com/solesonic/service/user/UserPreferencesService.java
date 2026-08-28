@@ -54,7 +54,6 @@ public class UserPreferencesService {
     private UserPreferences createDefaults(UUID userId) {
         UserPreferences newPreferences = new UserPreferences();
         newPreferences.setUserId(userId);
-        newPreferences.setModel(chatModel);
         newPreferences.setChatSimilarityThreshold(chatSimilarityThreshold);
         newPreferences.setUserSimilarityThreshold(userSimilarityThreshold);
         newPreferences.setGlobalSimilarityThreshold(globalSimilarityThreshold);

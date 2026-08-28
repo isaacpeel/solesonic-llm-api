@@ -21,8 +21,6 @@ public class UserPreferences {
 
     private ZonedDateTime updated;
 
-    private String model;
-
     private Double chatSimilarityThreshold;
 
     private Double userSimilarityThreshold;
@@ -63,14 +61,6 @@ public class UserPreferences {
 
     public void setUserId(UUID userId) {
         this.userId = userId;
-    }
-
-    public String getModel() {
-        return model;
-    }
-
-    public void setModel(String model) {
-        this.model = model;
     }
 
     public ZonedDateTime getCreated() {

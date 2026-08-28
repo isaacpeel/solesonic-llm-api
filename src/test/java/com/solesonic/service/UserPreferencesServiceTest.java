@@ -35,7 +35,6 @@ public class UserPreferencesServiceTest {
 
     private UUID userId;
     private UserPreferences userPreferences;
-    private final String defaultChatModel = "llama3";
     private final Double defaultChatSimilarityThreshold = 0.5;
     private final Double defaultUserSimilarityThreshold = 0.7;
     private final Double defaultGlobalSimilarityThreshold = 0.7;
@@ -47,7 +46,6 @@ public class UserPreferencesServiceTest {
         // Set up UserPreferences
         userPreferences = new UserPreferences();
         userPreferences.setUserId(userId);
-        userPreferences.setModel(defaultChatModel);
         userPreferences.setChatSimilarityThreshold(defaultChatSimilarityThreshold);
         userPreferences.setUserSimilarityThreshold(defaultUserSimilarityThreshold);
         userPreferences.setGlobalSimilarityThreshold(defaultGlobalSimilarityThreshold);
@@ -69,7 +67,6 @@ public class UserPreferencesServiceTest {
         ));
 
         // Set default values using ReflectionTestUtils
-        ReflectionTestUtils.setField(userPreferencesService, "chatModel", defaultChatModel);
         ReflectionTestUtils.setField(userPreferencesService, "chatSimilarityThreshold", defaultChatSimilarityThreshold);
         ReflectionTestUtils.setField(userPreferencesService, "userSimilarityThreshold", defaultUserSimilarityThreshold);
         ReflectionTestUtils.setField(userPreferencesService, "globalSimilarityThreshold", defaultGlobalSimilarityThreshold);
@@ -82,7 +79,6 @@ public class UserPreferencesServiceTest {
 
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
-        assertThat(result.getModel()).isEqualTo(defaultChatModel);
         assertThat(result.getChatSimilarityThreshold()).isEqualTo(defaultChatSimilarityThreshold);
         assertThat(result.getUserSimilarityThreshold()).isEqualTo(defaultUserSimilarityThreshold);
         assertThat(result.getGlobalSimilarityThreshold()).isEqualTo(defaultGlobalSimilarityThreshold);
@@ -103,7 +99,6 @@ public class UserPreferencesServiceTest {
         
         assertThat(result).isNotNull();
         assertThat(result.getUserId()).isEqualTo(userId);
-        assertThat(result.getModel()).isEqualTo(defaultChatModel);
         assertThat(result.getChatSimilarityThreshold()).isEqualTo(defaultChatSimilarityThreshold);
         assertThat(result.getUserSimilarityThreshold()).isEqualTo(defaultUserSimilarityThreshold);
         assertThat(result.getGlobalSimilarityThreshold()).isEqualTo(defaultGlobalSimilarityThreshold);
