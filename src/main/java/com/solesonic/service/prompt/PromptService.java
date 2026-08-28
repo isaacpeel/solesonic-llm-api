@@ -46,14 +46,12 @@ public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
     public static final String CHAT_ID = "chatId";
     public static final String USER_MESSAGE = "userMessage";
-    public static final String BASIC_PROMPT = "basic-prompt";
     public static final String PROGRESS_TOKEN = "progressToken";
     public static final String AGENT_NAME = "agentName";
 
     private final ChatClient chatClient;
     private final SlashCommandService slashCommandService;
     private final McpSyncClient mcpClient;
-    private final McpPromptAdapter mcpPromptAdapter;
     private final ToolCallService toolCallService;
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
@@ -86,7 +84,6 @@ public class PromptService {
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
         this.mcpClient = mcpClient;
-        this.mcpPromptAdapter = mcpPromptAdapter;
         this.toolCallService = toolCallService;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;

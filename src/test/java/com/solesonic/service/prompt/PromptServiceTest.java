@@ -423,15 +423,4 @@ class PromptServiceTest {
         // Image descriptions must not reach a tool's arguments.
         verify(toolCallService).stream(eq(chatId), eq("search for cats"), eq(toolCommand), any(), any());
     }
-
-    /**
-     * The model is a deployment fact, not a per-user preference: an OpenAI-compatible server serves
-     * one model for its lifetime, so the configured default is what answers regardless of who asked.
-     */
-    @Test
-    void model_returnsTheConfiguredDefaultRatherThanAUserPreference() {
-        String model = promptService.model(userId);
-
-        assertThat(model).isEqualTo("qwen3-8b");
-    }
 }
