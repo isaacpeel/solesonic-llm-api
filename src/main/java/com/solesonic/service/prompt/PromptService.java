@@ -96,10 +96,6 @@ public class PromptService {
         this.chatDocumentIngestionService = chatDocumentIngestionService;
     }
 
-    public String model(UUID userId) {
-        return defaultChatModel;
-    }
-
     /**
      * @param responseMetadataCapture receives what the model server reports about the turn, response
      *                                by response, for as many model calls as the turn makes. Left
@@ -111,7 +107,6 @@ public class PromptService {
     public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication,
                                ResponseMetadataCapture responseMetadataCapture) {
         log.info("Streaming prompt for chat id {}", chatId);
-        String model = model(userId);
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
 
@@ -153,7 +148,7 @@ public class PromptService {
 
                         log.info("No command or sticky agent, using basic-prompt from MCP.");
 
-                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, model, responseMetadataCapture);
+                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, defaultChatModel, responseMetadataCapture);
                     });
         }
 
@@ -179,7 +174,7 @@ public class PromptService {
                         .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                         .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                         .toolContext(contextMap)
-                        .options(chatOptions(model))
+                        .options(chatOptions(defaultChatModel))
                         .stream()
                         .chatResponse();
 
@@ -303,20 +298,5 @@ public class PromptService {
                         .map(AbstractMessage::getText)
                         .orElse(""))
                 .filter(StringUtils::isNotEmpty);
-    }
-
-    private String loadBasicPromptSystemText(String message) {
-        try {
-            McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(BASIC_PROMPT)
-                    .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
-                    .build();
-
-            McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-
-            return mcpPromptAdapter.toSystemText(getPromptResult);
-        } catch (Exception exception) {
-            log.warn("Could not load '{}' prompt from MCP server, proceeding without system prompt: {}", BASIC_PROMPT, exception.getMessage());
-            return null;
-        }
     }
 }
