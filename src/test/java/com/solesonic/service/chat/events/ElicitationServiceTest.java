@@ -1,6 +1,5 @@
 package com.solesonic.service.chat.events;
 
-import com.solesonic.service.chat.ChatMessageService;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -8,19 +7,15 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.ReactiveValueOperations;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
-import tools.jackson.databind.json.JsonMapper;
 
 import static org.mockito.Mockito.*;
 
-import org.springframework.data.redis.core.ReactiveValueOperations;
-
 @ExtendWith(MockitoExtension.class)
 class ElicitationServiceTest {
-    @Mock
-    private ChatMessageService chatMessageService;
 
     @Mock
     private ReactiveStringRedisTemplate redisTemplate;
@@ -32,7 +27,6 @@ class ElicitationServiceTest {
 
     @BeforeEach
     void setUp() {
-        JsonMapper jsonMapper = JsonMapper.builder().build();
         messageRelay = Sinks.many().multicast().onBackpressureBuffer();
 
         lenient().doReturn(valueOperations).when(redisTemplate).opsForValue();
