@@ -50,7 +50,6 @@ Redis is required for streaming chat (Redis Streams) and for caching the slash-c
 | `ATLASSIAN_OAUTH_CLIENT_ID` | Atlassian OAuth2 client ID | `your_atlassian_client_id` | No | Required for Jira/Confluence integration |
 | `ATLASSIAN_OAUTH_CLIENT_SECRET` | Atlassian OAuth2 client secret | `your_atlassian_client_secret` | No | Keep secure; required with client ID |
 | `ATLASSIAN_OAUTH_TOKEN_URI` | Atlassian token endpoint | `https://auth.atlassian.com/oauth/token` | No | Standard Atlassian OAuth2 endpoint |
-| `JIRA_CLOUD_ID_PATH` | Jira cloud ID path for API access | `/your-cloud-id` | No | Required for Jira API calls |
 | `CALLBACK_HOST` | OAuth callback host URL | `https://yourdomain.com/settings` | No | Required for production OAuth flows |
 | `ATLASSIAN_TOKENS_ADMIN_KEY` | Admin user ID for service account token operations | `your_admin_key` | No | Required for token storage operations |
 
@@ -389,7 +388,6 @@ REDIS_PASSWORD=your-redis-password
 ATLASSIAN_OAUTH_CLIENT_ID=your_atlassian_client_id
 ATLASSIAN_OAUTH_CLIENT_SECRET=your_atlassian_client_secret
 ATLASSIAN_OAUTH_TOKEN_URI=https://auth.atlassian.com/oauth/token
-JIRA_CLOUD_ID_PATH=/your-cloud-id
 CALLBACK_HOST=https://yourdomain.com/settings
 ATLASSIAN_TOKENS_ADMIN_KEY=your_admin_key
 

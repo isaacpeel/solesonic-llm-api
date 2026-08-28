@@ -111,7 +111,6 @@ class PromptServiceTest {
 
         promptService = new PromptService(
                 chatClient,
-                userPreferencesService,
                 slashCommandService,
                 mcpClient,
                 mcpPromptAdapter,

@@ -4,17 +4,12 @@ import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
-import com.solesonic.model.prompt.AgentSlashCommand;
-import com.solesonic.model.prompt.LocalToolSlashCommand;
-import com.solesonic.model.prompt.PromptSlashCommand;
-import com.solesonic.model.prompt.SlashCommand;
-import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.model.prompt.*;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.etl.ChatDocumentIngestionService;
 import com.solesonic.service.rag.VectorStoreService;
-import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.service.vision.ImageDescriptionService;
 import com.solesonic.util.AttachmentContextFormatter;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -56,7 +51,6 @@ public class PromptService {
     public static final String AGENT_NAME = "agentName";
 
     private final ChatClient chatClient;
-    private final UserPreferencesService userPreferencesService;
     private final SlashCommandService slashCommandService;
     private final McpSyncClient mcpClient;
     private final McpPromptAdapter mcpPromptAdapter;
@@ -79,7 +73,6 @@ public class PromptService {
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
-            UserPreferencesService userPreferencesService,
             SlashCommandService slashCommandService,
             McpSyncClient mcpClient,
             McpPromptAdapter mcpPromptAdapter,
@@ -91,7 +84,6 @@ public class PromptService {
             ChatAttachmentService chatAttachmentService,
             ChatDocumentIngestionService chatDocumentIngestionService) {
         this.chatClient = chatClient;
-        this.userPreferencesService = userPreferencesService;
         this.slashCommandService = slashCommandService;
         this.mcpClient = mcpClient;
         this.mcpPromptAdapter = mcpPromptAdapter;

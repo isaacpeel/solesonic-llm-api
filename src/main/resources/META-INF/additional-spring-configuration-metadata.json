@@ -66,26 +66,6 @@
       "description": "URL template for linking jira issues."
     },
     {
-      "name": "solesonic.llm.jira.cloud.id.path",
-      "type": "java.lang.String",
-      "description": "The path to the Jira Cloud ID."
-    },
-    {
-      "name": "atlassian.tokens.cache.enabled",
-      "type": "java.lang.String",
-      "description": "Enables in-memory caching of Atlassian access tokens to reduce network calls. Accepts true or false."
-    },
-    {
-      "name": "atlassian.tokens.cache.ttl-seconds",
-      "type": "java.lang.String",
-      "description": "Time-to-live for cached Atlassian tokens, in seconds."
-    },
-    {
-      "name": "atlassian.tokens.migration.enabled",
-      "type": "java.lang.String",
-      "description": "Enables one-time token migration tasks (e.g., moving or reformatting stored Atlassian tokens). Accepts true or false."
-    },
-    {
       "name": "spring.flyway.enabled",
       "type": "java.lang.String",
       "description": "Description for spring.flyway.enabled."
