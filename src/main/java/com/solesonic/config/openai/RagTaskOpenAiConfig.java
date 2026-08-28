@@ -30,11 +30,9 @@ public class RagTaskOpenAiConfig {
      */
     @Bean(defaultCandidate = false)
     @Qualifier(RAG_TASK_CHAT_MODEL)
-    public OpenAiChatModel ragTaskChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
-                                            @Value("${solesonic.llm.rag-task.model}") String ragTaskModel) {
+    public OpenAiChatModel ragTaskChatModel(@Value("${spring.ai.openai.api-key}") String apiKey) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .apiKey(apiKey)
-                .model(ragTaskModel)
                 .temperature(0.0)
                 .build();
 
