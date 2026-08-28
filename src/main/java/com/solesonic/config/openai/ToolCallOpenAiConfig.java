@@ -1,6 +1,5 @@
 package com.solesonic.config.openai;
 
-import org.springframework.ai.model.NoopApiKey;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -26,11 +25,10 @@ public class ToolCallOpenAiConfig {
      */
     @Bean(defaultCandidate = false)
     @Qualifier(TOOL_CALL_CHAT_MODEL)
-    public OpenAiChatModel toolCallChatModel(@Value("${solesonic.llm.tool-call.openai.host}") String baseUrl,
+    public OpenAiChatModel toolCallChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                              @Value("${solesonic.llm.tool-call.model}") String toolCallModel) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(baseUrl)
-                .apiKey(new NoopApiKey())
+                .apiKey(apiKey)
                 .model(toolCallModel)
                 .build();
 

@@ -1,6 +1,5 @@
 package com.solesonic.config.openai;
 
-import org.springframework.ai.model.NoopApiKey;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -39,12 +38,11 @@ public class VisionOpenAiConfig {
      */
     @Bean(defaultCandidate = false)
     @Qualifier(VISION_CHAT_MODEL)
-    public OpenAiChatModel visionChatModel(@Value("${solesonic.llm.vision.openai.host}") String baseUrl,
+    public OpenAiChatModel visionChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                            @Value("${solesonic.llm.vision.model}") String visionModel,
                                            @Value("${solesonic.llm.vision.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(baseUrl)
-                .apiKey(new NoopApiKey())
+                .apiKey(apiKey)
                 .model(visionModel)
                 .timeout(readTimeout)
                 .temperature(0.2)

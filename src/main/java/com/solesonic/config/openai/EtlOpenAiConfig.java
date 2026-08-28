@@ -1,6 +1,5 @@
 package com.solesonic.config.openai;
 
-import org.springframework.ai.model.NoopApiKey;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -47,12 +46,12 @@ public class EtlOpenAiConfig {
      */
     @Bean(defaultCandidate = false)
     @Qualifier(ETL_KEYWORD_CHAT_MODEL)
-    public OpenAiChatModel etlKeywordChatModel(@Value("${solesonic.llm.etl.openai.host}") String baseUrl,
+    public OpenAiChatModel etlKeywordChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                                @Value("${solesonic.llm.etl.model}") String etlModel,
                                                @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(baseUrl)
-                .apiKey(new NoopApiKey())
+                .apiKey(apiKey)
+                .apiKey(apiKey)
                 .model(etlModel)
                 .timeout(readTimeout)
                 .temperature(0.0)
@@ -67,12 +66,11 @@ public class EtlOpenAiConfig {
 
     @Bean(defaultCandidate = false)
     @Qualifier(ETL_METADATA_CHAT_MODEL)
-    public OpenAiChatModel etlMetadataChatModel(@Value("${solesonic.llm.etl.openai.host}") String baseUrl,
+    public OpenAiChatModel etlMetadataChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                                 @Value("${solesonic.llm.etl.model}") String etlModel,
                                                 @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(baseUrl)
-                .apiKey(new NoopApiKey())
+                .apiKey(apiKey)
                 .model(etlModel)
                 .timeout(readTimeout)
                 .temperature(0.3)

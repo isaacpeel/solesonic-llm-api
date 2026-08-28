@@ -1,6 +1,5 @@
 package com.solesonic.config.openai;
 
-import org.springframework.ai.model.NoopApiKey;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -31,11 +30,10 @@ public class RagTaskOpenAiConfig {
      */
     @Bean(defaultCandidate = false)
     @Qualifier(RAG_TASK_CHAT_MODEL)
-    public OpenAiChatModel ragTaskChatModel(@Value("${solesonic.llm.rag-task.openai.host}") String baseUrl,
+    public OpenAiChatModel ragTaskChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                             @Value("${solesonic.llm.rag-task.model}") String ragTaskModel) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
-                .baseUrl(baseUrl)
-                .apiKey(new NoopApiKey())
+                .apiKey(apiKey)
                 .model(ragTaskModel)
                 .temperature(0.0)
                 .build();
