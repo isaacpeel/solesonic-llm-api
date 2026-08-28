@@ -1,6 +1,5 @@
 package com.solesonic.service.prompt;
 
-import com.solesonic.mcp.client.prompt.McpPromptAdapter;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
@@ -73,7 +72,6 @@ public class PromptService {
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
             SlashCommandService slashCommandService,
             McpSyncClient mcpClient,
-            McpPromptAdapter mcpPromptAdapter,
             ToolCallService toolCallService,
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,

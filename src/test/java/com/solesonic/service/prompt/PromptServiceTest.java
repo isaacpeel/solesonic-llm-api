@@ -113,7 +113,6 @@ class PromptServiceTest {
                 chatClient,
                 slashCommandService,
                 mcpClient,
-                mcpPromptAdapter,
                 toolCallService,
                 a2aAgentService,
                 a2aStickyAgentService,
