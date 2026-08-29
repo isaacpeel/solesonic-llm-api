@@ -102,23 +102,26 @@ re-consent.
 Every LLM interaction in this application talks to an **OpenAI-compatible** server (llama.cpp
 `llama-server` or anything else that speaks the same protocol).
 
-Six interactions are configured **independently**, so each can be pointed at whichever hardware
-suits it:
+Six interactions are configured **independently by model name**, but all six talk to the **same**
+OpenAI-compatible server — there is exactly one host variable in the whole application:
 
 | Interaction | Host variable | Model variable | What it does |
 |---|---|---|---|
 | Chat | `CHAT_OPENAI_HOST` (`spring.ai.openai.base-url`) | `DEFAULT_CHAT_MODEL` | The conversational model |
 | Embedding | `CHAT_OPENAI_HOST` | `EMBEDDING_MODEL` | Vectors for the pgvector store |
-| ETL | `ETL_OPENAI_HOST` | `ETL_MODEL` | Keyword + metadata enrichment during document ingestion |
-| Vision | `VISION_OPENAI_HOST` | `VISION_MODEL` | Describing image attachments |
-| RAG task | `solesonic.llm.rag-task.openai.host` (`CHAT_OPENAI_HOST`) | `solesonic.llm.rag-task.model` (`DEFAULT_CHAT_MODEL`) | Query rewrite, multi-query expansion, reranking |
-| Tool-call task | `solesonic.llm.tool-call.openai.host` (`CHAT_OPENAI_HOST`) | `solesonic.llm.tool-call.model` (`DEFAULT_CHAT_MODEL`) | Slash-command tool-call routing |
+| ETL | `CHAT_OPENAI_HOST` | `ETL_MODEL` | Keyword + metadata enrichment during document ingestion |
+| Vision | `CHAT_OPENAI_HOST` | `VISION_MODEL` | Describing image attachments |
+| RAG task | `CHAT_OPENAI_HOST` | `solesonic.llm.rag-task.model` (`DEFAULT_CHAT_MODEL`) | Query rewrite, multi-query expansion, reranking |
+| Tool-call task | `CHAT_OPENAI_HOST` | `solesonic.llm.tool-call.model` (`DEFAULT_CHAT_MODEL`) | Slash-command tool-call routing |
 
-Every host is a **full base URL including the `/v1` path** (`http://host:port/v1`) and every one is
-**required** — none carries a masking default, so a missing one fails startup with a clear
-placeholder error rather than silently falling back. Nothing requires them to be six different
-hosts; the properties files point chat, embedding, RAG task and tool-call routing at
-`CHAT_OPENAI_HOST` and only ETL and vision at hosts of their own.
+`CHAT_OPENAI_HOST` is a **full base URL including the `/v1` path** (`http://host:port/v1`) and is
+**required** — it carries no masking default, so a missing value fails startup with a clear
+placeholder error rather than silently falling back. The five hand-built models in `config/openai`
+(ETL ×2, vision, RAG task, tool-call) each inject `spring.ai.openai.base-url` directly via `@Value`
+rather than pointing at hosts of their own — there is no per-purpose host property, only a
+per-purpose model name. Running ETL or vision on genuinely separate hardware would require
+reintroducing a purpose-specific host property and threading it through the relevant `@Bean`
+method, which is not wired up today.
 
 Model names are environment variables as well, because a `llama-server`-style process serves
 whichever single model it was launched with regardless of what is requested. On such a server the
@@ -182,12 +185,11 @@ The variable is **required**: the application will not start without it.
 ### ETL Configuration
 
 Uploaded documents are split, then enriched with keywords and summary metadata before being embedded.
-Enrichment makes an LLM call per chunk, so it runs against its own host and can be sized for
-throughput rather than latency.
+Enrichment makes an LLM call per chunk, run against the same `CHAT_OPENAI_HOST` as chat, with its
+own model chosen for throughput rather than latency.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `ETL_OPENAI_HOST` | Base URL for the OpenAI-compatible enrichment endpoint | `http://izzy-bot-spark:8080/v1` | Yes | A **full base URL** including the `/v1` path |
 | `ETL_MODEL` | Model used for keyword and metadata enrichment | `llama3.1:8b` | Yes | Small and fast beats large here — it is one call per chunk |
 
 Fixed in `application.properties` rather than exposed as variables:
@@ -222,12 +224,14 @@ call. They are configured separately because they are asked for completely diffe
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `CHAT_OPENAI_HOST` | Base URL both tasks run against | `http://izzy-bot-chat:8080/v1` | Yes | The properties files point `solesonic.llm.rag-task.openai.host` and `solesonic.llm.tool-call.openai.host` at it |
+| `CHAT_OPENAI_HOST` | Base URL both tasks run against | `http://izzy-bot-chat:8080/v1` | Yes | Both beans inject `spring.ai.openai.base-url` directly; there is no separate host property for either |
 | `DEFAULT_CHAT_MODEL` | Model both tasks run | `qwen2.5:32b` | Yes | The properties files point `solesonic.llm.rag-task.model` and `solesonic.llm.tool-call.model` at it |
 
-Both host and model properties are required in every profile — none carries a Java-side default. Point
-them at hosts of their own by overriding the four properties directly. The RAG task model runs at temperature 0 so a rewritten query and a rerank verdict
-are reproducible for the same input; the tool-call model needs to be one that calls tools reliably.
+Both model properties are required in every profile — neither carries a Java-side default. The RAG
+task model runs at temperature 0 so a rewritten query and a rerank verdict are reproducible for the
+same input; the tool-call model needs to be one that calls tools reliably. Pointing either at a host
+of its own would require adding a purpose-specific host property back and threading it through the
+relevant `@Bean` method in `config/openai`.
 
 ### Vision Configuration
 
@@ -235,13 +239,12 @@ Image attachments are described by a vision model, and that description is what 
 the image bytes are never sent to it. A description is generated once per attachment and stored, so
 later turns reuse it without another vision call.
 
-The vision model is configured independently of the chat model, so it can run on different hardware.
-Both variables are **required**: the application will not start without them.
+The vision model is configured independently of the chat model by name, but runs against the same
+`CHAT_OPENAI_HOST`. `VISION_MODEL` is **required**: the application will not start without it.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
 | `VISION_MODEL` | Model used to describe images | `qwen2.5vl` | Yes | Must be vision-capable. A text-only model produces confident nonsense rather than an error |
-| `VISION_OPENAI_HOST` | Base URL for the OpenAI-compatible vision endpoint | `http://izzy-bot-spark:8080/v1` | Yes | A **full base URL** including the `/v1` path |
 
 Fixed in `application.properties` rather than exposed as variables:
 
@@ -341,13 +344,11 @@ JWK_SET_URI=https://your-issuer/.well-known/jwks.json
 # CORS (adjust for your frontend)
 CORS_ALLOWED_ORIGINS=http://localhost:3000
 
-# Model servers (required — full base URLs including /v1)
+# Model server (required — full base URL including /v1, shared by every interaction)
 CHAT_OPENAI_HOST=http://localhost:8080/v1
 DEFAULT_CHAT_MODEL=qwen2.5:32b
 EMBEDDING_MODEL=mxbai-embed-large
-ETL_OPENAI_HOST=http://localhost:8080/v1
 ETL_MODEL=llama3.1:8b
-VISION_OPENAI_HOST=http://localhost:8080/v1
 VISION_MODEL=qwen2.5vl
 
 # Image generation admission control (required)
@@ -403,14 +404,12 @@ MCP_CLIENT_SECRET=your_mcp_client_secret
 MCP_ISSUER_URI=https://your-auth-server
 TOKEN_ENDPOINT=https://your-auth-server/token
 
-# Model Server Configuration — OpenAI-compatible endpoints, each a full base URL
-# including /v1. All are required; several may point at the same server.
+# Model Server Configuration — one OpenAI-compatible endpoint, a full base URL
+# including /v1, shared by chat, embedding, ETL, vision, RAG task and tool-call routing.
 CHAT_OPENAI_HOST=http://localhost:8080/v1
 DEFAULT_CHAT_MODEL=qwen2.5:32b
 EMBEDDING_MODEL=mxbai-embed-large
-ETL_OPENAI_HOST=http://localhost:8080/v1
 ETL_MODEL=llama3.1:8b
-VISION_OPENAI_HOST=http://localhost:8080/v1
 VISION_MODEL=qwen2.5vl
 
 # Image Generation Configuration
@@ -452,7 +451,7 @@ The application supports different profiles with varying configuration requireme
 3. **CORS errors**: Add your frontend URL to `CORS_ALLOWED_ORIGINS`
 4. **Redis connection failures**: Verify Redis is running and that `REDIS_HOST` (note the double-D) is set correctly for non-local environments
 5. **MCP integration issues**: Verify `SOLESONIC_MCP_URI`, `MCP_CLIENT_ID`, `MCP_CLIENT_SECRET`, and `MCP_ISSUER_URI` are all configured
-6. **Startup fails on a missing placeholder**: all six `*_OPENAI_HOST` variables are required and none has a default. The error names the property; set it to a full base URL including `/v1`
+6. **Startup fails on a missing placeholder**: `CHAT_OPENAI_HOST` (`spring.ai.openai.base-url`) is required and has no default — every model interaction (chat, embedding, ETL, vision, RAG task, tool-call) injects it. The error names the property; set it to a full base URL including `/v1`
 7. **`required a single bean, but 2 were found` for `EmbeddingModel`**: `spring.ai.model.embedding` is not `none`, so the OpenAI starter's own auto-configured embedding bean is competing with the hand-built one for pgvector's unqualified injection point
 
 For more troubleshooting guidance, see [docs/troubleshooting.md](troubleshooting.md).

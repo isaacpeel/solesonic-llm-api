@@ -126,24 +126,9 @@
       "description": "Experimental: enables automatic reconnection to the MCP server after a connection loss, with exponential backoff. Disabled by default."
     },
     {
-      "name": "solesonic.llm.chat.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server backing main chat, including the /v1 path. Required; no default."
-    },
-    {
-      "name": "solesonic.llm.etl.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server backing ETL keyword and metadata enrichment, including the /v1 path. Required; no default."
-    },
-    {
       "name": "solesonic.llm.etl.openai.read-timeout",
       "type": "java.time.Duration",
       "description": "Read timeout for the ETL model client. Must exceed the time to cold-load the ETL model, otherwise the first request aborts with a timeout instead of waiting for the load."
-    },
-    {
-      "name": "solesonic.llm.vision.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server backing image description, including the /v1 path. Required; no default."
     },
     {
       "name": "solesonic.llm.vision.openai.read-timeout",
@@ -151,29 +136,14 @@
       "description": "Read timeout for the vision model client. A cold vision-model load routinely outlives a default read timeout and surfaces as a timeout on the first image rather than a wait."
     },
     {
-      "name": "solesonic.llm.embedding.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server producing embeddings for the pgvector store, including the /v1 path. Required; no default."
-    },
-    {
       "name": "solesonic.llm.embedding.model",
       "type": "java.lang.String",
       "description": "Embedding model name. Changing it changes the vectors, so an existing corpus must be re-ingested rather than mixed."
     },
     {
-      "name": "solesonic.llm.rag-task.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server running the RAG pipeline's own prompts — query rewrite, expansion, reranking — including the /v1 path. Required; no default."
-    },
-    {
       "name": "solesonic.llm.rag-task.model",
       "type": "java.lang.String",
       "description": "Model used for RAG query rewriting, multi-query expansion and document reranking. Required; no default."
-    },
-    {
-      "name": "solesonic.llm.tool-call.openai.host",
-      "type": "java.lang.String",
-      "description": "Base URL of the OpenAI-compatible server backing slash-command tool-call routing, including the /v1 path. Required; no default."
     },
     {
       "name": "solesonic.llm.tool-call.model",

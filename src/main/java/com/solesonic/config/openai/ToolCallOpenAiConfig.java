@@ -9,9 +9,9 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * The model a slash command routes through when it has to turn a user's message into a single tool
- * call, served by an OpenAI-compatible server of its own. Kept apart from
- * {@link RagTaskOpenAiConfig} so tool-call routing can be pointed at whichever model calls tools
- * reliably, independently of what rewrites RAG queries.
+ * call, served by the same OpenAI-compatible server as chat ({@code spring.ai.openai.base-url}).
+ * Kept apart from {@link RagTaskOpenAiConfig} as its own bean so tool-call routing can be pointed at
+ * a model of its own, independently of what rewrites RAG queries.
  */
 @Configuration
 public class ToolCallOpenAiConfig {
@@ -26,8 +26,10 @@ public class ToolCallOpenAiConfig {
     @Bean(defaultCandidate = false)
     @Qualifier(TOOL_CALL_CHAT_MODEL)
     public OpenAiChatModel toolCallChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
+                                             @Value("${spring.ai.openai.base-url}") String baseUrl,
                                              @Value("${solesonic.llm.tool-call.model}") String toolCallModel) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .model(toolCallModel)
                 .build();

@@ -10,9 +10,9 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Duration;
 
 /**
- * The vision model used to describe image attachments, served by an OpenAI-compatible server of its
- * own. Configured separately from the chat model — its own host, model and timeout — so it can run
- * on different hardware, exactly as {@link EtlOpenAiConfig} does for enrichment.
+ * The vision model used to describe image attachments, served by the same OpenAI-compatible server
+ * as chat ({@code spring.ai.openai.base-url}) but with its own model and timeout, exactly as
+ * {@link EtlOpenAiConfig} does for enrichment.
  */
 @Configuration
 public class VisionOpenAiConfig {
@@ -39,9 +39,11 @@ public class VisionOpenAiConfig {
     @Bean(defaultCandidate = false)
     @Qualifier(VISION_CHAT_MODEL)
     public OpenAiChatModel visionChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
+                                           @Value("${spring.ai.openai.base-url}") String baseUrl,
                                            @Value("${solesonic.llm.vision.model}") String visionModel,
                                            @Value("${solesonic.llm.vision.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .model(visionModel)
                 .timeout(readTimeout)

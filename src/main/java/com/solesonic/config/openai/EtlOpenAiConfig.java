@@ -10,13 +10,12 @@ import org.springframework.context.annotation.Configuration;
 import java.time.Duration;
 
 /**
- * The two enrichment models the ETL pipeline runs over every chunk it ingests, both served by an
- * OpenAI-compatible server pointed at by {@code solesonic.llm.etl.openai.host}. Configured
- * separately from chat — its own host, model and timeout — so enrichment can run on its own
- * hardware, exactly as {@link VisionOpenAiConfig} does for image description.
+ * The two enrichment models the ETL pipeline runs over every chunk it ingests, served by the same
+ * OpenAI-compatible server as chat ({@code spring.ai.openai.base-url}) but with their own model and
+ * timeout, exactly as {@link VisionOpenAiConfig} does for image description.
  * <p>
- * Both beans share a host and a model and differ only in sampling: keyword extraction wants a
- * deterministic short answer, metadata summarisation a longer and slightly freer one.
+ * Both beans share a model and differ only in sampling: keyword extraction wants a deterministic
+ * short answer, metadata summarisation a longer and slightly freer one.
  * <p>
  * There is nothing here to pull a model on demand, keep it resident after an idle period, or size
  * its context per request: an OpenAI-compatible server loads one model at process start, and
@@ -43,9 +42,11 @@ public class EtlOpenAiConfig {
     @Bean(defaultCandidate = false)
     @Qualifier(ETL_KEYWORD_CHAT_MODEL)
     public OpenAiChatModel etlKeywordChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
+                                               @Value("${spring.ai.openai.base-url}") String baseUrl,
                                                @Value("${solesonic.llm.etl.model}") String etlModel,
                                                @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .model(etlModel)
                 .timeout(readTimeout)
@@ -62,9 +63,11 @@ public class EtlOpenAiConfig {
     @Bean(defaultCandidate = false)
     @Qualifier(ETL_METADATA_CHAT_MODEL)
     public OpenAiChatModel etlMetadataChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
+                                                @Value("${spring.ai.openai.base-url}") String baseUrl,
                                                 @Value("${solesonic.llm.etl.model}") String etlModel,
                                                 @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
+                .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .model(etlModel)
                 .timeout(readTimeout)
