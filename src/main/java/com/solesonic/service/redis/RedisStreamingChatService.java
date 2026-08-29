@@ -3,8 +3,6 @@ package com.solesonic.service.redis;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.InitPayload;
-import com.solesonic.model.chat.ResponseMetadata;
-import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
@@ -142,14 +140,6 @@ public class RedisStreamingChatService {
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
-        //Filled by whichever route through PromptService actually calls a chat model, from what the
-        //server itself reports — nothing here is measured or derived locally. It accumulates rather
-        //than snapshotting one response, because under the OpenAI protocol the token counts arrive on
-        //a final chunk that carries no text, and a tool-calling turn reports once per round trip.
-        //Read only after chunkFlow completes, which the concatWith below guarantees happens-after
-        //every doOnNext that could fill it.
-        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
-
         Flux<ServerSentEvent<?>> elicitationFlux = elicitationService.registerChat(chatId);
 
         Flux<ServerSentEvent<?>> cancelEvents = elicitationFlux
@@ -157,7 +147,7 @@ public class RedisStreamingChatService {
                 .take(1)
                 .share();
 
-        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication, responseMetadataCapture))
+        Flux<String> chunkObjects = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .doOnNext(assembled::append);
@@ -173,20 +163,6 @@ public class RedisStreamingChatService {
             //References, never bytes. A client that missed the image event mid-stream — a reconnect,
             //a late subscribe — still finalises the turn with the image on it.
             responseMessage.setGeneratedImages(generatedImageService.forChatSince(chatId, turnStarted));
-
-            //Null whenever the server never reported anything — an A2A delegation calls no chat
-            //model, and a turn that ends before the first usage chunk has nothing to report either.
-            ResponseMetadata responseMetadata = responseMetadataCapture.metadata();
-            responseMessage.setResponseMetadata(responseMetadata);
-
-            //The chat memory advisor already saved this turn's row without responseMetadata, since
-            //the counts do not arrive until the stream completes — this is what makes them durable
-            //rather than living only on this one done event. The per-call breakdown is persisted with
-            //them but deliberately left off responseMessage, so it never reaches a client.
-            if (responseMetadata != null) {
-                chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata,
-                        responseMetadataCapture.calls());
-            }
 
             SolesonicChatResponse solesonicChatResponse = new SolesonicChatResponse(chatId, responseMessage);
 

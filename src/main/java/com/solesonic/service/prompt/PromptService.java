@@ -1,7 +1,6 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.model.chat.ChatRequest;
-import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.*;
 import com.solesonic.service.a2a.A2AAgentService;
@@ -59,11 +58,9 @@ public class PromptService {
     private final ChatAttachmentService chatAttachmentService;
     private final ChatDocumentIngestionService chatDocumentIngestionService;
 
-    @Value("${solesonic.llm.bot.name}")
-    private String agentName;
+    private final String agentName;
 
-    @Value("classpath:prompts/basic-system-prompt.st")
-    private Resource basicSystemPrompt;
+    private final Prompt defaultSystemPrompt;
 
     @Value("${spring.ai.openai.model}")
     private String defaultChatModel;
@@ -78,7 +75,9 @@ public class PromptService {
             VectorStoreService vectorStoreService,
             ImageDescriptionService imageDescriptionService,
             ChatAttachmentService chatAttachmentService,
-            ChatDocumentIngestionService chatDocumentIngestionService) {
+            ChatDocumentIngestionService chatDocumentIngestionService,
+            @Value("${solesonic.llm.bot.name}") String agentName,
+            @Value("classpath:prompts/basic-system-prompt.st") Resource defaultSystemPromptResource) {
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
         this.mcpClient = mcpClient;
@@ -89,18 +88,23 @@ public class PromptService {
         this.imageDescriptionService = imageDescriptionService;
         this.chatAttachmentService = chatAttachmentService;
         this.chatDocumentIngestionService = chatDocumentIngestionService;
+        this.agentName = agentName;
+
+        Map<String, Object> systemPromptContext = Map.of(
+                AGENT_NAME, agentName
+        );
+
+        PromptTemplate promptTemplate = PromptTemplate.builder()
+                .resource(defaultSystemPromptResource)
+                .variables(systemPromptContext)
+                .build();
+
+        defaultSystemPrompt = promptTemplate.create();
     }
 
-    /**
-     * @param responseMetadataCapture receives what the model server reports about the turn, response
-     *                                by response, for as many model calls as the turn makes. Left
-     *                                unset by routes that call no chat model — an A2A agent
-     *                                delegation — so a caller reading it after the stream finishes
-     *                                must treat {@code null} as "no metadata available" rather than
-     *                                a bug.
-     */
-    public Flux<String> stream(UUID chatId, UUID userId, ChatRequest chatMessage, Authentication authentication,
-                               ResponseMetadataCapture responseMetadataCapture) {
+    public Flux<String> stream(UUID chatId, UUID userId,
+                               ChatRequest chatMessage,
+                               Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
         String message = chatMessage.chatMessage();
         Set<String> commands = chatMessage.commands();
@@ -141,9 +145,9 @@ public class PromptService {
                                     AttachmentContextFormatter.prepend(message, imageDescriptions), authToken);
                         }
 
-                        log.info("No command or sticky agent, using basic-prompt from MCP.");
+                        log.info("No command or sticky agent, using default system prompt.");
 
-                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, defaultChatModel, responseMetadataCapture);
+                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, defaultChatModel);
                     });
         }
 
@@ -174,14 +178,14 @@ public class PromptService {
                         .chatResponse();
 
                 yield a2aStickyAgentService.deactivate(chatId)
-                        .thenMany(contentFlux(promptChatResponse, responseMetadataCapture));
+                        .thenMany(contentFlux(promptChatResponse));
             }
 
             case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap, responseMetadataCapture));
+                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
 
             case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, responseMetadataCapture));
+                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap));
 
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
@@ -217,34 +221,31 @@ public class PromptService {
     }
 
     /**
-     * @param message      the user's own words — both the MCP prompt template and the model get these
-     *                     unaltered
+     * Streams the no-slash-command, no-sticky-agent chat path: the default system prompt — built
+     * once in the constructor from {@code basic-system-prompt.st} and the configured agent name,
+     * not rebuilt on every call — plus the RAG retrieval advisor and the user's message.
+     *
+     * @param chatId       identifies the conversation to the retrieval advisor, both directly and
+     *                     as the {@code CONVERSATION_ID} advisor param
+     * @param userId       resolves the retrieval advisor's per-user similarity threshold
+     * @param message      the user's own words
      * @param attachmentContext the attachment block — described images, named documents, or both —
      *                     or null when nothing was attached. Carried as a message of its own, which
      *                     {@code DefaultChatClientUtils} places between the system text and the user
      *                     message, and which the retrieval advisor leaves alone because it only ever
      *                     rewrites the last user message
+     * @param contextMap   tool context forwarded to any MCP tool the model calls mid-turn
+     * @param model        the chat model name requested via {@code OpenAiChatOptions}
      */
     private Flux<String> streamBasicPrompt(UUID chatId,
                                            UUID userId,
                                            String message,
                                            String attachmentContext,
                                            Map<String, Object> contextMap,
-                                           String model,
-                                           ResponseMetadataCapture responseMetadataCapture) {
-        Map<String, Object> promptContext = Map.of(
-                AGENT_NAME, agentName
-        );
-
-        PromptTemplate promptTemplate = PromptTemplate.builder()
-                .resource(basicSystemPrompt)
-                .variables(promptContext)
-                .build();
-
-        Prompt systemPrompt = promptTemplate.create();
+                                           String model) {
 
         var promptSpec = chatClient.prompt()
-                .system(systemPrompt.getContents())
+                .system(defaultSystemPrompt.getContents())
                 .user(message)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
@@ -257,7 +258,7 @@ public class PromptService {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
         }
 
-        return contentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture);
+        return contentFlux(promptSpec.stream().chatResponse());
     }
 
     /**
@@ -277,17 +278,10 @@ public class PromptService {
     }
 
     /**
-     * Equivalent to {@code StreamResponseSpec.content()}, plus offering <em>every</em> response to
-     * the capture on the way past. No single response holds the turn's accounting: the model name and
-     * finish reason ride the chunk that carries the text, the token counts arrive on a later chunk
-     * with no text at all, and a tool-calling turn repeats both once per round trip. This must run
-     * over the same stream that produces the chunks, not a second call, or the model would be invoked
-     * twice.
+     * Equivalent to {@code StreamResponseSpec.content()}.
      */
-    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux,
-                                            ResponseMetadataCapture responseMetadataCapture) {
+    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux) {
         return chatResponseFlux
-                .doOnNext(responseMetadataCapture::accept)
                 .map(chatResponse -> Optional.ofNullable(chatResponse.getResult())
                         .map(Generation::getOutput)
                         .map(AbstractMessage::getText)

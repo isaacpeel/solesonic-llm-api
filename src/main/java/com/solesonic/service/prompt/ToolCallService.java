@@ -1,6 +1,5 @@
 package com.solesonic.service.prompt;
 
-import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.tools.LocalToolRegistry;
@@ -47,31 +46,28 @@ public class ToolCallService {
     public Flux<String> stream(UUID chatId,
                                String message,
                                ToolSlashCommand toolCommand,
-                               Map<String, Object> contextMap,
-                               ResponseMetadataCapture responseMetadataCapture) {
+                               Map<String, Object> contextMap) {
 
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap, responseMetadataCapture);
+        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap);
     }
 
     public Flux<String> streamLocal(UUID chatId,
                                     String message,
                                     LocalToolSlashCommand localToolCommand,
-                                    Map<String, Object> contextMap,
-                                    ResponseMetadataCapture responseMetadataCapture) {
+                                    Map<String, Object> contextMap) {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap, responseMetadataCapture);
+        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap);
     }
 
     private Flux<String> invoke(UUID chatId,
                                 String message,
                                 String toolName,
                                 ToolCallback toolCallback,
-                                Map<String, Object> contextMap,
-                                ResponseMetadataCapture responseMetadataCapture) {
+                                Map<String, Object> contextMap) {
 
         log.info("Tool invoke: {}", toolName);
 
@@ -91,8 +87,6 @@ public class ToolCallService {
             log.warn("No response received for tool: {}", toolName);
             return Flux.empty();
         }
-
-        responseMetadataCapture.accept(chatResponse);
 
         String result = chatResponse.getResult().getOutput().getText();
 

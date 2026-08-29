@@ -66,7 +66,7 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
             int remaining = topK - retrieved.size();
 
             if (remaining <= 0) {
-                log.debug("Retrieval budget of {} spent before reaching scope {}", topK, scopedTier.scope());
+                log.info("Retrieval budget of {} spent before reaching scope {}", topK, scopedTier.scope());
                 break;
             }
 
@@ -78,7 +78,7 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
                     .build()
                     .retrieve(query);
 
-            log.debug("Retrieved {} document(s) at scope {}", tierDocuments.size(), scopedTier.scope());
+            log.info("Retrieved {} document(s) at scope {}", tierDocuments.size(), scopedTier.scope());
 
             retrieved.addAll(tierDocuments);
         }
