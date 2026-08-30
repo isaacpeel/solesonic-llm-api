@@ -189,6 +189,36 @@
       "name": "google.api.auth.callback.uri",
       "type": "java.lang.String",
       "description": "Redirect URI Google returns the authorization code to. Must match a redirect URI registered on the OAuth client exactly."
+    },
+    {
+      "name": "xero.oauth.auth-uri",
+      "type": "java.lang.String",
+      "description": "Xero's authorization endpoint, where the user is sent to consent and to pick which organisation to grant."
+    },
+    {
+      "name": "xero.oauth.base-uri",
+      "type": "java.lang.String",
+      "description": "Base URI of Xero's OAuth2 token endpoint. Distinct from the authorization host: Xero consents at login.xero.com and exchanges at identity.xero.com."
+    },
+    {
+      "name": "xero.oauth.client-id",
+      "type": "java.lang.String",
+      "description": "OAuth2 client ID of the Xero app."
+    },
+    {
+      "name": "xero.oauth.client-secret",
+      "type": "java.lang.String",
+      "description": "OAuth2 client secret paired with xero.oauth.client-id."
+    },
+    {
+      "name": "xero.api.uri",
+      "type": "java.lang.String",
+      "description": "Base URI for the Xero API, covering both GET /connections and the Accounting API."
+    },
+    {
+      "name": "xero.api.auth.callback.uri",
+      "type": "java.lang.String",
+      "description": "Redirect URI Xero returns the authorization code to. Must match a redirect URI registered on the Xero app exactly."
     }
   ]
 }

@@ -91,6 +91,46 @@ mode; publishing to general users additionally requires a CASA security assessme
 issued by a consent screen in Testing mode expire after seven days, after which the user must
 re-consent.
 
+### Xero Integration
+
+Three-legged OAuth2 against Xero, scoped to a single Xero organisation per user. The user consents
+once; the token — refresh token included — is encrypted into `user_preferences.xero_access_token`
+and never leaves the application. Unlike the Atlassian integration there is no token broker: this
+application is Xero's only caller.
+
+Every variable below is Xero-specific and shares nothing with the Atlassian or Google flows, so a
+change to one integration's callback cannot silently move another's.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `XERO_OAUTH_CLIENT_ID` | OAuth2 client ID of the Xero app | `A1B2C3D4E5F6...` | Yes | From the app's Configuration tab in the Xero developer portal |
+| `XERO_OAUTH_CLIENT_SECRET` | OAuth2 client secret paired with the client ID | `xero-client-secret` | Yes | Keep secure; Xero shows it once at generation |
+| `XERO_AUTH_CALLBACK_URI` | Redirect URI for the `test` and `local` profiles | `http://localhost:3000/xero/auth/callback` | Yes (test, local) | Must match a redirect URI registered on the Xero app **exactly** |
+| `XERO_CALLBACK_HOST` | Redirect URI for the `prod` and `prod-nginx` profiles | `https://yourdomain.com/xero/auth/callback` | Yes (prod) | Registered separately from the local one; Xero allows several per app |
+
+Fixed in `application.properties` rather than exposed as variables, since they are Xero's own
+endpoints and identical in every deployment:
+
+- `xero.oauth.auth-uri=https://login.xero.com/identity/connect/authorize`
+- `xero.oauth.base-uri=https://identity.xero.com` — the token endpoint, at `/connect/token`
+- `xero.api.uri=https://api.xero.com` — both `GET /connections` and the Accounting API
+
+Note that consent and token exchange are on **different hosts** (`login.xero.com` and
+`identity.xero.com`), which is why they are two properties rather than one base URI.
+
+The scopes requested are `openid profile email accounting.transactions offline_access`.
+`offline_access` is mandatory: without it Xero issues no refresh token at all, and the connection
+dies 30 minutes later when the access token expires with nothing able to renew it.
+
+Xero's token endpoint takes `application/x-www-form-urlencoded`, like Google's and unlike
+Atlassian's, which accepts JSON.
+
+After the token exchange the callback resolves the organisation from `GET /connections` and stores
+its `tenantId` alongside the token — the Accounting API needs it on an `xero-tenant-id` header, and
+that call is the only place it exists. Xero's consent screen cannot be limited to one organisation
+up front, so a user who grants several has the first taken and a warning logged. A grant covering no
+organisation is rejected rather than stored.
+
 ### AWS Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -357,6 +397,11 @@ IMAGE_ADMISSION_TIMEOUT=30s
 
 # A2A (required)
 A2A_BASE_URI=https://agents.yourdomain.com
+
+# Xero (required — no defaults, so the application will not start without them)
+XERO_OAUTH_CLIENT_ID=your_xero_client_id
+XERO_OAUTH_CLIENT_SECRET=your_xero_client_secret
+XERO_AUTH_CALLBACK_URI=http://localhost:3000/xero/auth/callback
 ```
 
 ### Full Configuration (.env)
@@ -396,6 +441,11 @@ ATLASSIAN_TOKENS_ADMIN_KEY=your_admin_key
 GOOGLE_OAUTH_CLIENT_ID=your_google_client_id.apps.googleusercontent.com
 GOOGLE_OAUTH_CLIENT_SECRET=your_google_client_secret
 GOOGLE_CALLBACK_HOST=https://yourdomain.com/google/auth/callback
+
+# Xero Integration
+XERO_OAUTH_CLIENT_ID=your_xero_client_id
+XERO_OAUTH_CLIENT_SECRET=your_xero_client_secret
+XERO_CALLBACK_HOST=https://yourdomain.com/xero/auth/callback
 
 # MCP Configuration
 SOLESONIC_MCP_URI=http://localhost:3001/sse
