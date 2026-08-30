@@ -197,7 +197,7 @@ class XeroInvoiceServiceTest {
 
                     return next.exchange(request);
                 }))
-                .exchangeFunction(request -> Mono.just(ClientResponse.create(HttpStatus.OK, EXCHANGE_STRATEGIES)
+                .exchangeFunction(_ -> Mono.just(ClientResponse.create(HttpStatus.OK, EXCHANGE_STRATEGIES)
                         .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
                         .body(CREATED_RESPONSE)
                         .build()))

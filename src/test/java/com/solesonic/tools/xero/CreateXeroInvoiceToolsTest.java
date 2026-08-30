@@ -148,7 +148,7 @@ class CreateXeroInvoiceToolsTest {
     private static Method toolMethod() {
         return Arrays.stream(CreateXeroInvoiceTools.class.getDeclaredMethods())
                 .filter(method -> method.isAnnotationPresent(Tool.class))
-                .reduce((first, second) -> {
+                .reduce((_, _) -> {
                     throw new IllegalStateException("Expected exactly one @Tool method");
                 })
                 .orElseThrow(() -> new IllegalStateException("No @Tool method found"));

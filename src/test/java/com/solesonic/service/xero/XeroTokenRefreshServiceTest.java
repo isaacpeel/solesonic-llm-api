@@ -86,7 +86,7 @@ class XeroTokenRefreshServiceTest {
         return xeroTokenRefreshService(response, HttpStatus.OK);
     }
 
-    private XeroTokenRefreshService xeroTokenRefreshService(String response, HttpStatus status) {
+    private XeroTokenRefreshService xeroTokenRefreshService(String response, @SuppressWarnings("all") HttpStatus status) {
         WebClient authWebClient = WebClient.builder()
                 .baseUrl(OAUTH_BASE_URI)
                 .exchangeFunction(request -> {

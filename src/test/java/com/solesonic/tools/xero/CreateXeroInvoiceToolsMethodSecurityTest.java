@@ -47,8 +47,6 @@ import static org.mockito.Mockito.verify;
  */
 class CreateXeroInvoiceToolsMethodSecurityTest {
 
-    private static final String XERO_INVOICE_CREATE = "ROLE_xero-invoice-create";
-
     @Configuration
     @EnableMethodSecurity
     @EnableAspectJAutoProxy(proxyTargetClass = true)
