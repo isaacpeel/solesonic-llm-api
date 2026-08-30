@@ -79,7 +79,8 @@ class SecurityEventLoggerTest {
                 "/slash/commands",
                 "/atlassian/auth",
                 "/confluence/spaces",
-                "/broker/atlassian/token");
+                "/broker/atlassian/token",
+                "/xero/invoices");
 
         routes.forEach(route -> {
             appender.list.clear();

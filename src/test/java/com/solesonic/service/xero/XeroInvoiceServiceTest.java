@@ -6,6 +6,7 @@ import com.solesonic.exception.xero.XeroInvoiceValidationException;
 import com.solesonic.model.xero.invoice.XeroInvoice;
 import com.solesonic.model.xero.invoice.XeroInvoiceRequest;
 import com.solesonic.model.xero.invoice.XeroLineItemRequest;
+import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -37,6 +38,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import static com.solesonic.config.xero.XeroConstants.XERO_USER_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.http.HttpMethod.POST;
@@ -113,17 +115,17 @@ class XeroInvoiceServiceTest {
 
     private static final BodyInserter.Context BODY_CONTEXT = new BodyInserter.Context() {
         @Override
-        public List<HttpMessageWriter<?>> messageWriters() {
+        public @NonNull List<HttpMessageWriter<?>> messageWriters() {
             return EXCHANGE_STRATEGIES.messageWriters();
         }
 
         @Override
-        public Optional<ServerHttpRequest> serverRequest() {
+        public @NonNull Optional<ServerHttpRequest> serverRequest() {
             return Optional.empty();
         }
 
         @Override
-        public Map<String, Object> hints() {
+        public @NonNull Map<String, Object> hints() {
             return Map.of();
         }
     };
@@ -173,6 +175,56 @@ class XeroInvoiceServiceTest {
                 "PO-1234",
                 "USD",
                 "Exclusive");
+    }
+
+    /**
+     * The user has to reach {@code XeroRequestAuthorizationFilter}, and the Reactor context is the
+     * only channel that can carry it there: the filter runs inside the exchange, not on the caller's
+     * thread, and the chat tool path has no request scope for it to read instead.
+     */
+    @Test
+    void publishesTheUserIdIntoTheReactorContextForTheAuthorizationFilter() {
+        List<UUID> observedUsers = new ArrayList<>();
+
+        WebClient apiWebClient = WebClient.builder()
+                .baseUrl(API_URI)
+                .codecs(configurer -> {
+                    configurer.defaultCodecs().jacksonJsonEncoder(new JacksonJsonEncoder(JSON_MAPPER));
+                    configurer.defaultCodecs().jacksonJsonDecoder(new JacksonJsonDecoder(JSON_MAPPER));
+                })
+                .filter((request, next) -> Mono.deferContextual(contextView -> {
+                    observedUsers.add(contextView.get(XERO_USER_ID));
+
+                    return next.exchange(request);
+                }))
+                .exchangeFunction(request -> Mono.just(ClientResponse.create(HttpStatus.OK, EXCHANGE_STRATEGIES)
+                        .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                        .body(CREATED_RESPONSE)
+                        .build()))
+                .build();
+
+        XeroInvoiceService xeroInvoiceService = new XeroInvoiceService(apiWebClient);
+        ReflectionTestUtils.setField(xeroInvoiceService, "defaultContactId", DEFAULT_CONTACT_ID);
+
+        xeroInvoiceService.create(invoiceRequest(), userId);
+
+        assertThat(observedUsers).containsExactly(userId);
+    }
+
+    /**
+     * A {@code null} user would be an unusable call — the filter could not name a connection to make
+     * it on — and it is refused here rather than allowed to become a
+     * {@link NullPointerException} inside Reactor's context, which carries no clue about its cause.
+     */
+    @Test
+    void refusesToCreateAnInvoiceWithoutAUser() {
+        XeroInvoiceService xeroInvoiceService = xeroInvoiceService(CREATED_RESPONSE);
+        XeroInvoiceRequest invoiceRequest = invoiceRequest();
+
+        assertThatThrownBy(() -> xeroInvoiceService.create(invoiceRequest, null))
+                .isInstanceOf(XeroApiException.class);
+
+        assertThat(recordedRequests).isEmpty();
     }
 
     /**

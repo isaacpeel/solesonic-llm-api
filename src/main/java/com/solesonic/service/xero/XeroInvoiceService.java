@@ -7,7 +7,6 @@ import com.solesonic.model.xero.invoice.XeroInvoice;
 import com.solesonic.model.xero.invoice.XeroInvoiceRequest;
 import com.solesonic.model.xero.invoice.XeroInvoicesEnvelope;
 import com.solesonic.model.xero.invoice.XeroLineItem;
-import com.solesonic.model.xero.invoice.XeroLineItemRequest;
 import com.solesonic.model.xero.invoice.XeroValidationError;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -22,15 +21,22 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.solesonic.config.xero.XeroConstants.XERO_API_WEB_CLIENT;
+import static com.solesonic.config.xero.XeroConstants.XERO_USER_ID;
 
 /**
  * Creates draft sales invoices in the calling user's Xero organisation.
  * <p>
  * Nothing here obtains or renews a token: the call goes out on the API {@code WebClient}, whose
  * {@link com.solesonic.security.xero.XeroRequestAuthorizationFilter} reads the stored connection for
- * the request-scoped user, refreshes it if it has expired, and adds both {@code Authorization} and
+ * the user, refreshes it if it has expired, and adds both {@code Authorization} and
  * {@code xero-tenant-id}. Keeping that in one filter is what stops a second copy of the refresh
  * logic from appearing here — and each spare refresh burns a refresh token, since Xero rotates them.
+ * <p>
+ * Which user that is arrives through the Reactor subscription context rather than the request scope,
+ * and this method is the only place it is put there. The filter runs inside the exchange, so it can
+ * read nothing this method does not publish; and the two callers do not share a thread —
+ * {@code XeroInvoiceController} has an HTTP request bound to its, {@code CreateXeroInvoiceTools} runs
+ * on the scheduler the chat stream subscribes on and has none.
  * <p>
  * The two behaviours worth knowing before changing this class:
  * <ul>
@@ -66,6 +72,8 @@ public class XeroInvoiceService {
 
     private static final String NO_INVOICE_RETURNED = "xero_returned_no_invoice";
 
+    private static final String NO_USER = "xero_invoice_without_a_user";
+
     /**
      * Xero flagged the invoice but named no reason. Rare, but the alternative is throwing a
      * validation exception whose message is the empty string.
@@ -82,6 +90,12 @@ public class XeroInvoiceService {
     }
 
     public XeroInvoice create(XeroInvoiceRequest xeroInvoiceRequest, UUID userId) {
+        if (userId == null) {
+            log.error("Refusing to create a Xero invoice with no user");
+
+            throw new XeroApiException(NO_USER);
+        }
+
         log.info("Creating Xero invoice for user: {}", userId);
 
         XeroInvoicesEnvelope requestEnvelope =
@@ -95,6 +109,7 @@ public class XeroInvoiceService {
                 .bodyValue(requestEnvelope)
                 .retrieve()
                 .bodyToMono(XeroInvoicesEnvelope.class)
+                .contextWrite(context -> context.put(XERO_USER_ID, userId))
                 .block();
 
         XeroInvoice created = single(responseEnvelope, userId);

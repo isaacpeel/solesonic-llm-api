@@ -2,6 +2,7 @@ package com.solesonic.service.xero;
 
 import com.solesonic.exception.xero.XeroTokenException;
 import com.solesonic.model.xero.auth.XeroAccessToken;
+import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -61,17 +62,17 @@ class XeroTokenRefreshServiceTest {
 
     private static final BodyInserter.Context BODY_CONTEXT = new BodyInserter.Context() {
         @Override
-        public List<HttpMessageWriter<?>> messageWriters() {
+        public @NonNull List<HttpMessageWriter<?>> messageWriters() {
             return ExchangeStrategies.withDefaults().messageWriters();
         }
 
         @Override
-        public Optional<ServerHttpRequest> serverRequest() {
+        public @NonNull Optional<ServerHttpRequest> serverRequest() {
             return Optional.empty();
         }
 
         @Override
-        public Map<String, Object> hints() {
+        public @NonNull Map<String, Object> hints() {
             return Map.of();
         }
     };
@@ -302,7 +303,7 @@ class XeroTokenRefreshServiceTest {
         return mockClientHttpRequest.getBodyAsString().block();
     }
 
-    private static Consumer<Throwable> nonRetriable(HttpStatus expectedStatus) {
+    private static Consumer<Throwable> nonRetriable(@SuppressWarnings("all") HttpStatus expectedStatus) {
         return thrown -> {
             XeroTokenException xeroTokenException = (XeroTokenException) thrown;
             assertThat(xeroTokenException.getErrorCode()).isEqualTo(expectedStatus);
@@ -310,7 +311,7 @@ class XeroTokenRefreshServiceTest {
         };
     }
 
-    private static Consumer<Throwable> retriable(HttpStatus expectedStatus) {
+    private static Consumer<Throwable> retriable(@SuppressWarnings("all") HttpStatus expectedStatus) {
         return thrown -> {
             XeroTokenException xeroTokenException = (XeroTokenException) thrown;
             assertThat(xeroTokenException.getErrorCode()).isEqualTo(expectedStatus);

@@ -19,6 +19,10 @@ import static com.solesonic.exception.xero.XeroErrorResponse.RATE_LIMITED;
 import static com.solesonic.exception.xero.XeroErrorResponse.RECONNECT_REQUIRED;
 import static com.solesonic.exception.xero.XeroErrorResponse.UPSTREAM_UNAVAILABLE;
 import static com.solesonic.exception.xero.XeroErrorResponse.VALIDATION_FAILED;
+import static com.solesonic.exception.xero.XeroErrorMessages.INTERNAL_MESSAGE;
+import static com.solesonic.exception.xero.XeroErrorMessages.RATE_LIMITED_MESSAGE;
+import static com.solesonic.exception.xero.XeroErrorMessages.RECONNECT_MESSAGE;
+import static com.solesonic.exception.xero.XeroErrorMessages.UPSTREAM_MESSAGE;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
@@ -26,7 +30,9 @@ import static org.springframework.http.HttpStatus.TOO_MANY_REQUESTS;
 
 /**
  * Turns Xero failures into something a caller can act on: a real status code and a stable error
- * code. Xero's own error text is logged, never returned.
+ * code. Xero's own error text is logged, never returned — the wording that is returned instead lives
+ * in {@link com.solesonic.exception.xero.XeroErrorMessages}, shared with the chat-callable tool that
+ * exposes the same capability and cannot reach this handler.
  * <p>
  * Deliberately <em>not</em> built on {@link ExceptionService}, the way
  * {@code AtlassianExceptionHandler} is. That renders a failure as {@code 200 OK} carrying a chat
@@ -41,10 +47,6 @@ import static org.springframework.http.HttpStatus.TOO_MANY_REQUESTS;
 public class XeroExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(XeroExceptionHandler.class);
 
-    private static final String RECONNECT_MESSAGE = "Xero access is no longer valid. Reconnect your Xero organisation.";
-    private static final String RATE_LIMITED_MESSAGE = "Xero is rate limiting requests. Please try again shortly.";
-    private static final String UPSTREAM_MESSAGE = "Xero is temporarily unavailable. Please try again.";
-    private static final String INTERNAL_MESSAGE = "Internal service error. Please contact Isaac.";
 
     /**
      * The {@link ClientResponse} is optional. It is present when the API {@code WebClient}'s response
