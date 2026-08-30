@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.xero.auth.XeroAccessToken;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -130,8 +131,16 @@ public class UserControllerTest {
                 .refreshToken("google-refresh-token")
                 .build());
 
+        userPreferences.setXeroAccessToken(XeroAccessToken.builder()
+                .accessToken("xero-access-token")
+                .refreshToken("xero-refresh-token")
+                .tenantId("xero-tenant-id")
+                .tenantName("xero-tenant-name")
+                .build());
+
         userPreferences.setAtlassianAuthentication(true);
         userPreferences.setGoogleAuthentication(true);
+        userPreferences.setXeroAuthentication(true);
 
         when(userPreferencesService.get(userId)).thenReturn(userPreferences);
 
@@ -139,8 +148,10 @@ public class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.atlassianAccessToken").doesNotExist())
                 .andExpect(jsonPath("$.googleAccessToken").doesNotExist())
+                .andExpect(jsonPath("$.xeroAccessToken").doesNotExist())
                 .andExpect(jsonPath("$.atlassianAuthentication").value(true))
                 .andExpect(jsonPath("$.googleAuthentication").value(true))
+                .andExpect(jsonPath("$.xeroAuthentication").value(true))
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
@@ -149,6 +160,8 @@ public class UserControllerTest {
                 .doesNotContain("atlassian-access-token")
                 .doesNotContain("atlassian-refresh-token")
                 .doesNotContain("google-access-token")
-                .doesNotContain("google-refresh-token");
+                .doesNotContain("google-refresh-token")
+                .doesNotContain("xero-access-token")
+                .doesNotContain("xero-refresh-token");
     }
 }

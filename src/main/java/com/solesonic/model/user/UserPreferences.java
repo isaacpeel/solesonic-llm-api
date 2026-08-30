@@ -6,6 +6,8 @@ import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAccessTokenConverter;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessTokenConverter;
+import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.model.xero.auth.XeroAccessTokenConverter;
 import jakarta.persistence.*;
 
 import java.time.ZonedDateTime;
@@ -54,6 +56,20 @@ public class UserPreferences {
     @Convert(converter = GoogleAccessTokenConverter.class)
     @Column(name = "google_access_token", columnDefinition = "bytea")
     private GoogleAccessToken googleAccessToken;
+
+    @Transient
+    private boolean xeroAuthentication;
+
+    /**
+     * {@code @JsonIgnore} for the same reason as {@link #atlassianAccessToken}: the client learns
+     * whether Xero is connected from {@link #xeroAuthentication} and has no reason to ever receive
+     * the tokens themselves. This one additionally carries the organisation's {@code tenantId},
+     * which is the identifier every Accounting API call is scoped by.
+     */
+    @JsonIgnore
+    @Convert(converter = XeroAccessTokenConverter.class)
+    @Column(name = "xero_access_token", columnDefinition = "bytea")
+    private XeroAccessToken xeroAccessToken;
 
     public UUID getUserId() {
         return userId;
@@ -136,5 +152,21 @@ public class UserPreferences {
 
     public void setGoogleAccessToken(GoogleAccessToken googleAccessToken) {
         this.googleAccessToken = googleAccessToken;
+    }
+
+    public boolean isXeroAuthentication() {
+        return xeroAuthentication;
+    }
+
+    public void setXeroAuthentication(boolean xeroAuthentication) {
+        this.xeroAuthentication = xeroAuthentication;
+    }
+
+    public XeroAccessToken getXeroAccessToken() {
+        return xeroAccessToken;
+    }
+
+    public void setXeroAccessToken(XeroAccessToken xeroAccessToken) {
+        this.xeroAccessToken = xeroAccessToken;
     }
 }
