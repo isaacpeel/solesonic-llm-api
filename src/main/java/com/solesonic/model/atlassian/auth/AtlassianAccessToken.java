@@ -2,6 +2,9 @@ package com.solesonic.model.atlassian.auth;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+
+import org.jspecify.annotations.NonNull;
+
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
@@ -86,6 +89,38 @@ public record AtlassianAccessToken(
     @SuppressWarnings("unused")
     public boolean isAdministrator() {
         return administrator;
+    }
+
+    /**
+     * Overridden because a record's generated {@code toString()} renders every component, which
+     * would put {@code accessToken} and {@code refreshToken} in plaintext into any log line,
+     * exception message or debugger dump that reached for the object. Redacting here removes the
+     * whole class of mistake instead of relying on every future call site to remember.
+     * <p>
+     * Secrets render as a fixed marker rather than a length, prefix or hash: a partial token is
+     * still credential material and a stable hash is a correlation handle. Absent stays
+     * distinguishable from present, because whether a refresh token came back at all is the most
+     * common question in this area.
+     */
+    @Override
+    @NonNull
+    public String toString() {
+        return "AtlassianAccessToken[userId=" + userId
+                + ", accessToken=" + redacted(accessToken)
+                + ", refreshToken=" + redacted(refreshToken)
+                + ", tokenType=" + tokenType
+                + ", scope=" + scope
+                + ", expiresIn=" + expiresIn
+                + ", administrator=" + administrator
+                + ", created=" + created
+                + ", updated=" + updated
+                + ", error=" + error
+                + ", errorDescription=" + errorDescription
+                + "]";
+    }
+
+    private static String redacted(String secret) {
+        return secret == null ? "null" : "[redacted]";
     }
 
     public static Builder builder() {

@@ -2,7 +2,10 @@ package com.solesonic.exception.handler;
 
 import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.exception.xero.XeroErrorResponse;
+import com.solesonic.exception.xero.XeroInvoiceValidationException;
 import com.solesonic.exception.xero.XeroTokenException;
+
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -118,5 +121,49 @@ class XeroExceptionHandlerTest {
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().message()).doesNotContain("invalid_grant");
         assertThat(response.getBody().message()).doesNotContain("5C0B4C1F");
+    }
+
+    /**
+     * The one Xero failure whose upstream text <em>is</em> returned. Accounting validation wording is
+     * written for the person who submitted the document and names nothing about the client, tenant or
+     * token — and it is the only thing that tells a caller which line item to fix.
+     * <p>
+     * Without this branch the exception falls to {@link GeneralExceptionHandler}'s catch-all, which
+     * answers {@code 200 OK} carrying a chat message. On a creation endpoint that reads as "the
+     * invoice was created", which is precisely backwards.
+     */
+    @Test
+    void answersBadRequestWithXerosOwnValidationMessages() {
+        XeroInvoiceValidationException xeroInvoiceValidationException =
+                new XeroInvoiceValidationException(List.of(
+                        "Account code 'ZZZ' is not a valid code for this document.",
+                        "Invoice not of valid status for modification."));
+
+        ResponseEntity<XeroErrorResponse> response =
+                xeroExceptionHandler.handleXeroInvoiceValidationException(xeroInvoiceValidationException);
+
+        assertThat(response.getStatusCode()).isEqualTo(BAD_REQUEST);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo(XeroErrorResponse.VALIDATION_FAILED);
+        assertThat(response.getBody().message())
+                .contains("Account code 'ZZZ' is not a valid code for this document.")
+                .contains("Invoice not of valid status for modification.");
+    }
+
+    /**
+     * A {@link XeroApiException} raised for a {@code 200} whose envelope carried no invoice has no
+     * failing {@link ClientResponse} to attach. The handler has to tolerate that: throwing from
+     * inside a {@code @ControllerAdvice} replaces a reportable failure with an unreportable one.
+     */
+    @Test
+    void answersWithoutTheRequestUriWhenThereIsNoFailingResponse() {
+        XeroApiException xeroApiException = new XeroApiException("xero_returned_no_invoice");
+
+        ResponseEntity<XeroErrorResponse> response =
+                xeroExceptionHandler.handleXeroApiException(xeroApiException);
+
+        assertThat(response.getStatusCode()).isEqualTo(INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().code()).isEqualTo(XeroErrorResponse.UPSTREAM_UNAVAILABLE);
     }
 }

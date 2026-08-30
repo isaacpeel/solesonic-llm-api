@@ -2,6 +2,8 @@ package com.solesonic.model.google.auth;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import org.jspecify.annotations.NonNull;
+
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
@@ -56,6 +58,38 @@ public record GoogleAccessToken(
         ZonedDateTime expirationTime = created.plusSeconds(expiresIn).minusSeconds(10);
 
         return ZonedDateTime.now().isAfter(expirationTime);
+    }
+
+    /**
+     * Overridden because a record's generated {@code toString()} renders every component, which
+     * would put {@code accessToken} and {@code refreshToken} in plaintext into any log line,
+     * exception message or debugger dump that reached for the object. Redacting here removes the
+     * whole class of mistake instead of relying on every future call site to remember.
+     * <p>
+     * Secrets render as a fixed marker rather than a length, prefix or hash: a partial token is
+     * still credential material and a stable hash is a correlation handle. Absent stays
+     * distinguishable from present, which matters more here than anywhere else — Google returns a
+     * refresh token only on a fresh grant, so whether one came back at all is the usual question.
+     */
+    @Override
+    @NonNull
+    public String toString() {
+        return "GoogleAccessToken[userId=" + userId
+                + ", accessToken=" + redacted(accessToken)
+                + ", refreshToken=" + redacted(refreshToken)
+                + ", tokenType=" + tokenType
+                + ", scope=" + scope
+                + ", expiresIn=" + expiresIn
+                + ", refreshTokenExpiresIn=" + refreshTokenExpiresIn
+                + ", created=" + created
+                + ", updated=" + updated
+                + ", error=" + error
+                + ", errorDescription=" + errorDescription
+                + "]";
+    }
+
+    private static String redacted(String secret) {
+        return secret == null ? "null" : "[redacted]";
     }
 
     public static Builder builder() {

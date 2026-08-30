@@ -2,6 +2,7 @@ package com.solesonic.exception.handler;
 
 import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.exception.xero.XeroErrorResponse;
+import com.solesonic.exception.xero.XeroInvoiceValidationException;
 import com.solesonic.exception.xero.XeroTokenException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,6 +18,7 @@ import static com.solesonic.exception.xero.XeroErrorResponse.INTERNAL;
 import static com.solesonic.exception.xero.XeroErrorResponse.RATE_LIMITED;
 import static com.solesonic.exception.xero.XeroErrorResponse.RECONNECT_REQUIRED;
 import static com.solesonic.exception.xero.XeroErrorResponse.UPSTREAM_UNAVAILABLE;
+import static com.solesonic.exception.xero.XeroErrorResponse.VALIDATION_FAILED;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.INTERNAL_SERVER_ERROR;
 import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
@@ -44,15 +46,49 @@ public class XeroExceptionHandler {
     private static final String UPSTREAM_MESSAGE = "Xero is temporarily unavailable. Please try again.";
     private static final String INTERNAL_MESSAGE = "Internal service error. Please contact Isaac.";
 
+    /**
+     * The {@link ClientResponse} is optional. It is present when the API {@code WebClient}'s response
+     * filter raised this for a non-2xx, and absent when the service raised it for a {@code 200} whose
+     * bulk envelope carried no invoice at all. Dereferencing it unconditionally would throw from
+     * inside a {@code @ControllerAdvice}, replacing a reportable failure with an unreportable one.
+     */
     @ExceptionHandler(XeroApiException.class)
     public ResponseEntity<XeroErrorResponse> handleXeroApiException(XeroApiException xeroApiException) {
         ClientResponse clientResponse = xeroApiException.getResponse();
-        URI requestUri = clientResponse.request().getURI();
 
-        log.error("Xero API error calling {}", requestUri);
+        if (clientResponse == null) {
+            log.error("Xero API error with no failing response: {}", xeroApiException.getMessage());
+        } else {
+            URI requestUri = clientResponse.request().getURI();
+
+            log.error("Xero API error calling {}", requestUri);
+        }
 
         return ResponseEntity.status(INTERNAL_SERVER_ERROR)
                 .body(new XeroErrorResponse(UPSTREAM_UNAVAILABLE, UPSTREAM_MESSAGE));
+    }
+
+    /**
+     * The one Xero failure whose upstream text is returned verbatim.
+     * <p>
+     * Xero answers a rejected invoice with {@code 200} once {@code summarizeErrors=false} is set, so
+     * without this branch the exception would fall to {@link GeneralExceptionHandler}'s catch-all and
+     * be rendered as {@code 200 OK} carrying a chat message — which a caller of a creation endpoint
+     * reads as "the invoice was created".
+     * <p>
+     * Unlike an OAuth error body, these messages are safe to return: they are accounting validation
+     * wording written for the person who submitted the document, and they are the only thing that
+     * tells a caller which line item to fix.
+     */
+    @ExceptionHandler(XeroInvoiceValidationException.class)
+    public ResponseEntity<XeroErrorResponse> handleXeroInvoiceValidationException(
+            XeroInvoiceValidationException xeroInvoiceValidationException) {
+        String messages = String.join(" ", xeroInvoiceValidationException.getMessages());
+
+        log.warn("Xero rejected an invoice: {}", messages);
+
+        return ResponseEntity.status(BAD_REQUEST)
+                .body(new XeroErrorResponse(VALIDATION_FAILED, messages));
     }
 
     @ExceptionHandler(XeroTokenException.class)

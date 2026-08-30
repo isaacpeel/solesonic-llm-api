@@ -107,6 +107,7 @@ change to one integration's callback cannot silently move another's.
 | `XERO_OAUTH_CLIENT_SECRET` | OAuth2 client secret paired with the client ID | `xero-client-secret` | Yes | Keep secure; Xero shows it once at generation |
 | `XERO_AUTH_CALLBACK_URI` | Redirect URI for the `test` and `local` profiles | `http://localhost:3000/xero/auth/callback` | Yes (test, local) | Must match a redirect URI registered on the Xero app **exactly** |
 | `XERO_CALLBACK_HOST` | Redirect URI for the `prod` and `prod-nginx` profiles | `https://yourdomain.com/xero/auth/callback` | Yes (prod) | Registered separately from the local one; Xero allows several per app |
+| `XERO_DEFAULT_CONTACT_ID` | The single Xero `ContactID` every invoice created through this API is billed to | `0d7a8f61-3c2e-4a55-9c9c-1f2f1c0b7e11` | Yes | Not caller-supplied and not looked up: there is one contact per deployment. Copy it from the contact's URL in Xero. No default, so a missing value fails startup |
 
 Fixed in `application.properties` rather than exposed as variables, since they are Xero's own
 endpoints and identical in every deployment:
@@ -402,6 +403,7 @@ A2A_BASE_URI=https://agents.yourdomain.com
 XERO_OAUTH_CLIENT_ID=your_xero_client_id
 XERO_OAUTH_CLIENT_SECRET=your_xero_client_secret
 XERO_AUTH_CALLBACK_URI=http://localhost:3000/xero/auth/callback
+XERO_DEFAULT_CONTACT_ID=0d7a8f61-3c2e-4a55-9c9c-1f2f1c0b7e11
 ```
 
 ### Full Configuration (.env)
@@ -446,6 +448,7 @@ GOOGLE_CALLBACK_HOST=https://yourdomain.com/google/auth/callback
 XERO_OAUTH_CLIENT_ID=your_xero_client_id
 XERO_OAUTH_CLIENT_SECRET=your_xero_client_secret
 XERO_CALLBACK_HOST=https://yourdomain.com/xero/auth/callback
+XERO_DEFAULT_CONTACT_ID=0d7a8f61-3c2e-4a55-9c9c-1f2f1c0b7e11
 
 # MCP Configuration
 SOLESONIC_MCP_URI=http://localhost:3001/sse

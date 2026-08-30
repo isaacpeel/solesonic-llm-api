@@ -15,6 +15,17 @@ public class XeroApiException extends RuntimeException {
         this.response = response;
     }
 
+    /**
+     * For a Xero answer that was successful by status and unusable in content — a
+     * {@code 200} whose bulk envelope carries no invoice at all. There is no failing
+     * {@link ClientResponse} to attach in that case, so {@link #getResponse()} returns null and
+     * every handler reading it has to tolerate that.
+     */
+    public XeroApiException(String message) {
+        super(message);
+        this.response = null;
+    }
+
     public ClientResponse getResponse() {
         return response;
     }

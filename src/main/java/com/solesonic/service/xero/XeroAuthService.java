@@ -45,9 +45,16 @@ public class XeroAuthService {
     private static final Logger log = LoggerFactory.getLogger(XeroAuthService.class);
 
     public static final String AUTHORIZATION_CODE_GRANT = "authorization_code";
+    public static final String REFRESH_TOKEN_GRANT = "refresh_token";
 
-    private static final String CONNECT_PATH_SEGMENT = "connect";
-    private static final String TOKEN_PATH_SEGMENT = "token";
+    /**
+     * Package-private rather than private because {@link XeroTokenRefreshService} posts to this same
+     * endpoint. One definition of the path is what stops the connect and refresh flows from drifting
+     * apart.
+     */
+    static final String CONNECT_PATH_SEGMENT = "connect";
+    static final String TOKEN_PATH_SEGMENT = "token";
+
     private static final String CONNECTIONS_PATH = "/connections";
 
     private static final String CLIENT_ID_PARAM = "client_id";

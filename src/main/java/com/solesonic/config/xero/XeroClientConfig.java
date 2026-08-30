@@ -1,6 +1,7 @@
 package com.solesonic.config.xero;
 
 import com.solesonic.exception.xero.XeroApiException;
+import com.solesonic.security.xero.XeroRequestAuthorizationFilter;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -57,15 +58,24 @@ public class XeroClientConfig {
      * The client for calls made on a <em>stored</em> connection, and the one that turns a non-2xx
      * answer into a {@link XeroApiException}.
      * <p>
-     * It has no consumer yet — nothing in the connect flow uses it. That is not an oversight:
-     * {@code GET /connections} runs during the OAuth callback, before any token or tenant has been
-     * stored, so it carries its own {@code Authorization} header on the auth client instead. This
-     * bean is what the Accounting API calls will use, once the request-authorization filter that
-     * supplies {@code Authorization} and {@code xero-tenant-id} from the stored token exists.
+     * Nothing in the connect flow uses it: {@code GET /connections} runs during the OAuth callback,
+     * before any token or tenant has been stored, so it carries its own {@code Authorization} header
+     * on the auth client instead. This is the client every Accounting API call goes out on.
+     * <p>
+     * {@link XeroRequestAuthorizationFilter} arrives as a bean-method parameter rather than through
+     * the constructor on purpose. The filter depends on the refresh service, which depends on the
+     * auth client defined here; taking the filter in the constructor would make constructing this
+     * configuration require a bean that this configuration has to exist to produce.
+     * <p>
+     * The filter order is load-bearing. Authorization runs first, so the error-handling filter below
+     * it only ever reports on a request that actually carried credentials — reversed, an expired
+     * token would surface as an opaque {@link XeroApiException} instead of the retriable-or-not
+     * {@code XeroTokenException} the refresh path raises.
      */
     @Bean
     @Qualifier(XERO_API_WEB_CLIENT)
-    public WebClient xeroApiWebClient(JsonMapper jsonMapper) {
+    public WebClient xeroApiWebClient(JsonMapper jsonMapper,
+                                      XeroRequestAuthorizationFilter xeroRequestAuthorizationFilter) {
         return WebClient.builder()
                 .baseUrl(xeroApiUri)
                 .defaultHeaders(httpHeaders -> {
@@ -76,6 +86,7 @@ public class XeroClientConfig {
                     configurer.defaultCodecs().jacksonJsonEncoder(new JacksonJsonEncoder(jsonMapper));
                     configurer.defaultCodecs().jacksonJsonDecoder(new JacksonJsonDecoder(jsonMapper));
                 })
+                .filter(xeroRequestAuthorizationFilter)
                 .filter((request, next) -> next.exchange(request)
                         .flatMap(this::handleResponse))
                 .build();
