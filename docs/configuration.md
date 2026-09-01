@@ -50,8 +50,10 @@ Redis is required for streaming chat (Redis Streams) and for caching the slash-c
 | `ATLASSIAN_OAUTH_CLIENT_ID` | Atlassian OAuth2 client ID | `your_atlassian_client_id` | No | Required for Jira/Confluence integration |
 | `ATLASSIAN_OAUTH_CLIENT_SECRET` | Atlassian OAuth2 client secret | `your_atlassian_client_secret` | No | Keep secure; required with client ID |
 | `ATLASSIAN_OAUTH_TOKEN_URI` | Atlassian token endpoint | `https://auth.atlassian.com/oauth/token` | No | Standard Atlassian OAuth2 endpoint |
-| `CALLBACK_HOST` | OAuth callback host URL | `https://yourdomain.com/settings` | No | Required for production OAuth flows |
+| `CALLBACK_HOST` | OAuth callback host URL | `https://yourdomain.com/atlassian/auth/callback` | No | Required for production OAuth flows. Must match a redirect URI registered on the Atlassian OAuth app **exactly**, character for character |
 | `ATLASSIAN_TOKENS_ADMIN_KEY` | Admin user ID for service account token operations | `your_admin_key` | No | Required for token storage operations |
+
+The `local` profile defaults `jira.api.auth.callback.uri=http://localhost:3000/atlassian/auth/callback`, mirroring the Google pattern below: a dedicated callback route rather than a shared page, so the UI can capture the authorization `code` before any other client-side redirect (e.g. an identity provider's own login flow) has a chance to strip it from the URL.
 
 ### Google Integration
 
@@ -436,7 +438,7 @@ REDIS_PASSWORD=your-redis-password
 ATLASSIAN_OAUTH_CLIENT_ID=your_atlassian_client_id
 ATLASSIAN_OAUTH_CLIENT_SECRET=your_atlassian_client_secret
 ATLASSIAN_OAUTH_TOKEN_URI=https://auth.atlassian.com/oauth/token
-CALLBACK_HOST=https://yourdomain.com/settings
+CALLBACK_HOST=https://yourdomain.com/atlassian/auth/callback
 ATLASSIAN_TOKENS_ADMIN_KEY=your_admin_key
 
 # Google Integration

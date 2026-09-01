@@ -3,6 +3,7 @@ package com.solesonic.tools;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.xero.XeroInvoiceService;
 import com.solesonic.tools.xero.CreateXeroInvoiceTools;
+import com.solesonic.tools.xero.ExtractXeroInvoiceDraftTools;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -21,9 +22,12 @@ import static org.mockito.Mockito.mock;
 class LocalToolRegistryTest {
 
     private static final String CREATE_XERO_INVOICE = "create_xero_invoice";
+    private static final String EXTRACT_XERO_INVOICE_DRAFT = "extract_xero_invoice_draft";
 
     private LocalToolRegistry registry() {
-        return new LocalToolRegistry(List.of(new CreateXeroInvoiceTools(mock(XeroInvoiceService.class))));
+        return new LocalToolRegistry(List.of(
+                new CreateXeroInvoiceTools(mock(XeroInvoiceService.class)),
+                new ExtractXeroInvoiceDraftTools()));
     }
 
     @Test
@@ -33,6 +37,18 @@ class LocalToolRegistryTest {
         assertThat(slashCommands)
                 .extracting(SlashCommand::command)
                 .contains(CREATE_XERO_INVOICE);
+    }
+
+    /**
+     * The two halves of invoicing from a work order are separate commands on purpose: drafting reads
+     * a document and creating writes to an accounting system, and a user who wants to check the price
+     * before it becomes real needs to be able to stop between them.
+     */
+    @Test
+    void exposesTheWorkOrderDraftToolAsItsOwnSlashCommand() {
+        assertThat(registry().asSlashCommands())
+                .extracting(SlashCommand::command)
+                .contains(EXTRACT_XERO_INVOICE_DRAFT);
     }
 
     /**
