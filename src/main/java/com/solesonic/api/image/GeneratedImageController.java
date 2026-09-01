@@ -7,6 +7,7 @@ import com.solesonic.model.image.ImageGenerationEvent;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.image.ImageGenerationService;
+import com.solesonic.util.AuthenticationTokens;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.CacheControl;
@@ -14,7 +15,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -59,7 +59,8 @@ public class GeneratedImageController {
         log.info("Streaming image generation for user {}", userRequestContext.getUserId());
 
         return imageGenerationService
-                .stream(generateImageRequest.prompt(), userRequestContext.getUserId(), token(authentication))
+                .stream(generateImageRequest.prompt(), userRequestContext.getUserId(),
+                        AuthenticationTokens.token(authentication))
                 .map(GeneratedImageController::serverSentEvent);
     }
 
@@ -74,7 +75,8 @@ public class GeneratedImageController {
         log.info("Generating image for user {}", userRequestContext.getUserId());
 
         GeneratedImageSummary generatedImageSummary = imageGenerationService
-                .generate(generateImageRequest.prompt(), userRequestContext.getUserId(), token(authentication));
+                .generate(generateImageRequest.prompt(), userRequestContext.getUserId(),
+                        AuthenticationTokens.token(authentication));
 
         return ResponseEntity.created(URI.create(generatedImageSummary.imageUrl())).body(generatedImageSummary);
     }
@@ -111,13 +113,5 @@ public class GeneratedImageController {
                 .event(imageGenerationEvent.eventName())
                 .data(imageGenerationEvent)
                 .build();
-    }
-
-    private static String token(Authentication authentication) {
-        if (!(authentication.getPrincipal() instanceof Jwt jwt)) {
-            throw new IllegalStateException("Authentication principal is not a JWT token");
-        }
-
-        return jwt.getTokenValue();
     }
 }

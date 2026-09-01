@@ -1,44 +1,48 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.model.chat.ChatRequest;
-import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
-import com.solesonic.model.prompt.*;
+import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
-import com.solesonic.service.chat.attachment.ChatAttachmentService;
-import com.solesonic.service.etl.ChatDocumentIngestionService;
+import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
-import com.solesonic.service.vision.ImageDescriptionService;
 import com.solesonic.util.AttachmentContextFormatter;
-import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.spec.McpSchema;
+import com.solesonic.util.AuthenticationTokens;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.AbstractMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
-import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.security.core.Authentication;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
+import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
+import static com.solesonic.service.prompt.ChatStreamSupport.contentFlux;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
+/**
+ * Where every incoming chat message is routed.
+ * <p>
+ * Only two decisions are made here — whether the send named a slash command, and, when it did not,
+ * whether the conversation is pinned to a remote agent. Everything each branch then does belongs to
+ * a collaborator: {@link AttachmentContextResolver} for what the attachments amount to,
+ * {@link SlashCommandRouter} for the four command routes. What is left in this class is the
+ * no-command default LLM path, which is its actual reason for existing.
+ */
 @Service
 public class PromptService {
     private static final Logger log = LoggerFactory.getLogger(PromptService.class);
@@ -49,46 +53,35 @@ public class PromptService {
 
     private final ChatClient chatClient;
     private final SlashCommandService slashCommandService;
-    private final McpSyncClient mcpClient;
-    private final ToolCallService toolCallService;
+    private final SlashCommandRouter slashCommandRouter;
+    private final AttachmentContextResolver attachmentContextResolver;
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final VectorStoreService vectorStoreService;
-    private final ImageDescriptionService imageDescriptionService;
-    private final ChatAttachmentService chatAttachmentService;
-    private final ChatDocumentIngestionService chatDocumentIngestionService;
 
-    private final String agentName;
+    private final String defaultChatModel;
 
     private final Prompt defaultSystemPrompt;
-
-    @Value("${spring.ai.openai.model}")
-    private String defaultChatModel;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
             SlashCommandService slashCommandService,
-            McpSyncClient mcpClient,
-            ToolCallService toolCallService,
+            SlashCommandRouter slashCommandRouter,
+            AttachmentContextResolver attachmentContextResolver,
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,
             VectorStoreService vectorStoreService,
-            ImageDescriptionService imageDescriptionService,
-            ChatAttachmentService chatAttachmentService,
-            ChatDocumentIngestionService chatDocumentIngestionService,
             @Value("${solesonic.llm.bot.name}") String agentName,
+            @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("classpath:prompts/basic-system-prompt.st") Resource defaultSystemPromptResource) {
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
-        this.mcpClient = mcpClient;
-        this.toolCallService = toolCallService;
+        this.slashCommandRouter = slashCommandRouter;
+        this.attachmentContextResolver = attachmentContextResolver;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.vectorStoreService = vectorStoreService;
-        this.imageDescriptionService = imageDescriptionService;
-        this.chatAttachmentService = chatAttachmentService;
-        this.chatDocumentIngestionService = chatDocumentIngestionService;
-        this.agentName = agentName;
+        this.defaultChatModel = defaultChatModel;
 
         Map<String, Object> systemPromptContext = Map.of(
                 AGENT_NAME, agentName
@@ -102,31 +95,15 @@ public class PromptService {
         defaultSystemPrompt = promptTemplate.create();
     }
 
-    public Flux<String> stream(UUID chatId, UUID userId,
+    public Flux<String> stream(UUID chatId,
+                               UUID userId,
                                ChatRequest chatMessage,
                                Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
-        String message = chatMessage.chatMessage();
-        Set<String> commands = chatMessage.commands();
 
-        ChatAttachmentService.AttachmentPartition attachments = chatAttachmentService
-                .partition(userId, chatMessage.attachmentIds());
+        String authToken = AuthenticationTokens.token(authentication);
 
-        List<ChatAttachmentDescription> imageDescriptions = imageDescriptionService
-                .describe(chatId, userId, attachments.imageIds());
-
-        List<String> indexedDocuments = chatDocumentIngestionService
-                .ingest(chatId, userId, attachments.documentIds());
-
-        String attachmentContext = attachmentContext(imageDescriptions, indexedDocuments);
-
-        Object principal = authentication.getPrincipal();
-
-        if (!(principal instanceof Jwt jwt)) {
-            throw new IllegalStateException("Authentication principal is not a JWT token");
-        }
-
-        String authToken = jwt.getTokenValue();
+        AttachmentResolution attachments = attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds());
 
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
@@ -134,90 +111,49 @@ public class PromptService {
                 CHAT_ID, chatId,
                 PROGRESS_TOKEN, chatId);
 
+        Set<String> commands = chatMessage.commands();
+
         if (CollectionUtils.isEmpty(commands)) {
-            return a2aStickyAgentService
-                    .getActiveAgent(chatId)
-                    .flatMapMany(stickyAgent -> {
-                        if (stickyAgent.isPresent()) {
-                            log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
-
-                            return a2aAgentService.delegate(chatId, stickyAgent.get(),
-                                    AttachmentContextFormatter.prepend(message, imageDescriptions), authToken);
-                        }
-
-                        log.info("No command or sticky agent, using default system prompt.");
-
-                        return streamBasicPrompt(chatId, userId, message, attachmentContext, contextMap, defaultChatModel);
-                    });
+            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken);
         }
 
-        List<SlashCommand> slashCommands = slashCommandService.commands(commands);
-
-        SlashCommand slashCommand = slashCommands.stream()
+        SlashCommand slashCommand = slashCommandService.commands(commands).stream()
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
 
-        return switch (slashCommand) {
-            case PromptSlashCommand promptCommand -> {
-                log.info("Prompt invoke: {}", promptCommand.name());
-
-                McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(promptCommand.name())
-                        .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
-                        .build();
-
-                McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
-
-                Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachmentContext);
-
-                Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
-                        .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
-                        .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
-                        .toolContext(contextMap)
-                        .options(chatOptions(defaultChatModel))
-                        .stream()
-                        .chatResponse();
-
-                yield a2aStickyAgentService.deactivate(chatId)
-                        .thenMany(contentFlux(promptChatResponse));
-            }
-
-            case ToolSlashCommand toolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.stream(chatId, message, toolCommand, contextMap));
-
-            case LocalToolSlashCommand localToolCommand -> a2aStickyAgentService.deactivate(chatId)
-                    .thenMany(toolCallService.streamLocal(chatId, message, localToolCommand, contextMap));
-
-            case AgentSlashCommand agentCommand -> {
-                log.info("A2A agent invoke: {}", agentCommand.command());
-
-                yield a2aStickyAgentService.activate(chatId, agentCommand.command())
-                        .thenMany(a2aAgentService.delegate(chatId, agentCommand.command(),
-                                AttachmentContextFormatter.prepend(message, imageDescriptions), authToken));
-            }
-        };
+        return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken);
     }
 
     /**
-     * Joins what the model is told about this message's attachments into one block, documents
-     * first: the document note only says which files exist, while the image block carries actual
-     * content, and the content reads better closest to the question.
-     *
-     * @return the block, or null when the message carried no attachment either pass could use
+     * The default route: a conversation already pinned to a remote agent keeps going there, and
+     * everything else reaches the LLM.
+     * <p>
+     * The sticky check is a Redis read, so the branch is taken inside the stream rather than before
+     * it.
      */
-    private static String attachmentContext(List<ChatAttachmentDescription> imageDescriptions,
-                                            List<String> indexedDocuments) {
-        String imageContext = AttachmentContextFormatter.context(imageDescriptions);
-        String documentContext = AttachmentContextFormatter.documentContext(indexedDocuments);
+    private Flux<String> streamWithoutCommand(UUID chatId,
+                                              UUID userId,
+                                              String message,
+                                              AttachmentResolution attachments,
+                                              Map<String, Object> contextMap,
+                                              String authToken) {
+        return a2aStickyAgentService
+                .getActiveAgent(chatId)
+                .flatMapMany(stickyAgent -> {
+                    if (stickyAgent.isPresent()) {
+                        log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
 
-        if (documentContext == null) {
-            return imageContext;
-        }
+                        //A remote agent takes a single string, so the block is inlined here rather
+                        //than carried as a message of its own.
+                        return a2aAgentService.delegate(chatId, stickyAgent.get(),
+                                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()),
+                                authToken);
+                    }
 
-        if (imageContext == null) {
-            return documentContext;
-        }
+                    log.info("No command or sticky agent, using default system prompt.");
 
-        return documentContext + System.lineSeparator() + imageContext;
+                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, defaultChatModel);
+                });
     }
 
     /**
@@ -237,12 +173,12 @@ public class PromptService {
      * @param contextMap   tool context forwarded to any MCP tool the model calls mid-turn
      * @param model        the chat model name requested via {@code OpenAiChatOptions}
      */
-    private Flux<String> streamBasicPrompt(UUID chatId,
-                                           UUID userId,
-                                           String message,
-                                           String attachmentContext,
-                                           Map<String, Object> contextMap,
-                                           String model) {
+    private Flux<String> streamDefaultSystemPrompt(UUID chatId,
+                                                   UUID userId,
+                                                   String message,
+                                                   String attachmentContext,
+                                                   Map<String, Object> contextMap,
+                                                   String model) {
 
         var promptSpec = chatClient.prompt()
                 .system(defaultSystemPrompt.getContents())
@@ -259,33 +195,5 @@ public class PromptService {
         }
 
         return contentFlux(promptSpec.stream().chatResponse());
-    }
-
-    /**
-     * Asks the server for {@code stream_options.include_usage}, which is what puts the turn's token
-     * counts on the stream's final chunk at all.
-     * <p>
-     * Pinning it rather than relying on the default is deliberate. Spring AI only defaults it to true
-     * while no stream options are set: the moment anything sets one,
-     * {@code OpenAiChatModel.createRequest} reads {@code includeUsage} out of it and a null there
-     * becomes {@code false}. Setting any unrelated stream option elsewhere would otherwise silently
-     * take the token counts away again.
-     */
-    private static OpenAiChatOptions.Builder chatOptions(String model) {
-        return OpenAiChatOptions.builder()
-                .model(model)
-                .streamUsage(true);
-    }
-
-    /**
-     * Equivalent to {@code StreamResponseSpec.content()}.
-     */
-    private static Flux<String> contentFlux(Flux<ChatResponse> chatResponseFlux) {
-        return chatResponseFlux
-                .map(chatResponse -> Optional.ofNullable(chatResponse.getResult())
-                        .map(Generation::getOutput)
-                        .map(AbstractMessage::getText)
-                        .orElse(""))
-                .filter(StringUtils::isNotEmpty);
     }
 }

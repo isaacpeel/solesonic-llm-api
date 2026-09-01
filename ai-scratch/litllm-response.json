@@ -1,0 +1,41 @@
+{
+  "id": "chatcmpl-LygyibpY666eucMpt7RrzxM2HrNqqg5l",
+  "created": 1788289404,
+  "model": "qwen3.8",
+  "object": "chat.completion",
+  "system_fingerprint": "b10724-2d8d612e4",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "Hello! 👋 How's it going? Is there something I can help you with today?",
+        "role": "assistant",
+        "reasoning_content": "The user said \"hello\" - a simple greeting. I should respond in a friendly, natural way. No need for anything complex here.\n",
+        "provider_specific_fields": {
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 51,
+    "prompt_tokens": 11,
+    "total_tokens": 62,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 11,
+    "prompt_ms": 202.423,
+    "prompt_per_token_ms": 18.40209090909091,
+    "prompt_per_second": 54.34165089935432,
+    "predicted_n": 51,
+    "predicted_ms": 1232.613,
+    "predicted_per_token_ms": 24.652260000000002,
+    "predicted_per_second": 40.56423224483272
+  }
+}
