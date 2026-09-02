@@ -2,7 +2,7 @@ package com.solesonic.service.rag;
 
 import com.solesonic.model.VectorSearch;
 import com.solesonic.model.rag.RetrievalScope;
-import com.solesonic.model.training.VectorDocument;
+import com.solesonic.model.ingestion.VectorDocument;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.rag.VectorStoreRepository;
 import com.solesonic.service.user.UserPreferencesService;
@@ -189,8 +189,8 @@ public class VectorStoreService {
         return vectorStore.similaritySearch(searchRequest);
     }
 
-    public List<VectorDocument> findByTrainingDocumentId(UUID trainingDocumentId) {
-        return vectorStoreRepository.findByTrainingDocumentId(trainingDocumentId.toString())
+    public List<VectorDocument> findByIngestedDocumentId(UUID ingestedDocumentId) {
+        return vectorStoreRepository.findByIngestedDocumentId(ingestedDocumentId.toString())
                 .orElse(Collections.emptyList());
     }
 
@@ -198,8 +198,8 @@ public class VectorStoreService {
         vectorStoreRepository.deleteAll(vectorDocuments);
     }
 
-    public void delete(UUID trainingDocumentId) {
-        vectorStoreRepository.deleteById(trainingDocumentId);
+    public void delete(UUID ingestedDocumentId) {
+        vectorStoreRepository.deleteById(ingestedDocumentId);
     }
 
     /**

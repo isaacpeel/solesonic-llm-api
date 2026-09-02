@@ -1,4 +1,4 @@
-package com.solesonic.model.training;
+package com.solesonic.model.ingestion;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.Entity;
@@ -37,8 +37,8 @@ public class StatusHistory {
         return documentId;
     }
 
-    public void setDocumentId(UUID trainingDocumentId) {
-        this.documentId = trainingDocumentId;
+    public void setDocumentId(UUID ingestedDocumentId) {
+        this.documentId = ingestedDocumentId;
     }
 
     public DocumentStatus getDocumentStatus() {

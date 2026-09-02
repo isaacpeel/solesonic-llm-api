@@ -3,10 +3,10 @@ package com.solesonic.service.atlassian;
 import com.solesonic.model.atlassian.confluence.ConfluencePagesResponse;
 import com.solesonic.model.atlassian.confluence.Page;
 import com.solesonic.model.atlassian.confluence.ResponseLinks;
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.model.training.VectorDocument;
-import com.solesonic.service.rag.TrainingDocumentService;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
@@ -28,14 +28,14 @@ import java.util.Set;
 
 import static com.solesonic.config.atlassian.AtlassianConstants.ATLASSIAN_API_INTERNAL_CLIENT;
 import static com.solesonic.model.document.DocumentSource.CONFLUENCE;
-import static com.solesonic.model.training.TrainingDocument.*;
+import static com.solesonic.model.ingestion.IngestedDocument.*;
 import static com.solesonic.service.atlassian.ConfluenceConstants.*;
 import static org.springframework.http.MediaType.TEXT_HTML_VALUE;
 
 @Service
-public class ConfluenceTrainingService {
-    private static final Logger log = LoggerFactory.getLogger(ConfluenceTrainingService.class);
-    private final TrainingDocumentService trainingDocumentService;
+public class ConfluenceIngestionService {
+    private static final Logger log = LoggerFactory.getLogger(ConfluenceIngestionService.class);
+    private final IngestedDocumentService ingestedDocumentService;
     private final VectorStoreService vectorStoreService;
     private final WebClient webClient;
 
@@ -43,10 +43,10 @@ public class ConfluenceTrainingService {
     private static final String CURSOR_PARAM = "cursor";
     private static final int PAGE_FETCH_LIMIT = 250;
 
-    public ConfluenceTrainingService(TrainingDocumentService trainingDocumentService,
-                                     VectorStoreService vectorStoreService,
-                                     @Qualifier(ATLASSIAN_API_INTERNAL_CLIENT) WebClient webClient) {
-        this.trainingDocumentService = trainingDocumentService;
+    public ConfluenceIngestionService(IngestedDocumentService ingestedDocumentService,
+                                      VectorStoreService vectorStoreService,
+                                      @Qualifier(ATLASSIAN_API_INTERNAL_CLIENT) WebClient webClient) {
+        this.ingestedDocumentService = ingestedDocumentService;
         this.vectorStoreService = vectorStoreService;
         this.webClient = webClient;
     }
@@ -62,32 +62,32 @@ public class ConfluenceTrainingService {
                 String pageId = confluencePage.getId();
                 livePageIds.add(pageId);
 
-                //look for existing training documents, have we added this confluence page to rag before?
-                List<TrainingDocument> trainingDocuments = trainingDocumentService.findByConfluencePageId(pageId);
+                //look for existing ingested documents, have we added this confluence page to rag before?
+                List<IngestedDocument> ingestedDocuments = ingestedDocumentService.findByConfluencePageId(pageId);
 
-                if (CollectionUtils.isNotEmpty(trainingDocuments)) {
-                    //Get the training document with the highest version number;
-                    TrainingDocument newestTrainingDocument = trainingDocuments.stream()
+                if (CollectionUtils.isNotEmpty(ingestedDocuments)) {
+                    //Get the ingested document with the highest version number;
+                    IngestedDocument newestIngestedDocument = ingestedDocuments.stream()
                             .max(Comparator.comparing(doc -> (Integer) doc.getMetadata().get(CONFLUENCE_PAGE_VERSION)))
                             .orElse(null);
 
-                    assert newestTrainingDocument != null;
-                    Map<String, Object> trainingDocumentMetadata = newestTrainingDocument.getMetadata();
-                    Object documentVersion = trainingDocumentMetadata.get(CONFLUENCE_PAGE_VERSION);
+                    assert newestIngestedDocument != null;
+                    Map<String, Object> ingestedDocumentMetadata = newestIngestedDocument.getMetadata();
+                    Object documentVersion = ingestedDocumentMetadata.get(CONFLUENCE_PAGE_VERSION);
 
                     if (documentVersion != null) {
                         int confluencePageVersion = confluencePage.getVersion().getNumber();
-                        int trainingDocumentPageVersion = Integer.parseInt(documentVersion.toString());
+                        int ingestedDocumentPageVersion = Integer.parseInt(documentVersion.toString());
 
                         //there is a new version in confluence, remove the old version and add the new one
-                        if (confluencePageVersion > trainingDocumentPageVersion) {
-                            List<VectorDocument> vectorDocuments = vectorStoreService.findByTrainingDocumentId(newestTrainingDocument.getId());
+                        if (confluencePageVersion > ingestedDocumentPageVersion) {
+                            List<VectorDocument> vectorDocuments = vectorStoreService.findByIngestedDocumentId(newestIngestedDocument.getId());
                             vectorStoreService.delete(vectorDocuments);
 
                             //queue the new version of the confluence page to add it to rag
-                            TrainingDocument queuedTrainingDocument = queue(confluencePage);
-                            trainingDocumentMetadata.put(REPLACED_BY_ID, queuedTrainingDocument.getId());
-                            trainingDocumentService.update(newestTrainingDocument, DocumentStatus.REPLACED);
+                            IngestedDocument queuedIngestedDocument = queue(confluencePage);
+                            ingestedDocumentMetadata.put(REPLACED_BY_ID, queuedIngestedDocument.getId());
+                            ingestedDocumentService.update(newestIngestedDocument, DocumentStatus.REPLACED);
                         }
                     }
                 } else {
@@ -109,7 +109,7 @@ public class ConfluenceTrainingService {
             return;
         }
 
-        List<String> trackedPageIds = trainingDocumentService.findConfluencePageIds();
+        List<String> trackedPageIds = ingestedDocumentService.findConfluencePageIds();
 
         for (String trackedPageId : trackedPageIds) {
             if (livePageIds.contains(trackedPageId)) {
@@ -118,45 +118,45 @@ public class ConfluenceTrainingService {
 
             log.info("Confluence page {} no longer exists; removing its tracked documents.", trackedPageId);
 
-            List<TrainingDocument> trainingDocuments = trainingDocumentService.findByConfluencePageId(trackedPageId);
+            List<IngestedDocument> ingestedDocuments = ingestedDocumentService.findByConfluencePageId(trackedPageId);
 
-            if (CollectionUtils.isEmpty(trainingDocuments)) {
+            if (CollectionUtils.isEmpty(ingestedDocuments)) {
                 continue;
             }
 
-            for (TrainingDocument trainingDocument : trainingDocuments) {
-                List<VectorDocument> vectorDocuments = vectorStoreService.findByTrainingDocumentId(trainingDocument.getId());
+            for (IngestedDocument ingestedDocument : ingestedDocuments) {
+                List<VectorDocument> vectorDocuments = vectorStoreService.findByIngestedDocumentId(ingestedDocument.getId());
                 vectorStoreService.delete(vectorDocuments);
-                trainingDocumentService.delete(trainingDocument);
+                ingestedDocumentService.delete(ingestedDocument);
             }
         }
     }
 
-    public TrainingDocument queue(Page confluencePage) {
+    public IngestedDocument queue(Page confluencePage) {
         String title = confluencePage.getTitle();
         byte[] fileData = confluencePage.getBody().getStorage().getValue().getBytes();
         String pageId = confluencePage.getId();
         int version = confluencePage.getVersion().getNumber();
 
-        String trainingDocumentFilename = CONFLUENCE_DOCUMENT_FILENAME_TEMPLATE.formatted(title, version);
+        String ingestedDocumentFilename = CONFLUENCE_DOCUMENT_FILENAME_TEMPLATE.formatted(title, version);
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put(CONFLUENCE_PAGE_ID, pageId);
         metadata.put(CONFLUENCE_PAGE_VERSION, version);
 
-        TrainingDocument trainingDocument = new TrainingDocument();
-        trainingDocument.setDocumentStatus(DocumentStatus.QUEUED);
-        trainingDocument.setFileName(trainingDocumentFilename);
-        trainingDocument.setFileData(fileData);
-        trainingDocument.setContentType(TEXT_HTML_VALUE);
-        trainingDocument.setMetadata(metadata);
-        trainingDocument.setDocumentSource(CONFLUENCE);
-        trainingDocument.setCreated(ZonedDateTime.now());
-        trainingDocument.setUpdated(ZonedDateTime.now());
+        IngestedDocument ingestedDocument = new IngestedDocument();
+        ingestedDocument.setDocumentStatus(DocumentStatus.QUEUED);
+        ingestedDocument.setFileName(ingestedDocumentFilename);
+        ingestedDocument.setFileData(fileData);
+        ingestedDocument.setContentType(TEXT_HTML_VALUE);
+        ingestedDocument.setMetadata(metadata);
+        ingestedDocument.setDocumentSource(CONFLUENCE);
+        ingestedDocument.setCreated(ZonedDateTime.now());
+        ingestedDocument.setUpdated(ZonedDateTime.now());
 
-        trainingDocumentService.save(trainingDocument);
+        ingestedDocumentService.save(ingestedDocument);
 
-        return trainingDocument;
+        return ingestedDocument;
     }
 
     public List<Page> allPages() {

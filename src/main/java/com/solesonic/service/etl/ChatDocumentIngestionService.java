@@ -48,7 +48,7 @@ import static com.solesonic.model.chat.attachment.ExtractionFailureReason.EXCEED
  * Indexing happens once per attachment and is recorded as {@code chunkCount} on its row, so the cost
  * is paid on the turn the document is sent and never again.
  * <p>
- * Deliberately <em>not</em> routed through {@link EtlService} like training ingestion is. That
+ * Deliberately <em>not</em> routed through {@link EtlService} like file-upload ingestion is. That
  * pipeline runs a keyword enricher and a summary enricher, each of which makes an LLM call per
  * chunk; it is the right trade for a background job and completely wrong inline in a chat turn,
  * where it would add minutes before the first token. Splitting is all that happens here.
@@ -271,7 +271,7 @@ public class ChatDocumentIngestionService {
 
     /**
      * Stamps the keys that confine this chunk to one conversation. Without them the chunk is
-     * indistinguishable from shared training material and would answer other users' questions.
+     * indistinguishable from shared ingested material and would answer other users' questions.
      * <p>
      * The ids go in as strings because a filter expression compares against a JSON string.
      */

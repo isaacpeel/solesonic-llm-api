@@ -1,4 +1,4 @@
-package com.solesonic.model.training;
+package com.solesonic.model.ingestion;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.document.DocumentSource;
@@ -12,7 +12,7 @@ import java.util.Map;
 import java.util.UUID;
 
 @Entity
-public class TrainingDocument {
+public class IngestedDocument {
     public static final String REPLACED_BY_ID = "REPLACED_BY_ID";
     public static final String CONFLUENCE_PAGE_VERSION = "CONFLUENCE_PAGE_VERSION";
     public static final String CONFLUENCE_PAGE_ID = "CONFLUENCE_PAGE_ID";
@@ -60,10 +60,10 @@ public class TrainingDocument {
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> metadata;
 
-    public TrainingDocument() {
+    public IngestedDocument() {
     }
 
-    public TrainingDocument(UUID id, String fileName, String contentType) {
+    public IngestedDocument(UUID id, String fileName, String contentType) {
         this.id = id;
         this.fileName = fileName;
         this.contentType = contentType;

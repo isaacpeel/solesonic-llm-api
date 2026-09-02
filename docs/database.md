@@ -68,13 +68,13 @@ The migrations are organized in major versions:
    - Jira access tokens
    - The model catalog (`llm_model`, entity `LlmModel`; the table was renamed from its original
      name in `V3_21`)
-   - Training documents
+   - Ingested documents
    - User preferences
    - Vector store
    - Chats and chat messages
 
 The `chat_attachment` table (V3_4) stores images attached to chat messages. Image bytes are held in
-a `bytea` column — deliberately not the `oid` large object used by `training_document`, because
+a `bytea` column — deliberately not the `oid` large object used by `ingested_document`, because
 attachments are routinely deleted and large objects would be orphaned in `pg_largeobject`. A row
 with a null `chat_message_id` is *staged*: uploaded but not yet sent on a message.
 

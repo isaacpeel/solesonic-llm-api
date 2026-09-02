@@ -1,4 +1,4 @@
-package com.solesonic.model.training;
+package com.solesonic.model.ingestion;
 
 public enum DocumentStatus {
     IN_PROGRESS,

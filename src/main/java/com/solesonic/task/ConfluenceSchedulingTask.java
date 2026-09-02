@@ -1,6 +1,6 @@
 package com.solesonic.task;
 
-import com.solesonic.service.atlassian.ConfluenceTrainingService;
+import com.solesonic.service.atlassian.ConfluenceIngestionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,19 +10,19 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.TimeUnit;
 
 @Component
-@ConditionalOnProperty(name = "confluence.training.task.enabled", havingValue = "true")
+@ConditionalOnProperty(name = "confluence.ingestion.task.enabled", havingValue = "true")
 public class ConfluenceSchedulingTask {
     private static final Logger log = LoggerFactory.getLogger(ConfluenceSchedulingTask.class);
 
-    private final ConfluenceTrainingService confluenceTrainingService;
+    private final ConfluenceIngestionService confluenceIngestionService;
 
-    public ConfluenceSchedulingTask(ConfluenceTrainingService confluenceTrainingService) {
-        this.confluenceTrainingService = confluenceTrainingService;
+    public ConfluenceSchedulingTask(ConfluenceIngestionService confluenceIngestionService) {
+        this.confluenceIngestionService = confluenceIngestionService;
     }
 
     @Scheduled(fixedRate = 5, timeUnit = TimeUnit.HOURS, initialDelay = 0)
     public void scanConfluence() {
         log.debug("Scanning confluence...");
-        confluenceTrainingService.pageScan();
+        confluenceIngestionService.pageScan();
     }
 }

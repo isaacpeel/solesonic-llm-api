@@ -73,7 +73,7 @@ class SecurityEventLoggerTest {
                 "/attachments/abc",
                 "/images/abc/metadata",
                 "/documents",
-                "/trainingdocuments/abc",
+                "/documents/ingested/abc",
                 "/models/abc",
                 "/users/abc",
                 "/slash/commands",

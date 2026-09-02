@@ -3,9 +3,9 @@ package com.solesonic.api.document;
 import com.solesonic.model.VectorSearch;
 import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.rag.RetrievalScope;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.rag.TrainingDocumentService;
-import com.solesonic.service.rag.UriTrainingService;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.ingestion.UriIngestionService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.springframework.ai.document.Document;
 import org.springframework.http.ResponseEntity;
@@ -21,15 +21,15 @@ import java.util.List;
 public class DocumentController {
 
     private final VectorStoreService vectorStoreService;
-    private final TrainingDocumentService trainingDocumentService;
-    private final UriTrainingService uriTrainingService;
+    private final IngestedDocumentService ingestedDocumentService;
+    private final UriIngestionService uriIngestionService;
 
     public DocumentController(VectorStoreService vectorStoreService,
-                              TrainingDocumentService trainingDocumentService,
-                              UriTrainingService uriTrainingService) {
+                              IngestedDocumentService ingestedDocumentService,
+                              UriIngestionService uriIngestionService) {
         this.vectorStoreService = vectorStoreService;
-        this.trainingDocumentService = trainingDocumentService;
-        this.uriTrainingService = uriTrainingService;
+        this.ingestedDocumentService = ingestedDocumentService;
+        this.uriIngestionService = uriIngestionService;
     }
 
     @PostMapping("/data/search")
@@ -42,25 +42,25 @@ public class DocumentController {
     @PostMapping("/data/upload")
     public ResponseEntity<Void> handleFileUpload(@RequestParam MultipartFile file,
                                                  @RequestParam(required = false) RetrievalScope scope) {
-        TrainingDocument trainingDocument = trainingDocumentService.queue(file, scope);
+        IngestedDocument ingestedDocument = ingestedDocumentService.queue(file, scope);
 
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}")
-                .buildAndExpand(trainingDocument.getId())
+                .buildAndExpand(ingestedDocument.getId())
                 .toUri();
 
         return ResponseEntity.created(location).build();
     }
 
     @PostMapping("/uri")
-    public ResponseEntity<TrainingDocument> handleUriIngest(@RequestBody UriIngestRequest uriIngestRequest) {
-        TrainingDocument trainingDocument = uriTrainingService.queue(uriIngestRequest.uri());
+    public ResponseEntity<IngestedDocument> handleUriIngest(@RequestBody UriIngestRequest uriIngestRequest) {
+        IngestedDocument ingestedDocument = uriIngestionService.queue(uriIngestRequest.uri());
 
         URI location = ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/trainingdocuments/{id}")
-                .buildAndExpand(trainingDocument.getId())
+                .path("/documents/ingested/{id}")
+                .buildAndExpand(ingestedDocument.getId())
                 .toUri();
 
-        return ResponseEntity.accepted().location(location).body(trainingDocument);
+        return ResponseEntity.accepted().location(location).body(ingestedDocument);
     }
 }

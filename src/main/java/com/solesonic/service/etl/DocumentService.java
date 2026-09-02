@@ -2,9 +2,9 @@ package com.solesonic.service.etl;
 
 import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.rag.RetrievalScope;
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.rag.TrainingDocumentService;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,42 +29,42 @@ import static org.springframework.http.MediaType.*;
 @Service
 public class DocumentService {
     private static final Logger log = LoggerFactory.getLogger(DocumentService.class);
-    public static final String TRAINING_DOCUMENT_ID = "TRAINING_DOCUMENT_ID";
+    public static final String INGESTED_DOCUMENT_ID = "INGESTED_DOCUMENT_ID";
     private final VectorStoreService vectorStoreService;
     private final EtlService etlService;
-    private final TrainingDocumentService trainingDocumentService;
+    private final IngestedDocumentService ingestedDocumentService;
     private final UriContentFetcher uriContentFetcher;
 
     public DocumentService(VectorStoreService vectorStoreService,
                            EtlService etlService,
-                           TrainingDocumentService trainingDocumentService,
+                           IngestedDocumentService ingestedDocumentService,
                            UriContentFetcher uriContentFetcher) {
         this.vectorStoreService = vectorStoreService;
         this.etlService = etlService;
-        this.trainingDocumentService = trainingDocumentService;
+        this.ingestedDocumentService = ingestedDocumentService;
         this.uriContentFetcher = uriContentFetcher;
     }
 
     /**
      * Stores the given resource to the vector store
      */
-    public void resourceToVectorStore(UUID trainingDocumentId) {
+    public void resourceToVectorStore(UUID ingestedDocumentId) {
         log.info("Saving resource to the vector store.");
 
-        TrainingDocument trainingDocument = trainingDocumentService.get(trainingDocumentId);
+        IngestedDocument ingestedDocument = ingestedDocumentService.get(ingestedDocumentId);
 
-        if (trainingDocument.getDocumentSource() == DocumentSource.URI) {
-            fetchUriContent(trainingDocument);
+        if (ingestedDocument.getDocumentSource() == DocumentSource.URI) {
+            fetchUriContent(ingestedDocument);
         }
 
-        String contentType = trainingDocument.getContentType();
+        String contentType = ingestedDocument.getContentType();
 
-        byte[] fileContent = trainingDocument.getFileData();
+        byte[] fileContent = ingestedDocument.getFileData();
 
         ByteArrayResource resource = new ByteArrayResource(fileContent) {
             @Override
             public String getFilename() {
-                return trainingDocument.getFileName();
+                return ingestedDocument.getFileName();
             }
         };
 
@@ -72,16 +72,16 @@ public class DocumentService {
 
         List<Document> documents = read(resource, contentType);
 
-        documents = etlService.prepare(documents, trainingDocument);
+        documents = etlService.prepare(documents, ingestedDocument);
 
         for(Document document : documents) {
             Map<String, Object> metadata = document.getMetadata();
-            metadata.put(TRAINING_DOCUMENT_ID, trainingDocument.getId());
-            scope(metadata, trainingDocument);
+            metadata.put(INGESTED_DOCUMENT_ID, ingestedDocument.getId());
+            scope(metadata, ingestedDocument);
             vectorStoreService.save(List.of(document));
         }
 
-        trainingDocumentService.update(trainingDocument, DocumentStatus.COMPLETED);
+        ingestedDocumentService.update(ingestedDocument, DocumentStatus.COMPLETED);
 
     }
 
@@ -93,27 +93,27 @@ public class DocumentService {
      * The ids go in as strings: a filter expression compares against a JSON string, so a UUID
      * written as anything else would never match.
      */
-    private static void scope(Map<String, Object> metadata, TrainingDocument trainingDocument) {
-        RetrievalScope scope = trainingDocument.getScope() == null
+    private static void scope(Map<String, Object> metadata, IngestedDocument ingestedDocument) {
+        RetrievalScope scope = ingestedDocument.getScope() == null
                 ? RetrievalScope.GLOBAL
-                : trainingDocument.getScope();
+                : ingestedDocument.getScope();
 
         metadata.put(SCOPE, scope.name());
 
-        if (scope == RetrievalScope.USER && trainingDocument.getUserId() != null) {
-            metadata.put(USER_ID, trainingDocument.getUserId().toString());
+        if (scope == RetrievalScope.USER && ingestedDocument.getUserId() != null) {
+            metadata.put(USER_ID, ingestedDocument.getUserId().toString());
         }
     }
 
-    private void fetchUriContent(TrainingDocument trainingDocument) {
-        Object sourceUri = trainingDocument.getMetadata().get(TrainingDocument.SOURCE_URI);
+    private void fetchUriContent(IngestedDocument ingestedDocument) {
+        Object sourceUri = ingestedDocument.getMetadata().get(IngestedDocument.SOURCE_URI);
         assert sourceUri != null;
 
         UriContentFetcher.FetchedContent fetchedContent = uriContentFetcher.fetch(sourceUri.toString());
 
-        trainingDocument.setFileData(fetchedContent.data());
-        trainingDocument.setContentType(fetchedContent.contentType());
-        trainingDocument.getMetadata().put(TrainingDocument.FILE_SIZE_BYTES, fetchedContent.data().length);
+        ingestedDocument.setFileData(fetchedContent.data());
+        ingestedDocument.setContentType(fetchedContent.contentType());
+        ingestedDocument.getMetadata().put(IngestedDocument.FILE_SIZE_BYTES, fetchedContent.data().length);
     }
 
     /**

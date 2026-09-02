@@ -16,9 +16,9 @@
       "description": "The base URI for the JIRA api."
     },
     {
-      "name": "training.task.enabled",
+      "name": "document.ingestion.task.enabled",
       "type": "java.lang.Boolean",
-      "description": "Description for training.task.enabled."
+      "description": "Description for document.ingestion.task.enabled."
     },
     {
       "name": "jira.api.auth.callback.uri",
@@ -46,9 +46,9 @@
       "description": "Description for local.dev.user.id."
     },
     {
-      "name": "confluence.training.task.enabled",
+      "name": "confluence.ingestion.task.enabled",
       "type": "java.lang.Boolean",
-      "description": "Description for confluence.training.task.enabled."
+      "description": "Description for confluence.ingestion.task.enabled."
     },
     {
       "name": "solesonic.llm.intent.model",

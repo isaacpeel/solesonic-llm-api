@@ -1,8 +1,8 @@
 package com.solesonic.tools.rag;
 
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.rag.UriTrainingService;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.service.ingestion.UriIngestionService;
 import com.solesonic.tools.LocalTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,14 +18,14 @@ public class UriIngestTools implements LocalTool {
 
     public static final String URI_INGEST = "uri-ingest";
 
-    private final UriTrainingService uriTrainingService;
+    private final UriIngestionService uriIngestionService;
 
-    public UriIngestTools(UriTrainingService uriTrainingService) {
-        this.uriTrainingService = uriTrainingService;
+    public UriIngestTools(UriIngestionService uriIngestionService) {
+        this.uriIngestionService = uriIngestionService;
     }
 
     public record UriIngestRequest(String uri) {}
-    public record UriIngestResponse(UUID trainingDocumentId, String uri, DocumentStatus documentStatus) {}
+    public record UriIngestResponse(UUID ingestedDocumentId, String uri, DocumentStatus documentStatus) {}
 
     @SuppressWarnings("unused")
     @Tool(name = URI_INGEST, description = "Adds a uri to the RAG ingestion queue so its content can be fetched and embedded into the vector store. Use responsibly and ensure no repeated calls for the same uri.")
@@ -34,10 +34,10 @@ public class UriIngestTools implements LocalTool {
         log.debug("Invoking uri ingest tool");
         log.debug("Uri: {}", request.uri);
 
-        TrainingDocument trainingDocument = uriTrainingService.queue(request.uri);
+        IngestedDocument ingestedDocument = uriIngestionService.queue(request.uri);
 
-        log.debug("Queued training document: {}", trainingDocument.getId());
+        log.debug("Queued ingested document: {}", ingestedDocument.getId());
 
-        return new UriIngestResponse(trainingDocument.getId(), request.uri, trainingDocument.getDocumentStatus());
+        return new UriIngestResponse(ingestedDocument.getId(), request.uri, ingestedDocument.getDocumentStatus());
     }
 }

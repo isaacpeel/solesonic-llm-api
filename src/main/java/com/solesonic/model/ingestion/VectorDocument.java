@@ -1,4 +1,4 @@
-package com.solesonic.model.training;
+package com.solesonic.model.ingestion;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

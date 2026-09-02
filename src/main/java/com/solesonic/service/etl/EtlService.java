@@ -1,8 +1,8 @@
 package com.solesonic.service.etl;
 
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.rag.TrainingDocumentService;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
@@ -13,35 +13,35 @@ import java.util.List;
 @Service
 public class EtlService {
     private static final Logger log = LoggerFactory.getLogger(EtlService.class);
-    private final TrainingDocumentService trainingDocumentService;
+    private final IngestedDocumentService ingestedDocumentService;
     private final EtlKeywordEnricher etlKeywordEnricher;
     private final EtlMetadataEnricher etlMetadataEnricher;
     private final EtlTextSplitter etlTextSplitter;
 
-    public EtlService(TrainingDocumentService trainingDocumentService,
+    public EtlService(IngestedDocumentService ingestedDocumentService,
                       EtlKeywordEnricher etlKeywordEnricher,
                       EtlMetadataEnricher etlMetadataEnricher,
                       EtlTextSplitter etlTextSplitter) {
-        this.trainingDocumentService = trainingDocumentService;
+        this.ingestedDocumentService = ingestedDocumentService;
         this.etlKeywordEnricher = etlKeywordEnricher;
         this.etlMetadataEnricher = etlMetadataEnricher;
         this.etlTextSplitter = etlTextSplitter;
     }
 
-    public List<Document> prepare(List<Document> documents, TrainingDocument trainingDocument) {
+    public List<Document> prepare(List<Document> documents, IngestedDocument ingestedDocument) {
         log.info("Preparing documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.PREPARING);
+        ingestedDocumentService.update(ingestedDocument, DocumentStatus.PREPARING);
 
         log.info("Token splitting documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.TOKEN_SPLITTING);
+        ingestedDocumentService.update(ingestedDocument, DocumentStatus.TOKEN_SPLITTING);
         List<Document> splitDocuments = etlTextSplitter.split(documents);
 
         log.info("Keyword enriching documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.KEYWORD_ENRICHING);
+        ingestedDocumentService.update(ingestedDocument, DocumentStatus.KEYWORD_ENRICHING);
         List<Document> keywordEnriched = etlKeywordEnricher.enrich(splitDocuments);
 
         log.info("Metadata enriching documents");
-        trainingDocumentService.update(trainingDocument, DocumentStatus.METADATA_ENRICHING);
+        ingestedDocumentService.update(ingestedDocument, DocumentStatus.METADATA_ENRICHING);
         return etlMetadataEnricher.enrich(keywordEnriched);
     }
 }

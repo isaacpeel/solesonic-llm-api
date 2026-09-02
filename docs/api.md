@@ -718,7 +718,7 @@ Every endpoint requires the `model-admin` role.
 
 ---
 
-## Document and Training Data
+## Document and Ingested Data
 
 ### Retrieval scope
 
@@ -745,7 +745,7 @@ Documents ingested before scoping existed are `GLOBAL`, which is what they alrea
     to keep it to the caller. `CHAT` is rejected with `400` — attach the document to a message
     instead.
 - **Description**: Queues a document for processing and ingestion into the vector store. Supported formats include PDF and plain text.
-- **Response**: `201 Created` with a `Location` header pointing to the queued training document record
+- **Response**: `201 Created` with a `Location` header pointing to the queued ingested document record
 
 De-duplication by file name applies only between `GLOBAL` documents. Two users uploading `notes.pdf`
 at `USER` scope get two separate documents.
@@ -756,10 +756,10 @@ at `USER` scope get two separate documents.
 - **Request Body**: `VectorSearch` containing the query text
 - **Response**: Array of matching document text excerpts ranked by similarity
 
-### List Training Documents
+### List Ingested Documents
 
-- **Endpoint**: `GET /trainingdocuments`
-- **Response**: Array of `TrainingDocument` objects, including processing status (`QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`)
+- **Endpoint**: `GET /documents/ingested`
+- **Response**: Array of `IngestedDocument` objects, including processing status (`QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`)
 
 ---
 

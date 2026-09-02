@@ -161,13 +161,13 @@ either this projection or the dedicated byte query in §3 — never
 
 ## 3. Storage
 
-**`bytea`, not `oid`.** `TrainingDocument` uses `@Lob byte[]`, which Hibernate maps
+**`bytea`, not `oid`.** `IngestedDocument` uses `@Lob byte[]`, which Hibernate maps
 to a Postgres **large object** — `V1_3__initialize_training_document.sql` declares
 `file_data oid`. That is the wrong choice here for two reasons:
 
 1. Attachments have a `DELETE` endpoint. Deleting the row leaves the large object
    orphaned in `pg_largeobject` forever unless `lo_unlink` is called explicitly or
-   `vacuumlo` is run out of band. `TrainingDocument` gets away with it because
+   `vacuumlo` is run out of band. `IngestedDocument` gets away with it because
    deletion is rare; a chat UI's ✕ button is not rare.
 2. Large objects require an open transaction to stream, which complicates serving
    bytes from a controller.
@@ -542,7 +542,7 @@ correctness bug — and it is preferable to duplicating every turn. Worth an exp
 test.
 
 **New scheduled task.** `task/ChatAttachmentSweepTask`, following the existing
-`TrainingSchedulingTask` pattern: delete rows where
+`DocumentIngestionSchedulingTask` pattern: delete rows where
 `chat_message_id is null and created < now() - staged-ttl`. Served by the partial
 index from §3.
 

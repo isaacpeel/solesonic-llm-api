@@ -1,6 +1,6 @@
 package com.solesonic.repository.rag;
 
-import com.solesonic.model.training.VectorDocument;
+import com.solesonic.model.ingestion.VectorDocument;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -14,10 +14,10 @@ public interface VectorStoreRepository extends JpaRepository<VectorDocument, UUI
 
     @Query(value = """
         SELECT *
-                FROM public.vector_store WHERE vector_store.metadata->>'TRAINING_DOCUMENT_ID' = :trainingDocumentId
+                FROM public.vector_store WHERE vector_store.metadata->>'INGESTED_DOCUMENT_ID' = :ingestedDocumentId
         """
         , nativeQuery = true)
-    Optional<List<VectorDocument>> findByTrainingDocumentId(@Param("trainingDocumentId") String trainingDocumentId);
+    Optional<List<VectorDocument>> findByIngestedDocumentId(@Param("ingestedDocumentId") String ingestedDocumentId);
 
     /**
      * Discards every chunk belonging to one conversation. There is no foreign key from the vector

@@ -1,6 +1,6 @@
 package com.solesonic.task;
 
-import com.solesonic.service.training.StatusHistoryService;
+import com.solesonic.service.ingestion.StatusHistoryService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -10,13 +10,13 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.TimeUnit;
 
 @Component
-@ConditionalOnProperty(name = "training.task.enabled", havingValue = "true")
-public class TrainingSchedulingTask {
-    private static final Logger log = LoggerFactory.getLogger(TrainingSchedulingTask.class);
+@ConditionalOnProperty(name = "document.ingestion.task.enabled", havingValue = "true")
+public class DocumentIngestionSchedulingTask {
+    private static final Logger log = LoggerFactory.getLogger(DocumentIngestionSchedulingTask.class);
 
     private final StatusHistoryService statusHistoryService;
 
-    public TrainingSchedulingTask(StatusHistoryService statusHistoryService) {
+    public DocumentIngestionSchedulingTask(StatusHistoryService statusHistoryService) {
         this.statusHistoryService = statusHistoryService;
     }
 

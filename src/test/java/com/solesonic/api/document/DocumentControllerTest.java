@@ -1,9 +1,9 @@
 package com.solesonic.api.document;
 
 import com.solesonic.model.document.UriIngestRequest;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.service.rag.TrainingDocumentService;
-import com.solesonic.service.rag.UriTrainingService;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.ingestion.UriIngestionService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,10 +39,10 @@ class DocumentControllerTest {
     private VectorStoreService vectorStoreService;
 
     @Mock
-    private TrainingDocumentService trainingDocumentService;
+    private IngestedDocumentService ingestedDocumentService;
 
     @Mock
-    private UriTrainingService uriTrainingService;
+    private UriIngestionService uriIngestionService;
 
     @InjectMocks
     private DocumentController documentController;
@@ -54,13 +54,13 @@ class DocumentControllerTest {
 
     @Test
     void test_handleUriIngest() throws Exception {
-        UUID trainingDocumentId = UUID.randomUUID();
+        UUID ingestedDocumentId = UUID.randomUUID();
 
-        TrainingDocument trainingDocument = new TrainingDocument();
-        trainingDocument.setId(trainingDocumentId);
-        trainingDocument.setFileName(TEST_URI);
+        IngestedDocument ingestedDocument = new IngestedDocument();
+        ingestedDocument.setId(ingestedDocumentId);
+        ingestedDocument.setFileName(TEST_URI);
 
-        when(uriTrainingService.queue(eq(TEST_URI))).thenReturn(trainingDocument);
+        when(uriIngestionService.queue(eq(TEST_URI))).thenReturn(ingestedDocument);
 
         UriIngestRequest uriIngestRequest = new UriIngestRequest(TEST_URI);
 
@@ -68,7 +68,7 @@ class DocumentControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(jsonMapper.writeValueAsString(uriIngestRequest)))
                 .andExpect(status().isAccepted())
-                .andExpect(header().string("Location", "http://localhost/trainingdocuments/" + trainingDocumentId))
-                .andExpect(jsonPath("$.id").value(trainingDocumentId.toString()));
+                .andExpect(header().string("Location", "http://localhost/documents/ingested/" + ingestedDocumentId))
+                .andExpect(jsonPath("$.id").value(ingestedDocumentId.toString()));
     }
 }

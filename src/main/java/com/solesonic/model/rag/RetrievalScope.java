@@ -10,7 +10,7 @@ package com.solesonic.model.rag;
  */
 public enum RetrievalScope {
     /**
-     * Shared training material. Retrievable by every user, in every conversation — the only scope
+     * Shared ingested material. Retrievable by every user, in every conversation — the only scope
      * that existed before scoping, and what every pre-existing row is backfilled to.
      */
     GLOBAL,

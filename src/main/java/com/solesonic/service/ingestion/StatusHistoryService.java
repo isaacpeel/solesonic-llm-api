@@ -1,11 +1,10 @@
-package com.solesonic.service.training;
+package com.solesonic.service.ingestion;
 
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.StatusHistory;
-import com.solesonic.model.training.TrainingDocument;
-import com.solesonic.repository.training.StatusHistoryRepository;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.StatusHistory;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.repository.ingestion.StatusHistoryRepository;
 import com.solesonic.service.etl.DocumentService;
-import com.solesonic.service.rag.TrainingDocumentService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -20,14 +19,14 @@ public class StatusHistoryService {
 
     private final StatusHistoryRepository statusHistoryRepository;
     private final DocumentService documentService;
-    private final TrainingDocumentService trainingDocumentService;
+    private final IngestedDocumentService ingestedDocumentService;
 
     public StatusHistoryService(StatusHistoryRepository statusHistoryRepository,
                                 DocumentService documentService,
-                                TrainingDocumentService trainingDocumentService) {
+                                IngestedDocumentService ingestedDocumentService) {
         this.statusHistoryRepository = statusHistoryRepository;
         this.documentService = documentService;
-        this.trainingDocumentService = trainingDocumentService;
+        this.ingestedDocumentService = ingestedDocumentService;
     }
 
     public void processQueued() {
@@ -41,20 +40,20 @@ public class StatusHistoryService {
             if (!CollectionUtils.isEmpty(queuedDocuments)) {
 
 
-                TrainingDocument confluenceTrainingDocument = null;
+                IngestedDocument confluenceIngestedDocument = null;
 
                 for (StatusHistory status : queuedDocuments) {
                     try {
                         UUID documentId = status.getDocumentId();
                         log.debug("Processing {} document with id: {}", status.getDocumentStatus(), documentId);
-                        confluenceTrainingDocument = trainingDocumentService.get(documentId);
+                        confluenceIngestedDocument = ingestedDocumentService.get(documentId);
 
-                        trainingDocumentService.update(confluenceTrainingDocument, DocumentStatus.IN_PROGRESS);
+                        ingestedDocumentService.update(confluenceIngestedDocument, DocumentStatus.IN_PROGRESS);
                         documentService.resourceToVectorStore(status.getDocumentId());
                     } catch (Exception e) {
                         log.error("Document processing failed", e);
-                        assert confluenceTrainingDocument != null;
-                        trainingDocumentService.update(confluenceTrainingDocument, DocumentStatus.FAILED);
+                        assert confluenceIngestedDocument != null;
+                        ingestedDocumentService.update(confluenceIngestedDocument, DocumentStatus.FAILED);
                     }
                 }
             }

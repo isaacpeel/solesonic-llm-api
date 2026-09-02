@@ -10,7 +10,7 @@ import org.springframework.ai.rag.postretrieval.document.DocumentPostProcessor;
 
 import java.util.List;
 
-import static com.solesonic.service.etl.DocumentService.TRAINING_DOCUMENT_ID;
+import static com.solesonic.service.etl.DocumentService.INGESTED_DOCUMENT_ID;
 
 /**
  * A {@link DocumentPostProcessor} that logs the documents retrieved for a query without
@@ -25,11 +25,11 @@ public class RetrievalLoggingPostProcessor implements DocumentPostProcessor {
         log.info("Retrieved {} documents for query \"{}\"", documents.size(), query.text());
 
         for (Document document : documents) {
-            Object trainingDocumentId = document.getMetadata().get(TRAINING_DOCUMENT_ID);
+            Object ingestedDocumentId = document.getMetadata().get(INGESTED_DOCUMENT_ID);
             Object distance = document.getMetadata().get(DocumentMetadata.DISTANCE.value());
 
-            log.info("Retrieved document id={} trainingDocumentId={} distance={}",
-                    document.getId(), trainingDocumentId, distance);
+            log.info("Retrieved document id={} ingestedDocumentId={} distance={}",
+                    document.getId(), ingestedDocumentId, distance);
         }
 
         return documents;

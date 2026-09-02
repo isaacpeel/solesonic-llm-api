@@ -1,7 +1,7 @@
-package com.solesonic.repository.training;
+package com.solesonic.repository.ingestion;
 
-import com.solesonic.model.training.DocumentStatus;
-import com.solesonic.model.training.StatusHistory;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.StatusHistory;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -19,8 +19,8 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                 SELECT d
                 FROM
                     StatusHistory d,
-                    TrainingDocument td
-                WHERE d.documentStatus = com.solesonic.model.training.DocumentStatus.QUEUED
+                    IngestedDocument td
+                WHERE d.documentStatus = com.solesonic.model.ingestion.DocumentStatus.QUEUED
                   AND NOT EXISTS (
                     SELECT 1
                     FROM StatusHistory d2
@@ -37,11 +37,11 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                 FROM
                     StatusHistory d
                 WHERE d.documentStatus IN (
-                          com.solesonic.model.training.DocumentStatus.IN_PROGRESS,
-                          com.solesonic.model.training.DocumentStatus.PREPARING,
-                          com.solesonic.model.training.DocumentStatus.TOKEN_SPLITTING,
-                          com.solesonic.model.training.DocumentStatus.KEYWORD_ENRICHING,
-                          com.solesonic.model.training.DocumentStatus.METADATA_ENRICHING
+                          com.solesonic.model.ingestion.DocumentStatus.IN_PROGRESS,
+                          com.solesonic.model.ingestion.DocumentStatus.PREPARING,
+                          com.solesonic.model.ingestion.DocumentStatus.TOKEN_SPLITTING,
+                          com.solesonic.model.ingestion.DocumentStatus.KEYWORD_ENRICHING,
+                          com.solesonic.model.ingestion.DocumentStatus.METADATA_ENRICHING
                       )
                   AND NOT EXISTS (
                     SELECT 1
