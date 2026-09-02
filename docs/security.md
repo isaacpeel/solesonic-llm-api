@@ -335,6 +335,12 @@ Events currently emitted: `authn.failure`, `authz.denied`, `broker.denied`, `rou
 `authn.rejected_audience`, `oauth.state_mismatch`, and `ratelimit.exceeded`, whose emission sites
 arrive with the subject allowlist, the OAuth state check, and a rate limiter respectively.
 
+`authz.denied` with `reason=wrong_subject` is `service/security/ResourceOwnershipService`, which
+enforces that a `{userId}` path segment names the caller: `GET`/`POST`/`PUT /users/{userId}/preferences`
+and `GET /chats/users/{userId}` all answer `403` for a mismatched subject (see
+[docs/api.md](api.md)). The streaming chat routes enforce the same rule independently, via
+`ChatStreamAccessService`, and do not emit this event.
+
 ### What is never logged
 
 Chat message content, prompt content, retrieved document text, and vision descriptions are never

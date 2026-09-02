@@ -383,6 +383,8 @@ These endpoints retrieve existing chat history. They do not create or send messa
 
 ### Get All Chats for a User
 
+`{userId}` must be the authenticated subject — otherwise `403`.
+
 - **Endpoint**: `GET /chats/users/{userId}`
 - **Path Parameters**:
   - `userId` (UUID): The user whose chats to retrieve
@@ -440,6 +442,9 @@ The ordering is deterministic, so pages never overlap or skip a chat.
 - **Path Parameters**:
   - `chatId` (UUID): The chat session to retrieve
 - **Response**: Complete chat object with message history
+
+Scoped to the caller exactly as [Rename a Chat](#rename-a-chat) is: a chat that does not exist, or
+is not owned by the caller, is `404`.
 
 ### Rename a Chat
 
@@ -759,6 +764,8 @@ at `USER` scope get two separate documents.
 ---
 
 ## User Preferences
+
+`{userId}` must be the authenticated subject on all three endpoints below — otherwise `403`.
 
 User preferences control per-user settings such as which catalog model to use for chat and the
 similarity thresholds for RAG retrieval — one per retrieval tier (`chatSimilarityThreshold`,

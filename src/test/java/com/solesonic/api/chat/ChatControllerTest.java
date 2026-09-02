@@ -2,6 +2,7 @@ package com.solesonic.api.chat;
 
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.chat.ChatService;
+import com.solesonic.service.security.ResourceOwnershipService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -24,6 +25,7 @@ import java.util.UUID;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -41,6 +43,9 @@ class ChatControllerTest {
     @Mock
     private ChatService chatService;
 
+    @Mock
+    private ResourceOwnershipService resourceOwnershipService;
+
     @InjectMocks
     private ChatController chatController;
 
@@ -51,6 +56,11 @@ class ChatControllerTest {
     void setUp() {
         chatId = UUID.randomUUID();
         userId = UUID.randomUUID();
+
+        // Only getUserChats consults this; lenient because most tests here exercise the
+        // chatId-keyed endpoints, which never call it.
+        lenient().when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(true);
+
         mockMvc = MockMvcBuilders.standaloneSetup(chatController)
                 .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
                 .build();
@@ -72,6 +82,17 @@ class ChatControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].id").value(chatId.toString()));
 
+        verify(chatService, never()).getUngroupedByUserId(any(), any());
+    }
+
+    @Test
+    void deniesListingAnotherUsersChats() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(get("/chats/users/{userId}", userId))
+                .andExpect(status().isForbidden());
+
+        verify(chatService, never()).getByUserId(any(), any());
         verify(chatService, never()).getUngroupedByUserId(any(), any());
     }
 
@@ -100,6 +121,26 @@ class ChatControllerTest {
                 .andExpect(status().isOk());
 
         verify(chatService, never()).getUngroupedByUserId(any(), any());
+    }
+
+    @Test
+    void getsAChat() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+
+        when(chatService.get(chatId)).thenReturn(chat);
+
+        mockMvc.perform(get("/chats/{chatId}", chatId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(chatId.toString()));
+    }
+
+    @Test
+    void propagatesNotFoundForAChatTheCallerDoesNotOwnOnGet() throws Exception {
+        when(chatService.get(chatId)).thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        mockMvc.perform(get("/chats/{chatId}", chatId))
+                .andExpect(status().isNotFound());
     }
 
     @Test

@@ -102,12 +102,14 @@ public class ChatService {
         return withMessages(chats);
     }
 
+    /**
+     * Scoped exactly as {@link #rename(UUID, String)} is: without this, any authenticated caller
+     * who knows or guesses another user's {@code chatId} could read that chat's full message
+     * history. A chat owned by someone else is indistinguishable from one that does not exist.
+     */
     public Chat get(UUID chatId) {
-        Chat chat = chatRepository.findById(chatId).orElse(null);
-
-        if (chat == null) {
-            return null;
-        }
+        UUID userId = userRequestContext.getUserId();
+        Chat chat = ownedChat(chatId, userId);
 
         chat.setChatMessages(chatMessages(chatId));
 

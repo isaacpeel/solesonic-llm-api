@@ -4,6 +4,8 @@ import com.solesonic.model.chat.ChatOrderRequest;
 import com.solesonic.model.chat.ChatRenameRequest;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.chat.ChatService;
+import com.solesonic.service.security.ResourceOwnershipService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -11,6 +13,7 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.data.web.PagedModel;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,9 +34,11 @@ public class ChatController {
     private static final int DEFAULT_PAGE_SIZE = 20;
 
     private final ChatService chatService;
+    private final ResourceOwnershipService resourceOwnershipService;
 
-    ChatController(ChatService chatService) {
+    ChatController(ChatService chatService, ResourceOwnershipService resourceOwnershipService) {
         this.chatService = chatService;
+        this.resourceOwnershipService = resourceOwnershipService;
     }
 
     /**
@@ -48,7 +53,12 @@ public class ChatController {
     public ResponseEntity<PagedModel<Chat>> getUserChats(
             @PathVariable UUID userId,
             @RequestParam(defaultValue = "false") boolean ungrouped,
-            @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
+            @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable,
+            HttpServletRequest request) {
+        if (!resourceOwnershipService.isOwner(userId, request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
         Pageable chatPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
         log.info("Getting chats by user id {} ungrouped {} page {} size {}",

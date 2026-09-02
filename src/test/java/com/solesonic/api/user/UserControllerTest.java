@@ -5,6 +5,7 @@ import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.service.security.ResourceOwnershipService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,9 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -41,6 +45,9 @@ public class UserControllerTest {
 
     @Mock
     private UserPreferencesService userPreferencesService;
+
+    @Mock
+    private ResourceOwnershipService resourceOwnershipService;
 
     @InjectMocks
     private UserController userController;
@@ -60,6 +67,9 @@ public class UserControllerTest {
         userPreferences.setGlobalSimilarityThreshold(0.7);
         userPreferences.setCreated(ZonedDateTime.now());
         userPreferences.setUpdated(ZonedDateTime.now());
+
+        // The matching-subject path succeeds unless a test below stubs otherwise.
+        lenient().when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(true);
 
         // Set up MockMvc
         mockMvc = MockMvcBuilders.standaloneSetup(userController).build();
@@ -163,5 +173,39 @@ public class UserControllerTest {
                 .doesNotContain("google-refresh-token")
                 .doesNotContain("xero-access-token")
                 .doesNotContain("xero-refresh-token");
+    }
+
+    @Test
+    void deniesGettingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(get("/users/{userId}/preferences", userId))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).get(any());
+    }
+
+    @Test
+    void deniesSavingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(post("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(userPreferences)))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).save(any(), any(UserPreferences.class));
+    }
+
+    @Test
+    void deniesUpdatingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(put("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(userPreferences)))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).update(any(), any(UserPreferences.class));
     }
 }
