@@ -49,17 +49,11 @@ public class ChatController {
             @PathVariable UUID userId,
             @RequestParam(defaultValue = "false") boolean ungrouped,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
-        // Only the window is taken from the request. Ordering belongs to the repository query, and a
-        // sort carried on the Pageable would be appended to it - an unknown ?sort= property throwing
-        // PropertyReferenceException, a known one perturbing the ordering that paging depends on.
         Pageable chatPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
         log.info("Getting chats by user id {} ungrouped {} page {} size {}",
                 userId, ungrouped, chatPage.getPageNumber(), chatPage.getPageSize());
 
-        // The branch lives here rather than as a boolean on the service: the request is the only
-        // thing that knows a filter was asked for, and getByUserId(userId, pageable, true) tells a
-        // reader at a call site nothing.
         Page<Chat> chats = ungrouped
                 ? chatService.getUngroupedByUserId(userId, chatPage)
                 : chatService.getByUserId(userId, chatPage);
