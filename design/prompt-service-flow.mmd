@@ -1,0 +1,32 @@
+flowchart TD
+    A["PromptService.stream(chatId, userId, message, ...)"] --> P["Partition attachments,\ndescribe images, ingest documents\nbuild attachmentContext"]
+
+    P --> D{"commands empty?"}
+
+    D -->|No| F["SlashCommandService.commands()\nfirst SlashCommand"]
+    F --> G{"switch (slashCommand)"}
+
+    G -->|PromptSlashCommand| H["deactivate sticky agent\nfetch MCP prompt, build Prompt\n+ full attachmentContext"]
+    H --> H2["ChatClient + RAG advisor\nstream response"]
+
+    G -->|ToolSlashCommand| I["deactivate sticky agent\nToolCallService.stream\n(MCP tool, no attachment context)"]
+
+    G -->|LocalToolSlashCommand| J["deactivate sticky agent\nToolCallService.streamLocal\n(local tool, no attachment context)"]
+
+    G -->|AgentSlashCommand| K["activate sticky agent\nA2AAgentService.delegate\n(images only, bypass LLM)"]
+
+    D -->|Yes| S{"sticky agent\nactive for chat?"}
+    S -->|Yes| T["A2AAgentService.delegate\n(images only, bypass LLM)"]
+    S -->|No| U["streamBasicPrompt:\nsystem+user prompt, RAG advisor,\n+ attachmentContext as UserMessage"]
+
+    classDef entry fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a,stroke-width:1.5px;
+    classDef step fill:#e8eaed,stroke:#5f6368,color:#202124,stroke-width:1px;
+    classDef decision fill:#ede9fe,stroke:#6d28d9,color:#4c1d95,stroke-width:1.5px;
+    classDef outcome fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1.5px;
+    classDef bypass fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:2px;
+
+    class A entry;
+    class P,F,H step;
+    class D,G,S decision;
+    class H2,I,J,U outcome;
+    class K,T bypass;

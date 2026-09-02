@@ -1,0 +1,66 @@
+flowchart TD
+    A["describe(chatId, userId, attachmentIds)"] --> B{"attachmentIds empty?"}
+    B -->|yes| B1["return List.of()"]
+    B -->|no| C["unsignalled = copy of attachmentIds\n(tracks which ids still need an event)"]
+
+    C --> D["describeAll"]
+    D --> E["ChatAttachmentService.attachments\nload rows incl. image bytes"]
+
+    E --> F{"attachments.size() >\nMAX_IMAGES_PER_MESSAGE (4)?"}
+    F -->|yes| F1["for each attachment beyond the first 4:\nsaveVisionFailure(EXCEEDED_IMAGE_LIMIT)\n+ signal"]
+    F1 --> G["attachments = first 4 only"]
+    F -->|no| G
+
+    G --> H["for each remaining attachment,\nsequentially: describeOne"]
+
+    H --> I{"visionDescription\nalready stored?"}
+    I -->|yes| I1["DescribeOutcome.described\n(reuse stored text —\nnever calls the vision model)"]
+
+    I -->|no| J{"fileSizeBytes >\nmax-image-bytes?"}
+    J -->|yes| J1["saveVisionFailure(IMAGE_TOO_LARGE)\nDescribeOutcome.skipped"]
+
+    J -->|no| K["NotificationService.emitProgress\n'Reading attached image &lt;name&gt;'"]
+    K --> L["callVisionModel(attachment)"]
+
+    L --> M["build Media(fileData, contentType)\n+ UserMessage(instruction + media)\ninstruction = describeInstruction\n(image-description-prompt.st)\n+ user's own note, if present"]
+    M --> N["visionChatModel.call(new Prompt(userMessage))\n(separate vision OpenAiChatModel —\nVISION_CHAT_MODEL qualifier)"]
+
+    N -->|"throws RuntimeException"| O["classify(exception)\nwalk cause chain, depth <= 10"]
+    O -->|"SocketTimeoutException /\nHttpTimeoutException / TimeoutException"| O1["VISION_TIMEOUT"]
+    O -->|"ConnectException /\nUnknownHostException /\nanything else"| O2["VISION_UNAVAILABLE"]
+    O1 --> P1["saveVisionFailure(reason)\nDescribeOutcome.skipped"]
+    O2 --> P1
+
+    N -->|"returns ChatResponse"| Q{"getResult() == null?\n(no Generation)"}
+    Q -->|yes| Q1["saveVisionFailure(IMAGE_UNREADABLE)\nDescribeOutcome.skipped"]
+
+    Q -->|no| R{"generation.getOutput().getText()\ntrimmed to null?"}
+    R -->|yes, blank| R1["saveVisionFailure(IMAGE_UNREADABLE)\nDescribeOutcome.skipped"]
+
+    R -->|no, non-blank| S["saveVisionDescription\n(text + visionModel name,\nclears any prior failure reason)"]
+    S --> S1["DescribeOutcome.described(visionDescription)"]
+
+    I1 --> T["signal(attachmentId, failureReason)\nremoves id from unsignalled,\nemits attachment SSE event\n(described, or skipped+reason)"]
+    J1 --> T
+    P1 --> T
+    Q1 --> T
+    R1 --> T
+    S1 --> T
+
+    T --> U{"describeOutcome.visionDescription\n== null?"}
+    U -->|yes, skipped| V["not added to result list"]
+    U -->|no, described| W["ChatAttachmentDescription\n(chatMessageId, fileName, user note,\nvisionDescription) appended in send order"]
+
+    V --> X["after loop: describeAll returns"]
+    W --> X
+
+    X --> Y["finally block in describe:\nany id still in unsignalled\n(no decision reached) is signalled\nas IMAGE_UNREADABLE"]
+    Y --> Z["return descriptions list"]
+
+    classDef failure fill:#c0392b,stroke:#7b241c,stroke-width:1px,color:#ffffff
+    classDef success fill:#1e8449,stroke:#145a32,stroke-width:1px,color:#ffffff
+    classDef llmcall fill:#1a5fb4,stroke:#0b3d91,stroke-width:1px,color:#ffffff
+
+    class F1,J1,P1,Q1,R1,Y failure
+    class S success
+    class N llmcall
