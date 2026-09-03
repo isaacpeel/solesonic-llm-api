@@ -135,11 +135,6 @@ public class DocumentEntitlementService {
         return principals(documentId, grantKind).contains(principal);
     }
 
-    @Transactional
-    public void deleteFor(UUID documentId) {
-        documentEntitlementRepository.deleteByIngestedDocumentId(documentId);
-    }
-
     private void replaceGrants(UUID documentId,
                                GrantKind grantKind,
                                Collection<DocumentPrincipal> principals,

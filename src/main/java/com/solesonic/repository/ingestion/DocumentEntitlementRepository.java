@@ -39,6 +39,4 @@ public interface DocumentEntitlementRepository extends JpaRepository<DocumentEnt
      * uploaded it loses the document they just promoted.
      */
     void deleteByIngestedDocumentIdAndGrantKind(UUID ingestedDocumentId, GrantKind grantKind);
-
-    void deleteByIngestedDocumentId(UUID ingestedDocumentId);
 }
