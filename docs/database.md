@@ -73,7 +73,7 @@ The migrations are organized in major versions:
    - Vector store
    - Chats and chat messages
 
-### Ingested documents — three tables (V3_27)
+### Ingested documents — three tables (V3_28)
 
 An ingested document is a descriptor, its bytes, and its grants:
 
@@ -104,8 +104,12 @@ retrieval reads entitlement, and promotion touches only the latter.
 > **`data` is `bytea`, and the entity field must never carry `@Lob`.** That annotation is what made
 > the old `ingested_document.file_data` a Postgres large object — an `oid` *reference* whose target
 > outlives the row pointing at it unless `lo_unlink` is called, which nothing ever did. By the time
-> `V3_27` swept them up there were 351,476 orphaned objects totalling roughly 6 GB, accumulated one
-> per document per re-ingestion cycle. A row delete reclaims `bytea` by itself.
+> this was noticed there were 351,476 orphaned objects totalling roughly 6 GB, accumulated one per
+> document per re-ingestion cycle — reclaimed by `scripts/reclaim-orphaned-large-objects.sql`, a
+> standalone maintenance script run manually rather than a Flyway migration, because the batched
+> `lo_unlink` sweep needs a real mid-script `COMMIT` between batches to avoid overflowing Postgres's
+> shared lock table, and OSS `flyway-core` has no way to disable a SQL migration's enclosing
+> transaction. A row delete reclaims `bytea` by itself going forward.
 
 The `chat_attachment` table (V3_4) stores images attached to chat messages. Image bytes are held in
 a `bytea` column — the same choice, made earlier and for the same reason. A row with a null

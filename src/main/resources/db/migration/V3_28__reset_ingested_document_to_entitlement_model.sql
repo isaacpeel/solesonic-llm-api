@@ -8,12 +8,13 @@
 -- column drop: the tables are dropped and recreated in their target shape. That is only safe
 -- because nothing of the old data survives to disagree with the new columns.
 --
--- The large objects referenced by the old file_data column were unlinked in the previous migration
--- (V3_27), in bounded batches -- doing that here, in this transaction, would hold a lock per object
--- for the life of the transaction and overflow the shared lock table at the scale this corpus had
--- grown to. Ordering across the two migrations is load-bearing for the same reason the original
--- single-script ordering was: the large objects must be gone before ingested_document is dropped,
--- because dropping the table destroys the only record of which objects were ever referenced.
+-- The large objects referenced by the old file_data column are reclaimed by a standalone maintenance
+-- script (scripts/reclaim-orphaned-large-objects.sql), run manually, in bounded batches -- doing that
+-- here, in this transaction, would hold a lock per object for the life of the transaction and
+-- overflow the shared lock table at the scale this corpus had grown to. That script is not itself
+-- scoped to ingested_document (it sweeps every row of pg_largeobject_metadata), so running it before
+-- or after this migration is equally correct; running it first only matters for how long the orphaned
+-- bytes sit unreclaimed on disk, not for whether they can still be found.
 
 -- 1. Discard the corpus.
 --
@@ -59,9 +60,9 @@ create table public.ingested_document
 -- "bytes live elsewhere" state an empty fileData used to represent, made explicit.
 --
 -- bytea, NOT oid, and the entity field must never carry @Lob: that annotation is what produced the
--- large object leak reclaimed in the previous migration. A row delete reclaims bytea inline, and
--- ON DELETE CASCADE means dropping a document takes its bytes with it without anything remembering
--- to.
+-- large object leak reclaimed by scripts/reclaim-orphaned-large-objects.sql. A row delete reclaims
+-- bytea inline, and ON DELETE CASCADE means dropping a document takes its bytes with it without
+-- anything remembering to.
 --
 -- Splitting the bytes off is also what retires SUMMARY_PROJECTION: a listing can select whole
 -- entities now without reading megabytes, so listings stop needing a JPQL constructor expression

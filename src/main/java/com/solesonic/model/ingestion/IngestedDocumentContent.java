@@ -23,9 +23,10 @@ import java.util.UUID;
  * <strong>Never {@code @Lob}.</strong> That annotation is what made
  * {@code IngestedDocument.fileData} a Postgres large object — an {@code oid} reference whose target
  * survives the deletion of the row pointing at it unless {@code lo_unlink} is called, which nothing
- * here ever did. By the time {@code V3_27} swept them up there were 351,476 orphaned objects
- * totalling some 6 GB. {@link SqlTypes#VARBINARY} maps to {@code bytea}, which a row delete reclaims
- * by itself; {@code ChatAttachment} made the same choice for the same reason.
+ * here ever did. By the time this was noticed there were 351,476 orphaned objects totalling some
+ * 6 GB, reclaimed by {@code scripts/reclaim-orphaned-large-objects.sql} rather than by a Flyway
+ * migration. {@link SqlTypes#VARBINARY} maps to {@code bytea}, which a row delete reclaims by itself;
+ * {@code ChatAttachment} made the same choice for the same reason.
  * <p>
  * A document has no row here when its bytes live elsewhere — a {@code URI} document before its
  * fetch, and a chat attachment whose only copy is on {@code chat_attachment}. Absence is that state,
