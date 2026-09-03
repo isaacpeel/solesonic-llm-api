@@ -56,7 +56,6 @@ public class DocumentEntitlementService {
         grant(documentId, GrantKind.MANAGE, List.of(managedBy), grantedBy);
     }
 
-    @Transactional
     public void grant(UUID documentId,
                       GrantKind grantKind,
                       Collection<DocumentPrincipal> principals,
