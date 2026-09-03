@@ -1,66 +1,61 @@
 package com.solesonic.api.document;
 
 import com.solesonic.model.VectorSearch;
-import com.solesonic.model.document.UriIngestRequest;
-import com.solesonic.model.rag.RetrievalScope;
-import com.solesonic.model.ingestion.IngestedDocument;
-import com.solesonic.service.ingestion.IngestedDocumentService;
-import com.solesonic.service.ingestion.UriIngestionService;
+import com.solesonic.service.ingestion.StatusHistoryService;
 import com.solesonic.service.rag.VectorStoreService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
-import java.net.URI;
 import java.util.List;
 
+/**
+ * What is left under {@code /documents} once the two scoped collections own creation and CRUD:
+ * a search across whatever the caller can retrieve, and the operator's handle on the ingestion
+ * queue. Neither is a document resource, which is why neither lives under
+ * {@code /documents/global} or {@code /users/{userId}/documents}.
+ */
 @RestController
 @RequestMapping("/documents")
 public class DocumentController {
+    private static final Logger log = LoggerFactory.getLogger(DocumentController.class);
 
     private final VectorStoreService vectorStoreService;
-    private final IngestedDocumentService ingestedDocumentService;
-    private final UriIngestionService uriIngestionService;
+    private final StatusHistoryService statusHistoryService;
 
     public DocumentController(VectorStoreService vectorStoreService,
-                              IngestedDocumentService ingestedDocumentService,
-                              UriIngestionService uriIngestionService) {
+                              StatusHistoryService statusHistoryService) {
         this.vectorStoreService = vectorStoreService;
-        this.ingestedDocumentService = ingestedDocumentService;
-        this.uriIngestionService = uriIngestionService;
+        this.statusHistoryService = statusHistoryService;
     }
 
     @PostMapping("/data/search")
     public ResponseEntity<List<String>> search(@RequestBody VectorSearch vectorSearch) {
-        List<Document> similarDocuments =  vectorStoreService.findSimilarDocuments(vectorSearch);
+        List<Document> similarDocuments = vectorStoreService.findSimilarDocuments(vectorSearch);
 
         return ResponseEntity.ok().body(similarDocuments.stream().map(Document::getText).toList());
     }
 
-    @PostMapping("/data/upload")
-    public ResponseEntity<Void> handleFileUpload(@RequestParam MultipartFile file,
-                                                 @RequestParam(required = false) RetrievalScope scope) {
-        IngestedDocument ingestedDocument = ingestedDocumentService.queue(file, scope);
+    /**
+     * Runs the ingestion queue now rather than waiting for {@code DocumentIngestionSchedulingTask}.
+     * <p>
+     * Carries no id and belongs to no collection — it drains whatever is queued, across both scopes.
+     * {@code rag-admin}, for the same reason the shared collection's writes are: the work it starts
+     * is chunking and embedding against the ETL model, so an ungated handle on it is an ungated
+     * handle on that load.
+     */
+    @PreAuthorize("hasRole('rag-admin')")
+    @PostMapping("/processQueue")
+    public ResponseEntity<Void> processQueue() {
+        log.info("Processing ingestion queue");
+        statusHistoryService.processQueued();
 
-        URI location = ServletUriComponentsBuilder.fromCurrentRequest()
-                .path("/{id}")
-                .buildAndExpand(ingestedDocument.getId())
-                .toUri();
-
-        return ResponseEntity.created(location).build();
-    }
-
-    @PostMapping("/uri")
-    public ResponseEntity<IngestedDocument> handleUriIngest(@RequestBody UriIngestRequest uriIngestRequest) {
-        IngestedDocument ingestedDocument = uriIngestionService.queue(uriIngestRequest.uri());
-
-        URI location = ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/documents/ingested/{id}")
-                .buildAndExpand(ingestedDocument.getId())
-                .toUri();
-
-        return ResponseEntity.accepted().location(location).body(ingestedDocument);
+        return ResponseEntity.accepted().build();
     }
 }

@@ -39,7 +39,6 @@ public class StatusHistoryService {
             log.debug("Documents queued: {}", queuedDocuments.size());
             if (!CollectionUtils.isEmpty(queuedDocuments)) {
 
-
                 IngestedDocument confluenceIngestedDocument = null;
 
                 for (StatusHistory status : queuedDocuments) {

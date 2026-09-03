@@ -4,6 +4,7 @@ import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -25,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -39,6 +42,9 @@ class ChatAttachmentServiceTest {
     @Mock
     private VectorStoreService vectorStoreService;
 
+    @Mock
+    private IngestedDocumentService ingestedDocumentService;
+
     private ChatAttachmentService chatAttachmentService;
 
     private final UUID userId = UUID.randomUUID();
@@ -46,7 +52,11 @@ class ChatAttachmentServiceTest {
     @BeforeEach
     void setUp() {
         chatAttachmentService = new ChatAttachmentService(
-                chatAttachmentRepository, userRequestContext, vectorStoreService, Duration.ofHours(24));
+                chatAttachmentRepository,
+                userRequestContext,
+                vectorStoreService,
+                ingestedDocumentService,
+                Duration.ofHours(24));
 
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
         lenient().when(chatAttachmentRepository.save(any(ChatAttachment.class)))
@@ -179,5 +189,39 @@ class ChatAttachmentServiceTest {
     @Test
     void bindIsANoOpWithoutAttachmentIds() {
         chatAttachmentService.bind(userId, UUID.randomUUID(), UUID.randomUUID(), null);
+    }
+
+    /**
+     * Removing one document from a conversation must remove its {@code ingested_document} and
+     * {@code status_history} rows too. Before this, the row outlived the attachment with no chunks
+     * behind it and no listing that would ever surface it — a silent, permanent leak.
+     */
+    @Test
+    void deleteAlsoClearsTheIngestedDocumentRow() {
+        ChatAttachment document = attachment("application/pdf");
+
+        when(chatAttachmentRepository.findByIdAndUserId(document.getId(), userId))
+                .thenReturn(Optional.of(document));
+
+        chatAttachmentService.delete(document.getId());
+
+        verify(ingestedDocumentService).deleteByChatAttachmentId(document.getId());
+        verify(vectorStoreService).deleteByChatAttachmentId(document.getId());
+        verify(chatAttachmentRepository).delete(document);
+    }
+
+    /**
+     * The same leak, in bulk. A deleted conversation takes every row its attachments opened, not
+     * just its chunks.
+     */
+    @Test
+    void deleteForChatAlsoClearsEveryIngestedDocumentRow() {
+        UUID chatId = UUID.randomUUID();
+
+        chatAttachmentService.deleteForChat(chatId);
+
+        verify(ingestedDocumentService).deleteByChatId(chatId);
+        verify(vectorStoreService).deleteByChatId(chatId);
+        verify(chatAttachmentRepository).deleteByChatId(chatId);
     }
 }

@@ -7,6 +7,7 @@ import com.solesonic.model.chat.attachment.ExtractionFailureReason;
 import com.solesonic.model.chat.attachment.VisionFailureReason;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -86,15 +87,18 @@ public class ChatAttachmentService {
     private final ChatAttachmentRepository chatAttachmentRepository;
     private final UserRequestContext userRequestContext;
     private final VectorStoreService vectorStoreService;
+    private final IngestedDocumentService ingestedDocumentService;
     private final Duration stagedTtl;
 
     public ChatAttachmentService(ChatAttachmentRepository chatAttachmentRepository,
                                  UserRequestContext userRequestContext,
                                  VectorStoreService vectorStoreService,
+                                 IngestedDocumentService ingestedDocumentService,
                                  @Value("${solesonic.llm.attachment.staged-ttl:PT24H}") Duration stagedTtl) {
         this.chatAttachmentRepository = chatAttachmentRepository;
         this.userRequestContext = userRequestContext;
         this.vectorStoreService = vectorStoreService;
+        this.ingestedDocumentService = ingestedDocumentService;
         this.stagedTtl = stagedTtl;
     }
 
@@ -140,8 +144,14 @@ public class ChatAttachmentService {
 
         log.info("Deleting attachment {}", attachmentId);
 
+        //An indexed document also has an ingested_document row, which nothing lists and nothing
+        //else would ever clean up. Asked for unconditionally: a row left FAILED or mid-ingest has
+        //no chunk count to test against, and it is exactly the row that would be left behind.
+        ingestedDocumentService.deleteByChatAttachmentId(attachmentId);
+
         //A document's chunks live in the vector store, which has no foreign key to cascade from.
         //Left behind they would keep answering questions about a document the user just removed.
+        //Still its own sweep after the row: it also reaches chunks with no row behind them.
         vectorStoreService.deleteByChatAttachmentId(attachmentId);
 
         chatAttachmentRepository.delete(chatAttachment);
@@ -157,10 +167,13 @@ public class ChatAttachmentService {
      * <p>
      * Not user-scoped, unlike {@link #delete(UUID)}: the caller has already established that the
      * conversation is theirs, and an attachment reaches a chat only by being bound to a message of
-     * it. It joins the caller's transaction so that a chat and its images go together or not at all.
+     * it. It joins the caller's transaction so that a chat, its images, and the
+     * {@code ingested_document} rows its documents opened go together or not at all.
      */
     @Transactional
     public void deleteForChat(UUID chatId) {
+        ingestedDocumentService.deleteByChatId(chatId);
+
         vectorStoreService.deleteByChatId(chatId);
 
         int deleted = chatAttachmentRepository.deleteByChatId(chatId);

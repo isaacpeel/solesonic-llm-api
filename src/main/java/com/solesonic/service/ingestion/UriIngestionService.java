@@ -5,11 +5,14 @@ import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -18,6 +21,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 import static com.solesonic.model.ingestion.IngestedDocument.REPLACED_BY_ID;
 import static com.solesonic.model.ingestion.IngestedDocument.SOURCE_URI;
@@ -36,19 +41,52 @@ public class UriIngestionService {
         this.vectorStoreService = vectorStoreService;
     }
 
-    public IngestedDocument queue(String uri) {
-        log.info("Queueing URI: {}", uri);
+    /**
+     * Queues a URI for fetch and embedding at the scope its caller names.
+     * <p>
+     * The scope and owner are arguments with no default. Before they were, this path never called
+     * {@code setScope} at all and every URI document was written with none recorded — invisible to a
+     * scoped filter, and only ever reaching retrieval because embedding treats a null scope as
+     * {@code GLOBAL}. There is now no call site on which the scope can be left unsaid.
+     */
+    public IngestedDocument queue(String uri, RetrievalScope scope, UUID ownerId) {
+        log.info("Queueing URI: {} at {} scope", uri, scope);
+
+        if (scope == RetrievalScope.CHAT) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Documents cannot be ingested at CHAT scope; attach them to a message instead");
+        }
 
         String validatedUri = validate(uri);
 
-        List<IngestedDocument> existingIngestedDocuments = ingestedDocumentService.findBySourceUri(validatedUri);
+        List<IngestedDocument> existingIngestedDocuments =
+                inSameCollection(ingestedDocumentService.findBySourceUri(validatedUri), scope, ownerId);
 
         IngestedDocument ingestedDocument = ingestedDocument(validatedUri);
+        ingestedDocument.setScope(scope);
+        ingestedDocument.setUserId(scope == RetrievalScope.USER ? ownerId : null);
+
         IngestedDocument queuedIngestedDocument = ingestedDocumentService.save(ingestedDocument);
 
         replaceExisting(existingIngestedDocuments, queuedIngestedDocument);
 
         return queuedIngestedDocument;
+    }
+
+    /**
+     * Only a document in the same collection may be superseded by this one.
+     * <p>
+     * {@code findBySourceUri} matches on the URI alone, so without this one user re-ingesting a
+     * public page would mark every other user's copy {@code REPLACED} and delete its chunks. The
+     * same URI at two scopes is two documents, exactly as the same file name at two scopes is.
+     */
+    private static List<IngestedDocument> inSameCollection(List<IngestedDocument> existingIngestedDocuments,
+                                                           RetrievalScope scope,
+                                                           UUID ownerId) {
+        return existingIngestedDocuments.stream()
+                .filter(existing -> existing.getScope() == scope)
+                .filter(existing -> scope != RetrievalScope.USER || Objects.equals(existing.getUserId(), ownerId))
+                .toList();
     }
 
     private void replaceExisting(List<IngestedDocument> existingIngestedDocuments, IngestedDocument queuedIngestedDocument) {

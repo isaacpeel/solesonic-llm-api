@@ -2,6 +2,7 @@ package com.solesonic.tools.rag;
 
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.service.ingestion.UriIngestionService;
 import com.solesonic.tools.LocalTool;
 import org.slf4j.Logger;
@@ -34,7 +35,9 @@ public class UriIngestTools implements LocalTool {
         log.debug("Invoking uri ingest tool");
         log.debug("Uri: {}", request.uri);
 
-        IngestedDocument ingestedDocument = uriIngestionService.queue(request.uri);
+        // GLOBAL, with no owner: this tool is gated on rag-admin and adds to the shared corpus.
+        // A conversation-scoped ingest would be an attachment, not a tool call.
+        IngestedDocument ingestedDocument = uriIngestionService.queue(request.uri, RetrievalScope.GLOBAL, null);
 
         log.debug("Queued ingested document: {}", ingestedDocument.getId());
 

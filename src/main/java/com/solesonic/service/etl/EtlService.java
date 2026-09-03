@@ -28,6 +28,13 @@ public class EtlService {
         this.etlTextSplitter = etlTextSplitter;
     }
 
+    public List<Document> prepare(List<Document> documents) {
+        List<Document> splitDocuments = etlTextSplitter.split(documents);
+        List<Document> keywordEnriched = etlKeywordEnricher.enrich(splitDocuments);
+
+        return etlMetadataEnricher.enrich(keywordEnriched);
+    }
+
     public List<Document> prepare(List<Document> documents, IngestedDocument ingestedDocument) {
         log.info("Preparing documents");
         ingestedDocumentService.update(ingestedDocument, DocumentStatus.PREPARING);

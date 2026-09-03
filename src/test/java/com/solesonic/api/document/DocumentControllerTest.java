@@ -1,9 +1,7 @@
 package com.solesonic.api.document;
 
-import com.solesonic.model.document.UriIngestRequest;
-import com.solesonic.model.ingestion.IngestedDocument;
-import com.solesonic.service.ingestion.IngestedDocumentService;
-import com.solesonic.service.ingestion.UriIngestionService;
+import com.solesonic.model.VectorSearch;
+import com.solesonic.service.ingestion.StatusHistoryService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,27 +9,27 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.document.Document;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import tools.jackson.databind.json.JsonMapper;
 
-import java.util.UUID;
+import java.util.List;
 
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SuppressWarnings("unused")
+/**
+ * What remains under {@code /documents} itself. Creation and CRUD moved to the two scoped
+ * collections, so the routes this used to cover — {@code /documents/data/upload} and
+ * {@code /documents/uri} — are gone rather than deprecated.
+ */
 @ExtendWith(MockitoExtension.class)
 class DocumentControllerTest {
-
-    private static final String TEST_URI = "https://example.com/article";
-
-    private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     private MockMvc mockMvc;
 
@@ -39,10 +37,7 @@ class DocumentControllerTest {
     private VectorStoreService vectorStoreService;
 
     @Mock
-    private IngestedDocumentService ingestedDocumentService;
-
-    @Mock
-    private UriIngestionService uriIngestionService;
+    private StatusHistoryService statusHistoryService;
 
     @InjectMocks
     private DocumentController documentController;
@@ -53,22 +48,22 @@ class DocumentControllerTest {
     }
 
     @Test
-    void test_handleUriIngest() throws Exception {
-        UUID ingestedDocumentId = UUID.randomUUID();
+    void searchReturnsTheMatchingText() throws Exception {
+        when(vectorStoreService.findSimilarDocuments(any(VectorSearch.class)))
+                .thenReturn(List.of(new Document("the handbook says so")));
 
-        IngestedDocument ingestedDocument = new IngestedDocument();
-        ingestedDocument.setId(ingestedDocumentId);
-        ingestedDocument.setFileName(TEST_URI);
-
-        when(uriIngestionService.queue(eq(TEST_URI))).thenReturn(ingestedDocument);
-
-        UriIngestRequest uriIngestRequest = new UriIngestRequest(TEST_URI);
-
-        mockMvc.perform(post("/documents/uri")
+        mockMvc.perform(post("/documents/data/search")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(jsonMapper.writeValueAsString(uriIngestRequest)))
-                .andExpect(status().isAccepted())
-                .andExpect(header().string("Location", "http://localhost/documents/ingested/" + ingestedDocumentId))
-                .andExpect(jsonPath("$.id").value(ingestedDocumentId.toString()));
+                        .content("{\"query\":\"handbook\",\"similarityThreshold\":0.7,\"topK\":5}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0]").value("the handbook says so"));
+    }
+
+    @Test
+    void processQueueDrainsTheIngestionQueue() throws Exception {
+        mockMvc.perform(post("/documents/processQueue"))
+                .andExpect(status().isAccepted());
+
+        verify(statusHistoryService).processQueued();
     }
 }

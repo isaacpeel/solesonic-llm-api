@@ -195,16 +195,13 @@ public class ConfluenceServicePageScanTest {
         when(ingestedDocumentService.findByConfluencePageId(CONFLUENCE_DELETED_PAGE_ID))
                 .thenReturn(List.of(deletedPageIngestedDocument));
 
-        VectorDocument vectorDocument = new VectorDocument();
-        when(vectorStoreService.findByIngestedDocumentId(DELETED_INGESTED_DOCUMENT_ID))
-                .thenReturn(List.of(vectorDocument));
-
         assertThatCode(() -> confluenceIngestionService.pageScan()).doesNotThrowAnyException();
 
-        //the deleted page's vectors and ingested document are removed
-        verify(vectorStoreService, times(1)).findByIngestedDocumentId(DELETED_INGESTED_DOCUMENT_ID);
-        verify(vectorStoreService, times(1)).delete(anyList());
+        //the deleted page's ingested document is removed, and with it its chunks: clearing those is
+        //IngestedDocumentService.delete's own job now, so that no caller can drop a document and
+        //leave its chunks behind still answering questions.
         verify(ingestedDocumentService, times(1)).delete(deletedPageIngestedDocument);
+        verify(vectorStoreService, never()).findByIngestedDocumentId(DELETED_INGESTED_DOCUMENT_ID);
 
         //the still-live page is left untouched
         verify(ingestedDocumentService, never()).delete(livePageIngestedDocument);

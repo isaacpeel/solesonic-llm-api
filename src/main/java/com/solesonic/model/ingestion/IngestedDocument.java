@@ -20,6 +20,17 @@ public class IngestedDocument {
     public static final String FILE_SIZE_BYTES = "FILE_SIZE_BYTES";
     public static final String SOURCE_URI = "SOURCE_URI";
 
+    /**
+     * The conversation a {@code CHAT} scoped document was attached to, and the
+     * {@code chat_attachment} row it was read from. Named after
+     * {@link com.solesonic.model.rag.RetrievalMetadata#CHAT_ID} and
+     * {@link com.solesonic.model.rag.RetrievalMetadata#CHAT_ATTACHMENT_ID}, but a separate map: those
+     * are chunk metadata a retrieval filter reads, these are entity metadata that says where this row
+     * came from, so deleting either the attachment or the whole chat can find it again.
+     */
+    public static final String CHAT_ID = "CHAT_ID";
+    public static final String CHAT_ATTACHMENT_ID = "CHAT_ATTACHMENT_ID";
+
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -56,6 +67,17 @@ public class IngestedDocument {
     @Enumerated(EnumType.STRING)
     private RetrievalScope scope;
 
+    /**
+     * Which conversation this document belongs to, when {@link #scope} is {@code CHAT}. Null at every
+     * other scope, the way {@link #userId} is null at {@code GLOBAL}.
+     * <p>
+     * A column rather than only the {@link #CHAT_ID} metadata key because the {@code CHAT} collection
+     * pages and looks up by it, and both of those project {@code fileData} away — which is JPQL, and
+     * JPQL cannot index into the json {@code metadata} column. The key is still written and still
+     * read: it is what the teardown queries and the chunk stamping use.
+     */
+    private UUID chatId;
+
     @Column(name = "metadata")
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> metadata;
@@ -67,6 +89,37 @@ public class IngestedDocument {
         this.id = id;
         this.fileName = fileName;
         this.contentType = contentType;
+    }
+
+    /**
+     * Everything a {@link IngestedDocumentSummary} needs and nothing else, so that the scoped
+     * listing queries can project rows without loading {@code fileData}. A whole row is on the
+     * order of the uploaded file; a page of twenty of them is not something to read to answer a
+     * listing.
+     * <p>
+     * {@code documentStatus} is absent on purpose — it is {@link Transient}, derived from
+     * {@code status_history}, and the service fills it in after the projection.
+     */
+    public IngestedDocument(UUID id,
+                            String fileName,
+                            String contentType,
+                            DocumentSource documentSource,
+                            RetrievalScope scope,
+                            UUID userId,
+                            UUID chatId,
+                            Map<String, Object> metadata,
+                            ZonedDateTime created,
+                            ZonedDateTime updated) {
+        this.id = id;
+        this.fileName = fileName;
+        this.contentType = contentType;
+        this.documentSource = documentSource;
+        this.scope = scope;
+        this.userId = userId;
+        this.chatId = chatId;
+        this.metadata = metadata;
+        this.created = created;
+        this.updated = updated;
     }
 
     public UUID getId() {
@@ -125,7 +178,6 @@ public class IngestedDocument {
         this.updated = updated;
     }
 
-    @SuppressWarnings("unused")
     public DocumentSource getDocumentSource() {
         return documentSource;
     }
@@ -140,6 +192,14 @@ public class IngestedDocument {
 
     public void setUserId(UUID userId) {
         this.userId = userId;
+    }
+
+    public UUID getChatId() {
+        return chatId;
+    }
+
+    public void setChatId(UUID chatId) {
+        this.chatId = chatId;
     }
 
     public RetrievalScope getScope() {

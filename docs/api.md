@@ -720,6 +720,22 @@ Every endpoint requires the `model-admin` role.
 
 ## Document and Ingested Data
 
+Ingested documents live in three independently CRUD-complete collections, one per scope. Which
+collection a document is in **is** its scope — there is no `scope` parameter on any request, and no
+way to create a document at the wrong scope.
+
+| Collection | Scope | Who may read | Who may write |
+|---|---|---|---|
+| `/documents/global` | `GLOBAL` | any authenticated user | `rag-admin` role |
+| `/users/{userId}/documents` | `USER` | the user named in the path | the user named in the path |
+| `/chats/{chatId}/documents` | `CHAT` | the owner of the chat | the owner of the chat |
+
+A `CHAT` document has two origins and one collection. It arrives either by being
+[attached to a message](#chat-attachments), which indexes it inline on that turn, or by being
+uploaded to `/chats/{chatId}/documents`, which queues it like any other document. Both are listed,
+renamed, refreshed and deleted through the same endpoints; `documentSource` tells them apart —
+`CHAT` for a document that came in on a message, `USER` for one uploaded to the conversation.
+
 ### Retrieval scope
 
 Everything in the vector store carries a `scope` in its metadata, and a chat turn searches the three
@@ -730,25 +746,132 @@ knowledge base, rather than competing with it on similarity alone.
 
 | Scope | Retrievable by | Written by |
 |-------|----------------|------------|
-| `GLOBAL` | every user, in every conversation | `POST /documents/data/upload` (the default), URI ingestion, Confluence ingestion |
-| `USER` | one user, in all of their conversations | `POST /documents/data/upload?scope=USER` |
-| `CHAT` | one conversation | attaching a document to a chat message |
+| `GLOBAL` | every user, in every conversation | `POST /documents/global`, `POST /documents/global/uri`, Confluence ingestion |
+| `USER` | one user, in all of their conversations | `POST /users/{userId}/documents`, `POST /users/{userId}/documents/uri` |
+| `CHAT` | one conversation | attaching a document to a chat message, `POST /chats/{chatId}/documents` |
 
-Documents ingested before scoping existed are `GLOBAL`, which is what they already effectively were.
+### IngestedDocumentSummary
 
-### Upload a Document
+Every endpoint below that returns a document returns this shape. The stored file content is never
+part of it.
 
-- **Endpoint**: `POST /documents/data/upload`
-- **Request**: `multipart/form-data` with a `file` field
-- **Query Parameters**:
-  - `scope` (optional, default `GLOBAL`): `GLOBAL` to share the document with every user, or `USER`
-    to keep it to the caller. `CHAT` is rejected with `400` — attach the document to a message
-    instead.
-- **Description**: Queues a document for processing and ingestion into the vector store. Supported formats include PDF and plain text.
-- **Response**: `201 Created` with a `Location` header pointing to the queued ingested document record
+```json
+{
+  "id": "uuid",
+  "fileName": "handbook.pdf",
+  "contentType": "application/pdf",
+  "fileSizeBytes": 20481,
+  "documentSource": "USER",
+  "scope": "GLOBAL",
+  "chatId": null,
+  "documentStatus": "COMPLETED",
+  "created": "2026-09-02T12:00:00Z",
+  "updated": "2026-09-02T12:04:00Z"
+}
+```
 
-De-duplication by file name applies only between `GLOBAL` documents. Two users uploading `notes.pdf`
-at `USER` scope get two separate documents.
+`documentSource` is one of `USER`, `CONFLUENCE`, `URI`, `CHAT`. `documentStatus` is one of `QUEUED`,
+`IN_PROGRESS`, `PREPARING`, `TOKEN_SPLITTING`, `KEYWORD_ENRICHING`, `METADATA_ENRICHING`,
+`COMPLETED`, `FAILED`, `REPLACED`. `fileSizeBytes` is `0` for a URI document that has not been
+fetched yet — its size is not known until the fetch happens, and for a document that came in as a
+chat attachment, whose bytes live on the attachment row rather than here. `chatId` is set only at
+`CHAT` scope and is `null` everywhere else.
+
+### Shared documents — `/documents/global`
+
+Reads are open to any authenticated user: these documents are already retrievable by everyone
+through RAG, so the listing shows only what the assistant already answers from. **Every write
+requires the `rag-admin` role** and answers `403` without it.
+
+| Method | Path | Authorization | Response |
+|---|---|---|---|
+| `POST` | `/documents/global` | `rag-admin` | `201` + `Location`, `IngestedDocumentSummary` |
+| `POST` | `/documents/global/uri` | `rag-admin` | `202` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/documents/global` | any authenticated user | `200`, paginated |
+| `GET` | `/documents/global/{id}` | any authenticated user | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/documents/global/{id}` | `rag-admin` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/documents/global/{id}` | `rag-admin` | `204` |
+| `POST` | `/documents/global/{id}/refresh` | `rag-admin` | `202`, `IngestedDocumentSummary` |
+
+- **Upload** takes `multipart/form-data` with a `file` field. De-duplication by file name applies
+  within this collection only — a `GLOBAL` upload whose name already exists returns the existing
+  document rather than creating a second one.
+- **URI ingestion** takes `{"uri": "https://..."}`. Only `http` and `https` are accepted. Re-ingesting
+  a URI already in *this* collection supersedes the earlier document (`REPLACED`) and clears its
+  chunks; a copy of the same URI in another collection is untouched.
+- **`PATCH` renames, and only renames.** The body is `{"fileName": "new-name.pdf"}`; a blank or
+  missing name is `400`. There is no content-replacement operation — re-running extraction over the
+  stored content is what `refresh` is for, and different bytes are a different document.
+- **`DELETE`** removes the document and its vector-store chunks together.
+- **`refresh`** clears the chunks and re-queues the document for embedding.
+
+### A user's own documents — `/users/{userId}/documents`
+
+Identical operations, self-service. **Every method** checks the `{userId}` path segment against the
+JWT subject and answers `403` when they differ — the same check `/users/{userId}/preferences` applies.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/users/{userId}/documents` | `201` + `Location`, `IngestedDocumentSummary` |
+| `POST` | `/users/{userId}/documents/uri` | `202` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/users/{userId}/documents` | `200`, paginated |
+| `GET` | `/users/{userId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/users/{userId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/users/{userId}/documents/{documentId}` | `204` |
+| `POST` | `/users/{userId}/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+
+No de-duplication by file name applies here. Two users uploading `notes.pdf` have two separate
+documents, and so do two users ingesting the same URI.
+
+**`403` and `404` answer different questions.** A `403` means the path named someone other than the
+caller — a value the caller supplied themselves, so there is nothing to conceal. A `404` means no
+such document *in this collection*, which is the same answer whether it never existed or belongs to
+someone else.
+
+### A conversation's own documents — `/chats/{chatId}/documents`
+
+The material one conversation can retrieve from, and only that conversation. **Every method** checks
+that the chat belongs to the caller before it touches a document.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/chats/{chatId}/documents` | `201` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/chats/{chatId}/documents` | `200`, paginated |
+| `GET` | `/chats/{chatId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/chats/{chatId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/chats/{chatId}/documents/{documentId}` | `204` |
+| `POST` | `/chats/{chatId}/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+
+- **The ownership failure is `404`, not `403`** — unlike the user collection. A chat belonging to
+  someone else must be indistinguishable from one that does not exist, the same answer
+  `GET /chats/{chatId}` gives. So a `404` here means either *no such chat of yours* or *no such
+  document of that chat*, deliberately without saying which.
+- **Upload** takes `multipart/form-data` with a `file` field, and is **queued**, not indexed inline:
+  it comes back `QUEUED` and becomes retrievable once its status reaches `COMPLETED`. This is the one
+  behavioural difference from attaching the same file to a message, where the indexing happens on the
+  turn because the user is waiting on the answer.
+- **There is no `/uri` sibling.** A conversation's documents are the ones being discussed in it; a
+  URI worth keeping past the conversation belongs at `USER` scope.
+- **`DELETE` stops the retrieval and leaves the conversation alone.** A document that arrived on a
+  message keeps its `chat_attachment` row, because that row is what the message displays — removing
+  both is `DELETE /attachments/{attachmentId}`.
+- **`refresh` works for either origin.** A document that came in as an attachment has no bytes of its
+  own; the re-ingest re-reads them from the attachment, the same way a URI document is re-fetched.
+- No de-duplication by file name applies here.
+
+### Pagination
+
+All three listing endpoints take `page` and `size` (default `20`) and return a `PagedModel`:
+
+```json
+{
+  "content": [ { "id": "uuid", "fileName": "handbook.pdf" } ],
+  "page": { "size": 20, "number": 0, "totalElements": 42, "totalPages": 3 }
+}
+```
+
+A client-supplied `sort` is ignored. Ordering is newest-first and belongs to the query, because a
+sort appended to it is either an unknown property or a perturbation that paging cannot rely on.
 
 ### Vector Search
 
@@ -756,10 +879,14 @@ at `USER` scope get two separate documents.
 - **Request Body**: `VectorSearch` containing the query text
 - **Response**: Array of matching document text excerpts ranked by similarity
 
-### List Ingested Documents
+### Process the Ingestion Queue
 
-- **Endpoint**: `GET /documents/ingested`
-- **Response**: Array of `IngestedDocument` objects, including processing status (`QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`)
+- **Endpoint**: `POST /documents/processQueue`
+- **Authorization**: Requires `rag-admin` role
+- **Description**: Drains whatever is queued now rather than waiting for the scheduled task. Carries
+  no id and belongs to no collection — the work it starts is chunking and embedding against the ETL
+  model, which is why it is gated.
+- **Response**: `202 Accepted`
 
 ---
 

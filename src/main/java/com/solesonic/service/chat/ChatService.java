@@ -288,6 +288,19 @@ public class ChatService {
         }
     }
 
+    /**
+     * Confirms the caller owns {@code chatId}, for a collection hanging off a conversation that has
+     * no need of the conversation itself — {@code IngestedChatDocumentController}.
+     * <p>
+     * A {@code 404} rather than a {@code 403}, the same answer {@link #get(UUID)} gives and for the
+     * same reason: a chat owned by someone else must be indistinguishable from one that does not
+     * exist. Messages are deliberately not loaded — this asks a question about the chat rather than
+     * reading it.
+     */
+    public void requireOwned(UUID chatId) {
+        ownedChat(chatId, userRequestContext.getUserId());
+    }
+
     private Chat ownedChat(UUID chatId, UUID userId) {
         return chatRepository.findByIdAndUserId(chatId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId));

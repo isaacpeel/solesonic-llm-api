@@ -5,6 +5,7 @@ import com.solesonic.model.atlassian.confluence.Page;
 import com.solesonic.model.atlassian.confluence.ResponseLinks;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.ingestion.VectorDocument;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
@@ -125,8 +126,6 @@ public class ConfluenceIngestionService {
             }
 
             for (IngestedDocument ingestedDocument : ingestedDocuments) {
-                List<VectorDocument> vectorDocuments = vectorStoreService.findByIngestedDocumentId(ingestedDocument.getId());
-                vectorStoreService.delete(vectorDocuments);
                 ingestedDocumentService.delete(ingestedDocument);
             }
         }
@@ -151,6 +150,7 @@ public class ConfluenceIngestionService {
         ingestedDocument.setContentType(TEXT_HTML_VALUE);
         ingestedDocument.setMetadata(metadata);
         ingestedDocument.setDocumentSource(CONFLUENCE);
+        ingestedDocument.setScope(RetrievalScope.GLOBAL);
         ingestedDocument.setCreated(ZonedDateTime.now());
         ingestedDocument.setUpdated(ZonedDateTime.now());
 

@@ -1,17 +1,18 @@
 package com.solesonic.service.etl;
 
+import com.solesonic.exception.rag.DocumentReadException;
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentEvent;
 import com.solesonic.model.chat.attachment.ExtractionFailureReason;
+import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.chat.events.NotificationEventMessage;
 import com.solesonic.service.chat.events.NotificationService;
-import com.solesonic.service.rag.VectorStoreService;
+import com.solesonic.service.ingestion.IngestedDocumentService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
@@ -21,15 +22,9 @@ import org.springframework.util.unit.DataSize;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ATTACHMENT_ID;
-import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ID;
-import static com.solesonic.model.rag.RetrievalMetadata.FILE_NAME;
-import static com.solesonic.model.rag.RetrievalMetadata.SCOPE;
-import static com.solesonic.model.rag.RetrievalMetadata.USER_ID;
 import static com.solesonic.model.chat.attachment.ExtractionFailureReason.DOCUMENT_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.ExtractionFailureReason.DOCUMENT_UNREADABLE;
 import static com.solesonic.model.chat.attachment.ExtractionFailureReason.EMBEDDING_UNAVAILABLE;
@@ -48,10 +43,16 @@ import static com.solesonic.model.chat.attachment.ExtractionFailureReason.EXCEED
  * Indexing happens once per attachment and is recorded as {@code chunkCount} on its row, so the cost
  * is paid on the turn the document is sent and never again.
  * <p>
- * Deliberately <em>not</em> routed through {@link EtlService} like file-upload ingestion is. That
- * pipeline runs a keyword enricher and a summary enricher, each of which makes an LLM call per
- * chunk; it is the right trade for a background job and completely wrong inline in a chat turn,
- * where it would add minutes before the first token. Splitting is all that happens here.
+ * Each document gets an {@code ingested_document} row of its own —
+ * {@link IngestedDocumentService#beginChatIngestion} — and the actual read/prepare/scope/embed work
+ * is then delegated to {@link DocumentService#resourceToVectorStore(Resource, UUID)}, the same
+ * status-tracked {@link EtlService#prepare(List, IngestedDocument)} pipeline file-upload and URI
+ * ingestion use. So a chat document's progress and failures are as visible in {@code status_history}
+ * as any other scope's, and its chunks carry the same {@code INGESTED_DOCUMENT_ID}.
+ * <p>
+ * The row is opened only once an attachment has passed both guards below. An attachment turned away
+ * for size, or for being beyond {@link #MAX_DOCUMENTS_PER_MESSAGE}, is never extracted at all, so it
+ * gets no row to leave behind.
  * <p>
  * Nothing here may fail a chat turn. Every failure path leaves the turn intact and emits an
  * {@code attachment} SSE event saying the document was not indexed.
@@ -68,22 +69,19 @@ public class ChatDocumentIngestionService {
 
     private final ChatAttachmentService chatAttachmentService;
     private final DocumentService documentService;
-    private final EtlTextSplitter etlTextSplitter;
-    private final VectorStoreService vectorStoreService;
     private final NotificationService notificationService;
+    private final IngestedDocumentService ingestedDocumentService;
     private final DataSize maxDocumentBytes;
 
     public ChatDocumentIngestionService(ChatAttachmentService chatAttachmentService,
                                         DocumentService documentService,
-                                        EtlTextSplitter etlTextSplitter,
-                                        VectorStoreService vectorStoreService,
                                         NotificationService notificationService,
+                                        IngestedDocumentService ingestedDocumentService,
                                         @Value("${solesonic.llm.attachment.document.max-size-bytes}") DataSize maxDocumentBytes) {
         this.chatAttachmentService = chatAttachmentService;
         this.documentService = documentService;
-        this.etlTextSplitter = etlTextSplitter;
-        this.vectorStoreService = vectorStoreService;
         this.notificationService = notificationService;
+        this.ingestedDocumentService = ingestedDocumentService;
         this.maxDocumentBytes = maxDocumentBytes;
     }
 
@@ -214,33 +212,27 @@ public class ChatDocumentIngestionService {
                 null,
                 null));
 
-        List<Document> chunks;
+        Resource resource = new ByteArrayResource(attachment.getFileData()) {
+            @Override
+            public String getFilename() {
+                return attachment.getFileName();
+            }
+        };
+
+        IngestedDocument ingestedDocument = ingestedDocumentService.beginChatIngestion(
+                chatId, userId, attachment.getId(), attachment.getFileName(), attachment.getContentType());
+
+        int chunkCount;
 
         try {
-            chunks = chunks(attachment);
-        } catch (RuntimeException runtimeException) {
+            chunkCount = documentService.resourceToVectorStore(resource, ingestedDocument.getId());
+        } catch (DocumentReadException documentReadException) {
             log.warn("Could not extract text from attachment {}: {}",
-                    attachment.getId(), runtimeException.getMessage());
+                    attachment.getId(), documentReadException.getMessage());
 
             chatAttachmentService.saveExtractionFailure(attachment.getId(), DOCUMENT_UNREADABLE);
 
             return IngestOutcome.skipped(DOCUMENT_UNREADABLE);
-        }
-
-        if (chunks.isEmpty()) {
-            log.warn("Attachment {} produced no readable text; leaving it unindexed", attachment.getId());
-
-            chatAttachmentService.saveExtractionFailure(attachment.getId(), DOCUMENT_UNREADABLE);
-
-            return IngestOutcome.skipped(DOCUMENT_UNREADABLE);
-        }
-
-        for (Document chunk : chunks) {
-            scope(chunk, chatId, userId, attachment);
-        }
-
-        try {
-            vectorStoreService.save(chunks);
         } catch (RuntimeException runtimeException) {
             log.warn("Could not embed attachment {}: {}", attachment.getId(), runtimeException.getMessage());
 
@@ -249,39 +241,10 @@ public class ChatDocumentIngestionService {
             return IngestOutcome.skipped(EMBEDDING_UNAVAILABLE);
         }
 
-        log.info("Indexed attachment {} as {} chunk(s) for chat {}", attachment.getId(), chunks.size(), chatId);
+        log.info("Indexed attachment {} as {} chunk(s) for chat {}", attachment.getId(), chunkCount, chatId);
 
-        chatAttachmentService.saveChunkCount(attachment.getId(), chunks.size());
+        chatAttachmentService.saveChunkCount(attachment.getId(), chunkCount);
 
-        return IngestOutcome.indexed(chunks.size());
-    }
-
-    private List<Document> chunks(ChatAttachment attachment) {
-        Resource resource = new ByteArrayResource(attachment.getFileData()) {
-            @Override
-            public String getFilename() {
-                return attachment.getFileName();
-            }
-        };
-
-        List<Document> documents = documentService.read(resource, attachment.getContentType());
-
-        return etlTextSplitter.split(documents);
-    }
-
-    /**
-     * Stamps the keys that confine this chunk to one conversation. Without them the chunk is
-     * indistinguishable from shared ingested material and would answer other users' questions.
-     * <p>
-     * The ids go in as strings because a filter expression compares against a JSON string.
-     */
-    private static void scope(Document chunk, UUID chatId, UUID userId, ChatAttachment attachment) {
-        Map<String, Object> metadata = chunk.getMetadata();
-
-        metadata.put(SCOPE, RetrievalScope.CHAT.name());
-        metadata.put(CHAT_ID, chatId.toString());
-        metadata.put(USER_ID, userId.toString());
-        metadata.put(CHAT_ATTACHMENT_ID, attachment.getId().toString());
-        metadata.put(FILE_NAME, attachment.getFileName());
+        return IngestOutcome.indexed(chunkCount);
     }
 }
