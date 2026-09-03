@@ -46,7 +46,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * The shared collection's routing and response shapes. The {@code rag-admin} gate is an annotation,
  * which a standalone {@code MockMvc} does not apply — {@link IngestedDocumentMethodSecurityTest}
  * covers that it is enforced, and
- * {@link com.solesonic.exception.handler.AccessDeniedExceptionHandlerTest} that the refusal leaves
  * as a {@code 403}.
  */
 @ExtendWith(MockitoExtension.class)
@@ -59,13 +58,6 @@ class IngestedGlobalDocumentControllerTest {
 
     @Mock
     private UriIngestionService uriIngestionService;
-
-    /**
-     * The uploader, recorded as {@code granted_by} on the grants a global upload writes. A global
-     * document keeps no personal grant, so this is the only record of who added it.
-     */
-    @Mock
-    private UserRequestContext userRequestContext;
 
     @InjectMocks
     private IngestedGlobalDocumentController ingestedGlobalDocumentController;

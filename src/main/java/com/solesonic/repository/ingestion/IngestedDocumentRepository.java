@@ -180,7 +180,7 @@ public interface IngestedDocumentRepository extends JpaRepository<IngestedDocume
                                 from StatusHistory later
                                where later.documentId = statusHistory.documentId
                                  and later.timestamp > statusHistory.timestamp)))
-                    """)
+            """)
     Page<IngestedDocument> findAllChatDocumentsManagedBy(@Param("userId") String userId,
                                                          @Param("chatId") String chatId,
                                                          @Param("documentStatus") DocumentStatus documentStatus,

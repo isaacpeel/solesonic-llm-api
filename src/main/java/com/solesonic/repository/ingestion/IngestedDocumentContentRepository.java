@@ -26,6 +26,4 @@ public interface IngestedDocumentContentRepository extends JpaRepository<Ingeste
     Optional<byte[]> findDataByIngestedDocumentId(UUID ingestedDocumentId);
 
     boolean existsByIngestedDocumentId(UUID ingestedDocumentId);
-
-    void deleteByIngestedDocumentId(UUID ingestedDocumentId);
 }

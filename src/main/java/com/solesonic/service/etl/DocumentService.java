@@ -226,8 +226,6 @@ public class DocumentService {
      * assigning the bytes here would make the second copy this design exists to avoid. They are set
      * on the in-memory instance only, and {@code fileData} is not part of any update the collection
      * performs.
-     */
-    /**
      * The bytes to ingest, from wherever this document's kind keeps them.
      * <p>
      * Three cases, and the difference between them is ownership of the only copy. A {@code URI}

@@ -11,9 +11,7 @@ import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -52,8 +50,6 @@ public class UriIngestionService {
      * {@code setScope} at all and every URI document was written with none recorded — invisible to a
      * scoped filter, and only ever reaching retrieval because embedding treats a null scope as
      * {@code GLOBAL}. There is now no call site on which the scope can be left unsaid.
-     */
-    /**
      * Queues a URI into the shared corpus, managed by the {@code rag-admin} role.
      */
     public IngestedDocument queueGlobal(String uri, UUID uploaderId) {

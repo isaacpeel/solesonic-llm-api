@@ -31,6 +31,7 @@ import java.util.UUID;
  * fetch, and a chat attachment whose only copy is on {@code chat_attachment}. Absence is that state,
  * where an empty {@code byte[0]} used to stand in for it.
  */
+@SuppressWarnings("unused")
 @Entity
 public class IngestedDocumentContent {
 

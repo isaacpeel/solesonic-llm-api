@@ -28,6 +28,7 @@ import java.util.UUID;
  * relationship: the FK carries {@code ON DELETE CASCADE}, so deleting a document takes its grants
  * with it without any code remembering to.
  */
+@SuppressWarnings("unused")
 @Entity
 public class DocumentEntitlement {
 
