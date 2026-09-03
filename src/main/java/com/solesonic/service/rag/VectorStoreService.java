@@ -80,6 +80,7 @@ public class VectorStoreService {
      * {@code chatId} may be null for a call that belongs to no conversation, in which case the
      * conversation tier is simply absent rather than filtered to nothing.
      */
+    @SuppressWarnings("unused")
     public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
 
