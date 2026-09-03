@@ -5,7 +5,7 @@ import com.solesonic.model.atlassian.confluence.Page;
 import com.solesonic.model.atlassian.confluence.ResponseLinks;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
 import com.solesonic.model.ingestion.VectorDocument;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
@@ -146,17 +146,20 @@ public class ConfluenceIngestionService {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setDocumentStatus(DocumentStatus.QUEUED);
         ingestedDocument.setFileName(ingestedDocumentFilename);
-        ingestedDocument.setFileData(fileData);
         ingestedDocument.setContentType(TEXT_HTML_VALUE);
         ingestedDocument.setMetadata(metadata);
         ingestedDocument.setDocumentSource(CONFLUENCE);
-        ingestedDocument.setScope(RetrievalScope.GLOBAL);
         ingestedDocument.setCreated(ZonedDateTime.now());
         ingestedDocument.setUpdated(ZonedDateTime.now());
 
-        ingestedDocumentService.save(ingestedDocument);
-
-        return ingestedDocument;
+        // A scanned page joins the shared corpus and is managed by the rag-admin role -- the same
+        // ownership a global upload gets. There is no granted_by: the scheduler ingested this, not
+        // a person.
+        return ingestedDocumentService.saveWithOwnership(ingestedDocument,
+                DocumentPrincipal.global(),
+                DocumentPrincipal.ragAdmin(),
+                null,
+                fileData);
     }
 
     public List<Page> allPages() {

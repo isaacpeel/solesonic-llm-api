@@ -1,6 +1,6 @@
 package com.solesonic.service.rag;
 
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -15,6 +15,7 @@ import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,14 +39,21 @@ class ScopedDocumentRetrieverTest {
     private static final double USER_THRESHOLD = 0.65;
     private static final double GLOBAL_THRESHOLD = 0.75;
 
+    private static final DocumentPrincipal CHAT_PRINCIPAL = DocumentPrincipal.chat(UUID.randomUUID());
+    private static final DocumentPrincipal USER_PRINCIPAL = DocumentPrincipal.user(UUID.randomUUID());
+    private static final DocumentPrincipal GLOBAL_PRINCIPAL = DocumentPrincipal.global();
+
     private List<ScopedDocumentRetriever.ScopedTier> tiers() {
         return List.of(
-                new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT,
-                        filterExpressionBuilder.eq("scope", "CHAT").build(), CHAT_THRESHOLD),
-                new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER,
-                        filterExpressionBuilder.eq("scope", "USER").build(), USER_THRESHOLD),
-                new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL,
-                        filterExpressionBuilder.eq("scope", "GLOBAL").build(), GLOBAL_THRESHOLD));
+                tier(CHAT_PRINCIPAL, CHAT_THRESHOLD),
+                tier(USER_PRINCIPAL, USER_THRESHOLD),
+                tier(GLOBAL_PRINCIPAL, GLOBAL_THRESHOLD));
+    }
+
+    private ScopedDocumentRetriever.ScopedTier tier(DocumentPrincipal principal, double similarityThreshold) {
+        return new ScopedDocumentRetriever.ScopedTier(principal,
+                filterExpressionBuilder.eq("entitlements", principal.key()).build(),
+                similarityThreshold);
     }
 
     private ScopedDocumentRetriever retriever() {
@@ -60,7 +68,7 @@ class ScopedDocumentRetrieverTest {
         return searchCaptor.getAllValues();
     }
 
-    private static String scopeOf(SearchRequest searchRequest) {
+    private static String entitlementOf(SearchRequest searchRequest) {
         Filter.Expression filterExpression = searchRequest.getFilterExpression();
 
         assertThat(filterExpression).isNotNull();
@@ -83,8 +91,8 @@ class ScopedDocumentRetrieverTest {
         retriever().retrieve(query);
 
         assertThat(capturedSearches())
-                .extracting(ScopedDocumentRetrieverTest::scopeOf)
-                .containsExactly("CHAT", "USER", "GLOBAL");
+                .extracting(ScopedDocumentRetrieverTest::entitlementOf)
+                .containsExactly(CHAT_PRINCIPAL.key(), USER_PRINCIPAL.key(), GLOBAL_PRINCIPAL.key());
     }
 
     /**
@@ -107,8 +115,8 @@ class ScopedDocumentRetrieverTest {
 
         //Only the conversation tier ran; the budget was gone before the other two.
         assertThat(capturedSearches())
-                .extracting(ScopedDocumentRetrieverTest::scopeOf)
-                .containsExactly("CHAT");
+                .extracting(ScopedDocumentRetrieverTest::entitlementOf)
+                .containsExactly(CHAT_PRINCIPAL.key());
     }
 
     /**
@@ -145,6 +153,31 @@ class ScopedDocumentRetrieverTest {
         assertThat(capturedSearches())
                 .extracting(SearchRequest::getSimilarityThreshold)
                 .containsExactly(CHAT_THRESHOLD, USER_THRESHOLD, GLOBAL_THRESHOLD);
+    }
+
+    /**
+     * A chunk granted to both a conversation and a user matches two tiers, and must still be
+     * returned once.
+     * <p>
+     * This could not happen under the old model — a chunk carried exactly one {@code scope}, so the
+     * tiers were mutually exclusive by construction and the retriever needed no de-duplication. An
+     * {@code entitlements} array can name several principals, so the guarantee is gone and has to be
+     * enforced here instead. Without it the duplicate would consume two of the {@code topK} budget
+     * and reach the model as the same passage twice.
+     */
+    @Test
+    void returnsAChunkOnceEvenWhenItMatchesTwoTiers() {
+        Document shared = new Document("granted to the chat and to the user");
+
+        when(vectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(shared))
+                .thenReturn(List.of(shared))
+                .thenReturn(List.of(new Document("global one")));
+
+        List<Document> retrieved = retriever().retrieve(query);
+
+        assertThat(retrieved).extracting(Document::getId).doesNotHaveDuplicates();
+        assertThat(retrieved).hasSize(2);
     }
 
     @Test

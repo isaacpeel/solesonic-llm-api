@@ -3,10 +3,10 @@ package com.solesonic.service.etl;
 import com.solesonic.exception.rag.DocumentReadException;
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.document.DocumentSource;
-import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
+import com.solesonic.service.ingestion.DocumentEntitlementService;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.slf4j.Logger;
@@ -28,9 +28,8 @@ import java.util.UUID;
 
 import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ATTACHMENT_ID;
 import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ID;
+import static com.solesonic.model.rag.RetrievalMetadata.ENTITLEMENTS;
 import static com.solesonic.model.rag.RetrievalMetadata.FILE_NAME;
-import static com.solesonic.model.rag.RetrievalMetadata.SCOPE;
-import static com.solesonic.model.rag.RetrievalMetadata.USER_ID;
 import static org.springframework.http.MediaType.*;
 
 @Service
@@ -42,17 +41,20 @@ public class DocumentService {
     private final IngestedDocumentService ingestedDocumentService;
     private final UriContentFetcher uriContentFetcher;
     private final ChatAttachmentRepository chatAttachmentRepository;
+    private final DocumentEntitlementService documentEntitlementService;
 
     public DocumentService(VectorStoreService vectorStoreService,
                            EtlService etlService,
                            IngestedDocumentService ingestedDocumentService,
                            UriContentFetcher uriContentFetcher,
-                           ChatAttachmentRepository chatAttachmentRepository) {
+                           ChatAttachmentRepository chatAttachmentRepository,
+                           DocumentEntitlementService documentEntitlementService) {
         this.vectorStoreService = vectorStoreService;
         this.etlService = etlService;
         this.ingestedDocumentService = ingestedDocumentService;
         this.uriContentFetcher = uriContentFetcher;
         this.chatAttachmentRepository = chatAttachmentRepository;
+        this.documentEntitlementService = documentEntitlementService;
     }
 
     /**
@@ -63,17 +65,9 @@ public class DocumentService {
 
         IngestedDocument ingestedDocument = ingestedDocumentService.get(ingestedDocumentId);
 
-        if (ingestedDocument.getDocumentSource() == DocumentSource.URI) {
-            fetchUriContent(ingestedDocument);
-        }
-
-        if (ingestedDocument.getDocumentSource() == DocumentSource.CHAT) {
-            loadChatAttachmentContent(ingestedDocument);
-        }
+        byte[] fileContent = content(ingestedDocument);
 
         String contentType = ingestedDocument.getContentType();
-
-        byte[] fileContent = ingestedDocument.getFileData();
 
         ByteArrayResource resource = new ByteArrayResource(fileContent) {
             @Override
@@ -88,11 +82,10 @@ public class DocumentService {
 
         documents = etlService.prepare(documents, ingestedDocument);
 
-        RetrievalScope scope = scope(ingestedDocument);
-        Map<String, Object> scopeMetadata = scopeMetadata(ingestedDocument, scope);
+        Map<String, Object> chunkMetadata = chunkMetadata(ingestedDocument);
 
         for (Document document : documents) {
-            scope(document.getMetadata(), scope, scopeMetadata);
+            document.getMetadata().putAll(chunkMetadata);
             vectorStoreService.save(List.of(document));
         }
 
@@ -145,11 +138,10 @@ public class DocumentService {
             throw new DocumentReadException("No readable text extracted from " + resource.getFilename());
         }
 
-        RetrievalScope scope = scope(ingestedDocument);
-        Map<String, Object> scopeMetadata = scopeMetadata(ingestedDocument, scope);
+        Map<String, Object> chunkMetadata = chunkMetadata(ingestedDocument);
 
         for (Document chunk : chunks) {
-            scope(chunk.getMetadata(), scope, scopeMetadata);
+            chunk.getMetadata().putAll(chunkMetadata);
         }
 
         vectorStoreService.save(chunks);
@@ -160,79 +152,64 @@ public class DocumentService {
     }
 
     /**
-     * A document with no scope recorded predates scoping and is shared, which is what it has always
-     * effectively been — the same default the backfill migration applied to chunks already in the
-     * store. Nothing writes a null scope any more; the column has been {@code NOT NULL} since
-     * {@code V3_25}.
-     */
-    private static RetrievalScope scope(IngestedDocument ingestedDocument) {
-        return ingestedDocument.getScope() == null
-                ? RetrievalScope.GLOBAL
-                : ingestedDocument.getScope();
-    }
-
-    /**
-     * The scope-specific keys every chunk of {@code ingestedDocument} is stamped with, read off the
-     * row rather than handed in, so no caller can embed a document under metadata that disagrees
-     * with what the row says the document is.
+     * Everything every chunk of {@code ingestedDocument} is stamped with: who may retrieve it, and
+     * where it came from.
      * <p>
-     * {@code CHAT} carries the most: its chunks have to be findable by the conversation and, when the
-     * document came in on a message, by the one attachment they came from, because deleting either
-     * has to delete exactly them.
+     * The entitlement half is <em>not</em> assembled here. It is read from
+     * {@link DocumentEntitlementService#retrievalKeys(UUID)}, which is the only producer of those
+     * keys anywhere in the codebase — this method's predecessor hand-built them from the row's
+     * columns and metadata map while the columns themselves were hand-set at five separate call
+     * sites, so the two could and did disagree. {@code V3_25} exists because of that. Now the chunk
+     * array is a projection of the {@code document_entitlement} rows with one place to change.
+     * <p>
+     * The ids go in as strings: a filter expression compares against a JSON string, so a UUID
+     * written as anything else would never match.
      */
-    private static Map<String, Object> scopeMetadata(IngestedDocument ingestedDocument, RetrievalScope scope) {
-        Map<String, Object> scopeMetadata = new HashMap<>();
-        scopeMetadata.put(INGESTED_DOCUMENT_ID, ingestedDocument.getId());
+    private Map<String, Object> chunkMetadata(IngestedDocument ingestedDocument) {
+        Map<String, Object> chunkMetadata = new HashMap<>();
+        chunkMetadata.put(INGESTED_DOCUMENT_ID, ingestedDocument.getId());
+        chunkMetadata.put(FILE_NAME, ingestedDocument.getFileName());
 
-        if (scope != RetrievalScope.GLOBAL && ingestedDocument.getUserId() != null) {
-            scopeMetadata.put(USER_ID, ingestedDocument.getUserId().toString());
+        List<String> entitlements = documentEntitlementService.retrievalKeys(ingestedDocument.getId());
+
+        // Refusing rather than defaulting. A chunk written with no entitlement is matched by no
+        // filter and so is retrievable by nobody -- the document would report COMPLETED and answer
+        // nothing, silently. Defaulting to "global" instead would turn the same bug into a
+        // disclosure, which is strictly worse, so neither is acceptable and this fails loudly.
+        if (entitlements.isEmpty()) {
+            throw new IllegalStateException("Document " + ingestedDocument.getId()
+                    + " has no retrieve grant; its chunks would be retrievable by nobody");
         }
 
-        if (scope == RetrievalScope.CHAT) {
-            Map<String, Object> metadata = ingestedDocument.getMetadata() == null
-                    ? Map.of()
-                    : ingestedDocument.getMetadata();
+        chunkMetadata.put(ENTITLEMENTS, entitlements);
 
-            Object chatId = metadata.get(IngestedDocument.CHAT_ID);
-            Object chatAttachmentId = metadata.get(IngestedDocument.CHAT_ATTACHMENT_ID);
+        Map<String, Object> metadata = ingestedDocument.getMetadata() == null
+                ? Map.of()
+                : ingestedDocument.getMetadata();
 
-            // Refusing here rather than stamping a null is what keeps a chat chunk retrievable and
-            // deletable: the CHAT retrieval tier filters on chatId, and a null is matched by no
-            // filter, so a chunk written without one is invisible from the moment it is saved.
-            if (chatId == null) {
-                throw new IllegalStateException("Chat document " + ingestedDocument.getId()
-                        + " is missing the chat id its chunks are retrieved and deleted by");
-            }
+        Object chatId = metadata.get(IngestedDocument.CHAT_ID);
+        Object chatAttachmentId = metadata.get(IngestedDocument.CHAT_ATTACHMENT_ID);
 
-            // Only a document that arrived on a message has an attachment, and only such a document
-            // is ever deleted by attachment id. One uploaded straight to the conversation has
-            // neither, and is deleted by its own id or with the whole chat.
-            if (ingestedDocument.getDocumentSource() == DocumentSource.CHAT && chatAttachmentId == null) {
-                throw new IllegalStateException("Chat document " + ingestedDocument.getId()
-                        + " came from an attachment but does not say which");
-            }
-
-            scopeMetadata.put(CHAT_ID, chatId);
-            scopeMetadata.put(FILE_NAME, ingestedDocument.getFileName());
-
-            if (chatAttachmentId != null) {
-                scopeMetadata.put(CHAT_ATTACHMENT_ID, chatAttachmentId);
-            }
+        // Only a document that arrived on a message has an attachment, and only such a document is
+        // ever deleted by attachment id. One uploaded straight to the conversation has none, and is
+        // deleted by its own id or with the whole chat.
+        if (ingestedDocument.getDocumentSource() == DocumentSource.CHAT && chatAttachmentId == null) {
+            throw new IllegalStateException("Chat document " + ingestedDocument.getId()
+                    + " came from an attachment but does not say which");
         }
 
-        return scopeMetadata;
-    }
+        // Provenance, stamped whenever the row carries it rather than only at one scope: it is what
+        // teardown matches on, and a document promoted out of its conversation keeps it precisely so
+        // that deleting that conversation still reaches the chunks that came from it.
+        if (chatId != null) {
+            chunkMetadata.put(CHAT_ID, chatId);
+        }
 
-    /**
-     * Stamps the scope every retrieval filter reads, plus the scope-specific keys
-     * {@link #scopeMetadata(IngestedDocument, RetrievalScope)} derived from the row.
-     * <p>
-     * The ids in {@code scopeMetadata} go in as strings: a filter expression compares against a JSON
-     * string, so a UUID written as anything else would never match.
-     */
-    private static void scope(Map<String, Object> chunkMetadata, RetrievalScope scope, Map<String, Object> scopeMetadata) {
-        chunkMetadata.put(SCOPE, scope.name());
-        chunkMetadata.putAll(scopeMetadata);
+        if (chatAttachmentId != null) {
+            chunkMetadata.put(CHAT_ATTACHMENT_ID, chatAttachmentId);
+        }
+
+        return chunkMetadata;
     }
 
     /**
@@ -250,7 +227,41 @@ public class DocumentService {
      * on the in-memory instance only, and {@code fileData} is not part of any update the collection
      * performs.
      */
-    private void loadChatAttachmentContent(IngestedDocument ingestedDocument) {
+    /**
+     * The bytes to ingest, from wherever this document's kind keeps them.
+     * <p>
+     * Three cases, and the difference between them is ownership of the only copy. A {@code URI}
+     * document has none until it is fetched; a {@code CHAT} document's copy belongs to the
+     * {@code chat_attachment} row it arrived on; everything else stored its own at upload.
+     */
+    private byte[] content(IngestedDocument ingestedDocument) {
+        if (ingestedDocument.getDocumentSource() == DocumentSource.URI) {
+            return fetchUriContent(ingestedDocument);
+        }
+
+        if (ingestedDocument.getDocumentSource() == DocumentSource.CHAT) {
+            return loadChatAttachmentContent(ingestedDocument);
+        }
+
+        return ingestedDocumentService.content(ingestedDocument.getId())
+                .orElseThrow(() -> new DocumentReadException(
+                        "Document " + ingestedDocument.getId() + " has no stored content to ingest"));
+    }
+
+    /**
+     * Reads an attachment-sourced document's bytes back off the attachment for the length of a
+     * re-ingest.
+     * <p>
+     * Only the queued path needs this, and only because {@code refresh} can put such a row back in
+     * the queue. On the turn it was first sent, {@code ChatDocumentIngestionService} already holds
+     * the bytes and hands them in as a {@link Resource}.
+     * <p>
+     * Deliberately not persisted. The attachment keeps the only copy, and writing a second one here
+     * would double the storage and be free to drift from the one the attachment actually serves.
+     * Promotion is the one operation that does copy them, because it is the one that severs the
+     * document from the attachment.
+     */
+    private byte[] loadChatAttachmentContent(IngestedDocument ingestedDocument) {
         Object chatAttachmentId = ingestedDocument.getMetadata() == null
                 ? null
                 : ingestedDocument.getMetadata().get(IngestedDocument.CHAT_ATTACHMENT_ID);
@@ -265,19 +276,27 @@ public class DocumentService {
                 .orElseThrow(() -> new IllegalStateException("Chat document " + ingestedDocument.getId()
                         + " has no attachment left to re-read"));
 
-        ingestedDocument.setFileData(chatAttachment.getFileData());
         ingestedDocument.setContentType(chatAttachment.getContentType());
+
+        return chatAttachment.getFileData();
     }
 
-    private void fetchUriContent(IngestedDocument ingestedDocument) {
+    /**
+     * Fetches a URI document's content and stores it, which is the point at which such a row stops
+     * being "bytes live elsewhere" and gains a content row of its own.
+     */
+    private byte[] fetchUriContent(IngestedDocument ingestedDocument) {
         Object sourceUri = ingestedDocument.getMetadata().get(IngestedDocument.SOURCE_URI);
         assert sourceUri != null;
 
         UriContentFetcher.FetchedContent fetchedContent = uriContentFetcher.fetch(sourceUri.toString());
 
-        ingestedDocument.setFileData(fetchedContent.data());
         ingestedDocument.setContentType(fetchedContent.contentType());
         ingestedDocument.getMetadata().put(IngestedDocument.FILE_SIZE_BYTES, fetchedContent.data().length);
+
+        ingestedDocumentService.storeContent(ingestedDocument.getId(), fetchedContent.data());
+
+        return fetchedContent.data();
     }
 
     /**

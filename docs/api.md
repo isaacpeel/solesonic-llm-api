@@ -724,31 +724,40 @@ Ingested documents live in three independently CRUD-complete collections, one pe
 collection a document is in **is** its scope — there is no `scope` parameter on any request, and no
 way to create a document at the wrong scope.
 
-| Collection | Scope | Who may read | Who may write |
+| Collection | Retrievable by | Who may read | Who may write |
 |---|---|---|---|
-| `/documents/global` | `GLOBAL` | any authenticated user | `rag-admin` role |
-| `/users/{userId}/documents` | `USER` | the user named in the path | the user named in the path |
-| `/chats/{chatId}/documents` | `CHAT` | the owner of the chat | the owner of the chat |
+| `/documents/global` | everyone | any authenticated user | `rag-admin` role |
+| `/users/{userId}/documents` | the user | the user named in the path | the user named in the path |
+| `/chats/documents` | one conversation | the uploader | the uploader |
 
-A `CHAT` document has two origins and one collection. It arrives either by being
+A chat document has two origins and one collection. It arrives either by being
 [attached to a message](#chat-attachments), which indexes it inline on that turn, or by being
-uploaded to `/chats/{chatId}/documents`, which queues it like any other document. Both are listed,
+uploaded to `/chats/documents?chatId=…`, which queues it like any other document. Both are listed,
 renamed, refreshed and deleted through the same endpoints; `documentSource` tells them apart —
 `CHAT` for a document that came in on a message, `USER` for one uploaded to the conversation.
 
-### Retrieval scope
+### Entitlements, and the `scope` field
 
-Everything in the vector store carries a `scope` in its metadata, and a chat turn searches the three
-scopes in order of precedence — **conversation, then user, then global** — over a shared result
-budget. The most specific scope takes what it can, the next takes what is left. That means a
-document attached to the conversation is both preferentially included and ranked ahead of the shared
-knowledge base, rather than competing with it on similarity alone.
+A document records **who may retrieve it** and **who may manage it** as separate grants, rather than
+as a single scope. That is what makes the chat collection the *uploader's* rather than the
+conversation's: a chat document is retrievable by the conversation and managed by whoever uploaded
+it, so "every document I have ever uploaded to any chat" becomes one query.
 
-| Scope | Retrievable by | Written by |
+| Principal | Retrievable by | Written by |
 |-------|----------------|------------|
-| `GLOBAL` | every user, in every conversation | `POST /documents/global`, `POST /documents/global/uri`, Confluence ingestion |
-| `USER` | one user, in all of their conversations | `POST /users/{userId}/documents`, `POST /users/{userId}/documents/uri` |
-| `CHAT` | one conversation | attaching a document to a chat message, `POST /chats/{chatId}/documents` |
+| `global` | every user, in every conversation | `POST /documents/global`, `POST /documents/global/uri`, Confluence ingestion |
+| `user:<userId>` | one user, in all of their conversations | `POST /users/{userId}/documents`, `POST /users/{userId}/documents/uri`, promotion |
+| `chat:<chatId>` | one conversation | attaching a document to a chat message, `POST /chats/documents?chatId=…` |
+
+A chat turn searches these in order of precedence — **conversation, then user, then global** — over a
+shared result budget. The most specific takes what it can, the next takes what is left, so a document
+attached to the conversation is both preferentially included and ranked ahead of the shared knowledge
+base rather than competing with it on similarity alone.
+
+> **`scope` is deprecated.** It is still returned, derived from the retrieve grants, so no client
+> breaks — but a document can now be granted to more than one principal, and one value cannot
+> describe that. Where several apply the narrowest is reported (`CHAT` > `USER` > `GLOBAL`). **Read
+> `entitlements` instead**, which is the full list.
 
 ### IngestedDocumentSummary
 
@@ -764,6 +773,8 @@ part of it.
   "documentSource": "USER",
   "scope": "GLOBAL",
   "chatId": null,
+  "entitlements": ["global"],
+  "chatName": null,
   "documentStatus": "COMPLETED",
   "created": "2026-09-02T12:00:00Z",
   "updated": "2026-09-02T12:04:00Z"
@@ -773,9 +784,17 @@ part of it.
 `documentSource` is one of `USER`, `CONFLUENCE`, `URI`, `CHAT`. `documentStatus` is one of `QUEUED`,
 `IN_PROGRESS`, `PREPARING`, `TOKEN_SPLITTING`, `KEYWORD_ENRICHING`, `METADATA_ENRICHING`,
 `COMPLETED`, `FAILED`, `REPLACED`. `fileSizeBytes` is `0` for a URI document that has not been
-fetched yet — its size is not known until the fetch happens, and for a document that came in as a
-chat attachment, whose bytes live on the attachment row rather than here. `chatId` is set only at
-`CHAT` scope and is `null` everywhere else.
+fetched yet — its size is not known until the fetch happens — and for a document that came in as a
+chat attachment, whose bytes live on the attachment row rather than here.
+
+- **`entitlements`** lists every principal that may retrieve the document: `global`,
+  `user:<userId>`, `chat:<chatId>`. This is the field to read.
+- **`scope`** is derived from that list and **deprecated**; see above.
+- **`chatId`** is where the document *came from*, not where it may be retrieved. A document promoted
+  out of a conversation clears it, which is what lets the promoted copy outlive the conversation
+  being deleted.
+- **`chatName`** is the conversation's display name, so a cross-chat listing can label its rows
+  rather than showing a bare id. Null for a document that came from no conversation.
 
 ### Shared documents — `/documents/global`
 
@@ -828,36 +847,65 @@ caller — a value the caller supplied themselves, so there is nothing to concea
 such document *in this collection*, which is the same answer whether it never existed or belongs to
 someone else.
 
-### A conversation's own documents — `/chats/{chatId}/documents`
+### Your chat documents — `/chats/documents`
 
-The material one conversation can retrieve from, and only that conversation. **Every method** checks
-that the chat belongs to the caller before it touches a document.
+Every document the caller has uploaded to any conversation. **The collection is the caller's, not the
+conversation's** — a chat document is retrievable by the chat but managed by whoever uploaded it, so
+the conversation is a filter on this collection rather than a segment of its path.
 
 | Method | Path | Response |
 |---|---|---|
-| `POST` | `/chats/{chatId}/documents` | `201` + `Location`, `IngestedDocumentSummary` |
-| `GET` | `/chats/{chatId}/documents` | `200`, paginated |
-| `GET` | `/chats/{chatId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
-| `PATCH` | `/chats/{chatId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
-| `DELETE` | `/chats/{chatId}/documents/{documentId}` | `204` |
-| `POST` | `/chats/{chatId}/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+| `POST` | `/chats/documents?chatId=…` | `201` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/chats/documents` | `200`, paginated |
+| `GET` | `/chats/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/chats/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/chats/documents/{documentId}` | `204` |
+| `POST` | `/chats/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+| `POST` | `/chats/documents/{documentId}/promote/user` | `200`, `IngestedDocumentSummary` |
+| `POST` | `/chats/documents/{documentId}/promote/global` | `200`, `IngestedDocumentSummary` — `rag-admin` |
 
-- **The ownership failure is `404`, not `403`** — unlike the user collection. A chat belonging to
-  someone else must be indistinguishable from one that does not exist, the same answer
-  `GET /chats/{chatId}` gives. So a `404` here means either *no such chat of yours* or *no such
-  document of that chat*, deliberately without saying which.
-- **Upload** takes `multipart/form-data` with a `file` field, and is **queued**, not indexed inline:
-  it comes back `QUEUED` and becomes retrievable once its status reaches `COMPLETED`. This is the one
-  behavioural difference from attaching the same file to a message, where the indexing happens on the
-  turn because the user is waiting on the answer.
+The caller is taken from the JWT subject, never from a path segment, so there is no `{userId}` here
+that could disagree with the token.
+
+- **`GET` spans every conversation by default.** `?chatId=` narrows to one; `?status=` filters on the
+  latest status. `?status=FAILED` is the reason that filter exists — a document that did not index is
+  otherwise invisible in every surface, and the user is never told their attachment failed.
+- **The ownership failure is `404`, not `403`.** Authorization is the manage grant applied inside the
+  query, so a document belonging to someone else is simply absent — the same answer
+  `GET /chats/{chatId}` gives. Asking about someone else's conversation returns an empty page rather
+  than a refusal.
+- **`POST` is the one place a chat id is supplied**, and the one operation that checks the
+  conversation belongs to the caller. It takes `multipart/form-data` with a `file` field and is
+  **queued**, not indexed inline: it comes back `QUEUED` and becomes retrievable at `COMPLETED`. That
+  is the one behavioural difference from attaching the same file to a message, where indexing happens
+  on the turn because the user is waiting on the answer.
 - **There is no `/uri` sibling.** A conversation's documents are the ones being discussed in it; a
-  URI worth keeping past the conversation belongs at `USER` scope.
+  URI worth keeping past the conversation belongs in the user's own collection.
 - **`DELETE` stops the retrieval and leaves the conversation alone.** A document that arrived on a
   message keeps its `chat_attachment` row, because that row is what the message displays — removing
   both is `DELETE /attachments/{attachmentId}`.
 - **`refresh` works for either origin.** A document that came in as an attachment has no bytes of its
   own; the re-ingest re-reads them from the attachment, the same way a URI document is re-fetched.
 - No de-duplication by file name applies here.
+
+#### Promotion
+
+Moves a document out of the conversation and into a wider audience. It is not a re-ingest: the
+audience is a filter key, never part of the vectors, so the chunks are re-pointed in place rather
+than re-embedded — there is no window in which the document is unretrievable.
+
+- **`promote/user`** makes it retrievable in every one of the caller's conversations. Management does
+  not change; the caller already manages it, which is how they were allowed to ask.
+- **`promote/global`** puts it in the shared corpus and hands management to the `rag-admin` role, so
+  the promoting admin keeps no personal grant. Two endpoints rather than one taking a target, because
+  `@PreAuthorize` cannot express "admin only when the body says global".
+- **The promoted document survives its origin conversation being deleted.** Promotion copies the
+  bytes off the attachment and clears the chat provenance from the row and its chunks, so the
+  teardown that follows a deleted chat no longer reaches it.
+- **`409`** if the document is still ingesting — a promotion would race the chunk stamping it is
+  rewriting — or, for `promote/global`, if a shared document of that name already exists. An upload
+  de-duplicates by returning the existing row; a promotion cannot, because it already has a different
+  one, and merging them would discard a document.
 
 ### Pagination
 

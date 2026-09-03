@@ -1,9 +1,9 @@
 package com.solesonic.service.ingestion;
 
+import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.StatusHistory;
-import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.repository.ingestion.StatusHistoryRepository;
 import com.solesonic.service.etl.DocumentService;
 import org.junit.jupiter.api.BeforeEach;
@@ -25,18 +25,25 @@ import static org.mockito.Mockito.when;
 /**
  * The scheduler's single-flight gate, and what it is allowed to be blocked by.
  * <p>
- * The {@code CHAT} exclusion itself lives in the JPQL of
- * {@link StatusHistoryRepository#findInProgress()} and {@link StatusHistoryRepository#findQueued()},
- * which nothing here executes — these mock the repository, so what they pin is that
- * {@code processQueued} drains its backlog whenever the in-progress set it is handed is empty, and
- * stands down whenever it is not. Proving the queries themselves exclude {@code CHAT} needs a
- * repository-level test against a real database, which this project has no harness for.
+ * The inline-ingest exclusion itself lives in the JPQL of
+ * {@link StatusHistoryRepository#findInProgress()}, and {@link StatusHistoryRepository#findQueued()}
+ * now carries no ownership filter at all. Nothing here executes either — these mock the repository,
+ * so what they pin is that {@code processQueued} drains its backlog whenever the in-progress set it
+ * is handed is empty, and stands down whenever it is not. Proving the queries themselves needs a
+ * repository-level test against a real database, which this project has no harness for: there is no
+ * {@code @DataJpaTest} anywhere, and {@code application-test.properties} resolves
+ * {@code SPRING_DATASOURCE_URL} from an environment variable the run configurations do not set.
+ * <p>
+ * The documents here are distinguished by {@link DocumentSource} rather than by scope, because that
+ * is what the exclusion is keyed on: {@code CHAT} means "ingested inline on a chat turn", which is
+ * the only thing the scheduler must not wait for.
  */
 @ExtendWith(MockitoExtension.class)
 class StatusHistoryServiceTest {
 
-    private static final UUID GLOBAL_DOCUMENT_ID = UUID.randomUUID();
-    private static final UUID USER_DOCUMENT_ID = UUID.randomUUID();
+    private static final UUID UPLOADED_DOCUMENT_ID = UUID.randomUUID();
+    private static final UUID URI_DOCUMENT_ID = UUID.randomUUID();
+    private static final UUID CHAT_UPLOAD_DOCUMENT_ID = UUID.randomUUID();
 
     @Mock
     private StatusHistoryRepository statusHistoryRepository;
@@ -57,39 +64,64 @@ class StatusHistoryServiceTest {
     }
 
     /**
-     * A chat attachment being indexed writes an {@code IN_PROGRESS} row like any other scope, but the
-     * scheduler never sees it: {@code findInProgress()} is scoped to {@code GLOBAL}/{@code USER}, so
-     * the backlog drains on the same tick rather than waiting out the chat turn.
+     * A chat attachment being indexed writes an {@code IN_PROGRESS} row like anything else, but the
+     * scheduler never sees it: {@code findInProgress()} excludes {@link DocumentSource#CHAT}, so the
+     * backlog drains on the same tick rather than waiting out the chat turn.
      */
     @Test
-    void chatIngestionDoesNotHoldOffTheBacklog() {
-        IngestedDocument globalDocument = ingestedDocument(GLOBAL_DOCUMENT_ID, RetrievalScope.GLOBAL);
-        IngestedDocument userDocument = ingestedDocument(USER_DOCUMENT_ID, RetrievalScope.USER);
+    void inlineChatIngestionDoesNotHoldOffTheBacklog() {
+        IngestedDocument uploadedDocument = ingestedDocument(UPLOADED_DOCUMENT_ID, DocumentSource.USER);
+        IngestedDocument uriDocument = ingestedDocument(URI_DOCUMENT_ID, DocumentSource.URI);
 
         when(statusHistoryRepository.findInProgress()).thenReturn(List.of());
         when(statusHistoryRepository.findQueued()).thenReturn(List.of(
-                statusHistory(GLOBAL_DOCUMENT_ID, DocumentStatus.QUEUED),
-                statusHistory(USER_DOCUMENT_ID, DocumentStatus.QUEUED)));
-        when(ingestedDocumentService.get(GLOBAL_DOCUMENT_ID)).thenReturn(globalDocument);
-        when(ingestedDocumentService.get(USER_DOCUMENT_ID)).thenReturn(userDocument);
+                statusHistory(UPLOADED_DOCUMENT_ID, DocumentStatus.QUEUED),
+                statusHistory(URI_DOCUMENT_ID, DocumentStatus.QUEUED)));
+        when(ingestedDocumentService.get(UPLOADED_DOCUMENT_ID)).thenReturn(uploadedDocument);
+        when(ingestedDocumentService.get(URI_DOCUMENT_ID)).thenReturn(uriDocument);
 
         statusHistoryService.processQueued();
 
-        verify(ingestedDocumentService).update(globalDocument, DocumentStatus.IN_PROGRESS);
-        verify(ingestedDocumentService).update(userDocument, DocumentStatus.IN_PROGRESS);
-        verify(documentService).resourceToVectorStore(GLOBAL_DOCUMENT_ID);
-        verify(documentService).resourceToVectorStore(USER_DOCUMENT_ID);
+        verify(ingestedDocumentService).update(uploadedDocument, DocumentStatus.IN_PROGRESS);
+        verify(ingestedDocumentService).update(uriDocument, DocumentStatus.IN_PROGRESS);
+        verify(documentService).resourceToVectorStore(UPLOADED_DOCUMENT_ID);
+        verify(documentService).resourceToVectorStore(URI_DOCUMENT_ID);
         verify(ingestedDocumentService, never()).update(any(IngestedDocument.class), eq(DocumentStatus.FAILED));
     }
 
     /**
-     * The single-flight gate still holds for the scopes it does watch: a {@code GLOBAL}/{@code USER}
-     * document mid-ingest keeps the next tick from starting another one.
+     * A document uploaded straight to a conversation through {@code POST /chats/{chatId}/documents}
+     * is chat-owned but asynchronous, and the scheduler is what ingests it.
+     * <p>
+     * This is the service half of the regression that left such a document at {@code QUEUED}
+     * forever. The other half — {@code findQueued()} no longer filtering it out — is JPQL this
+     * cannot execute. What is pinned here is that nothing in {@code processQueued} re-introduces the
+     * exclusion above the query: whatever the backlog hands back is ingested, whoever owns it.
+     */
+    @Test
+    void drainsADocumentUploadedStraightToAConversation() {
+        IngestedDocument chatUpload = ingestedDocument(CHAT_UPLOAD_DOCUMENT_ID, DocumentSource.USER);
+
+        when(statusHistoryRepository.findInProgress()).thenReturn(List.of());
+        when(statusHistoryRepository.findQueued())
+                .thenReturn(List.of(statusHistory(CHAT_UPLOAD_DOCUMENT_ID, DocumentStatus.QUEUED)));
+        when(ingestedDocumentService.get(CHAT_UPLOAD_DOCUMENT_ID)).thenReturn(chatUpload);
+
+        statusHistoryService.processQueued();
+
+        verify(ingestedDocumentService).update(chatUpload, DocumentStatus.IN_PROGRESS);
+        verify(documentService).resourceToVectorStore(CHAT_UPLOAD_DOCUMENT_ID);
+        verify(ingestedDocumentService, never()).update(any(IngestedDocument.class), eq(DocumentStatus.FAILED));
+    }
+
+    /**
+     * The single-flight gate still holds for the documents it does watch: one mid-ingest keeps the
+     * next tick from starting another.
      */
     @Test
     void inProgressDocumentStillHoldsOffTheBacklog() {
         when(statusHistoryRepository.findInProgress())
-                .thenReturn(List.of(statusHistory(GLOBAL_DOCUMENT_ID, DocumentStatus.KEYWORD_ENRICHING)));
+                .thenReturn(List.of(statusHistory(UPLOADED_DOCUMENT_ID, DocumentStatus.KEYWORD_ENRICHING)));
 
         statusHistoryService.processQueued();
 
@@ -97,10 +129,10 @@ class StatusHistoryServiceTest {
         verify(documentService, never()).resourceToVectorStore(any(UUID.class));
     }
 
-    private IngestedDocument ingestedDocument(UUID documentId, RetrievalScope scope) {
+    private IngestedDocument ingestedDocument(UUID documentId, DocumentSource documentSource) {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(documentId);
-        ingestedDocument.setScope(scope);
+        ingestedDocument.setDocumentSource(documentSource);
         return ingestedDocument;
     }
 

@@ -2,6 +2,7 @@ package com.solesonic.api.document;
 
 import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.ingestion.IngestedDocumentUpdateRequest;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.StatusHistoryService;
 import com.solesonic.service.ingestion.UriIngestionService;
@@ -68,6 +69,7 @@ class IngestedDocumentMethodSecurityTest {
     private static UriIngestionService uriIngestionService;
     private static VectorStoreService vectorStoreService;
     private static StatusHistoryService statusHistoryService;
+    private static UserRequestContext userRequestContext;
 
     @Configuration
     @EnableMethodSecurity
@@ -76,7 +78,9 @@ class IngestedDocumentMethodSecurityTest {
 
         @Bean
         IngestedGlobalDocumentController ingestedGlobalDocumentController() {
-            return new IngestedGlobalDocumentController(ingestedDocumentService, uriIngestionService);
+            return new IngestedGlobalDocumentController(ingestedDocumentService,
+                    uriIngestionService,
+                    userRequestContext);
         }
 
         @Bean
@@ -91,6 +95,7 @@ class IngestedDocumentMethodSecurityTest {
         uriIngestionService = mock(UriIngestionService.class);
         vectorStoreService = mock(VectorStoreService.class);
         statusHistoryService = mock(StatusHistoryService.class);
+        userRequestContext = mock(UserRequestContext.class);
     }
 
     @AfterEach

@@ -5,7 +5,8 @@ import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.VectorDocument;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.rag.GrantKind;
 import com.solesonic.service.rag.VectorStoreService;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
@@ -21,7 +22,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 import static com.solesonic.model.ingestion.IngestedDocument.REPLACED_BY_ID;
@@ -34,11 +35,14 @@ public class UriIngestionService {
 
     private final IngestedDocumentService ingestedDocumentService;
     private final VectorStoreService vectorStoreService;
+    private final DocumentEntitlementService documentEntitlementService;
 
     public UriIngestionService(IngestedDocumentService ingestedDocumentService,
-                               VectorStoreService vectorStoreService) {
+                               VectorStoreService vectorStoreService,
+                               DocumentEntitlementService documentEntitlementService) {
         this.ingestedDocumentService = ingestedDocumentService;
         this.vectorStoreService = vectorStoreService;
+        this.documentEntitlementService = documentEntitlementService;
     }
 
     /**
@@ -49,24 +53,43 @@ public class UriIngestionService {
      * scoped filter, and only ever reaching retrieval because embedding treats a null scope as
      * {@code GLOBAL}. There is now no call site on which the scope can be left unsaid.
      */
-    public IngestedDocument queue(String uri, RetrievalScope scope, UUID ownerId) {
-        log.info("Queueing URI: {} at {} scope", uri, scope);
+    /**
+     * Queues a URI into the shared corpus, managed by the {@code rag-admin} role.
+     */
+    public IngestedDocument queueGlobal(String uri, UUID uploaderId) {
+        return queue(uri, DocumentPrincipal.global(), DocumentPrincipal.ragAdmin(), uploaderId);
+    }
 
-        if (scope == RetrievalScope.CHAT) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "Documents cannot be ingested at CHAT scope; attach them to a message instead");
-        }
+    /**
+     * Queues a URI into one user's library, retrievable and managed by them.
+     */
+    public IngestedDocument queueForUser(String uri, UUID userId) {
+        DocumentPrincipal owner = DocumentPrincipal.user(userId);
+
+        return queue(uri, owner, owner, userId);
+    }
+
+    /**
+     * Queues a URI for fetch and embedding, granted to the principal its collection names.
+     * <p>
+     * Both principals are arguments with no default. Before they were, this path recorded no
+     * audience at all and every URI document was written with none — invisible to a scoped filter,
+     * and only ever reaching retrieval because embedding treated the absence as {@code GLOBAL}.
+     * There is now no call site on which the audience can be left unsaid.
+     */
+    private IngestedDocument queue(String uri,
+                                   DocumentPrincipal retrievableBy,
+                                   DocumentPrincipal managedBy,
+                                   UUID uploaderId) {
+        log.info("Queueing URI: {} for {}", uri, retrievableBy.key());
 
         String validatedUri = validate(uri);
 
         List<IngestedDocument> existingIngestedDocuments =
-                inSameCollection(ingestedDocumentService.findBySourceUri(validatedUri), scope, ownerId);
+                inSameCollection(ingestedDocumentService.findBySourceUri(validatedUri), retrievableBy);
 
-        IngestedDocument ingestedDocument = ingestedDocument(validatedUri);
-        ingestedDocument.setScope(scope);
-        ingestedDocument.setUserId(scope == RetrievalScope.USER ? ownerId : null);
-
-        IngestedDocument queuedIngestedDocument = ingestedDocumentService.save(ingestedDocument);
+        IngestedDocument queuedIngestedDocument = ingestedDocumentService.saveWithOwnership(
+                ingestedDocument(validatedUri), retrievableBy, managedBy, uploaderId, null);
 
         replaceExisting(existingIngestedDocuments, queuedIngestedDocument);
 
@@ -74,18 +97,26 @@ public class UriIngestionService {
     }
 
     /**
-     * Only a document in the same collection may be superseded by this one.
+     * Only a document with the same audience may be superseded by this one.
      * <p>
      * {@code findBySourceUri} matches on the URI alone, so without this one user re-ingesting a
      * public page would mark every other user's copy {@code REPLACED} and delete its chunks. The
-     * same URI at two scopes is two documents, exactly as the same file name at two scopes is.
+     * same URI granted to two different principals is two documents, exactly as the same file name
+     * in two libraries is.
+     * <p>
+     * Comparing the retrieve grant <em>set</em> rather than a scope and an owner is strictly more
+     * correct than what it replaces: {@code scope == scope && userId == ownerId} could not express a
+     * document shared with more than one principal, and would have treated a shared copy and a
+     * private one as the same collection.
      */
-    private static List<IngestedDocument> inSameCollection(List<IngestedDocument> existingIngestedDocuments,
-                                                           RetrievalScope scope,
-                                                           UUID ownerId) {
+    private List<IngestedDocument> inSameCollection(List<IngestedDocument> existingIngestedDocuments,
+                                                    DocumentPrincipal retrievableBy) {
+        Set<DocumentPrincipal> intended = Set.of(retrievableBy);
+
         return existingIngestedDocuments.stream()
-                .filter(existing -> existing.getScope() == scope)
-                .filter(existing -> scope != RetrievalScope.USER || Objects.equals(existing.getUserId(), ownerId))
+                .filter(existing -> Set.copyOf(
+                                documentEntitlementService.principals(existing.getId(), GrantKind.RETRIEVE))
+                        .equals(intended))
                 .toList();
     }
 
@@ -117,7 +148,6 @@ public class UriIngestionService {
         ingestedDocument.setDocumentStatus(DocumentStatus.QUEUED);
         ingestedDocument.setFileName(uri);
         ingestedDocument.setContentType(TEXT_HTML_VALUE);
-        ingestedDocument.setFileData(new byte[0]);
         ingestedDocument.setDocumentSource(DocumentSource.URI);
         ingestedDocument.setMetadata(metadata);
         ingestedDocument.setCreated(ZonedDateTime.now());

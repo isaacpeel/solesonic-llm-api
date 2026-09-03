@@ -73,10 +73,43 @@ The migrations are organized in major versions:
    - Vector store
    - Chats and chat messages
 
+### Ingested documents — three tables (V3_27)
+
+An ingested document is a descriptor, its bytes, and its grants:
+
+| Table | Holds |
+|---|---|
+| `ingested_document` | `id`, `file_name`, `content_type`, `document_source` (NOT NULL), `created`/`updated`, `metadata jsonb` |
+| `ingested_document_content` | `ingested_document_id` PK/FK, `data bytea`, `size_bytes`. Absent where the bytes live elsewhere |
+| `document_entitlement` | one row per `(document, principal_type, principal_id, grant_kind)` |
+
+**`ingested_document` carries no ownership columns.** `scope`, `user_id` and `chat_id` were a
+nullable-column discriminated union whose invariant — exactly one owning column set, agreeing with
+the scope — was enforced by nothing but every call site remembering, and the table's migration
+history is a record of call sites forgetting. Ownership is now rows in `document_entitlement`, so a
+new ownership shape is a new row rather than a new column and another unenforced rule.
+
+`grant_kind` separates `RETRIEVE` (who may have this come back from a search) from `MANAGE` (whose
+library it appears in). A chat document is retrievable by the conversation and managed by whoever
+uploaded it — two different principals, which is what makes "every document I uploaded to any chat"
+a single indexed query. `principal_id` is text because `GLOBAL` has no owner (the `'-'` sentinel, not
+null, so the unique constraint still bites) and `ROLE` is named. Both foreign keys cascade, so
+deleting a document takes its bytes and its grants without any code remembering to.
+
+`metadata` is **provenance only** — `CHAT_ID`, `CHAT_ATTACHMENT_ID`, `SOURCE_URI`,
+`CONFLUENCE_PAGE_ID`, `ORIGINAL_FILE_NAME`, `FILE_SIZE_BYTES`, `REPLACED_BY_ID`. Where a document
+came from and where it may be retrieved are now different facts: teardown reads provenance,
+retrieval reads entitlement, and promotion touches only the latter.
+
+> **`data` is `bytea`, and the entity field must never carry `@Lob`.** That annotation is what made
+> the old `ingested_document.file_data` a Postgres large object — an `oid` *reference* whose target
+> outlives the row pointing at it unless `lo_unlink` is called, which nothing ever did. By the time
+> `V3_27` swept them up there were 351,476 orphaned objects totalling roughly 6 GB, accumulated one
+> per document per re-ingestion cycle. A row delete reclaims `bytea` by itself.
+
 The `chat_attachment` table (V3_4) stores images attached to chat messages. Image bytes are held in
-a `bytea` column — deliberately not the `oid` large object used by `ingested_document`, because
-attachments are routinely deleted and large objects would be orphaned in `pg_largeobject`. A row
-with a null `chat_message_id` is *staged*: uploaded but not yet sent on a message.
+a `bytea` column — the same choice, made earlier and for the same reason. A row with a null
+`chat_message_id` is *staged*: uploaded but not yet sent on a message.
 
 `vision_description` and `vision_model` (V3_5) hold the description a vision model produced for the
 image, and the name of the model that produced it. A null `vision_description` means the image has

@@ -30,10 +30,11 @@ import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -45,13 +46,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * The conversation-scoped collection, and above all that every one of its methods establishes the
- * caller owns the chat before it touches a document.
+ * The chat document collection, which is the caller's rather than the conversation's.
  * <p>
- * The check answers {@code 404}, not {@code 403} — a chat belonging to someone else must be
- * indistinguishable from one that does not exist, the stance {@code ChatService.get} already takes.
- * That is the difference from {@link IngestedUserDocumentControllerTest}, where a mismatched path
- * {@code userId} is a value the caller supplied about themselves and has nothing to conceal.
+ * The {@code rag-admin} gate on {@code promote/global} is an annotation, which a standalone
+ * {@code MockMvc} does not apply — {@link IngestedDocumentMethodSecurityTest} is where enforcement
+ * is covered. What is covered here is routing, the filters, and that the caller is taken from the
+ * request context rather than from the path.
  */
 @ExtendWith(MockitoExtension.class)
 class IngestedChatDocumentControllerTest {
@@ -70,14 +70,14 @@ class IngestedChatDocumentControllerTest {
     @InjectMocks
     private IngestedChatDocumentController ingestedChatDocumentController;
 
-    private UUID chatId;
     private UUID documentId;
+    private UUID chatId;
     private UUID userId;
 
     @BeforeEach
     void beforeEach() {
-        chatId = UUID.randomUUID();
         documentId = UUID.randomUUID();
+        chatId = UUID.randomUUID();
         userId = UUID.randomUUID();
 
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
@@ -92,120 +92,187 @@ class IngestedChatDocumentControllerTest {
                 "notes.pdf",
                 "application/pdf",
                 1024L,
-                DocumentSource.USER,
+                DocumentSource.CHAT,
                 RetrievalScope.CHAT,
                 chatId,
-                DocumentStatus.QUEUED,
+                List.of("chat:" + chatId),
+                "Quarterly planning",
+                DocumentStatus.COMPLETED,
                 ZonedDateTime.now(),
                 ZonedDateTime.now());
     }
 
     /**
-     * No {@code scope} parameter reaches the service from this route either — the collection is the
-     * scope, and the owner comes from the request context rather than from anything the client sent.
+     * The one operation that names a conversation, and therefore the one that has to check it
+     * belongs to the caller. Everything else addresses a document the caller already manages.
      */
     @Test
-    void uploadQueuesAtChatScopeForThePathChat() throws Exception {
+    void uploadRequiresTheConversationToBeOwned() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "notes.pdf", "application/pdf", new byte[]{1, 2});
 
         when(ingestedDocumentService.queueForChat(any(), eq(chatId), eq(userId))).thenReturn(summary());
 
-        mockMvc.perform(multipart("/chats/{chatId}/documents", chatId).file(file))
+        mockMvc.perform(multipart("/chats/documents").file(file).param("chatId", chatId.toString()))
                 .andExpect(status().isCreated())
-                .andExpect(header().string("Location",
-                        "http://localhost/chats/" + chatId + "/documents/" + documentId))
-                .andExpect(jsonPath("$.scope").value("CHAT"))
-                .andExpect(jsonPath("$.chatId").value(chatId.toString()));
+                .andExpect(header().string("Location", "http://localhost/chats/documents/" + documentId))
+                .andExpect(jsonPath("$.id").value(documentId.toString()));
+
+        verify(chatService).requireOwned(chatId);
     }
 
     @Test
-    void listReturnsOnlyThisChatsDocuments() throws Exception {
-        when(ingestedDocumentService.listForChat(eq(chatId), any(Pageable.class)))
-                .thenReturn(new PageImpl<>(List.of(summary()), PageRequest.of(0, 20), 1));
+    void uploadToSomeoneElsesConversationIsNotFound() throws Exception {
+        MockMultipartFile file = new MockMultipartFile("file", "notes.pdf", "application/pdf", new byte[]{1, 2});
 
-        mockMvc.perform(get("/chats/{chatId}/documents", chatId))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.content[0].id").value(documentId.toString()))
-                .andExpect(jsonPath("$.page.totalElements").value(1));
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found"))
+                .when(chatService).requireOwned(chatId);
+
+        mockMvc.perform(multipart("/chats/documents").file(file).param("chatId", chatId.toString()))
+                .andExpect(status().isNotFound());
+
+        verify(ingestedDocumentService, never()).queueForChat(any(), any(), any());
     }
 
     /**
-     * A document of another conversation. The repository's {@code where} clause is what makes it
-     * absent, and absence is a {@code 404}.
+     * With no {@code chatId}, the listing spans every conversation the caller has uploaded to — the
+     * question the old {@code /chats/{chatId}/documents} route could not ask at all.
      */
     @Test
-    void aDocumentInAnotherChatIsNotFound() throws Exception {
-        when(ingestedDocumentService.getForChat(documentId, chatId))
-                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND));
+    void listsAcrossEveryConversationByDefault() throws Exception {
+        when(ingestedDocumentService.listChatDocuments(eq(userId), isNull(), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(summary()), PageRequest.of(0, 20), 1));
 
-        mockMvc.perform(get("/chats/{chatId}/documents/{documentId}", chatId, documentId))
-                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/chats/documents"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(documentId.toString()))
+                .andExpect(jsonPath("$.content[0].chatName").value("Quarterly planning"))
+                .andExpect(jsonPath("$.content[0].entitlements[0]").value("chat:" + chatId));
+
+        verify(chatService, never()).requireOwned(any());
+    }
+
+    /**
+     * A conversation belonging to someone else produces an empty page rather than a 403 — the
+     * {@code MANAGE} join in the query is the authorization, so there is nothing to refuse.
+     */
+    @Test
+    void narrowsToOneConversationWhenAsked() throws Exception {
+        when(ingestedDocumentService.listChatDocuments(eq(userId), eq(chatId), isNull(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(summary()), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get("/chats/documents").param("chatId", chatId.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(documentId.toString()));
+    }
+
+    /**
+     * A {@code FAILED} chat document is invisible in every other surface — nothing lists it, and the
+     * user is never told their attachment did not index.
+     */
+    @Test
+    void filtersByStatusSoAFailedDocumentCanBeFound() throws Exception {
+        when(ingestedDocumentService.listChatDocuments(
+                eq(userId), isNull(), eq(DocumentStatus.FAILED), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+        mockMvc.perform(get("/chats/documents").param("status", "FAILED"))
+                .andExpect(status().isOk());
+
+        verify(ingestedDocumentService)
+                .listChatDocuments(eq(userId), isNull(), eq(DocumentStatus.FAILED), any(Pageable.class));
     }
 
     @Test
-    void deleteRemovesTheDocumentAndNotTheAttachment() throws Exception {
-        mockMvc.perform(delete("/chats/{chatId}/documents/{documentId}", chatId, documentId))
-                .andExpect(status().isNoContent());
+    void getsOneDocumentByTheCallersManageGrant() throws Exception {
+        when(ingestedDocumentService.getChatDocument(documentId, userId)).thenReturn(summary());
 
-        verify(ingestedDocumentService).deleteForChat(documentId, chatId);
+        mockMvc.perform(get("/chats/documents/{documentId}", documentId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fileData").doesNotExist())
+                .andExpect(jsonPath("$.fileSizeBytes").value(1024));
     }
 
     @Test
     void renameSendsOnlyTheNewName() throws Exception {
-        when(ingestedDocumentService.renameForChat(documentId, chatId, "reading.pdf")).thenReturn(summary());
+        when(ingestedDocumentService.renameChatDocument(documentId, userId, "onboarding.pdf"))
+                .thenReturn(summary());
 
-        mockMvc.perform(patch("/chats/{chatId}/documents/{documentId}", chatId, documentId)
+        mockMvc.perform(patch("/chats/documents/{documentId}", documentId)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"fileName\":\"reading.pdf\"}"))
+                        .content("{\"fileName\":\"onboarding.pdf\"}"))
                 .andExpect(status().isOk());
 
-        verify(ingestedDocumentService).renameForChat(documentId, chatId, "reading.pdf");
+        verify(ingestedDocumentService).renameChatDocument(documentId, userId, "onboarding.pdf");
     }
 
     @Test
-    void refreshRequeuesTheDocument() throws Exception {
-        when(ingestedDocumentService.refreshForChat(documentId, chatId)).thenReturn(summary());
+    void deleteReturnsNoContent() throws Exception {
+        mockMvc.perform(delete("/chats/documents/{documentId}", documentId))
+                .andExpect(status().isNoContent());
 
-        mockMvc.perform(post("/chats/{chatId}/documents/{documentId}/refresh", chatId, documentId))
+        verify(ingestedDocumentService).deleteChatDocument(documentId, userId);
+    }
+
+    @Test
+    void refreshIsAccepted() throws Exception {
+        when(ingestedDocumentService.refreshChatDocument(documentId, userId)).thenReturn(summary());
+
+        mockMvc.perform(post("/chats/documents/{documentId}/refresh", documentId))
                 .andExpect(status().isAccepted());
+    }
 
-        verify(ingestedDocumentService).refreshForChat(documentId, chatId);
+    @Test
+    void promoteToUserMovesTheDocumentIntoTheCallersLibrary() throws Exception {
+        when(ingestedDocumentService.promoteToUser(documentId, userId)).thenReturn(summary());
+
+        mockMvc.perform(post("/chats/documents/{documentId}/promote/user", documentId))
+                .andExpect(status().isOk());
+
+        verify(ingestedDocumentService).promoteToUser(documentId, userId);
+    }
+
+    @Test
+    void promoteToGlobalMovesTheDocumentIntoTheSharedCorpus() throws Exception {
+        when(ingestedDocumentService.promoteToGlobal(documentId, userId)).thenReturn(summary());
+
+        mockMvc.perform(post("/chats/documents/{documentId}/promote/global", documentId))
+                .andExpect(status().isOk());
+
+        verify(ingestedDocumentService).promoteToGlobal(documentId, userId);
     }
 
     /**
-     * Every method, not just the reads. A guard covering only some of them would leave every other
-     * user's conversation-scoped material readable, writable and deletable by anyone who can guess a
-     * chat id.
+     * A promotion mid-ingest would race the chunk stamping it is trying to rewrite.
      */
     @Test
-    void everyMethodRefusesAChatTheCallerDoesNotOwn() throws Exception {
-        UUID otherChatId = UUID.randomUUID();
+    void promotingADocumentThatIsStillIngestingConflicts() throws Exception {
+        when(ingestedDocumentService.promoteToUser(documentId, userId))
+                .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "Document is IN_PROGRESS"));
 
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + otherChatId))
-                .when(chatService).requireOwned(otherChatId);
+        mockMvc.perform(post("/chats/documents/{documentId}/promote/user", documentId))
+                .andExpect(status().isConflict());
+    }
 
-        MockMultipartFile file = new MockMultipartFile("file", "notes.pdf", "application/pdf", new byte[]{1, 2});
+    /**
+     * Promotion cannot de-duplicate the way an upload does — it already has a different row, and
+     * silently merging two documents would discard one.
+     */
+    @Test
+    void promotingOverAnExistingGlobalNameConflicts() throws Exception {
+        when(ingestedDocumentService.promoteToGlobal(documentId, userId))
+                .thenThrow(new ResponseStatusException(HttpStatus.CONFLICT,
+                        "A shared document named 'notes.pdf' already exists"));
 
-        mockMvc.perform(multipart("/chats/{chatId}/documents", otherChatId).file(file))
+        mockMvc.perform(post("/chats/documents/{documentId}/promote/global", documentId))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    void aDocumentTheCallerDoesNotManageIsNotFound() throws Exception {
+        when(ingestedDocumentService.getChatDocument(documentId, userId))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "No such ingested document"));
+
+        mockMvc.perform(get("/chats/documents/{documentId}", documentId))
                 .andExpect(status().isNotFound());
-
-        mockMvc.perform(get("/chats/{chatId}/documents", otherChatId))
-                .andExpect(status().isNotFound());
-
-        mockMvc.perform(get("/chats/{chatId}/documents/{documentId}", otherChatId, documentId))
-                .andExpect(status().isNotFound());
-
-        mockMvc.perform(patch("/chats/{chatId}/documents/{documentId}", otherChatId, documentId)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"fileName\":\"stolen.pdf\"}"))
-                .andExpect(status().isNotFound());
-
-        mockMvc.perform(delete("/chats/{chatId}/documents/{documentId}", otherChatId, documentId))
-                .andExpect(status().isNotFound());
-
-        mockMvc.perform(post("/chats/{chatId}/documents/{documentId}/refresh", otherChatId, documentId))
-                .andExpect(status().isNotFound());
-
-        verifyNoInteractions(ingestedDocumentService);
     }
 }

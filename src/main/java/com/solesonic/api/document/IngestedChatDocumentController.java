@@ -1,5 +1,6 @@
 package com.solesonic.api.document;
 
+import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.ingestion.IngestedDocumentUpdateRequest;
 import com.solesonic.scope.UserRequestContext;
@@ -13,6 +14,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.data.web.PagedModel;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -29,31 +31,25 @@ import java.net.URI;
 import java.util.UUID;
 
 /**
- * One conversation's own documents: retrievable while answering in that chat and nowhere else.
+ * Every document the caller has ever uploaded to any conversation.
  * <p>
- * The third collection, and the one whose rows have two origins. A document reaches a chat either by
- * being attached to a message — {@code ChatDocumentIngestionService} indexes it inline on the turn,
- * against a row {@code IngestedDocumentService.beginChatIngestion} opens — or by being uploaded here,
- * to the conversation rather than to a turn of it. Both are {@code CHAT} scoped rows and both are
- * listed, renamed, refreshed and deleted through these methods; what tells them apart is
- * {@code documentSource}, {@code CHAT} for the first and {@code USER} for the second.
+ * Mounted at {@code /chats/documents} rather than {@code /chats/{chatId}/documents}, which is the
+ * whole point: a chat document is owned by the person who uploaded it, not by the conversation, so
+ * the collection is theirs and the conversation is a filter on it. The old path could only answer
+ * "what is in this one chat", and could not answer "where did I put that file" at all.
  * <p>
- * The scope is the collection, as it is for the other two: nothing here takes a {@code scope}
- * parameter and there is no request shape that can create a document at another scope.
+ * Authorization is the {@code MANAGE} grant, applied inside every query — there is no path on which
+ * it can be skipped, and a document belonging to someone else is a {@code 404} rather than a
+ * {@code 403}, matching how {@code ChatService.get} answers. The caller is taken from
+ * {@link UserRequestContext}, which reads the JWT subject and never a path segment, so there is no
+ * {@code {userId}} here that could disagree with the token.
  * <p>
- * Ownership is the conversation's, checked at the top of every method by
- * {@link ChatService#requireOwned(UUID)} — which answers {@code 404} rather than {@code 403} for a
- * chat belonging to someone else, exactly as {@code GET /chats/{chatId}} does. There is no
- * {@code {userId}} segment: a chat already has exactly one owner, and a second id naming the same
- * person would be a value with nothing to check it against. That makes the {@code 404} here mean two
- * things at once, on purpose — no such chat of yours, and no such document of that chat.
- * <p>
- * There is no {@code /uri} sibling. The other two collections have one because a shared or personal
- * corpus is something a user curates over time; a conversation's documents are the ones being
- * discussed in it, and a URI worth keeping past the conversation belongs at {@code USER} scope.
+ * {@code POST} is the one place a chat id is supplied and the one place
+ * {@code ChatService.requireOwned} is needed: adding to a conversation is the only operation whose
+ * target is the conversation rather than the document.
  */
 @RestController
-@RequestMapping("/chats/{chatId}/documents")
+@RequestMapping("/chats/documents")
 public class IngestedChatDocumentController {
     private static final Logger log = LoggerFactory.getLogger(IngestedChatDocumentController.class);
 
@@ -72,98 +68,124 @@ public class IngestedChatDocumentController {
     }
 
     /**
-     * Adds a document to the conversation without sending a message.
+     * Uploads a document straight into a conversation.
      * <p>
-     * Queued rather than ingested inline, which is the one behavioural difference from attaching the
-     * same file to a turn: nobody is waiting on a response, so the extraction and embedding go
-     * through {@code DocumentIngestionSchedulingTask} like every other queued document, and the
-     * document becomes retrievable once its status reaches {@code COMPLETED}.
-     * <p>
-     * The owner recorded on the row is the caller rather than the chat's owner. They are the same
-     * person — {@link ChatService#requireOwned(UUID)} has just established it — and taking it from
-     * {@link UserRequestContext} keeps the value coming from the JWT subject rather than from a row
-     * this request could not have written.
+     * The chat id is a request parameter rather than a path segment because this collection is the
+     * caller's, not the conversation's. It is checked against the caller here — the one operation
+     * that needs to, since every other one addresses a document the caller already manages.
      */
     @PostMapping
-    public ResponseEntity<IngestedDocumentSummary> upload(@PathVariable UUID chatId,
+    public ResponseEntity<IngestedDocumentSummary> upload(@RequestParam UUID chatId,
                                                           @RequestParam MultipartFile file) {
         chatService.requireOwned(chatId);
 
         log.info("Queuing a document for chat {}", chatId);
+
         IngestedDocumentSummary summary =
                 ingestedDocumentService.queueForChat(file, chatId, userRequestContext.getUserId());
 
-        return ResponseEntity.created(location(chatId, summary.id())).body(summary);
+        return ResponseEntity.created(location(summary.id())).body(summary);
     }
 
+    /**
+     * @param chatId null lists every conversation's documents
+     * @param status null lists every status. {@code FAILED} is the reason this filter exists — a
+     *               document that did not index is invisible in every other surface
+     */
     @GetMapping
     public ResponseEntity<PagedModel<IngestedDocumentSummary>> list(
-            @PathVariable UUID chatId,
+            @RequestParam(required = false) UUID chatId,
+            @RequestParam(required = false) DocumentStatus status,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
-        chatService.requireOwned(chatId);
-
-        // The window only, for the reason IngestedGlobalDocumentController.list gives.
         Pageable documentPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
-        log.info("Listing documents for chat {} page {} size {}",
-                chatId, documentPage.getPageNumber(), documentPage.getPageSize());
-        Page<IngestedDocumentSummary> summaries = ingestedDocumentService.listForChat(chatId, documentPage);
+        log.info("Listing chat documents page {} size {} chat {} status {}",
+                documentPage.getPageNumber(), documentPage.getPageSize(), chatId, status);
+
+        Page<IngestedDocumentSummary> summaries = ingestedDocumentService.listChatDocuments(
+                userRequestContext.getUserId(), chatId, status, documentPage);
 
         return ResponseEntity.ok(new PagedModel<>(summaries));
     }
 
     @GetMapping("/{documentId}")
-    public ResponseEntity<IngestedDocumentSummary> get(@PathVariable UUID chatId,
-                                                       @PathVariable UUID documentId) {
-        chatService.requireOwned(chatId);
+    public ResponseEntity<IngestedDocumentSummary> get(@PathVariable UUID documentId) {
+        log.info("Getting chat document {}", documentId);
 
-        log.info("Getting document {} of chat {}", documentId, chatId);
-
-        return ResponseEntity.ok(ingestedDocumentService.getForChat(documentId, chatId));
+        return ResponseEntity.ok(
+                ingestedDocumentService.getChatDocument(documentId, userRequestContext.getUserId()));
     }
 
     @PatchMapping("/{documentId}")
-    public ResponseEntity<IngestedDocumentSummary> rename(@PathVariable UUID chatId,
-                                                          @PathVariable UUID documentId,
+    public ResponseEntity<IngestedDocumentSummary> rename(@PathVariable UUID documentId,
                                                           @RequestBody IngestedDocumentUpdateRequest updateRequest) {
-        chatService.requireOwned(chatId);
+        log.info("Renaming chat document {}", documentId);
 
-        log.info("Renaming document {} of chat {}", documentId, chatId);
-
-        return ResponseEntity.ok(ingestedDocumentService.renameForChat(documentId, chatId, updateRequest.fileName()));
+        return ResponseEntity.ok(ingestedDocumentService.renameChatDocument(
+                documentId, userRequestContext.getUserId(), updateRequest.fileName()));
     }
 
     /**
-     * Stops the document being retrieved in this conversation, and leaves the conversation itself
-     * alone. A document that arrived on a message keeps its {@code chat_attachment} row, because
-     * that row is what the message displays and removing it would rewrite history the user did not
-     * ask to change — {@code DELETE /attachments/{attachmentId}} is what removes both.
+     * Removes the document, its chunks and its status history. The {@code chat_attachment} row it
+     * arrived on is deliberately left alone — that is {@code DELETE /attachments/{attachmentId}},
+     * and deleting it here would rewrite the conversation's history rather than stop the document
+     * being retrieved.
      */
     @DeleteMapping("/{documentId}")
-    public ResponseEntity<Void> delete(@PathVariable UUID chatId,
-                                       @PathVariable UUID documentId) {
-        chatService.requireOwned(chatId);
+    public ResponseEntity<Void> delete(@PathVariable UUID documentId) {
+        log.info("Deleting chat document {}", documentId);
 
-        log.info("Deleting document {} of chat {}", documentId, chatId);
-        ingestedDocumentService.deleteForChat(documentId, chatId);
+        ingestedDocumentService.deleteChatDocument(documentId, userRequestContext.getUserId());
 
         return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{documentId}/refresh")
-    public ResponseEntity<IngestedDocumentSummary> refresh(@PathVariable UUID chatId,
-                                                           @PathVariable UUID documentId) {
-        chatService.requireOwned(chatId);
+    public ResponseEntity<IngestedDocumentSummary> refresh(@PathVariable UUID documentId) {
+        log.info("Refreshing chat document {}", documentId);
 
-        log.info("Refreshing document {} of chat {}", documentId, chatId);
-
-        return ResponseEntity.accepted().body(ingestedDocumentService.refreshForChat(documentId, chatId));
+        return ResponseEntity.accepted().body(
+                ingestedDocumentService.refreshChatDocument(documentId, userRequestContext.getUserId()));
     }
 
-    private static URI location(UUID chatId, UUID documentId) {
+    /**
+     * Moves the document out of the conversation and into the caller's own library, where it is
+     * retrievable in every one of their chats.
+     * <p>
+     * It survives the origin conversation being deleted: promotion copies the bytes off the
+     * attachment and clears the chat provenance from both the row and its chunks, so the teardown
+     * that follows a deleted chat no longer reaches it.
+     */
+    @PostMapping("/{documentId}/promote/user")
+    public ResponseEntity<IngestedDocumentSummary> promoteToUser(@PathVariable UUID documentId) {
+        log.info("Promoting chat document {} to the caller's library", documentId);
+
+        return ResponseEntity.ok(
+                ingestedDocumentService.promoteToUser(documentId, userRequestContext.getUserId()));
+    }
+
+    /**
+     * Moves the document into the shared corpus, where everyone can retrieve it.
+     * <p>
+     * A separate endpoint from {@code promote/user} rather than one taking a target, because
+     * {@code @PreAuthorize} cannot cleanly express "admin only when the body says GLOBAL", and a
+     * runtime role branch inside a service is the shape this codebase avoids — cf. the dead
+     * {@code TokenBrokerAuthorizationFilter} whose checks never run. It also keeps the audience out
+     * of request parameters, consistent with both other document collections.
+     */
+    @PreAuthorize("hasRole('rag-admin')")
+    @PostMapping("/{documentId}/promote/global")
+    public ResponseEntity<IngestedDocumentSummary> promoteToGlobal(@PathVariable UUID documentId) {
+        log.info("Promoting chat document {} to the shared corpus", documentId);
+
+        return ResponseEntity.ok(
+                ingestedDocumentService.promoteToGlobal(documentId, userRequestContext.getUserId()));
+    }
+
+    private static URI location(UUID documentId) {
         return ServletUriComponentsBuilder.fromCurrentContextPath()
-                .path("/chats/{chatId}/documents/{documentId}")
-                .buildAndExpand(chatId, documentId)
+                .path("/chats/documents/{documentId}")
+                .buildAndExpand(documentId)
                 .toUri();
     }
 }

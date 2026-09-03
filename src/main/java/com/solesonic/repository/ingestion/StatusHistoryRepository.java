@@ -1,5 +1,6 @@
 package com.solesonic.repository.ingestion;
 
+import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.DocumentStatusEntry;
 import com.solesonic.model.ingestion.StatusHistory;
@@ -42,17 +43,24 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
     List<DocumentStatusEntry> findLatestStatuses(@Param("documentIds") Collection<UUID> documentIds);
 
     /**
-     * The asynchronous backlog {@code processQueued} drains, which is {@code GLOBAL} and {@code USER}
-     * documents only.
+     * The asynchronous backlog {@code processQueued} drains: every document sitting at
+     * {@code QUEUED}, whoever owns it.
      * <p>
-     * A {@code CHAT} document is ingested inline on the turn it is attached to and opens its row
-     * already {@code IN_PROGRESS}, so it is never {@code QUEUED} and this exclusion should never
-     * change an answer. It is stated anyway rather than left resting on that invariant, and so that
-     * this query and {@link #findInProgress} agree on what the scheduler's world consists of.
+     * There is deliberately no ownership filter. One used to exclude {@code CHAT} documents, resting
+     * on the stated invariant that such a row is ingested inline and so "is never {@code QUEUED}",
+     * which made the exclusion free. That invariant stopped holding the moment
+     * {@code IngestedDocumentService.queueForChat} was added for
+     * {@code POST /chats/{chatId}/documents}: it writes {@code QUEUED} against a conversation, and
+     * the filter then dropped the row from the only query that would ever pick it up — so a document
+     * uploaded straight to a chat sat at {@code QUEUED} forever and was never ingested.
      * <p>
-     * The scope list is affirmative rather than {@code <> CHAT} on purpose: a scope added later is
-     * left visibly stuck at {@code QUEUED} until someone decides whether the scheduler owns it,
-     * which is a louder failure than silently reintroducing the contention this filter removes.
+     * {@code QUEUED} is the whole question this query asks. Which documents must not contend for the
+     * ingest slot is a different question, asked by {@link #findInProgress} against
+     * {@code documentSource}; the two coincided only for as long as {@code CHAT} scope implied
+     * inline ingestion.
+     * <p>
+     * The join to {@code IngestedDocument} stays: it drops any status row whose document no longer
+     * exists, which would otherwise stall the scheduler permanently.
      */
     @Query("""
                 SELECT d
@@ -67,30 +75,40 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                       AND d2.timestamp > d.timestamp
                   )
                   AND d.documentId = td.id
-                  AND td.scope IN (
-                          com.solesonic.model.rag.RetrievalScope.GLOBAL,
-                          com.solesonic.model.rag.RetrievalScope.USER
-                      )
                 ORDER BY d.timestamp DESC
             """)
     List<StatusHistory> findQueued();
 
     /**
-     * What {@code processQueued} treats as a reason to stand down this tick, which is a
-     * {@code GLOBAL} or {@code USER} document mid-ingest and nothing else.
+     * What {@code processQueued} treats as a reason to stand down this tick: a document being
+     * ingested by the scheduler itself, and nothing else.
      * <p>
-     * A {@code CHAT} document is indexed inline on the turn it is attached to, and holds one of
-     * these statuses for the several seconds that takes. Without the scope filter every scheduler
-     * tick landing inside that window would skip the whole backlog, because this query cannot
-     * otherwise tell a chat attachment from a queued upload — a burst of attachments across
-     * concurrent conversations could keep the table continuously "busy" and delay unrelated work
-     * that had nothing to do with any chat. Chat rows are in {@code status_history} for cleanup and
-     * observability parity, not to participate in scheduling.
+     * A document read from a chat attachment is indexed <em>inline</em>, on the turn it is attached
+     * to, and holds one of these statuses for the several seconds that takes. Without an exclusion
+     * every scheduler tick landing inside that window would skip the whole backlog, because this
+     * query cannot otherwise tell an inline ingest from a queued upload — a burst of attachments
+     * across concurrent conversations could keep the table continuously "busy" and delay unrelated
+     * work that had nothing to do with any chat. Such rows are in {@code status_history} for cleanup
+     * and observability parity, not to participate in scheduling.
      * <p>
-     * The join to {@code IngestedDocument} is what makes the scope reachable, and it also drops any
-     * status row whose document no longer exists. Such a row would otherwise stall the scheduler
-     * permanently, having no ingestion left to finish and move it out of these statuses;
-     * {@link #findQueued} has always joined this way, so the two now agree.
+     * The exclusion is keyed on {@code documentSource}, not on scope. {@link DocumentSource#CHAT} is
+     * written only by {@code IngestedDocumentService.chatIngestedDocument} and means exactly "bytes
+     * live on a {@code chat_attachment}, ingested inline" — which is the real question. Scope was
+     * only ever a proxy for it, and a bad one: {@code queueForChat} writes a document that is
+     * chat-owned but asynchronous, and the old scope filter excluded it from
+     * {@link #findQueued} entirely (see that method).
+     * <p>
+     * A null {@code documentSource} counts as the scheduler's, which is the safe direction: it
+     * blocks a tick rather than letting an unrecognised row ingest concurrently.
+     * <p>
+     * <em>Caveat:</em> this couples scheduler control to provenance. It is exact today. If an
+     * ingestion path ever runs inline without being {@code CHAT}-sourced, give it an explicit
+     * ingestion mode rather than adding a third proxy.
+     * <p>
+     * The join to {@code IngestedDocument} is what makes {@code documentSource} reachable, and it
+     * also drops any status row whose document no longer exists. Such a row would otherwise stall
+     * the scheduler permanently, having no ingestion left to finish and move it out of these
+     * statuses; {@link #findQueued} joins the same way, so the two agree.
      */
     @Query("""
                 SELECT d
@@ -111,9 +129,9 @@ public interface StatusHistoryRepository extends JpaRepository<StatusHistory, UU
                       AND d2.timestamp > d.timestamp
                   )
                   AND d.documentId = td.id
-                  AND td.scope IN (
-                          com.solesonic.model.rag.RetrievalScope.GLOBAL,
-                          com.solesonic.model.rag.RetrievalScope.USER
+                  AND (
+                        td.documentSource IS NULL
+                     OR td.documentSource <> com.solesonic.model.document.DocumentSource.CHAT
                       )
                 ORDER BY d.timestamp DESC
             """)

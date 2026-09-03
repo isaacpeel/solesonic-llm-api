@@ -4,7 +4,6 @@ import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.ingestion.IngestedDocumentUpdateRequest;
-import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.UriIngestionService;
 import com.solesonic.service.security.ResourceOwnershipService;
@@ -18,6 +17,7 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.data.web.PagedModel;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -40,7 +40,9 @@ import java.util.UUID;
  * {@code UserController} takes for {@code /users/{userId}/preferences} — the path names an owner, so
  * the path is checked against the JWT subject before anything else happens. No role gating: this
  * collection is self-service, and a user adding to their own retrievable material changes nothing
- * anyone else sees.
+ * anyone else sees. The one exception is {@code promote/global}, which additionally requires the
+ * {@code rag-admin} role — moving a document into the shared corpus changes what everyone else sees,
+ * not just the caller's own material.
  * <p>
  * The {@code 403} and the {@code 404} answer different questions and neither leaks the other's. A
  * {@code 403} means the path named someone other than the caller — a value the caller supplied
@@ -77,7 +79,7 @@ public class IngestedUserDocumentController {
         }
 
         log.info("Queuing a document for user {}", userId);
-        IngestedDocumentSummary summary = ingestedDocumentService.queue(file, RetrievalScope.USER, userId);
+        IngestedDocumentSummary summary = ingestedDocumentService.queueForUser(file, userId);
 
         return ResponseEntity.created(location(userId, summary.id())).body(summary);
     }
@@ -92,10 +94,9 @@ public class IngestedUserDocumentController {
 
         log.info("Queuing a uri for user {}", userId);
         IngestedDocument ingestedDocument =
-                uriIngestionService.queue(uriIngestRequest.uri(), RetrievalScope.USER, userId);
+                uriIngestionService.queueForUser(uriIngestRequest.uri(), userId);
 
-        IngestedDocumentSummary summary =
-                IngestedDocumentSummary.of(ingestedDocument, ingestedDocument.getDocumentStatus());
+        IngestedDocumentSummary summary = ingestedDocumentService.summaryOf(ingestedDocument);
 
         return ResponseEntity.accepted().location(location(userId, summary.id())).body(summary);
     }
@@ -171,6 +172,29 @@ public class IngestedUserDocumentController {
         log.info("Refreshing document {} for user {}", documentId, userId);
 
         return ResponseEntity.accepted().body(ingestedDocumentService.refreshForUser(documentId, userId));
+    }
+
+    /**
+     * Moves the document into the shared corpus, where everyone can retrieve it.
+     * <p>
+     * Ownership is still checked first, the same as every other method here — the path names the
+     * document's owner, and that owner must also hold {@code rag-admin} to promote it. Management of
+     * a promoted document passes to the {@code rag-admin} role, same as {@code IngestedChatDocumentController}'s
+     * {@code promote/global}, whose service call this reuses: {@code IngestedDocumentService.promoteToGlobal}
+     * checks the caller manages the document, which a user document's own uploader already does.
+     */
+    @PreAuthorize("hasRole('rag-admin')")
+    @PostMapping("/{documentId}/promote/global")
+    public ResponseEntity<IngestedDocumentSummary> promoteToGlobal(@PathVariable UUID userId,
+                                                                    @PathVariable UUID documentId,
+                                                                    HttpServletRequest request) {
+        if (!resourceOwnershipService.isOwner(userId, request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        log.info("Promoting document {} for user {} to the shared corpus", documentId, userId);
+
+        return ResponseEntity.ok(ingestedDocumentService.promoteToGlobal(documentId, userId));
     }
 
     private static URI location(UUID userId, UUID documentId) {

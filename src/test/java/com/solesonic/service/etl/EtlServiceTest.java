@@ -2,7 +2,6 @@ package com.solesonic.service.etl;
 
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
-import com.solesonic.model.rag.RetrievalScope;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -61,7 +60,6 @@ class EtlServiceTest {
 
         ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(UUID.randomUUID());
-        ingestedDocument.setScope(RetrievalScope.CHAT);
     }
 
     /**

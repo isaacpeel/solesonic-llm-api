@@ -5,6 +5,7 @@ import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.UriIngestionService;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,7 +31,6 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -60,6 +60,13 @@ class IngestedGlobalDocumentControllerTest {
     @Mock
     private UriIngestionService uriIngestionService;
 
+    /**
+     * The uploader, recorded as {@code granted_by} on the grants a global upload writes. A global
+     * document keeps no personal grant, so this is the only record of who added it.
+     */
+    @Mock
+    private UserRequestContext userRequestContext;
+
     @InjectMocks
     private IngestedGlobalDocumentController ingestedGlobalDocumentController;
 
@@ -81,7 +88,28 @@ class IngestedGlobalDocumentControllerTest {
                 DocumentSource.USER,
                 RetrievalScope.GLOBAL,
                 null,
+                List.of("global"),
+                null,
                 DocumentStatus.COMPLETED,
+                ZonedDateTime.now(),
+                ZonedDateTime.now());
+    }
+
+    /**
+     * A URI document is returned the moment it is queued, before anything has fetched it — so its
+     * status is {@code QUEUED} and its size is still unknown.
+     */
+    private IngestedDocumentSummary queuedSummary() {
+        return new IngestedDocumentSummary(documentId,
+                "https://example.com/article",
+                "text/html",
+                0L,
+                DocumentSource.URI,
+                RetrievalScope.GLOBAL,
+                null,
+                List.of("global"),
+                null,
+                DocumentStatus.QUEUED,
                 ZonedDateTime.now(),
                 ZonedDateTime.now());
     }
@@ -94,13 +122,14 @@ class IngestedGlobalDocumentControllerTest {
     void uploadCreatesAtGlobalScopeWithNoOwner() throws Exception {
         MockMultipartFile file = new MockMultipartFile("file", "handbook.pdf", "application/pdf", new byte[]{1, 2});
 
-        when(ingestedDocumentService.queue(any(), eq(RetrievalScope.GLOBAL), isNull())).thenReturn(summary());
+        when(ingestedDocumentService.queueGlobal(any(), any())).thenReturn(summary());
 
         mockMvc.perform(multipart("/documents/global").file(file))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "http://localhost/documents/global/" + documentId))
                 .andExpect(jsonPath("$.id").value(documentId.toString()))
-                .andExpect(jsonPath("$.scope").value("GLOBAL"));
+                .andExpect(jsonPath("$.scope").value("GLOBAL"))
+                .andExpect(jsonPath("$.entitlements[0]").value("global"));
     }
 
     /**
@@ -122,11 +151,11 @@ class IngestedGlobalDocumentControllerTest {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(documentId);
         ingestedDocument.setFileName("https://example.com/article");
-        ingestedDocument.setScope(RetrievalScope.GLOBAL);
         ingestedDocument.setDocumentStatus(DocumentStatus.QUEUED);
 
-        when(uriIngestionService.queue(eq("https://example.com/article"), eq(RetrievalScope.GLOBAL), isNull()))
+        when(uriIngestionService.queueGlobal(eq("https://example.com/article"), any()))
                 .thenReturn(ingestedDocument);
+        when(ingestedDocumentService.summaryOf(ingestedDocument)).thenReturn(queuedSummary());
 
         mockMvc.perform(post("/documents/global/uri")
                         .contentType(MediaType.APPLICATION_JSON)

@@ -4,6 +4,7 @@ import com.solesonic.model.atlassian.confluence.*;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.model.rag.DocumentPrincipal;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
@@ -54,6 +55,17 @@ public class ConfluenceServicePageScanTest {
     @BeforeEach
     public void beforeEach() {
         confluenceIngestionService = new ConfluenceIngestionService(ingestedDocumentService, vectorStoreService, webClient);
+
+        // queue(...) returns the persisted row rather than the one it built, because the id is
+        // generated on save and the grants are written against it. An unstubbed mock returns null,
+        // which the scan would then dereference.
+        lenient().when(ingestedDocumentService.saveWithOwnership(any(IngestedDocument.class),
+                        any(DocumentPrincipal.class), any(DocumentPrincipal.class), any(), any()))
+                .thenAnswer(invocation -> {
+                    IngestedDocument saved = invocation.getArgument(0);
+                    saved.setId(UUID.randomUUID());
+                    return saved;
+                });
     }
 
     @SuppressWarnings("unchecked")

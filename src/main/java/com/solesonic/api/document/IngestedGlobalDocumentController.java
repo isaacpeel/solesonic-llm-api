@@ -4,7 +4,7 @@ import com.solesonic.model.document.UriIngestRequest;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.ingestion.IngestedDocumentUpdateRequest;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.UriIngestionService;
 import org.slf4j.Logger;
@@ -57,18 +57,21 @@ public class IngestedGlobalDocumentController {
 
     private final IngestedDocumentService ingestedDocumentService;
     private final UriIngestionService uriIngestionService;
+    private final UserRequestContext userRequestContext;
 
     public IngestedGlobalDocumentController(IngestedDocumentService ingestedDocumentService,
-                                            UriIngestionService uriIngestionService) {
+                                            UriIngestionService uriIngestionService,
+                                            UserRequestContext userRequestContext) {
         this.ingestedDocumentService = ingestedDocumentService;
         this.uriIngestionService = uriIngestionService;
+        this.userRequestContext = userRequestContext;
     }
 
     @PreAuthorize("hasRole('rag-admin')")
     @PostMapping
     public ResponseEntity<IngestedDocumentSummary> upload(@RequestParam MultipartFile file) {
         log.info("Queuing a shared document");
-        IngestedDocumentSummary summary = ingestedDocumentService.queue(file, RetrievalScope.GLOBAL, null);
+        IngestedDocumentSummary summary = ingestedDocumentService.queueGlobal(file, userRequestContext.getUserId());
 
         return ResponseEntity.created(location(summary.id())).body(summary);
     }
@@ -78,10 +81,9 @@ public class IngestedGlobalDocumentController {
     public ResponseEntity<IngestedDocumentSummary> ingestUri(@RequestBody UriIngestRequest uriIngestRequest) {
         log.info("Queuing a shared uri");
         IngestedDocument ingestedDocument =
-                uriIngestionService.queue(uriIngestRequest.uri(), RetrievalScope.GLOBAL, null);
+                uriIngestionService.queueGlobal(uriIngestRequest.uri(), userRequestContext.getUserId());
 
-        IngestedDocumentSummary summary =
-                IngestedDocumentSummary.of(ingestedDocument, ingestedDocument.getDocumentStatus());
+        IngestedDocumentSummary summary = ingestedDocumentService.summaryOf(ingestedDocument);
 
         return ResponseEntity.accepted().location(location(summary.id())).body(summary);
     }

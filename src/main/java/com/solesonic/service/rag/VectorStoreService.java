@@ -1,7 +1,8 @@
 package com.solesonic.service.rag;
 
 import com.solesonic.model.VectorSearch;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.rag.RetrievalMetadata;
 import com.solesonic.model.ingestion.VectorDocument;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.rag.VectorStoreRepository;
@@ -32,11 +33,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.solesonic.config.openai.RagTaskOpenAiConfig.RAG_TASK_CHAT_MODEL;
-import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ID;
-import static com.solesonic.model.rag.RetrievalMetadata.SCOPE;
-import static com.solesonic.model.rag.RetrievalMetadata.USER_ID;
+import static com.solesonic.model.rag.RetrievalMetadata.ENTITLEMENTS;
 
 @Service
 public class VectorStoreService {
@@ -134,40 +134,43 @@ public class VectorStoreService {
      * JSON is a string, and a filter comparing against anything else matches nothing.
      */
     private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId, UserPreferences userPreferences) {
-        FilterExpressionBuilder filterExpressionBuilder = new FilterExpressionBuilder();
-
         List<ScopedDocumentRetriever.ScopedTier> tiers = new ArrayList<>(3);
 
         if (chatId != null) {
-            Filter.Expression chatFilter = filterExpressionBuilder.and(
-                    filterExpressionBuilder.eq(SCOPE, RetrievalScope.CHAT.name()),
-                    filterExpressionBuilder.eq(CHAT_ID, chatId.toString())).build();
-
             Double chatSimilarityThreshold = Optional.ofNullable(userPreferences.getChatSimilarityThreshold())
                     .orElse(defaultChatSimilarityThreshold);
 
-            tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.CHAT, chatFilter, chatSimilarityThreshold));
+            tiers.add(tier(DocumentPrincipal.chat(chatId), chatSimilarityThreshold));
         }
-
-        Filter.Expression userFilter = filterExpressionBuilder.and(
-                filterExpressionBuilder.eq(SCOPE, RetrievalScope.USER.name()),
-                filterExpressionBuilder.eq(USER_ID, userId.toString())).build();
 
         Double userSimilarityThreshold = Optional.ofNullable(userPreferences.getUserSimilarityThreshold())
                 .orElse(defaultUserSimilarityThreshold);
 
-        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.USER, userFilter, userSimilarityThreshold));
-
-        Filter.Expression globalFilter = filterExpressionBuilder
-                .eq(SCOPE, RetrievalScope.GLOBAL.name())
-                .build();
+        tiers.add(tier(DocumentPrincipal.user(userId), userSimilarityThreshold));
 
         Double globalSimilarityThreshold = Optional.ofNullable(userPreferences.getGlobalSimilarityThreshold())
                 .orElse(defaultGlobalSimilarityThreshold);
 
-        tiers.add(new ScopedDocumentRetriever.ScopedTier(RetrievalScope.GLOBAL, globalFilter, globalSimilarityThreshold));
+        tiers.add(tier(DocumentPrincipal.global(), globalSimilarityThreshold));
 
         return tiers;
+    }
+
+    /**
+     * One principal's tier: a single equality against {@link RetrievalMetadata#ENTITLEMENTS}.
+     * <p>
+     * A single {@code eq} rather than the two-key {@code and} each tier used to need, because a
+     * chunk now names its audiences directly instead of carrying a scope plus whichever id that
+     * scope implied. It still matches a chunk granted to several principals: pgvector renders this
+     * as a jsonpath predicate and Postgres evaluates {@code @@} in lax mode, which unwraps the array
+     * before comparing.
+     */
+    private static ScopedDocumentRetriever.ScopedTier tier(DocumentPrincipal principal, Double similarityThreshold) {
+        Filter.Expression filterExpression = new FilterExpressionBuilder()
+                .eq(ENTITLEMENTS, principal.key())
+                .build();
+
+        return new ScopedDocumentRetriever.ScopedTier(principal, filterExpression, similarityThreshold);
     }
 
     public void save(List<Document> documents) {
@@ -203,8 +206,33 @@ public class VectorStoreService {
     }
 
     /**
-     * Discards every conversation-scoped chunk of one chat. Joins the caller's transaction so that
-     * a conversation and the documents that were attached to it go together or not at all.
+     * Re-points every chunk of one document at a new audience, clearing the chat provenance that
+     * would otherwise take it with the conversation it came from.
+     * <p>
+     * The keys are rendered to a JSON array here rather than by the caller, so the one place that
+     * produces an entitlement key ({@code DocumentEntitlementService.retrievalKeys}) stays the one
+     * place, and the array a chunk carries is written the same way whether it was stamped at
+     * ingestion or rewritten by a promotion.
+     */
+    @Transactional
+    public void promoteChunks(UUID ingestedDocumentId, List<String> entitlements) {
+        if (entitlements.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Refusing to rewrite chunks of " + ingestedDocumentId + " to no entitlements at all");
+        }
+
+        String entitlementsJson = entitlements.stream()
+                .map(entitlement -> "\"" + entitlement.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+                .collect(Collectors.joining(",", "[", "]"));
+
+        int updated = vectorStoreRepository.promoteChunks(ingestedDocumentId.toString(), entitlementsJson);
+
+        log.info("Re-pointed {} chunk(s) of document {} at {}", updated, ingestedDocumentId, entitlements);
+    }
+
+    /**
+     * Discards every chunk that came from one chat. Joins the caller's transaction so that a
+     * conversation and the documents that were attached to it go together or not at all.
      */
     @Transactional
     public void deleteByChatId(UUID chatId) {

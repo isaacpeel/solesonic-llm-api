@@ -5,14 +5,14 @@ import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.VectorDocument;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.rag.GrantKind;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.HashMap;
@@ -27,7 +27,12 @@ import static org.assertj.core.api.AssertionsForClassTypes.assertThatCode;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class UriIngestionServiceTest {
@@ -40,179 +45,179 @@ class UriIngestionServiceTest {
     @Mock
     private VectorStoreService vectorStoreService;
 
+    @Mock
+    private DocumentEntitlementService documentEntitlementService;
+
     private UriIngestionService uriIngestionService;
 
     @BeforeEach
     void beforeEach() {
-        uriIngestionService = new UriIngestionService(ingestedDocumentService, vectorStoreService);
+        uriIngestionService = new UriIngestionService(ingestedDocumentService,
+                vectorStoreService,
+                documentEntitlementService);
     }
 
-    @Test
-    void test_queue_new_uri() {
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of());
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
-
-        IngestedDocument queuedIngestedDocument = uriIngestionService.queue(TEST_URI, RetrievalScope.GLOBAL, null);
-
-        assertThat(queuedIngestedDocument.getDocumentSource()).isEqualTo(DocumentSource.URI);
-        assertThat(queuedIngestedDocument.getDocumentStatus()).isEqualTo(DocumentStatus.QUEUED);
-        assertThat(queuedIngestedDocument.getMetadata().get(SOURCE_URI)).isEqualTo(TEST_URI);
-
-        verify(vectorStoreService, never()).findByIngestedDocumentId(any());
-        verify(ingestedDocumentService, never()).update(any(), eq(DocumentStatus.REPLACED));
+    /**
+     * The queued row is saved through {@code saveWithOwnership}, which is what writes its grants — a
+     * URI document saved without them would be retrievable and manageable by nobody.
+     */
+    private void savesWithOwnership() {
+        when(ingestedDocumentService.saveWithOwnership(any(IngestedDocument.class),
+                any(DocumentPrincipal.class), any(DocumentPrincipal.class), any(), any()))
+                .thenAnswer(invocation -> {
+                    IngestedDocument ingestedDocument = invocation.getArgument(0);
+                    ingestedDocument.setId(UUID.randomUUID());
+                    return ingestedDocument;
+                });
     }
 
-    @Test
-    void test_queue_resubmitted_uri_replaces_existing() {
-        UUID existingIngestedDocumentId = UUID.randomUUID();
-
+    private static IngestedDocument existingUriDocument(UUID id) {
         IngestedDocument existingIngestedDocument = new IngestedDocument();
-        existingIngestedDocument.setId(existingIngestedDocumentId);
-        existingIngestedDocument.setScope(RetrievalScope.GLOBAL);
+        existingIngestedDocument.setId(id);
         existingIngestedDocument.setCreated(ZonedDateTime.now().minusDays(1));
 
         Map<String, Object> existingMetadata = new HashMap<>();
         existingMetadata.put(SOURCE_URI, TEST_URI);
         existingIngestedDocument.setMetadata(existingMetadata);
 
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of(existingIngestedDocument));
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
+        return existingIngestedDocument;
+    }
+
+    @Test
+    void queuesANewUriIntoTheSharedCorpus() {
+        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of());
+        savesWithOwnership();
+
+        IngestedDocument queuedIngestedDocument = uriIngestionService.queueGlobal(TEST_URI, null);
+
+        assertThat(queuedIngestedDocument.getDocumentSource()).isEqualTo(DocumentSource.URI);
+        assertThat(queuedIngestedDocument.getDocumentStatus()).isEqualTo(DocumentStatus.QUEUED);
+        assertThat(queuedIngestedDocument.getMetadata().get(SOURCE_URI)).isEqualTo(TEST_URI);
+
+        // Retrievable by everyone, managed by the role -- the uploading admin keeps no personal
+        // grant, which is what makes granted_by the record of who added it. The null content is a
+        // URI document having no bytes until DocumentService fetches them.
+        verify(ingestedDocumentService).saveWithOwnership(any(IngestedDocument.class),
+                eq(DocumentPrincipal.global()),
+                eq(DocumentPrincipal.ragAdmin()),
+                isNull(),
+                isNull());
+
+        verify(vectorStoreService, never()).findByIngestedDocumentId(any());
+        verify(ingestedDocumentService, never()).update(any(), eq(DocumentStatus.REPLACED));
+    }
+
+    @Test
+    void queuesAUriIntoOneUsersLibrary() {
+        UUID userId = UUID.randomUUID();
+
+        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of());
+        savesWithOwnership();
+
+        uriIngestionService.queueForUser(TEST_URI, userId);
+
+        verify(ingestedDocumentService).saveWithOwnership(any(IngestedDocument.class),
+                eq(DocumentPrincipal.user(userId)),
+                eq(DocumentPrincipal.user(userId)),
+                eq(userId),
+                isNull());
+    }
+
+    /**
+     * Re-ingesting the same URI for the same audience supersedes the previous document: its chunks
+     * go, and it is marked {@code REPLACED} with a pointer to what replaced it.
+     */
+    @Test
+    void resubmittingAUriReplacesTheDocumentWithTheSameAudience() {
+        UUID existingIngestedDocumentId = UUID.randomUUID();
+        IngestedDocument existingIngestedDocument = existingUriDocument(existingIngestedDocumentId);
+
+        when(ingestedDocumentService.findBySourceUri(TEST_URI))
+                .thenReturn(List.of(existingIngestedDocument));
+        when(documentEntitlementService.principals(existingIngestedDocumentId, GrantKind.RETRIEVE))
+                .thenReturn(List.of(DocumentPrincipal.global()));
+        savesWithOwnership();
 
         VectorDocument vectorDocument = new VectorDocument();
-        when(vectorStoreService.findByIngestedDocumentId(existingIngestedDocumentId)).thenReturn(List.of(vectorDocument));
+        when(vectorStoreService.findByIngestedDocumentId(existingIngestedDocumentId))
+                .thenReturn(List.of(vectorDocument));
 
-        IngestedDocument queuedIngestedDocument = uriIngestionService.queue(TEST_URI, RetrievalScope.GLOBAL, null);
+        IngestedDocument queuedIngestedDocument = uriIngestionService.queueGlobal(TEST_URI, null);
 
         verify(vectorStoreService, times(1)).findByIngestedDocumentId(existingIngestedDocumentId);
         verify(vectorStoreService, times(1)).delete(List.of(vectorDocument));
         verify(ingestedDocumentService, times(1)).update(existingIngestedDocument, DocumentStatus.REPLACED);
 
-        assertThat(existingIngestedDocument.getMetadata().get(REPLACED_BY_ID)).isEqualTo(queuedIngestedDocument.getId());
-    }
-
-    @Test
-    void test_queue_rejects_non_http_scheme() {
-        assertThatThrownBy(() -> uriIngestionService.queue("ftp://example.com/file", RetrievalScope.GLOBAL, null))
-                .isInstanceOf(ChatException.class);
-
-        verifyNoInteractions(ingestedDocumentService, vectorStoreService);
-    }
-
-    @Test
-    void test_queue_rejects_malformed_uri() {
-        assertThatThrownBy(() -> uriIngestionService.queue("not a uri", RetrievalScope.GLOBAL, null))
-                .isInstanceOf(ChatException.class);
-
-        verifyNoInteractions(ingestedDocumentService, vectorStoreService);
-    }
-
-    @Test
-    void test_queue_rejects_blank_uri() {
-        assertThatCode(() -> uriIngestionService.queue("", RetrievalScope.GLOBAL, null))
-                .isInstanceOf(ChatException.class);
-
-        verifyNoInteractions(ingestedDocumentService, vectorStoreService);
+        assertThat(existingIngestedDocument.getMetadata().get(REPLACED_BY_ID))
+                .isEqualTo(queuedIngestedDocument.getId());
     }
 
     /**
-     * The gap this signature closes. Before the scope was an argument this path never called
-     * {@code setScope}, so every URI document was written with none recorded and reached retrieval
-     * only because embedding treats a null scope as {@code GLOBAL}.
+     * The rule that keeps one person's re-ingest from destroying another's copy.
+     * <p>
+     * {@code findBySourceUri} matches on the URI alone, so the same public page ingested by two
+     * people comes back twice. Only the one with an identical retrieve grant set may be superseded —
+     * a user's private copy is not the shared corpus's copy, and marking it {@code REPLACED} would
+     * delete chunks belonging to someone who did nothing.
      */
     @Test
-    void test_queue_records_the_requested_scope_and_owner() {
-        UUID ownerId = UUID.randomUUID();
+    void doesNotReplaceTheSameUriHeldByADifferentAudience() {
+        UUID otherUsersDocumentId = UUID.randomUUID();
+        IngestedDocument otherUsersDocument = existingUriDocument(otherUsersDocumentId);
 
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of());
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
+        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of(otherUsersDocument));
+        when(documentEntitlementService.principals(otherUsersDocumentId, GrantKind.RETRIEVE))
+                .thenReturn(List.of(DocumentPrincipal.user(UUID.randomUUID())));
+        savesWithOwnership();
 
-        IngestedDocument queuedIngestedDocument =
-                uriIngestionService.queue(TEST_URI, RetrievalScope.USER, ownerId);
-
-        assertThat(queuedIngestedDocument.getScope()).isEqualTo(RetrievalScope.USER);
-        assertThat(queuedIngestedDocument.getUserId()).isEqualTo(ownerId);
-    }
-
-    @Test
-    void test_queue_at_global_scope_records_no_owner() {
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of());
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
-
-        IngestedDocument queuedIngestedDocument =
-                uriIngestionService.queue(TEST_URI, RetrievalScope.GLOBAL, UUID.randomUUID());
-
-        assertThat(queuedIngestedDocument.getScope()).isEqualTo(RetrievalScope.GLOBAL);
-        assertThat(queuedIngestedDocument.getUserId()).isNull();
-    }
-
-    /**
-     * {@code findBySourceUri} matches on the URI alone. Re-ingesting a public page privately must
-     * not mark the shared copy REPLACED and delete its chunks out from under every other user.
-     */
-    @Test
-    void test_queue_does_not_replace_a_document_in_another_collection() {
-        IngestedDocument sharedIngestedDocument = new IngestedDocument();
-        sharedIngestedDocument.setId(UUID.randomUUID());
-        sharedIngestedDocument.setScope(RetrievalScope.GLOBAL);
-        sharedIngestedDocument.setCreated(ZonedDateTime.now().minusDays(1));
-
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of(sharedIngestedDocument));
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
-
-        uriIngestionService.queue(TEST_URI, RetrievalScope.USER, UUID.randomUUID());
+        uriIngestionService.queueGlobal(TEST_URI, null);
 
         verify(vectorStoreService, never()).findByIngestedDocumentId(any());
         verify(ingestedDocumentService, never()).update(any(), eq(DocumentStatus.REPLACED));
     }
 
     /**
-     * Two users ingesting the same URI privately keep two documents; neither supersedes the other.
+     * A document shared with more than one principal is not the same collection as one granted to
+     * only the first of them. The old {@code scope == scope && userId == ownerId} comparison could
+     * not express this at all — it would have superseded the shared copy.
      */
     @Test
-    void test_queue_does_not_replace_another_users_copy_of_the_same_uri() {
-        IngestedDocument otherUsersIngestedDocument = new IngestedDocument();
-        otherUsersIngestedDocument.setId(UUID.randomUUID());
-        otherUsersIngestedDocument.setScope(RetrievalScope.USER);
-        otherUsersIngestedDocument.setUserId(UUID.randomUUID());
-        otherUsersIngestedDocument.setCreated(ZonedDateTime.now().minusDays(1));
+    void doesNotReplaceADocumentSharedMoreWidelyThanTheNewOne() {
+        UUID userId = UUID.randomUUID();
+        UUID sharedDocumentId = UUID.randomUUID();
+        IngestedDocument sharedDocument = existingUriDocument(sharedDocumentId);
 
-        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of(otherUsersIngestedDocument));
-        when(ingestedDocumentService.save(any(IngestedDocument.class))).thenAnswer(invocation -> {
-            IngestedDocument ingestedDocument = invocation.getArgument(0);
-            ingestedDocument.setId(UUID.randomUUID());
-            return ingestedDocument;
-        });
+        when(ingestedDocumentService.findBySourceUri(TEST_URI)).thenReturn(List.of(sharedDocument));
+        when(documentEntitlementService.principals(sharedDocumentId, GrantKind.RETRIEVE))
+                .thenReturn(List.of(DocumentPrincipal.user(userId), DocumentPrincipal.global()));
+        savesWithOwnership();
 
-        uriIngestionService.queue(TEST_URI, RetrievalScope.USER, UUID.randomUUID());
+        uriIngestionService.queueForUser(TEST_URI, userId);
 
         verify(ingestedDocumentService, never()).update(any(), eq(DocumentStatus.REPLACED));
     }
 
     @Test
-    void test_queue_rejects_chat_scope() {
-        assertThatThrownBy(() -> uriIngestionService.queue(TEST_URI, RetrievalScope.CHAT, UUID.randomUUID()))
-                .isInstanceOf(ResponseStatusException.class);
+    void rejectsANonHttpScheme() {
+        assertThatThrownBy(() -> uriIngestionService.queueGlobal("ftp://example.com/file", null))
+                .isInstanceOf(ChatException.class);
 
-        verifyNoInteractions(ingestedDocumentService, vectorStoreService);
+        verifyNoInteractions(ingestedDocumentService, vectorStoreService, documentEntitlementService);
+    }
+
+    @Test
+    void rejectsAMalformedUri() {
+        assertThatThrownBy(() -> uriIngestionService.queueGlobal("not a uri", null))
+                .isInstanceOf(ChatException.class);
+
+        verifyNoInteractions(ingestedDocumentService, vectorStoreService, documentEntitlementService);
+    }
+
+    @Test
+    void rejectsABlankUri() {
+        assertThatCode(() -> uriIngestionService.queueGlobal("", null))
+                .isInstanceOf(ChatException.class);
+
+        verifyNoInteractions(ingestedDocumentService, vectorStoreService, documentEntitlementService);
     }
 }

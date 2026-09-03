@@ -6,7 +6,8 @@ import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
-import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.service.ingestion.DocumentEntitlementService;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,9 +30,8 @@ import java.util.UUID;
 
 import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ATTACHMENT_ID;
 import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ID;
+import static com.solesonic.model.rag.RetrievalMetadata.ENTITLEMENTS;
 import static com.solesonic.model.rag.RetrievalMetadata.FILE_NAME;
-import static com.solesonic.model.rag.RetrievalMetadata.SCOPE;
-import static com.solesonic.model.rag.RetrievalMetadata.USER_ID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -60,13 +60,35 @@ class DocumentServiceTest {
     @Mock
     private ChatAttachmentRepository chatAttachmentRepository;
 
+    @Mock
+    private DocumentEntitlementService documentEntitlementService;
+
     private DocumentService documentService;
 
     @BeforeEach
     void beforeEach() {
         documentService = spy(new DocumentService(vectorStoreService, etlService, ingestedDocumentService,
-                uriContentFetcher, chatAttachmentRepository));
+                uriContentFetcher, chatAttachmentRepository, documentEntitlementService));
         doReturn(List.of(new Document("raw text"))).when(documentService).read(any(Resource.class), anyString());
+    }
+
+    /**
+     * Chunks are stamped from the grant rows, never from anything the row itself carries, so a test
+     * that wants a document embedded has to say what it is granted to. That is the point of the
+     * change: there is no scope column left to infer an audience from.
+     */
+    private void grantedTo(UUID ingestedDocumentId, DocumentPrincipal principal) {
+        when(documentEntitlementService.retrievalKeys(ingestedDocumentId))
+                .thenReturn(List.of(principal.key()));
+    }
+
+    /**
+     * The bytes of an ordinary document now live on {@code ingested_document_content} rather than on
+     * the row, so a queued ingest reads them through the service instead of off the entity.
+     */
+    private void storedContent(UUID ingestedDocumentId) {
+        when(ingestedDocumentService.content(ingestedDocumentId))
+                .thenReturn(Optional.of("hello".getBytes()));
     }
 
     private static Resource resource() {
@@ -85,7 +107,6 @@ class DocumentServiceTest {
      */
     private static IngestedDocument chatIngestedDocument(UUID ingestedDocumentId,
                                                          UUID chatId,
-                                                         UUID userId,
                                                          UUID chatAttachmentId) {
         Map<String, Object> metadata = new HashMap<>();
         metadata.put(IngestedDocument.ORIGINAL_FILE_NAME, CHAT_FILE_NAME);
@@ -96,10 +117,7 @@ class DocumentServiceTest {
         ingestedDocument.setId(ingestedDocumentId);
         ingestedDocument.setDocumentStatus(DocumentStatus.IN_PROGRESS);
         ingestedDocument.setDocumentSource(DocumentSource.CHAT);
-        ingestedDocument.setScope(RetrievalScope.CHAT);
-        ingestedDocument.setUserId(userId);
         ingestedDocument.setContentType(MediaType.TEXT_PLAIN_VALUE);
-        ingestedDocument.setFileData(new byte[0]);
         ingestedDocument.setFileName(CHAT_FILE_NAME);
         ingestedDocument.setMetadata(metadata);
         ingestedDocument.setCreated(ZonedDateTime.now());
@@ -117,12 +135,12 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_resource_and_id_stamps_chat_metadata_and_returns_chunk_count() {
         UUID ingestedDocumentId = UUID.randomUUID();
         UUID chatId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
         UUID chatAttachmentId = UUID.randomUUID();
 
         IngestedDocument ingestedDocument =
-                chatIngestedDocument(ingestedDocumentId, chatId, userId, chatAttachmentId);
+                chatIngestedDocument(ingestedDocumentId, chatId, chatAttachmentId);
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.chat(chatId));
 
         Document chunkOne = new Document("chunk one");
         Document chunkTwo = new Document("chunk two");
@@ -134,9 +152,8 @@ class DocumentServiceTest {
 
         for (Document chunk : List.of(chunkOne, chunkTwo)) {
             assertThat(chunk.getMetadata())
-                    .containsEntry(SCOPE, RetrievalScope.CHAT.name())
+                    .containsEntry(ENTITLEMENTS, List.of("chat:" + chatId))
                     .containsEntry(DocumentService.INGESTED_DOCUMENT_ID, ingestedDocumentId)
-                    .containsEntry(USER_ID, userId.toString())
                     .containsEntry(CHAT_ID, chatId.toString())
                     .containsEntry(CHAT_ATTACHMENT_ID, chatAttachmentId.toString())
                     .containsEntry(FILE_NAME, CHAT_FILE_NAME);
@@ -157,10 +174,10 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_resource_and_id_reads_the_passed_resource_not_the_empty_row_bytes() {
         UUID ingestedDocumentId = UUID.randomUUID();
 
-        IngestedDocument ingestedDocument = chatIngestedDocument(
-                ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        IngestedDocument ingestedDocument = chatIngestedDocument(ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID());
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(new Document("chunk")));
+        grantedTo(ingestedDocumentId, DocumentPrincipal.chat(UUID.randomUUID()));
 
         Resource resource = resource();
 
@@ -180,8 +197,7 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_resource_and_id_marks_failed_and_throws_when_no_chunks_produced() {
         UUID ingestedDocumentId = UUID.randomUUID();
 
-        IngestedDocument ingestedDocument = chatIngestedDocument(
-                ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        IngestedDocument ingestedDocument = chatIngestedDocument(ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID());
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of());
 
@@ -202,12 +218,14 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_resource_and_id_refuses_a_chat_row_missing_its_chat_ids() {
         UUID ingestedDocumentId = UUID.randomUUID();
 
-        IngestedDocument ingestedDocument = chatIngestedDocument(
-                ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        IngestedDocument ingestedDocument = chatIngestedDocument(ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID());
         ingestedDocument.setMetadata(new HashMap<>());
 
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(new Document("chunk")));
+
+        // Granted, so the refusal below is the missing attachment id rather than a missing grant.
+        grantedTo(ingestedDocumentId, DocumentPrincipal.chat(UUID.randomUUID()));
 
         assertThatThrownBy(() -> documentService.resourceToVectorStore(resource(), ingestedDocumentId))
                 .isInstanceOf(IllegalStateException.class);
@@ -223,8 +241,7 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_resource_and_id_marks_failed_and_rethrows_a_runtime_exception() {
         UUID ingestedDocumentId = UUID.randomUUID();
 
-        IngestedDocument ingestedDocument = chatIngestedDocument(
-                ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        IngestedDocument ingestedDocument = chatIngestedDocument(ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID());
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
 
         RuntimeException embeddingFailure = new RuntimeException("vector store unavailable");
@@ -249,8 +266,7 @@ class DocumentServiceTest {
         UUID ingestedDocumentId = UUID.randomUUID();
         UUID chatAttachmentId = UUID.randomUUID();
 
-        IngestedDocument ingestedDocument = chatIngestedDocument(
-                ingestedDocumentId, UUID.randomUUID(), UUID.randomUUID(), chatAttachmentId);
+        IngestedDocument ingestedDocument = chatIngestedDocument(ingestedDocumentId, UUID.randomUUID(), chatAttachmentId);
 
         ChatAttachment chatAttachment = new ChatAttachment();
         chatAttachment.setId(chatAttachmentId);
@@ -260,10 +276,14 @@ class DocumentServiceTest {
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
         when(chatAttachmentRepository.findById(chatAttachmentId)).thenReturn(Optional.of(chatAttachment));
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(new Document("chunk")));
+        grantedTo(ingestedDocumentId, DocumentPrincipal.chat(UUID.randomUUID()));
 
         documentService.resourceToVectorStore(ingestedDocumentId);
 
-        assertThat(ingestedDocument.getFileData()).isEqualTo("attached text".getBytes());
+        // The bytes came off the attachment rather than the row, and were deliberately not copied
+        // onto it: the attachment keeps the only copy until a promotion severs the two.
+        verify(chatAttachmentRepository).findById(chatAttachmentId);
+        verify(ingestedDocumentService, never()).storeContent(eq(ingestedDocumentId), any(byte[].class));
         verify(ingestedDocumentService).update(ingestedDocument, DocumentStatus.COMPLETED);
     }
 
@@ -276,7 +296,6 @@ class DocumentServiceTest {
     void test_resourceToVectorStore_uuid_embeds_a_chat_document_that_came_from_no_attachment() {
         UUID ingestedDocumentId = UUID.randomUUID();
         UUID chatId = UUID.randomUUID();
-        UUID userId = UUID.randomUUID();
 
         Map<String, Object> metadata = new HashMap<>();
         metadata.put(IngestedDocument.CHAT_ID, chatId.toString());
@@ -284,15 +303,13 @@ class DocumentServiceTest {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(ingestedDocumentId);
         ingestedDocument.setDocumentSource(DocumentSource.USER);
-        ingestedDocument.setScope(RetrievalScope.CHAT);
-        ingestedDocument.setChatId(chatId);
-        ingestedDocument.setUserId(userId);
         ingestedDocument.setContentType(MediaType.TEXT_PLAIN_VALUE);
-        ingestedDocument.setFileData("hello".getBytes());
         ingestedDocument.setFileName(CHAT_FILE_NAME);
         ingestedDocument.setMetadata(metadata);
 
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        storedContent(ingestedDocumentId);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.chat(chatId));
 
         Document chunk = new Document("chunk");
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(chunk));
@@ -300,9 +317,8 @@ class DocumentServiceTest {
         documentService.resourceToVectorStore(ingestedDocumentId);
 
         assertThat(chunk.getMetadata())
-                .containsEntry(SCOPE, RetrievalScope.CHAT.name())
+                .containsEntry(ENTITLEMENTS, List.of("chat:" + chatId))
                 .containsEntry(CHAT_ID, chatId.toString())
-                .containsEntry(USER_ID, userId.toString())
                 .containsEntry(FILE_NAME, CHAT_FILE_NAME)
                 .doesNotContainKey(CHAT_ATTACHMENT_ID);
 
@@ -322,14 +338,14 @@ class DocumentServiceTest {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(ingestedDocumentId);
         ingestedDocument.setDocumentSource(DocumentSource.USER);
-        ingestedDocument.setScope(RetrievalScope.GLOBAL);
         ingestedDocument.setContentType(MediaType.TEXT_PLAIN_VALUE);
-        ingestedDocument.setFileData("hello".getBytes());
         ingestedDocument.setFileName("shared.txt");
         ingestedDocument.setCreated(ZonedDateTime.now());
         ingestedDocument.setUpdated(ZonedDateTime.now());
 
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        storedContent(ingestedDocumentId);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.global());
 
         Document chunk = new Document("chunk");
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(chunk));
@@ -337,9 +353,9 @@ class DocumentServiceTest {
         documentService.resourceToVectorStore(ingestedDocumentId);
 
         assertThat(chunk.getMetadata())
-                .containsEntry(SCOPE, RetrievalScope.GLOBAL.name())
+                .containsEntry(ENTITLEMENTS, List.of("global"))
                 .containsEntry(DocumentService.INGESTED_DOCUMENT_ID, ingestedDocumentId)
-                .doesNotContainKey(USER_ID);
+                .doesNotContainKey(CHAT_ID);
 
         verify(etlService).prepare(anyList(), eq(ingestedDocument));
         verify(etlService, never()).prepare(anyList());
@@ -354,15 +370,14 @@ class DocumentServiceTest {
         IngestedDocument ingestedDocument = new IngestedDocument();
         ingestedDocument.setId(ingestedDocumentId);
         ingestedDocument.setDocumentSource(DocumentSource.USER);
-        ingestedDocument.setScope(RetrievalScope.USER);
-        ingestedDocument.setUserId(ownerId);
         ingestedDocument.setContentType(MediaType.TEXT_PLAIN_VALUE);
-        ingestedDocument.setFileData("hello".getBytes());
         ingestedDocument.setFileName("mine.txt");
         ingestedDocument.setCreated(ZonedDateTime.now());
         ingestedDocument.setUpdated(ZonedDateTime.now());
 
         when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        storedContent(ingestedDocumentId);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.user(ownerId));
 
         Document chunk = new Document("chunk");
         when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(chunk));
@@ -370,7 +385,6 @@ class DocumentServiceTest {
         documentService.resourceToVectorStore(ingestedDocumentId);
 
         assertThat(chunk.getMetadata())
-                .containsEntry(SCOPE, RetrievalScope.USER.name())
-                .containsEntry(USER_ID, ownerId.toString());
+                .containsEntry(ENTITLEMENTS, List.of("user:" + ownerId));
     }
 }

@@ -2,7 +2,6 @@ package com.solesonic.model.ingestion;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.document.DocumentSource;
-import com.solesonic.model.rag.RetrievalScope;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
@@ -21,12 +20,16 @@ public class IngestedDocument {
     public static final String SOURCE_URI = "SOURCE_URI";
 
     /**
-     * The conversation a {@code CHAT} scoped document was attached to, and the
-     * {@code chat_attachment} row it was read from. Named after
-     * {@link com.solesonic.model.rag.RetrievalMetadata#CHAT_ID} and
+     * The conversation this document was attached to, and the {@code chat_attachment} row it was read
+     * from. Named after {@link com.solesonic.model.rag.RetrievalMetadata#CHAT_ID} and
      * {@link com.solesonic.model.rag.RetrievalMetadata#CHAT_ATTACHMENT_ID}, but a separate map: those
-     * are chunk metadata a retrieval filter reads, these are entity metadata that says where this row
-     * came from, so deleting either the attachment or the whole chat can find it again.
+     * are chunk metadata, these are entity metadata.
+     * <p>
+     * Both are <em>provenance</em> — where this row came from — and after the entitlement model they
+     * are nothing else. Who may retrieve the document is {@code document_entitlement}'s answer, so a
+     * document promoted out of a conversation keeps these keys as an audit trail and simply stops
+     * being granted to that chat. That separation is what lets teardown stay keyed on provenance:
+     * deleting the conversation still finds every row that came from it.
      */
     public static final String CHAT_ID = "CHAT_ID";
     public static final String CHAT_ATTACHMENT_ID = "CHAT_ATTACHMENT_ID";
@@ -40,9 +43,6 @@ public class IngestedDocument {
 
     private String contentType;
 
-    @Lob
-    private byte[] fileData;
-
     @Transient
     private DocumentStatus documentStatus;
 
@@ -52,31 +52,6 @@ public class IngestedDocument {
 
     @Enumerated(EnumType.STRING)
     private DocumentSource documentSource;
-
-    /**
-     * Who owns this document, when {@link #scope} is {@code USER}. Null at {@code GLOBAL} scope,
-     * which is what every document ingested before scoping existed is.
-     */
-    private UUID userId;
-
-    /**
-     * How widely the chunks of this document may be retrieved. Stamped onto every chunk's metadata
-     * at ingestion, which is where retrieval actually reads it from — this column is the record of
-     * what was intended, so a re-ingest reproduces the same scope.
-     */
-    @Enumerated(EnumType.STRING)
-    private RetrievalScope scope;
-
-    /**
-     * Which conversation this document belongs to, when {@link #scope} is {@code CHAT}. Null at every
-     * other scope, the way {@link #userId} is null at {@code GLOBAL}.
-     * <p>
-     * A column rather than only the {@link #CHAT_ID} metadata key because the {@code CHAT} collection
-     * pages and looks up by it, and both of those project {@code fileData} away — which is JPQL, and
-     * JPQL cannot index into the json {@code metadata} column. The key is still written and still
-     * read: it is what the teardown queries and the chunk stamping use.
-     */
-    private UUID chatId;
 
     @Column(name = "metadata")
     @JdbcTypeCode(SqlTypes.JSON)
@@ -89,37 +64,6 @@ public class IngestedDocument {
         this.id = id;
         this.fileName = fileName;
         this.contentType = contentType;
-    }
-
-    /**
-     * Everything a {@link IngestedDocumentSummary} needs and nothing else, so that the scoped
-     * listing queries can project rows without loading {@code fileData}. A whole row is on the
-     * order of the uploaded file; a page of twenty of them is not something to read to answer a
-     * listing.
-     * <p>
-     * {@code documentStatus} is absent on purpose — it is {@link Transient}, derived from
-     * {@code status_history}, and the service fills it in after the projection.
-     */
-    public IngestedDocument(UUID id,
-                            String fileName,
-                            String contentType,
-                            DocumentSource documentSource,
-                            RetrievalScope scope,
-                            UUID userId,
-                            UUID chatId,
-                            Map<String, Object> metadata,
-                            ZonedDateTime created,
-                            ZonedDateTime updated) {
-        this.id = id;
-        this.fileName = fileName;
-        this.contentType = contentType;
-        this.documentSource = documentSource;
-        this.scope = scope;
-        this.userId = userId;
-        this.chatId = chatId;
-        this.metadata = metadata;
-        this.created = created;
-        this.updated = updated;
     }
 
     public UUID getId() {
@@ -136,14 +80,6 @@ public class IngestedDocument {
 
     public void setFileName(String name) {
         this.fileName = name;
-    }
-
-    public byte[] getFileData() {
-        return fileData;
-    }
-
-    public void setFileData(byte[] fileData) {
-        this.fileData = fileData;
     }
 
     public String getContentType() {
@@ -184,30 +120,6 @@ public class IngestedDocument {
 
     public void setDocumentSource(DocumentSource documentSource) {
         this.documentSource = documentSource;
-    }
-
-    public UUID getUserId() {
-        return userId;
-    }
-
-    public void setUserId(UUID userId) {
-        this.userId = userId;
-    }
-
-    public UUID getChatId() {
-        return chatId;
-    }
-
-    public void setChatId(UUID chatId) {
-        this.chatId = chatId;
-    }
-
-    public RetrievalScope getScope() {
-        return scope;
-    }
-
-    public void setScope(RetrievalScope scope) {
-        this.scope = scope;
     }
 
     public Map<String, Object> getMetadata() {
