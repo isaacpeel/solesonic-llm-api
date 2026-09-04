@@ -28,7 +28,7 @@ public class WebConfig {
             public void addCorsMappings(@NonNull CorsRegistry registry) {
                 registry.addMapping("/**")
                         .allowedOrigins(allowedOrigins)
-                        .allowedMethods(GET.name(), POST.name(), PUT.name(), DELETE.name(), OPTIONS.name())
+                        .allowedMethods(GET.name(), POST.name(), PUT.name(), DELETE.name(), PATCH.name(), OPTIONS.name())
                         .allowedHeaders("*")
                         .allowCredentials(true)
                         .exposedHeaders("*");
