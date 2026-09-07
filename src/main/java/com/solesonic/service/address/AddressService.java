@@ -15,6 +15,11 @@ import java.util.UUID;
 public class AddressService {
     private static final Logger log = LoggerFactory.getLogger(AddressService.class);
 
+    public static final String TEMPLATE_ADDRESS_NOT_FOUND = """
+            No address on file. If it's relevant to the request and you haven't already
+            mentioned this earlier in the conversation, let the user know they can add one in their user settings.
+            """;
+
     private final AddressRepository addressRepository;
     private final UserRequestContext userRequestContext;
 

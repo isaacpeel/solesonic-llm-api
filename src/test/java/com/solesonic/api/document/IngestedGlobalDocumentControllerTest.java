@@ -5,6 +5,7 @@ import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.UriIngestionService;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +31,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -58,6 +60,9 @@ class IngestedGlobalDocumentControllerTest {
     @Mock
     private UriIngestionService uriIngestionService;
 
+    @Mock
+    private UserRequestContext userRequestContext;
+
     @InjectMocks
     private IngestedGlobalDocumentController ingestedGlobalDocumentController;
 
@@ -66,6 +71,11 @@ class IngestedGlobalDocumentControllerTest {
     @BeforeEach
     void beforeEach() {
         documentId = UUID.randomUUID();
+
+        // Only upload and uri-ingest read the caller's id; stub leniently so the other tests don't
+        // trip strict-stubbing over an unused stub.
+        lenient().when(userRequestContext.getUserId()).thenReturn(UUID.randomUUID());
+
         mockMvc = MockMvcBuilders.standaloneSetup(ingestedGlobalDocumentController)
                 .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
                 .build();

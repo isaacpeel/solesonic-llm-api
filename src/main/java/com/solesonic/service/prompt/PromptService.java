@@ -6,6 +6,7 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.address.AddressService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
@@ -31,10 +32,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
@@ -204,12 +202,8 @@ public class PromptService {
 
         Address address = userPreferencesService.getAddress(userId);
 
-        String templateAddress = "No address on file. If it's relevant to the request and you haven't already " +
-                "mentioned this earlier in the conversation, let the user know they can add one in their user settings.";
-
-        if(address != null) {
-            templateAddress = address.toString();
-        }
+        String templateAddress = Optional.ofNullable(address.toString()).
+                orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
 
         String timeZone = userPreferencesService.getTimeZone(userId);
         String templateDateTime = ZonedDateTime.now(resolveZone(timeZone)).format(CURRENT_DATE_TIME_FORMATTER);
