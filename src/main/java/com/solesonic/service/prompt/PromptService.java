@@ -201,8 +201,9 @@ public class PromptService {
 
         Address address = userPreferencesService.getAddress(userId);
 
-        String templateAddress = Optional.ofNullable(address.toString()).
-                orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
+        String templateAddress = Optional.ofNullable(address)
+                .map(Object::toString)
+                .orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
 
         String timeZone = userPreferencesService.getTimeZone(userId);
         String templateDateTime = ZonedDateTime.now(resolveZone(timeZone)).format(CURRENT_DATE_TIME_FORMATTER);
