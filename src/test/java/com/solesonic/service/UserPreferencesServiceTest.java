@@ -3,6 +3,7 @@ package com.solesonic.service;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.repository.AddressRepository;
 import com.solesonic.repository.UserPreferencesRepository;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
@@ -13,6 +14,7 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.Arrays;
@@ -21,7 +23,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -31,6 +35,8 @@ public class UserPreferencesServiceTest {
     @Mock
     private UserPreferencesRepository userPreferencesRepository;
 
+    @Mock
+    private AddressRepository addressRepository;
 
     @InjectMocks
     private UserPreferencesService userPreferencesService;
@@ -254,6 +260,36 @@ public class UserPreferencesServiceTest {
 
         assertThat(captor.getValue().getXeroAccessToken()).isNull();
         assertThat(captor.getValue().isXeroAuthentication()).isFalse();
+    }
+
+    @Test
+    void testLinkAddressSetsAddressIdWhenAddressExists() {
+        UUID addressId = UUID.randomUUID();
+
+        when(addressRepository.existsById(addressId)).thenReturn(true);
+        when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
+        when(userPreferencesRepository.save(any(UserPreferences.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        UserPreferences result = userPreferencesService.linkAddress(userId, addressId);
+
+        assertThat(result.getAddressId()).isEqualTo(addressId);
+
+        ArgumentCaptor<UserPreferences> captor = ArgumentCaptor.forClass(UserPreferences.class);
+        verify(userPreferencesRepository).save(captor.capture());
+        assertThat(captor.getValue().getAddressId()).isEqualTo(addressId);
+    }
+
+    @Test
+    void testLinkAddressFailsWhenAddressDoesNotExist() {
+        UUID addressId = UUID.randomUUID();
+
+        when(addressRepository.existsById(addressId)).thenReturn(false);
+
+        assertThatThrownBy(() -> userPreferencesService.linkAddress(userId, addressId))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(userPreferencesRepository, never()).save(any(UserPreferences.class));
     }
 
     private XeroAccessToken storedXeroAccessToken() {

@@ -2,6 +2,7 @@ package com.solesonic.mcp.client;
 
 import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import io.modelcontextprotocol.client.McpSyncClient;
+import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import org.springframework.security.oauth2.server.resource.authentication.JwtAut
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * A ToolCallbackProvider that wraps MCP tools with security context propagation.
@@ -59,7 +61,8 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     }
 
     private List<ToolCallback> allMcpToolCallbacks() {
-        List<Tool> tools = Objects.requireNonNull(mcpClient.listTools()).tools();
+        McpSchema.ListToolsResult listToolsResult = mcpClient.listTools();
+        List<Tool> tools = Objects.requireNonNull(listToolsResult).tools();
 
         log.info("Found {} MCP tools from client", tools.size());
         tools.forEach(tool -> log.debug("Available MCP tool: {}", tool.name()));
@@ -75,5 +78,19 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     @Override
     public ToolCallback[] getToolCallbacks() {
         return toolCallbacks.toArray(new ToolCallback[0]);
+    }
+
+    /**
+     * The identity-wrapped subset of {@link #getToolCallbacks()} whose name is in {@code toolNames}.
+     * <p>
+     * Spring AI's {@code ChatClient} only ever adds request-level tools on top of a builder's
+     * default tools, so a caller that must offer fewer than the full MCP catalog cannot rely on
+     * {@code ChatClient.Builder#defaultTools} at all — it has to build its own list per request.
+     * This is the one place that list is assembled from.
+     */
+    public List<ToolCallback> getToolCallbacks(Set<String> toolNames) {
+        return toolCallbacks.stream()
+                .filter(toolCallback -> toolNames.contains(toolCallback.getToolDefinition().name()))
+                .toList();
     }
 }

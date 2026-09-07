@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.ToolSlashCommand;
@@ -7,6 +8,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
+import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,6 +28,7 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -67,6 +70,10 @@ class PromptServiceTest {
     @Mock
     private VectorStoreService vectorStoreService;
     @Mock
+    private UserPreferencesService userPreferencesService;
+    @Mock
+    private McpIdentityProvider mcpIdentityProvider;
+    @Mock
     private Authentication authentication;
     @Mock
     private Jwt jwt;
@@ -93,8 +100,12 @@ class PromptServiceTest {
                 a2aAgentService,
                 a2aStickyAgentService,
                 vectorStoreService,
-                "Izzy",
-                "qwen3-8b",
+                userPreferencesService,
+                mcpIdentityProvider,
+                "qwen3-8b");
+
+        ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
+        ReflectionTestUtils.setField(promptService, "defaultSystemPromptResource",
                 new ClassPathResource("prompts/basic-system-prompt.st"));
 
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
@@ -112,6 +123,8 @@ class PromptServiceTest {
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
+        lenient().when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.<String>anySet())).thenReturn(List.of());
+        when(requestSpec.tools(ArgumentMatchers.any())).thenReturn(requestSpec);
         lenient().when(requestSpec.messages(ArgumentMatchers.<Message>any())).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);

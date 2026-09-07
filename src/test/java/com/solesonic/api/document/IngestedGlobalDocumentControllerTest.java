@@ -5,6 +5,7 @@ import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.model.ingestion.IngestedDocumentSummary;
 import com.solesonic.model.rag.RetrievalScope;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.UriIngestionService;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,6 +58,9 @@ class IngestedGlobalDocumentControllerTest {
 
     @Mock
     private UriIngestionService uriIngestionService;
+
+    @Mock
+    private UserRequestContext userRequestContext;
 
     @InjectMocks
     private IngestedGlobalDocumentController ingestedGlobalDocumentController;

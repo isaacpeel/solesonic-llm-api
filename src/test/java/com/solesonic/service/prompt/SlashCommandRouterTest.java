@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
@@ -25,6 +26,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -51,6 +53,8 @@ class SlashCommandRouterTest {
     private ChatClient chatClient;
     @Mock
     private McpSyncClient mcpClient;
+    @Mock
+    private McpIdentityProvider mcpIdentityProvider;
     @Mock
     private ToolCallService toolCallService;
     @Mock
@@ -82,6 +86,7 @@ class SlashCommandRouterTest {
         slashCommandRouter = new SlashCommandRouter(
                 chatClient,
                 mcpClient,
+                mcpIdentityProvider,
                 toolCallService,
                 a2aAgentService,
                 a2aStickyAgentService,
@@ -95,6 +100,10 @@ class SlashCommandRouterTest {
 
     private void stubPromptChain(Flux<String> emissions) {
         when(chatClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
+        //A single-element array keeps this a one-argument varargs call on both sides of the stub,
+        //since ToolCallback[] is spread directly into Object... rather than wrapped as one element.
+        when(mcpIdentityProvider.getToolCallbacks()).thenReturn(new ToolCallback[] { mock(ToolCallback.class) });
+        when(requestSpec.tools(any())).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
                 .thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);

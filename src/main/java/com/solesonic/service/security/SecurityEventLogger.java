@@ -48,6 +48,7 @@ public class SecurityEventLogger {
             "/documents",
             "/models",
             "/users",
+            "/addresses",
             "/slash",
             "/atlassian",
             "/confluence",

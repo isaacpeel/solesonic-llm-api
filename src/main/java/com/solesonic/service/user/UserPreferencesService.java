@@ -1,14 +1,18 @@
 package com.solesonic.service.user;
 
+import com.solesonic.model.address.Address;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.repository.AddressRepository;
 import com.solesonic.repository.UserPreferencesRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
@@ -18,6 +22,7 @@ import java.util.UUID;
 public class UserPreferencesService {
     private static final Logger log = LoggerFactory.getLogger(UserPreferencesService.class);
     private final UserPreferencesRepository userPreferencesRepository;
+    private final AddressRepository addressRepository;
 
     @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")
     private Double chatSimilarityThreshold;
@@ -31,8 +36,9 @@ public class UserPreferencesService {
     @Value("${atlassian.service.account.user.id}")
     private UUID serviceAccountUserId;
 
-    public UserPreferencesService(UserPreferencesRepository userPreferencesRepository) {
+    public UserPreferencesService(UserPreferencesRepository userPreferencesRepository, AddressRepository addressRepository) {
         this.userPreferencesRepository = userPreferencesRepository;
+        this.addressRepository = addressRepository;
     }
 
     public UserPreferences get(UUID userId) {
@@ -98,6 +104,53 @@ public class UserPreferencesService {
         preserveExistingTokens(userId, userPreferences);
 
         return applyAuthenticationFlags(userPreferencesRepository.save(userPreferences));
+    }
+
+    /**
+     * Backs {@code PUT /users/{userId}/preferences/{addressId}}, the one place
+     * {@code UserPreferences.addressId} is ever set. A {@code 404} rather than a silent no-op if
+     * the address does not exist, since a dangling foreign key would only surface later, on
+     * whatever tries to resolve it through {@code AddressService}.
+     */
+    public UserPreferences linkAddress(UUID userId, UUID addressId) {
+        log.info("Linking address {} to user {}", addressId, userId);
+
+        if (!addressRepository.existsById(addressId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Address not found: " + addressId);
+        }
+
+        UserPreferences userPreferences = get(userId);
+        userPreferences.setAddressId(addressId);
+        userPreferences.setUpdated(ZonedDateTime.now());
+
+        return applyAuthenticationFlags(userPreferencesRepository.save(userPreferences));
+    }
+
+    /**
+     * {@code UserPreferences.addressId} is a plain foreign key, never a mapped relationship (see its
+     * Javadoc), so resolving it to an {@link Address} goes through {@link AddressRepository} here
+     * rather than through the entity. Reuses {@code findByIdAndUserId} rather than a plain
+     * {@code findById} so a dangling or mismatched reference surfaces as {@code 404} instead of
+     * silently returning someone else's address.
+     */
+    public Address getAddress(UUID userId) {
+        log.debug("Getting address for user {}", userId);
+
+        UserPreferences userPreferences = get(userId);
+        UUID addressId = userPreferences.getAddressId();
+
+        if (addressId == null) {
+            return null;
+        }
+
+        return addressRepository.findByIdAndUserId(addressId, userId)
+                .orElse(null);
+    }
+
+    public String getTimeZone(UUID userId) {
+        log.debug("Getting time zone for user {}", userId);
+
+        return get(userId).getTimeZone();
     }
 
     /**

@@ -1,11 +1,14 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.model.address.Address;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
+import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import com.solesonic.util.AuthenticationTokens;
 import org.apache.commons.collections4.CollectionUtils;
@@ -23,7 +26,14 @@ import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.time.DateTimeException;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -50,6 +60,22 @@ public class PromptService {
     public static final String USER_MESSAGE = "userMessage";
     public static final String PROGRESS_TOKEN = "progressToken";
     public static final String AGENT_NAME = "agentName";
+    public static final String USER_ADDRESS = "userAddress";
+    public static final String CURRENT_DATE_TIME = "currentDateTime";
+    private static final DateTimeFormatter CURRENT_DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a (zzz)", Locale.US);
+
+    /**
+     * The only MCP tools the no-slash-command default chat path may call.
+     * TODO: placeholder names — replace with the real MCP tool names this path should expose
+     */
+    private static final Set<String> DEFAULT_PROMPT_TOOLS = Set.of(
+            "web_search",
+            "web_search_advanced",
+            "web_search_news",
+            "web_extract_content"
+
+    );
 
     private final ChatClient chatClient;
     private final SlashCommandService slashCommandService;
@@ -58,10 +84,16 @@ public class PromptService {
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final VectorStoreService vectorStoreService;
+    private final UserPreferencesService userPreferencesService;
+    private final McpIdentityProvider mcpIdentityProvider;
+
+    @Value("${solesonic.llm.bot.name}")
+    private String agentName;
+
+    @Value("classpath:prompts/basic-system-prompt.st")
+    Resource defaultSystemPromptResource;
 
     private final String defaultChatModel;
-
-    private final Prompt defaultSystemPrompt;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -71,9 +103,9 @@ public class PromptService {
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,
             VectorStoreService vectorStoreService,
-            @Value("${solesonic.llm.bot.name}") String agentName,
-            @Value("${spring.ai.openai.model}") String defaultChatModel,
-            @Value("classpath:prompts/basic-system-prompt.st") Resource defaultSystemPromptResource) {
+            UserPreferencesService userPreferencesService,
+            McpIdentityProvider mcpIdentityProvider,
+            @Value("${spring.ai.openai.model}") String defaultChatModel) {
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
         this.slashCommandRouter = slashCommandRouter;
@@ -81,18 +113,9 @@ public class PromptService {
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.vectorStoreService = vectorStoreService;
+        this.userPreferencesService = userPreferencesService;
+        this.mcpIdentityProvider = mcpIdentityProvider;
         this.defaultChatModel = defaultChatModel;
-
-        Map<String, Object> systemPromptContext = Map.of(
-                AGENT_NAME, agentName
-        );
-
-        PromptTemplate promptTemplate = PromptTemplate.builder()
-                .resource(defaultSystemPromptResource)
-                .variables(systemPromptContext)
-                .build();
-
-        defaultSystemPrompt = promptTemplate.create();
     }
 
     public Flux<String> stream(UUID chatId,
@@ -180,9 +203,34 @@ public class PromptService {
                                                    Map<String, Object> contextMap,
                                                    String model) {
 
+        Address address = userPreferencesService.getAddress(userId);
+
+        String templateAddress = "--None Provided--";
+
+        if(address != null) {
+            templateAddress = address.toString();
+        }
+
+        String timeZone = userPreferencesService.getTimeZone(userId);
+        String templateDateTime = ZonedDateTime.now(resolveZone(timeZone)).format(CURRENT_DATE_TIME_FORMATTER);
+
+        Map<String, Object> systemPromptContext = Map.of(
+                AGENT_NAME, agentName,
+                USER_ADDRESS, templateAddress,
+                CURRENT_DATE_TIME, templateDateTime
+        );
+
+        PromptTemplate systempPromptTemplate = PromptTemplate.builder()
+                .resource(defaultSystemPromptResource)
+                .variables(systemPromptContext)
+                .build();
+
+        Prompt defaultSystemPrompt = systempPromptTemplate.create();
+
         var promptSpec = chatClient.prompt()
                 .system(defaultSystemPrompt.getContents())
                 .user(message)
+                .tools(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS))
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -195,5 +243,21 @@ public class PromptService {
         }
 
         return contentFlux(promptSpec.stream().chatResponse());
+    }
+
+    /**
+     * {@code UserPreferences.timeZone} has no validation at its write boundary yet, so a malformed
+     * IANA id reaching here falls back to UTC rather than failing the turn.
+     */
+    private static ZoneId resolveZone(String timeZone) {
+        if (StringUtils.isEmpty(timeZone)) {
+            return ZoneOffset.UTC;
+        }
+
+        try {
+            return ZoneId.of(timeZone);
+        } catch (DateTimeException exception) {
+            return ZoneOffset.UTC;
+        }
     }
 }

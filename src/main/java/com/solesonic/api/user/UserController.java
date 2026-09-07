@@ -67,4 +67,16 @@ public class UserController {
         UserPreferences update = userPreferencesService.update(userId, userPreferences);
         return ResponseEntity.ok(update);
     }
+
+    @PutMapping("/{userId}/preferences/{addressId}")
+    public ResponseEntity<UserPreferences> linkAddress(@PathVariable UUID userId,
+                                                        @PathVariable UUID addressId,
+                                                        HttpServletRequest request) {
+        if (!resourceOwnershipService.isOwner(userId, request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        UserPreferences updated = userPreferencesService.linkAddress(userId, addressId);
+        return ResponseEntity.ok(updated);
+    }
 }

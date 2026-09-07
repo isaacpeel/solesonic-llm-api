@@ -208,4 +208,27 @@ public class UserControllerTest {
 
         verify(userPreferencesService, never()).update(any(), any(UserPreferences.class));
     }
+
+    @Test
+    void testLinkAddress() throws Exception {
+        UUID addressId = UUID.randomUUID();
+        userPreferences.setAddressId(addressId);
+
+        when(userPreferencesService.linkAddress(userId, addressId)).thenReturn(userPreferences);
+
+        mockMvc.perform(put("/users/{userId}/preferences/{addressId}", userId, addressId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.addressId").value(addressId.toString()));
+    }
+
+    @Test
+    void deniesLinkingAddressToAnotherUsersPreferences() throws Exception {
+        UUID addressId = UUID.randomUUID();
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(put("/users/{userId}/preferences/{addressId}", userId, addressId))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).linkAddress(any(), any());
+    }
 }

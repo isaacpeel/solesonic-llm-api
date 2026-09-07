@@ -29,6 +29,10 @@ public class UserPreferences {
 
     private Double globalSimilarityThreshold;
 
+    private UUID addressId;
+
+    private String timeZone;
+
     @Transient
     private boolean atlassianAuthentication;
 
@@ -127,6 +131,22 @@ public class UserPreferences {
 
     public void setGlobalSimilarityThreshold(Double globalSimilarityThreshold) {
         this.globalSimilarityThreshold = globalSimilarityThreshold;
+    }
+
+    public UUID getAddressId() {
+        return addressId;
+    }
+
+    public void setAddressId(UUID addressId) {
+        this.addressId = addressId;
+    }
+
+    public String getTimeZone() {
+        return timeZone;
+    }
+
+    public void setTimeZone(String timeZone) {
+        this.timeZone = timeZone;
     }
 
     public AtlassianAccessToken getAtlassianAccessToken() {

@@ -958,12 +958,21 @@ should read to decide whether to show "connected" or a "connect" link:
   "chatSimilarityThreshold": 0.5,
   "userSimilarityThreshold": 0.75,
   "globalSimilarityThreshold": 0.75,
+  "addressId": "address-uuid-here",
+  "timeZone": "America/Chicago",
   "atlassianAuthentication": true,
   "googleAuthentication": false,
   "created": "2026-08-11T16:55:00Z",
   "updated": "2026-08-11T16:55:00Z"
 }
 ```
+
+`addressId` is a plain foreign key to an [`Address`](#addresses) row — never a nested object. It is
+set only by [`PUT /users/{userId}/preferences/{addressId}`](#link-address); the address's own fields
+are read and written through `/addresses`, not through this resource.
+
+`timeZone` is a plain IANA zone id string (e.g. `"America/Chicago"`), not a fixed UTC offset — this
+is what lets it account for daylight saving time. It is optional and has no default.
 
 Because tokens cannot round-trip, a `POST` or `PUT` body that omits them does **not** clear them —
 the stored tokens are preserved. Disconnecting is an explicit action
@@ -991,6 +1000,56 @@ the stored tokens are preserved. Disconnecting is an explicit action
   - `userId` (UUID)
 - **Request Body**: `UserPreferences`
 - **Response**: Updated `UserPreferences`
+
+### Link Address
+
+- **Endpoint**: `PUT /users/{userId}/preferences/{addressId}`
+- **Path Parameters**:
+  - `userId` (UUID)
+  - `addressId` (UUID): Must already exist — created via `POST /addresses`
+- **Response**: Updated `UserPreferences`, with `addressId` set
+- **Errors**: `404` if `addressId` does not name an existing address
+
+---
+
+## Addresses
+
+A generic postal address — `address`, `city`, `state`, `zip`, all optional. It carries no owner of
+its own; ownership is derived entirely from whichever `UserPreferences` row has linked it via
+`addressId` (see [Link Address](#link-address) above). The caller is taken from the authenticated
+subject, never a path segment.
+
+An address is invisible to `GET`/`PUT`/`DELETE` until it has been linked to the caller's own
+preferences — `POST` returns the created address directly, so the id is available immediately, but
+reading it back requires linking it first.
+
+### Create Address
+
+- **Endpoint**: `POST /addresses`
+- **Request Body**: `Address` (`address`, `city`, `state`, `zip` — all optional strings)
+- **Response**: `201 Created` with the created `Address`
+
+### Get Address
+
+- **Endpoint**: `GET /addresses/{addressId}`
+- **Response**: `Address`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+### Update Address
+
+- **Endpoint**: `PUT /addresses/{addressId}`
+- **Request Body**: `Address`
+- **Response**: Updated `Address`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+### Delete Address
+
+- **Endpoint**: `DELETE /addresses/{addressId}`
+- **Response**: `204 No Content`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+Deleting an address nulls out `UserPreferences.addressId` at the database level
+(`on delete set null`) rather than through application code.
 
 ---
 

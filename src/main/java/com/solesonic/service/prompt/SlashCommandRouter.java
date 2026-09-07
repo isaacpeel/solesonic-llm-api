@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
@@ -45,6 +46,7 @@ public class SlashCommandRouter {
 
     private final ChatClient chatClient;
     private final McpSyncClient mcpClient;
+    private final McpIdentityProvider mcpIdentityProvider;
     private final ToolCallService toolCallService;
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
@@ -54,6 +56,7 @@ public class SlashCommandRouter {
 
     public SlashCommandRouter(@Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
                               McpSyncClient mcpClient,
+                              McpIdentityProvider mcpIdentityProvider,
                               ToolCallService toolCallService,
                               A2AAgentService a2aAgentService,
                               A2AStickyAgentService a2aStickyAgentService,
@@ -62,6 +65,7 @@ public class SlashCommandRouter {
                               @Value("${spring.ai.openai.model}") String defaultChatModel) {
         this.chatClient = chatClient;
         this.mcpClient = mcpClient;
+        this.mcpIdentityProvider = mcpIdentityProvider;
         this.toolCallService = toolCallService;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
@@ -131,6 +135,7 @@ public class SlashCommandRouter {
         Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachments.attachmentContext());
 
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
+                .tools(mcpIdentityProvider.getToolCallbacks())
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                 .toolContext(contextMap)
