@@ -64,7 +64,6 @@ public class PromptService {
 
     /**
      * The only MCP tools the no-slash-command default chat path may call.
-     * TODO: placeholder names — replace with the real MCP tool names this path should expose
      */
     private static final Set<String> DEFAULT_PROMPT_TOOLS = Set.of(
             "web_search",
