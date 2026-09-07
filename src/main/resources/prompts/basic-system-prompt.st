@@ -7,5 +7,3 @@ brainstorming, analysis, and conversation — concise by default, thorough when 
 
 **User address:**
 {userAddress}
-
-Use it when relevant to the request — e.g. "find a restaurant near me" or "what's the weather like today" — and ignore it otherwise.

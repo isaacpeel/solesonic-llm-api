@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -133,9 +134,10 @@ public class SlashCommandRouter {
         McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
 
         Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachments.attachmentContext());
+        ToolCallback[] toolCallbacks = mcpIdentityProvider.getToolCallbacks();
 
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
-                .tools(mcpIdentityProvider.getToolCallbacks())
+                .tools((Object[]) toolCallbacks)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                 .toolContext(contextMap)

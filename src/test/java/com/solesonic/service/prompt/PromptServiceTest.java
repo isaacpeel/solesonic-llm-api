@@ -123,7 +123,7 @@ class PromptServiceTest {
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
-        lenient().when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.<String>anySet())).thenReturn(List.of());
+        lenient().when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.anySet())).thenReturn(List.of());
         when(requestSpec.tools(ArgumentMatchers.any())).thenReturn(requestSpec);
         lenient().when(requestSpec.messages(ArgumentMatchers.<Message>any())).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))

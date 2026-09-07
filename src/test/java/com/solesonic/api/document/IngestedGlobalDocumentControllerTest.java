@@ -59,9 +59,6 @@ class IngestedGlobalDocumentControllerTest {
     @Mock
     private UriIngestionService uriIngestionService;
 
-    @Mock
-    private UserRequestContext userRequestContext;
-
     @InjectMocks
     private IngestedGlobalDocumentController ingestedGlobalDocumentController;
 

@@ -33,7 +33,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -205,7 +204,8 @@ public class PromptService {
 
         Address address = userPreferencesService.getAddress(userId);
 
-        String templateAddress = "--None Provided--";
+        String templateAddress = "No address on file. If it's relevant to the request and you haven't already " +
+                "mentioned this earlier in the conversation, let the user know they can add one in their user settings.";
 
         if(address != null) {
             templateAddress = address.toString();
