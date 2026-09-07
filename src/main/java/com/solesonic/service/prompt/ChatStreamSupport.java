@@ -7,14 +7,12 @@ import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.Optional;
 
 /**
  * The two pieces every route that streams from a {@code ChatClient} needs identically: the options
  * the request is made with, and the reduction of a response stream to the text a client renders.
- * <p>
- * Shared rather than duplicated because the first of them is load-bearing and easy to lose — see
- * {@link #chatOptions(String)}.
  */
 public final class ChatStreamSupport {
 
@@ -30,11 +28,19 @@ public final class ChatStreamSupport {
      * {@code OpenAiChatModel.createRequest} reads {@code includeUsage} out of it and a null there
      * becomes {@code false}. Setting any unrelated stream option elsewhere would otherwise silently
      * take the token counts away again.
+     * <p>
+     * {@code timeout} is equally load-bearing: {@code OpenAiChatModel.buildRequestOptions} always
+     * sets a per-call {@code RequestOptions} timeout from {@code OpenAiChatOptions.getTimeout()},
+     * which defaults to a hardcoded 60 seconds ({@code AbstractOpenAiOptions.DEFAULT_TIMEOUT}) when
+     * left unset here — and that per-call value overrides the OkHttp client's own default timeout on
+     * every request, {@code spring.ai.openai.chat.timeout} included. Passing it through explicitly is
+     * what makes that property apply to streaming chat calls at all.
      */
-    public static OpenAiChatOptions.Builder chatOptions(String model) {
+    public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout) {
         return OpenAiChatOptions.builder()
                 .model(model)
-                .streamUsage(true);
+                .streamUsage(true)
+                .timeout(timeout);
     }
 
     /**

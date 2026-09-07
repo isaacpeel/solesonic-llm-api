@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.DateTimeException;
+import java.time.Duration;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -90,6 +91,7 @@ public class PromptService {
     Resource defaultSystemPromptResource;
 
     private final String defaultChatModel;
+    private final Duration chatTimeout;
 
     public PromptService(
             @Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -101,7 +103,8 @@ public class PromptService {
             VectorStoreService vectorStoreService,
             UserPreferencesService userPreferencesService,
             McpIdentityProvider mcpIdentityProvider,
-            @Value("${spring.ai.openai.model}") String defaultChatModel) {
+            @Value("${spring.ai.openai.model}") String defaultChatModel,
+            @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
         this.slashCommandRouter = slashCommandRouter;
@@ -112,6 +115,7 @@ public class PromptService {
         this.userPreferencesService = userPreferencesService;
         this.mcpIdentityProvider = mcpIdentityProvider;
         this.defaultChatModel = defaultChatModel;
+        this.chatTimeout = chatTimeout;
     }
 
     public Flux<String> stream(UUID chatId,
@@ -230,7 +234,7 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
-                .options(chatOptions(model));
+                .options(chatOptions(model, chatTimeout));
 
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));

@@ -276,6 +276,14 @@ same input; the tool-call model needs to be one that calls tools reliably. Point
 of its own would require adding a purpose-specific host property back and threading it through the
 relevant `@Bean` method in `config/openai`.
 
+Fixed in `application.properties` rather than exposed as variables:
+
+- `solesonic.llm.rag-task.openai.read-timeout=5m` / `solesonic.llm.tool-call.openai.read-timeout=5m`
+  — each bean passes its own read timeout into `OpenAiChatOptions`, following the ETL/vision pattern.
+  Spring AI's `OpenAiChatModel` always sets a per-call request timeout from `OpenAiChatOptions`, and
+  that timeout defaults to a hardcoded 60 seconds when a bean doesn't set one explicitly — a cold
+  model load past that mark would otherwise surface as a timeout rather than a wait.
+
 ### Vision Configuration
 
 Image attachments are described by a vision model, and that description is what the chat model sees —

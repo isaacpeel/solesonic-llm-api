@@ -33,6 +33,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -102,7 +103,8 @@ class PromptServiceTest {
                 vectorStoreService,
                 userPreferencesService,
                 mcpIdentityProvider,
-                "qwen3-8b");
+                "qwen3-8b",
+                Duration.ofMinutes(30));
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
         ReflectionTestUtils.setField(promptService, "defaultSystemPromptResource",

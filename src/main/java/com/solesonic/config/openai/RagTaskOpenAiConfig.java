@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
+
 /**
  * The small model the RAG pipeline runs its own prompts against — query rewriting, multi-query
  * expansion and document reranking — served by the same OpenAI-compatible server as chat
@@ -33,10 +35,12 @@ public class RagTaskOpenAiConfig {
     @Bean(defaultCandidate = false)
     @Qualifier(RAG_TASK_CHAT_MODEL)
     public OpenAiChatModel ragTaskChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
-                                            @Value("${spring.ai.openai.base-url}") String baseUrl) {
+                                            @Value("${spring.ai.openai.base-url}") String baseUrl,
+                                            @Value("${solesonic.llm.rag-task.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
+                .timeout(readTimeout)
                 .temperature(0.0)
                 .build();
 

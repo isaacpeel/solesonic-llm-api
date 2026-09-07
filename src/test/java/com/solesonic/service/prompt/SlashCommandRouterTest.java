@@ -31,6 +31,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -92,7 +93,8 @@ class SlashCommandRouterTest {
                 a2aStickyAgentService,
                 vectorStoreService,
                 "Izzy",
-                "qwen3-8b");
+                "qwen3-8b",
+                Duration.ofMinutes(30));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
                 .thenReturn(mock(Advisor.class));

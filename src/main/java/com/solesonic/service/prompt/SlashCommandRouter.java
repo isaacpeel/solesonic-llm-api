@@ -24,6 +24,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 
@@ -54,6 +55,7 @@ public class SlashCommandRouter {
     private final VectorStoreService vectorStoreService;
     private final String agentName;
     private final String defaultChatModel;
+    private final Duration chatTimeout;
 
     public SlashCommandRouter(@Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
                               McpSyncClient mcpClient,
@@ -63,7 +65,8 @@ public class SlashCommandRouter {
                               A2AStickyAgentService a2aStickyAgentService,
                               VectorStoreService vectorStoreService,
                               @Value("${solesonic.llm.bot.name}") String agentName,
-                              @Value("${spring.ai.openai.model}") String defaultChatModel) {
+                              @Value("${spring.ai.openai.model}") String defaultChatModel,
+                              @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
         this.mcpClient = mcpClient;
         this.mcpIdentityProvider = mcpIdentityProvider;
@@ -73,6 +76,7 @@ public class SlashCommandRouter {
         this.vectorStoreService = vectorStoreService;
         this.agentName = agentName;
         this.defaultChatModel = defaultChatModel;
+        this.chatTimeout = chatTimeout;
     }
 
     /**
@@ -141,7 +145,7 @@ public class SlashCommandRouter {
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                 .toolContext(contextMap)
-                .options(chatOptions(defaultChatModel))
+                .options(chatOptions(defaultChatModel, chatTimeout))
                 .stream()
                 .chatResponse();
 

@@ -7,6 +7,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
+
 /**
  * The model a slash command routes through when it has to turn a user's message into a single tool
  * call, served by the same OpenAI-compatible server as chat ({@code spring.ai.openai.base-url}).
@@ -27,11 +29,13 @@ public class ToolCallOpenAiConfig {
     @Qualifier(TOOL_CALL_CHAT_MODEL)
     public OpenAiChatModel toolCallChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                              @Value("${spring.ai.openai.base-url}") String baseUrl,
-                                             @Value("${solesonic.llm.tool-call.model}") String toolCallModel) {
+                                             @Value("${solesonic.llm.tool-call.model}") String toolCallModel,
+                                             @Value("${solesonic.llm.tool-call.openai.read-timeout}") Duration readTimeout) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .model(toolCallModel)
+                .timeout(readTimeout)
                 .build();
 
         return OpenAiChatModel.builder()
