@@ -1479,6 +1479,51 @@ say *this specific image* when reporting a problem. Every field except `imageId`
 `prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
 text block, and an unparsed field costs a null rather than a failed generation.
 
+`GeneratedImageSummary` also carries `userId` (the owner) and `name` (a display name the owner has
+set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed).
+
+### Managing Generated Images
+
+Self-service endpoints, scoped to the caller the same way `GET /images/{imageId}` is — no `{userId}`
+path segment, since the identity comes from the bearer token.
+
+#### List My Images
+
+- **Endpoint**: `GET /images`
+- **Query Parameters**: standard pagination (`page`, `size`; default size 20)
+- **Response**: `200`, a page of `GeneratedImageSummary`, newest first
+
+#### Rename an Image
+
+- **Endpoint**: `PATCH /images/{imageId}`
+- **Request Body**: `{ "name": "lighthouse in a storm" }`
+- **Response**: `200`, the updated `GeneratedImageSummary`
+- **Errors**: `400` if `name` is blank, `404` if the image is not the caller's
+
+Rename only — the bytes, prompt, and every other field of a generated image are immutable once
+written.
+
+#### Delete an Image
+
+- **Endpoint**: `DELETE /images/{imageId}`
+- **Response**: `204 No Content`
+- **Errors**: `404` if the image is not the caller's
+
+Deletion is permanent and has no soft-delete. If the image was already shown in a past conversation
+turn (`chatMessageId` set), it disappears from that turn's history retroactively — there is no
+tombstone left behind.
+
+### Admin: Every User's Images
+
+These three endpoints require the **`image-admin`** role and act on any user's images, not just the
+caller's — the same idiom `rag-admin` uses for the shared document corpus.
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` narrows to one user's images |
+| `PATCH` | `/images/admin/{imageId}` | Rename any image; same request/response shape as the self-service rename |
+| `DELETE` | `/images/admin/{imageId}` | Delete any image; `204`, same retroactive-history caveat as above |
+
 ### Image Generation Errors
 
 Failures collapse onto a closed set of codes. The message is always user-safe; the underlying detail

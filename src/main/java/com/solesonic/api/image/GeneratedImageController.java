@@ -3,6 +3,7 @@ package com.solesonic.api.image;
 import com.solesonic.model.image.GenerateImageRequest;
 import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
+import com.solesonic.model.image.GeneratedImageUpdateRequest;
 import com.solesonic.model.image.ImageGenerationEvent;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.image.GeneratedImageService;
@@ -10,16 +11,25 @@ import com.solesonic.service.image.ImageGenerationService;
 import com.solesonic.util.AuthenticationTokens;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.data.web.PagedModel;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 
@@ -40,6 +50,8 @@ public class GeneratedImageController {
     private static final Logger log = LoggerFactory.getLogger(GeneratedImageController.class);
 
     static final String IMAGES = "/images";
+
+    private static final int DEFAULT_PAGE_SIZE = 20;
 
     private final ImageGenerationService imageGenerationService;
     private final GeneratedImageService generatedImageService;
@@ -106,6 +118,89 @@ public class GeneratedImageController {
     @GetMapping("/{imageId}/metadata")
     public ResponseEntity<GeneratedImageSummary> metadata(@PathVariable UUID imageId) {
         return ResponseEntity.ok(generatedImageService.metadata(imageId));
+    }
+
+    /**
+     * The caller's own images, newest first — the management listing.
+     */
+    @GetMapping
+    public ResponseEntity<PagedModel<GeneratedImageSummary>> list(
+            @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
+        Pageable imagePage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+
+        log.info("Listing generated images for user {} page {} size {}",
+                userRequestContext.getUserId(), imagePage.getPageNumber(), imagePage.getPageSize());
+
+        Page<GeneratedImageSummary> summaries =
+                generatedImageService.list(userRequestContext.getUserId(), imagePage);
+
+        return ResponseEntity.ok(new PagedModel<>(summaries));
+    }
+
+    /**
+     * Renames the caller's own image. Rename only — the bytes and provenance never change.
+     */
+    @PatchMapping("/{imageId}")
+    public ResponseEntity<GeneratedImageSummary> rename(@PathVariable UUID imageId,
+                                                        @RequestBody GeneratedImageUpdateRequest updateRequest) {
+        log.info("Renaming generated image {} for user {}", imageId, userRequestContext.getUserId());
+
+        return ResponseEntity.ok(generatedImageService
+                .renameForUser(imageId, userRequestContext.getUserId(), updateRequest.name()));
+    }
+
+    /**
+     * Deletes the caller's own image.
+     */
+    @DeleteMapping("/{imageId}")
+    public ResponseEntity<Void> delete(@PathVariable UUID imageId) {
+        log.info("Deleting generated image {} for user {}", imageId, userRequestContext.getUserId());
+        generatedImageService.deleteForUser(imageId, userRequestContext.getUserId());
+
+        return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Every user's images, newest first. {@code userId} narrows the listing to one user's images,
+     * covering the support case of "show me this one user's images" without a separate endpoint.
+     */
+    @PreAuthorize("hasRole('image-admin')")
+    @GetMapping("/admin")
+    public ResponseEntity<PagedModel<GeneratedImageSummary>> listAll(
+            @RequestParam(required = false) UUID userId,
+            @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
+        Pageable imagePage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+
+        log.info("Listing generated images page {} size {} user {}",
+                imagePage.getPageNumber(), imagePage.getPageSize(), userId);
+
+        Page<GeneratedImageSummary> summaries = generatedImageService.listAll(userId, imagePage);
+
+        return ResponseEntity.ok(new PagedModel<>(summaries));
+    }
+
+    /**
+     * Renames any user's image, for moderation.
+     */
+    @PreAuthorize("hasRole('image-admin')")
+    @PatchMapping("/admin/{imageId}")
+    public ResponseEntity<GeneratedImageSummary> renameAny(@PathVariable UUID imageId,
+                                                           @RequestBody GeneratedImageUpdateRequest updateRequest) {
+        log.info("Renaming generated image {}", imageId);
+
+        return ResponseEntity.ok(generatedImageService.rename(imageId, updateRequest.name()));
+    }
+
+    /**
+     * Deletes any user's image, for moderation.
+     */
+    @PreAuthorize("hasRole('image-admin')")
+    @DeleteMapping("/admin/{imageId}")
+    public ResponseEntity<Void> deleteAny(@PathVariable UUID imageId) {
+        log.info("Deleting generated image {}", imageId);
+        generatedImageService.delete(imageId);
+
+        return ResponseEntity.noContent().build();
     }
 
     private static ServerSentEvent<?> serverSentEvent(ImageGenerationEvent imageGenerationEvent) {

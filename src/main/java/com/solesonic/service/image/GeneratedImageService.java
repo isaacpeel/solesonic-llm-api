@@ -8,6 +8,8 @@ import com.solesonic.scope.UserRequestContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -168,8 +170,10 @@ public class GeneratedImageService {
     public GeneratedImageSummary summary(GeneratedImage generatedImage) {
         return new GeneratedImageSummary(
                 generatedImage.getId(),
+                generatedImage.getUserId(),
                 generatedImage.getChatMessageId(),
                 imageUrl(generatedImage.getId()),
+                generatedImage.getName(),
                 generatedImage.getPrompt(),
                 generatedImage.getModel(),
                 generatedImage.getSeed(),
@@ -181,10 +185,102 @@ public class GeneratedImageService {
                 generatedImage.getCreated());
     }
 
+    /**
+     * The caller's own images, newest first.
+     */
+    @Transactional(readOnly = true)
+    public Page<GeneratedImageSummary> list(UUID userId, Pageable pageable) {
+        return withImageUrls(generatedImageRepository.findSummaryPageByUserId(userId, pageable));
+    }
+
+    /**
+     * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter}
+     * narrows the listing to one user without needing a separate endpoint.
+     */
+    @Transactional(readOnly = true)
+    public Page<GeneratedImageSummary> listAll(UUID userIdFilter, Pageable pageable) {
+        Page<GeneratedImageSummary> summaries = userIdFilter == null
+                ? generatedImageRepository.findSummaryPage(pageable)
+                : generatedImageRepository.findSummaryPageByUserId(userIdFilter, pageable);
+
+        return withImageUrls(summaries);
+    }
+
+    /**
+     * Renames the caller's own image. {@code 404} rather than {@code 403} for an image belonging to
+     * someone else, the same stance {@link #get(UUID)} takes.
+     */
+    @Transactional
+    public GeneratedImageSummary renameForUser(UUID imageId, UUID userId, String name) {
+        GeneratedImage generatedImage = generatedImageRepository.findByIdAndUserId(imageId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Generated image not found: " + imageId));
+
+        return rename(generatedImage, name);
+    }
+
+    /**
+     * Renames any user's image, for the {@code image-admin} role.
+     */
+    @Transactional
+    public GeneratedImageSummary rename(UUID imageId, String name) {
+        GeneratedImage generatedImage = generatedImageRepository.findById(imageId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Generated image not found: " + imageId));
+
+        return rename(generatedImage, name);
+    }
+
+    /**
+     * Deletes the caller's own image.
+     */
+    @Transactional
+    public void deleteForUser(UUID imageId, UUID userId) {
+        GeneratedImage generatedImage = generatedImageRepository.findByIdAndUserId(imageId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Generated image not found: " + imageId));
+
+        generatedImageRepository.delete(generatedImage);
+        log.info("Deleted generated image {} for user {}", imageId, userId);
+    }
+
+    /**
+     * Deletes any user's image, for the {@code image-admin} role.
+     */
+    @Transactional
+    public void delete(UUID imageId) {
+        GeneratedImage generatedImage = generatedImageRepository.findById(imageId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Generated image not found: " + imageId));
+
+        generatedImageRepository.delete(generatedImage);
+        log.info("Deleted generated image {}", imageId);
+    }
+
+    private GeneratedImageSummary rename(GeneratedImage generatedImage, String name) {
+        generatedImage.setName(validName(name));
+
+        log.info("Renaming generated image {} to {}", generatedImage.getId(), generatedImage.getName());
+
+        return summary(generatedImageRepository.save(generatedImage));
+    }
+
+    private static String validName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A name is required");
+        }
+
+        return name.strip();
+    }
+
     private List<GeneratedImageSummary> withImageUrls(List<GeneratedImageSummary> summaries) {
         return summaries.stream()
                 .map(summary -> summary.withImageUrl(imageUrl(summary.imageId())))
                 .toList();
+    }
+
+    private Page<GeneratedImageSummary> withImageUrls(Page<GeneratedImageSummary> summaries) {
+        return summaries.map(summary -> summary.withImageUrl(imageUrl(summary.imageId())));
     }
 
     private String imageUrl(UUID imageId) {

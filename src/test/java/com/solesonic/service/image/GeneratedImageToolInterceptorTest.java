@@ -219,7 +219,7 @@ class GeneratedImageToolInterceptorTest {
     }
 
     private GeneratedImageSummary summary(UUID imageId) {
-        return new GeneratedImageSummary(imageId, null, "/izzybot/images/" + imageId,
+        return new GeneratedImageSummary(imageId, userId, null, "/izzybot/images/" + imageId, null,
                 "a small red lighthouse", "FLUX.1-schnell", 8339331079448168597L,
                 1024, 1024, 4, 8.2d, IMAGE_BYTES.length, ZonedDateTime.now());
     }
