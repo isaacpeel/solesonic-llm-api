@@ -34,6 +34,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.time.Duration;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -119,6 +120,8 @@ class PromptServiceTest {
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
                 .thenReturn(mock(Advisor.class));
+
+        lenient().when(userPreferencesService.getZone(any())).thenReturn(ZoneOffset.UTC);
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {

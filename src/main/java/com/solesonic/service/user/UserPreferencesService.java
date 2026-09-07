@@ -7,6 +7,7 @@ import com.solesonic.model.user.UserPreferences;
 import com.solesonic.model.xero.auth.XeroAccessToken;
 import com.solesonic.repository.AddressRepository;
 import com.solesonic.repository.UserPreferencesRepository;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,6 +15,9 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.DateTimeException;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -151,6 +155,26 @@ public class UserPreferencesService {
         log.debug("Getting time zone for user {}", userId);
 
         return get(userId).getTimeZone();
+    }
+
+    public ZoneId getZone(UUID userId) {
+        return resolveZone(getTimeZone(userId));
+    }
+
+    /**
+     * {@code UserPreferences.timeZone} has no validation at its write boundary yet, so a malformed
+     * IANA id reaching here falls back to UTC rather than failing the turn.
+     */
+    private static ZoneId resolveZone(String timeZone) {
+        if (StringUtils.isEmpty(timeZone)) {
+            return ZoneOffset.UTC;
+        }
+
+        try {
+            return ZoneId.of(timeZone);
+        } catch (DateTimeException exception) {
+            return ZoneOffset.UTC;
+        }
     }
 
     /**

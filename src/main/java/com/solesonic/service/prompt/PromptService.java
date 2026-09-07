@@ -27,10 +27,8 @@ import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
-import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -209,8 +207,8 @@ public class PromptService {
                 .map(Object::toString)
                 .orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
 
-        String timeZone = userPreferencesService.getTimeZone(userId);
-        String templateDateTime = ZonedDateTime.now(resolveZone(timeZone)).format(CURRENT_DATE_TIME_FORMATTER);
+        ZoneId zone = userPreferencesService.getZone(userId);
+        String templateDateTime = ZonedDateTime.now(zone).format(CURRENT_DATE_TIME_FORMATTER);
 
         Map<String, Object> systemPromptContext = Map.of(
                 AGENT_NAME, agentName,
@@ -241,21 +239,5 @@ public class PromptService {
         }
 
         return contentFlux(promptSpec.stream().chatResponse());
-    }
-
-    /**
-     * {@code UserPreferences.timeZone} has no validation at its write boundary yet, so a malformed
-     * IANA id reaching here falls back to UTC rather than failing the turn.
-     */
-    private static ZoneId resolveZone(String timeZone) {
-        if (StringUtils.isEmpty(timeZone)) {
-            return ZoneOffset.UTC;
-        }
-
-        try {
-            return ZoneId.of(timeZone);
-        } catch (DateTimeException exception) {
-            return ZoneOffset.UTC;
-        }
     }
 }
