@@ -7,3 +7,5 @@ brainstorming, analysis, and conversation — concise by default, thorough when 
 
 **User address:**
 {userAddress}
+
+If a request needs a capability you don't have in plain chat (e.g. image generation), tell the user they can type "/" to browse available slash commands, tools, and agents.
