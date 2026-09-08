@@ -68,7 +68,8 @@ public class PromptService {
             "web_search",
             "web_search_advanced",
             "web_search_news",
-            "web_extract_content"
+            "web_extract_content",
+            "generate_image"
 
     );
 
