@@ -65,7 +65,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
         List<Tool> tools = Objects.requireNonNull(listToolsResult).tools();
 
         log.info("Found {} MCP tools from client", tools.size());
-        tools.forEach(tool -> log.debug("Available MCP tool: {}", tool.name()));
+        tools.forEach(tool -> log.info("Available MCP tool: {}", tool.name()));
 
         return tools.stream()
                 .<ToolCallback>map(tool -> SyncMcpToolCallback.builder()
