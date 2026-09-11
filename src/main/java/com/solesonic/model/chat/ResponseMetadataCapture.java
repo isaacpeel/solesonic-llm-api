@@ -159,7 +159,8 @@ public final class ResponseMetadataCapture {
                         lastCall.totalTokens(),
                         pending.promptMillis,
                         pending.predictedMillis,
-                        pending.predictedPerSecond));
+                        pending.predictedPerSecond,
+                        lastCall.liteLlm()));
 
                 pending.reset();
 
@@ -181,9 +182,29 @@ public final class ResponseMetadataCapture {
                 pending.totalTokens,
                 pending.promptMillis,
                 pending.predictedMillis,
-                pending.predictedPerSecond));
+                pending.predictedPerSecond,
+                null));
 
         pending.reset();
+    }
+
+    /**
+     * Attaches what the proxy reported about each HTTP call, paired positionally: both lists are in
+     * the order the round trips were made, so the nth of each is the same call.
+     * <p>
+     * Pairing by position rather than by an id is forced — the proxy's {@code x-litellm-call-id} is
+     * in the headers and the model's completion id is in the body, and no field appears in both. The
+     * shorter list governs, so a round trip that reported one and not the other simply keeps what it
+     * has rather than shifting every later pairing by one.
+     */
+    public void applyLiteLlmCalls(List<LiteLlmCallMetadata> liteLlmCalls) {
+        settle();
+
+        int pairedCalls = Math.min(calls.size(), liteLlmCalls.size());
+
+        for (int index = 0; index < pairedCalls; index++) {
+            calls.set(index, calls.get(index).withLiteLlm(liteLlmCalls.get(index)));
+        }
     }
 
     private void applyTimings(ChatResponseMetadata chatResponseMetadata) {

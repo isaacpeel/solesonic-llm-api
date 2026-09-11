@@ -3,9 +3,12 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
@@ -23,6 +26,9 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.core.io.ClassPathResource;
@@ -33,8 +39,10 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -45,6 +53,7 @@ import java.util.function.Consumer;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -56,6 +65,8 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class PromptServiceTest {
+
+    private static final String SERVER_REPORTED_MODEL = "qwen3-8b-instruct-q6";
 
     @Mock
     private ChatClient chatClient;
@@ -75,6 +86,8 @@ class PromptServiceTest {
     private UserPreferencesService userPreferencesService;
     @Mock
     private McpIdentityProvider mcpIdentityProvider;
+    @Mock
+    private ChatMessageService chatMessageService;
     @Mock
     private Authentication authentication;
     @Mock
@@ -104,6 +117,8 @@ class PromptServiceTest {
                 vectorStoreService,
                 userPreferencesService,
                 mcpIdentityProvider,
+                chatMessageService,
+                new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
@@ -125,6 +140,10 @@ class PromptServiceTest {
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {
+        stubBasicPromptResponses(chatResponsesOf(emissions));
+    }
+
+    private void stubBasicPromptResponses(Flux<ChatResponse> chatResponses) {
         when(chatClient.prompt()).thenReturn(requestSpec);
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
@@ -137,11 +156,29 @@ class PromptServiceTest {
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
-        when(streamResponseSpec.chatResponse()).thenReturn(chatResponsesOf(emissions));
+        when(streamResponseSpec.chatResponse()).thenReturn(chatResponses);
     }
 
     private static Flux<ChatResponse> chatResponsesOf(Flux<String> emissions) {
         return emissions.map(text -> new ChatResponse(List.of(new Generation(new AssistantMessage(text)))));
+    }
+
+    /**
+     * A turn the server reported on, in the shape a llama.cpp-style server closes one with: the
+     * answer and the finish reason on one response, the counts on it too. The model name is
+     * deliberately not the one the call requested — recording what actually answered is the whole
+     * reason {@code responseMetadata.model} exists separately from the configured model.
+     */
+    @SuppressWarnings("all")
+    private static Flux<ChatResponse> reportedTurn(String text) {
+        return Flux.just(new ChatResponse(
+                List.of(new Generation(new AssistantMessage(text),
+                        ChatGenerationMetadata.builder().finishReason("STOP").build())),
+                ChatResponseMetadata.builder()
+                        .model(SERVER_REPORTED_MODEL)
+                        .id("chatcmpl-1")
+                        .usage(new DefaultUsage(300, 40, 340))
+                        .build()));
     }
 
     private void resolvesToImage(String fileName, String visionDescription) {
@@ -183,6 +220,37 @@ class PromptServiceTest {
 
         verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?", "token-abc");
         verifyNoInteractions(slashCommandRouter);
+
+        //A remote agent has no token accounting to report, so this turn must leave the column null
+        //rather than write an empty record over it.
+        verifyNoInteractions(chatMessageService);
+    }
+
+    /**
+     * The whole point of the column: what the server said answered, which a router or fallback group
+     * can make a different model from the one the call asked for.
+     */
+    @Test
+    void stream_withNoCommandsAndNoStickyAgent_persistsWhatTheServerReportedForTheTurn() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptResponses(reportedTurn("hi there"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("hi there")
+                .verifyComplete();
+
+        ArgumentCaptor<ResponseMetadata> metadataCaptor = ArgumentCaptor.captor();
+
+        verify(chatMessageService).updateResponseMetadata(eq(chatId), any(ZonedDateTime.class),
+                metadataCaptor.capture(), anyList());
+
+        ResponseMetadata responseMetadata = metadataCaptor.getValue();
+
+        assertThat(responseMetadata.model()).isEqualTo(SERVER_REPORTED_MODEL);
+        assertThat(responseMetadata.model()).isNotEqualTo("qwen3-8b");
+        assertThat(responseMetadata.totalTokens()).isEqualTo(340);
+        assertThat(responseMetadata.modelCalls()).isEqualTo(1);
     }
 
     @Test

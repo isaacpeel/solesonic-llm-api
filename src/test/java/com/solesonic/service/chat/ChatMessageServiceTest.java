@@ -205,8 +205,8 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.of(assistantMessage));
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null),
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null));
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null, null),
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", null, "stop", calls);
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata, calls);
@@ -230,11 +230,50 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null));
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null, null));
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted,
                 ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls), calls);
 
         verify(chatMessageRepository, never()).save(any(ChatMessage.class));
+    }
+
+    /**
+     * The {@code done} frame is built from scratch rather than from the persisted row, so it has to
+     * read the accounting back — the same {@code since} lookup that wrote it, one step later.
+     */
+    @Test
+    void responseMetadataReadsBackWhatTheTurnRecorded() {
+        ChatMessage assistantMessage = chatMessage(MessageType.ASSISTANT, "the answer");
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null));
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
+
+        assistantMessage.setResponseMetadata(responseMetadata);
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.of(assistantMessage));
+
+        assertThat(chatMessageService.responseMetadata(chatId, turnStarted)).isEqualTo(responseMetadata);
+    }
+
+    /**
+     * A turn no chat model answered leaves no row to read, and must come back as "nothing reported"
+     * rather than throwing on the way to a {@code done} frame the client is waiting for.
+     */
+    @Test
+    void responseMetadataIsNullWhenNoAssistantRowMatches() {
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.empty());
+
+        assertThat(chatMessageService.responseMetadata(chatId, turnStarted)).isNull();
     }
 }

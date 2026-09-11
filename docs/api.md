@@ -179,7 +179,8 @@ De-duplicate by `imageId`.
       "completionTokens": 259,
       "totalTokens": 1301,
       "promptMillis": 130.079,
-      "predictedMillis": 4232.71
+      "predictedMillis": 4232.71,
+      "routedModel": "qwen3.5-9b"
     }
   }
 }
@@ -211,6 +212,12 @@ numbers, not an approximation of them.
   **These two are a llama.cpp extension**, taken from the non-standard `timings` object llama-server
   adds to its final response; against any other OpenAI-compatible server they are simply absent.
   Neither covers retrieval, vision description, or anything else the turn did around the model call.
+- `routedModel` is the model a LiteLLM-style proxy actually routed the turn to, which `model` cannot
+  answer: a request against a model group reports the group that was asked for (`auto-model`), not
+  what served it. **This one is not from the response body** — it is taken from the proxy's
+  `x-litellm-model-name` response header, so it is absent against a server that is not behind such a
+  proxy. When several round trips were routed differently it is the *last* call's, which is the one
+  that produced the answer being read.
 - There is no tokens-per-second: a single rate would be meaningless across several round trips, and
   this API does not compute what the server did not report. Divide `completionTokens` by
   `predictedMillis / 1000` if you want one.

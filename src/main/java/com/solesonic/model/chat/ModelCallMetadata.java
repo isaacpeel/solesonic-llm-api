@@ -31,5 +31,23 @@ public record ModelCallMetadata(
         @Nullable Integer totalTokens,
         @Nullable Double promptMillis,
         @Nullable Double predictedMillis,
-        @Nullable Double predictedPerSecond) {
+        @Nullable Double predictedPerSecond,
+        //Null against a server that is not behind LiteLLM, and against a call whose headers never
+        //reached the turn that made it.
+        @Nullable LiteLlmCallMetadata liteLlm) {
+
+    public ModelCallMetadata withLiteLlm(LiteLlmCallMetadata liteLlmCallMetadata) {
+        return new ModelCallMetadata(
+                model,
+                id,
+                createdAt,
+                finishReason,
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                promptMillis,
+                predictedMillis,
+                predictedPerSecond,
+                liteLlmCallMetadata);
+    }
 }

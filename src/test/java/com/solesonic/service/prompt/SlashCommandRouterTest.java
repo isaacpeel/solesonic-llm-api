@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
@@ -9,6 +10,8 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -23,6 +26,9 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
+import org.springframework.ai.chat.metadata.ChatResponseMetadata;
+import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
@@ -31,7 +37,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -39,6 +47,7 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -49,6 +58,8 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class SlashCommandRouterTest {
+
+    private static final String SERVER_REPORTED_MODEL = "qwen3-8b-instruct-q6";
 
     @Mock
     private ChatClient chatClient;
@@ -64,6 +75,8 @@ class SlashCommandRouterTest {
     private A2AStickyAgentService a2aStickyAgentService;
     @Mock
     private VectorStoreService vectorStoreService;
+    @Mock
+    private ChatMessageService chatMessageService;
     @Mock
     private ChatClient.ChatClientRequestSpec requestSpec;
     @Mock
@@ -92,6 +105,8 @@ class SlashCommandRouterTest {
                 a2aAgentService,
                 a2aStickyAgentService,
                 vectorStoreService,
+                chatMessageService,
+                new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "Izzy",
                 "qwen3-8b",
                 Duration.ofMinutes(30));
@@ -101,6 +116,11 @@ class SlashCommandRouterTest {
     }
 
     private void stubPromptChain(Flux<String> emissions) {
+        stubPromptResponses(
+                emissions.map(text -> new ChatResponse(List.of(new Generation(new AssistantMessage(text))))));
+    }
+
+    private void stubPromptResponses(Flux<ChatResponse> chatResponses) {
         when(chatClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
         //A single-element array keeps this a one-argument varargs call on both sides of the stub,
         //since ToolCallback[] is spread directly into Object... rather than wrapped as one element.
@@ -112,8 +132,23 @@ class SlashCommandRouterTest {
         when(requestSpec.toolContext(any())).thenReturn(requestSpec);
         when(requestSpec.options(any())).thenReturn(requestSpec);
         when(requestSpec.stream()).thenReturn(streamResponseSpec);
-        when(streamResponseSpec.chatResponse()).thenReturn(
-                emissions.map(text -> new ChatResponse(List.of(new Generation(new AssistantMessage(text))))));
+        when(streamResponseSpec.chatResponse()).thenReturn(chatResponses);
+    }
+
+    /**
+     * A turn the server reported on. The model name is deliberately not the one the call requested —
+     * this field records what actually answered.
+     */
+    @SuppressWarnings("all")
+    private static Flux<ChatResponse> reportedTurn(String text) {
+        return Flux.just(new ChatResponse(
+                List.of(new Generation(new AssistantMessage(text),
+                        ChatGenerationMetadata.builder().finishReason("STOP").build())),
+                ChatResponseMetadata.builder()
+                        .model(SERVER_REPORTED_MODEL)
+                        .id("chatcmpl-1")
+                        .usage(new DefaultUsage(300, 40, 340))
+                        .build()));
     }
 
     private static ToolSlashCommand toolSlashCommand() {
@@ -150,6 +185,55 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
+    }
+
+    /**
+     * The MCP-prompt route reaches a chat model like any other, so its turn is costed and attributed
+     * like any other.
+     */
+    @Test
+    void route_promptSlashCommand_persistsWhatTheServerReportedForTheTurn() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+
+        McpSchema.TextContent userContent = new McpSchema.TextContent(null, "tell me something", null);
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER, userContent);
+        McpSchema.GetPromptResult getPromptResult =
+                new McpSchema.GetPromptResult(null, List.of(userMessage), null);
+
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptResponses(reportedTurn("answer"));
+
+        StepVerifier.create(route(promptCommand, "tell me something", NO_ATTACHMENTS))
+                .expectNext("answer")
+                .verifyComplete();
+
+        ArgumentCaptor<ResponseMetadata> metadataCaptor = ArgumentCaptor.captor();
+
+        verify(chatMessageService).updateResponseMetadata(eq(chatId), any(ZonedDateTime.class),
+                metadataCaptor.capture(), anyList());
+
+        assertThat(metadataCaptor.getValue().model()).isEqualTo(SERVER_REPORTED_MODEL);
+        assertThat(metadataCaptor.getValue().totalTokens()).isEqualTo(340);
+    }
+
+    /**
+     * The A2A route never reaches a chat model, so it has nothing to record — and the tool routes
+     * record their own turn inside {@link ToolCallService}, which uses a different model entirely.
+     */
+    @Test
+    void route_agentSlashCommand_recordsNoResponseMetadata() {
+        AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
+
+        when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+                .thenReturn(Flux.just("a2a-result"));
+
+        StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
+                .expectNext("a2a-result")
+                .verifyComplete();
+
+        verifyNoInteractions(chatMessageService);
     }
 
     /**

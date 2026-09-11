@@ -7,6 +7,7 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
+import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
@@ -36,8 +37,10 @@ import java.util.*;
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
+
+import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
-import static com.solesonic.service.prompt.ChatStreamSupport.contentFlux;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 /**
@@ -82,6 +85,8 @@ public class PromptService {
     private final VectorStoreService vectorStoreService;
     private final UserPreferencesService userPreferencesService;
     private final McpIdentityProvider mcpIdentityProvider;
+    private final ChatMessageService chatMessageService;
+    private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -102,6 +107,8 @@ public class PromptService {
             VectorStoreService vectorStoreService,
             UserPreferencesService userPreferencesService,
             McpIdentityProvider mcpIdentityProvider,
+            ChatMessageService chatMessageService,
+            LiteLlmHeaderRegistry liteLlmHeaderRegistry,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
@@ -113,6 +120,8 @@ public class PromptService {
         this.vectorStoreService = vectorStoreService;
         this.userPreferencesService = userPreferencesService;
         this.mcpIdentityProvider = mcpIdentityProvider;
+        this.chatMessageService = chatMessageService;
+        this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
     }
@@ -202,6 +211,14 @@ public class PromptService {
                                                    Map<String, Object> contextMap,
                                                    String model) {
 
+        //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
+        //chat memory advisor is about to write rather than the previous turn's.
+        ZonedDateTime since = ZonedDateTime.now();
+
+        //Joins this turn to the x-litellm-* headers of the HTTP calls it is about to make; the two
+        //reach the application on different threads and share nothing else.
+        UUID correlationId = UUID.randomUUID();
+
         Address address = userPreferencesService.getAddress(userId);
 
         String templateAddress = Optional.ofNullable(address)
@@ -233,12 +250,13 @@ public class PromptService {
                         .param(CONVERSATION_ID, chatId)
                 )
                 .toolContext(contextMap)
-                .options(chatOptions(model, chatTimeout));
+                .options(chatOptions(model, chatTimeout, correlationId));
 
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
         }
-
-        return contentFlux(promptSpec.stream().chatResponse());
+ 
+        return capturingContentFlux(promptSpec.stream().chatResponse(), chatMessageService, liteLlmHeaderRegistry,
+                chatId, since, correlationId);
     }
 }

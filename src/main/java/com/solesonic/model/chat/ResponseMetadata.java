@@ -42,7 +42,11 @@ public record ResponseMetadata(
         @Nullable Integer completionTokens,
         @Nullable Integer totalTokens,
         @Nullable Double promptMillis,
-        @Nullable Double predictedMillis) {
+        @Nullable Double predictedMillis,
+        //The model LiteLLM actually routed to, which model() cannot answer: a request against a
+        //model group reports the group that was asked for, the same "what was requested, not what
+        //ran" gap this record exists to close. Null when nothing is proxying.
+        @Nullable String routedModel) {
 
     /**
      * Folds one turn's calls into its totals, or returns {@code null} when the turn reported none.
@@ -71,7 +75,26 @@ public record ResponseMetadata(
                 sumIntegers(calls, ModelCallMetadata::completionTokens),
                 sumIntegers(calls, ModelCallMetadata::totalTokens),
                 sumDoubles(calls, ModelCallMetadata::promptMillis),
-                sumDoubles(calls, ModelCallMetadata::predictedMillis));
+                sumDoubles(calls, ModelCallMetadata::predictedMillis),
+                routedModel(calls));
+    }
+
+    /**
+     * The last call's routed model, not the first. A tool-calling turn can be routed per round trip,
+     * and the call that produced the answer the user is reading is the one worth naming.
+     */
+    private static @Nullable String routedModel(List<ModelCallMetadata> calls) {
+        String routedModel = null;
+
+        for (ModelCallMetadata call : calls) {
+            LiteLlmCallMetadata liteLlm = call.liteLlm();
+
+            if (liteLlm != null && liteLlm.modelName() != null) {
+                routedModel = liteLlm.modelName();
+            }
+        }
+
+        return routedModel;
     }
 
     /**

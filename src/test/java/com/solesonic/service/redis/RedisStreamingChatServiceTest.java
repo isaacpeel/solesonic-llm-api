@@ -2,6 +2,8 @@ package com.solesonic.service.redis;
 
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ModelCallMetadata;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
@@ -176,6 +178,38 @@ class RedisStreamingChatServiceTest {
 
         verify(generatedImageService).forChatSince(eq(CHAT_ID), any());
         assertThat(doneMessage().getGeneratedImages()).isEmpty();
+    }
+
+    /**
+     * The done message is built from scratch rather than read from the row the chat memory advisor
+     * wrote, so what the model server reported has to be fetched back onto it — otherwise the
+     * accounting lands in history but is null on the frame the client finalises the turn with.
+     */
+    @Test
+    void normalTurnAttachesWhatTheServerReportedAboutTheTurn() {
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null));
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
+
+        when(chatMessageService.responseMetadata(eq(CHAT_ID), any())).thenReturn(responseMetadata);
+
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(doneMessage().getResponseMetadata()).isEqualTo(responseMetadata);
+    }
+
+    /**
+     * A turn no chat model reported on leaves the field null rather than failing the frame.
+     */
+    @Test
+    void normalTurnLeavesResponseMetadataNullWhenNothingWasReported() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(doneMessage().getResponseMetadata()).isNull();
     }
 
     /**

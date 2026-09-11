@@ -8,6 +8,7 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.util.AttachmentContextFormatter;
@@ -25,12 +26,15 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
+
+import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
-import static com.solesonic.service.prompt.ChatStreamSupport.contentFlux;
 import static com.solesonic.service.prompt.PromptService.AGENT_NAME;
 import static com.solesonic.service.prompt.PromptService.USER_MESSAGE;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
@@ -53,6 +57,8 @@ public class SlashCommandRouter {
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final VectorStoreService vectorStoreService;
+    private final ChatMessageService chatMessageService;
+    private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
     private final String agentName;
     private final String defaultChatModel;
     private final Duration chatTimeout;
@@ -64,6 +70,8 @@ public class SlashCommandRouter {
                               A2AAgentService a2aAgentService,
                               A2AStickyAgentService a2aStickyAgentService,
                               VectorStoreService vectorStoreService,
+                              ChatMessageService chatMessageService,
+                              LiteLlmHeaderRegistry liteLlmHeaderRegistry,
                               @Value("${solesonic.llm.bot.name}") String agentName,
                               @Value("${spring.ai.openai.model}") String defaultChatModel,
                               @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
@@ -74,6 +82,8 @@ public class SlashCommandRouter {
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.vectorStoreService = vectorStoreService;
+        this.chatMessageService = chatMessageService;
+        this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.agentName = agentName;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
@@ -131,6 +141,14 @@ public class SlashCommandRouter {
 
         log.info("Prompt invoke: {}", promptCommand.name());
 
+        //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
+        //chat memory advisor is about to write rather than the previous turn's.
+        ZonedDateTime since = ZonedDateTime.now();
+
+        //Joins this turn to the x-litellm-* headers of the HTTP calls it is about to make; the two
+        //reach the application on different threads and share nothing else.
+        UUID correlationId = UUID.randomUUID();
+
         McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(promptCommand.name())
                 .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
                 .build();
@@ -145,11 +163,12 @@ public class SlashCommandRouter {
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                 .toolContext(contextMap)
-                .options(chatOptions(defaultChatModel, chatTimeout))
+                .options(chatOptions(defaultChatModel, chatTimeout, correlationId))
                 .stream()
                 .chatResponse();
 
-        return contentFlux(promptChatResponse);
+        return capturingContentFlux(promptChatResponse, chatMessageService, liteLlmHeaderRegistry,
+                chatId, since, correlationId);
     }
 
     /**

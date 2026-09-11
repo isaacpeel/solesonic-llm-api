@@ -43,13 +43,6 @@ public class ChatService {
     private final RedisStreamService redisStreamService;
     private final UserRequestContext userRequestContext;
 
-    private String removeThinkTags(String message) {
-        if (message == null) {
-            return null;
-        }
-        return message.replaceAll("<think>.*?</think>", "");
-    }
-
     public ChatService(
             ChatRepository chatRepository,
             ChatMessageRepository chatMessageRepository,
@@ -340,23 +333,13 @@ public class ChatService {
                 .stream()
                 .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
 
-        // Likewise one image query per chat. References only — the bytes stay in the table and are
-        // fetched per image from the download endpoint, which is what keeps a conversation with a
-        // dozen images a few kilobytes of JSON rather than tens of megabytes.
         Map<UUID, List<GeneratedImageSummary>> generatedImagesByMessageId = generatedImageService.forChat(chatId)
                 .stream()
                 .collect(Collectors.groupingBy(GeneratedImageSummary::chatMessageId));
 
         for (ChatMessage chatMessage : chatMessages) {
-            // Remove <think>...</think> tags from each message
-            String message = chatMessage.getMessage();
-            if (message != null) {
-                chatMessage.setMessage(removeThinkTags(message));
-            }
-
             chatMessage.setAttachments(attachmentsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
-            chatMessage.setGeneratedImages(
-                    generatedImagesByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+            chatMessage.setGeneratedImages(generatedImagesByMessageId.getOrDefault(chatMessage.getId(), List.of()));
         }
 
         return chatMessages;

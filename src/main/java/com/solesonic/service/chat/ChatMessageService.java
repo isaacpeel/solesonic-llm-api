@@ -123,6 +123,23 @@ public class ChatMessageService {
                 });
     }
 
+    /**
+     * Reads back what {@link #updateResponseMetadata} recorded for a turn, by the same {@code since}
+     * the caller wrote it with.
+     * <p>
+     * The {@code done} frame needs this because it builds its message from scratch rather than from
+     * the persisted row — without it the accounting reaches chat history but is null on the frame a
+     * client finalises the turn with. Null means no chat model reported on the turn: an A2A
+     * delegation, or a turn that ended before any usage arrived.
+     */
+    @Transactional(readOnly = true)
+    public ResponseMetadata responseMetadata(UUID chatId, ZonedDateTime since) {
+        return chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .map(ChatMessage::getResponseMetadata)
+                .orElse(null);
+    }
+
     public List<Message> findByChatId(UUID chatId) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 

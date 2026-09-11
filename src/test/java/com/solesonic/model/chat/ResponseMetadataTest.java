@@ -29,7 +29,7 @@ class ResponseMetadataTest {
     private static ModelCallMetadata call(int promptTokens, int completionTokens, double promptMillis, double predictedMillis) {
         return new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "stop",
                 promptTokens, completionTokens, promptTokens + completionTokens,
-                promptMillis, predictedMillis, 61.2);
+                promptMillis, predictedMillis, 61.2, null);
     }
 
     private static ResponseMetadata singleCallMetadata() {
@@ -91,7 +91,7 @@ class ResponseMetadataTest {
     void leavesUnreportedFieldsNullRatherThanZero() {
         ResponseMetadata responseMetadata = ResponseMetadata.of("gpt-oss", "chatcmpl-4", null, "stop",
                 List.of(new ModelCallMetadata("gpt-oss", "chatcmpl-4", null, "stop",
-                        10, 2, 12, null, null, null)));
+                        10, 2, 12, null, null, null, null)));
 
         assertThat(responseMetadata).isNotNull();
         assertThat(responseMetadata.totalTokens()).isEqualTo(12);

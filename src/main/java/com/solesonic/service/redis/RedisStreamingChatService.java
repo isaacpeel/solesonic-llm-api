@@ -3,8 +3,10 @@ package com.solesonic.service.redis;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.InitPayload;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -24,6 +26,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -190,9 +193,11 @@ public class RedisStreamingChatService {
                                                UUID userId,
                                                ZonedDateTime turnStarted,
                                                String content) {
-        return Mono.fromCallable(() -> generatedImageService.forChatSince(chatId, turnStarted))
+        return Mono.fromCallable(() -> new CompletedTurn(
+                        generatedImageService.forChatSince(chatId, turnStarted),
+                        chatMessageService.responseMetadata(chatId, turnStarted)))
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(generatedImages -> {
+                .flatMap(completedTurn -> {
                     ChatMessage responseMessage = new ChatMessage();
                     responseMessage.setChatId(chatId);
                     responseMessage.setMessageType(ASSISTANT);
@@ -200,7 +205,13 @@ public class RedisStreamingChatService {
 
                     //References, never bytes. A client that missed the image event mid-stream — a reconnect,
                     //a late subscribe — still finalises the turn with the image on it.
-                    responseMessage.setGeneratedImages(generatedImages);
+                    responseMessage.setGeneratedImages(completedTurn.generatedImages());
+
+                    //Read back rather than carried down from the model call: the row is written by the
+                    //chat memory advisor mid-turn and the accounting is attached to it once the stream
+                    //completes, both of which are behind us by here. Null for a turn no chat model
+                    //answered.
+                    responseMessage.setResponseMetadata(completedTurn.responseMetadata());
 
                     log.debug("Publishing done event to Redis for chat id {}", chatId);
 
@@ -208,6 +219,14 @@ public class RedisStreamingChatService {
                             new SolesonicChatResponse(chatId, responseMessage));
                 })
                 .then();
+    }
+
+    /**
+     * The two blocking reads the done frame needs, fetched together so the turn pays one hop onto
+     * {@code boundedElastic} rather than two.
+     */
+    private record CompletedTurn(List<GeneratedImageSummary> generatedImages,
+                                 ResponseMetadata responseMetadata) {
     }
 
     private Mono<Void> publishCancelledOutcome(UUID chatId, UUID userId) {
