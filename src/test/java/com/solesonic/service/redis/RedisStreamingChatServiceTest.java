@@ -367,6 +367,46 @@ class RedisStreamingChatServiceTest {
     }
 
     /**
+     * A non-{@code done} tail means a turn is still writing to this stream, so there is a live
+     * subscriber on the elicitation channel for the signal to reach.
+     */
+    @Test
+    void cancelSignalsWhenATurnIsInFlight() {
+        when(redisStreamService.tail(CHAT_ID, USER_ID))
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", CHUNK)));
+        when(elicitationService.cancelChat(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
+                .expectNext(RedisStreamingChatService.CancelOutcome.CANCEL_REQUESTED)
+                .verifyComplete();
+
+        verify(elicitationService).cancelChat(CHAT_ID);
+    }
+
+    @Test
+    void cancelIsANoOpOnceTheTurnHasFinished() {
+        when(redisStreamService.tail(CHAT_ID, USER_ID))
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", DONE)));
+
+        StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
+                .expectNext(RedisStreamingChatService.CancelOutcome.NOTHING_TO_CANCEL)
+                .verifyComplete();
+
+        verify(elicitationService, never()).cancelChat(any());
+    }
+
+    @Test
+    void cancelIsANoOpWhenTheChatNeverStreamed() {
+        when(redisStreamService.tail(CHAT_ID, USER_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
+                .expectNext(RedisStreamingChatService.CancelOutcome.NOTHING_TO_CANCEL)
+                .verifyComplete();
+
+        verify(elicitationService, never()).cancelChat(any());
+    }
+
+    /**
      * Emits the given chunks, then fires the cancel signal, then stalls — so cancellation is what ends the
      * turn, deterministically and without a sleep.
      */

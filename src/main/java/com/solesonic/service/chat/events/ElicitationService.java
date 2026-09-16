@@ -81,6 +81,25 @@ public class ElicitationService {
                 .subscribe(deleted -> log.debug("Closed {} pending elicitations for chat {}", deleted, chatId));
     }
 
+    /**
+     * Publishes the same {@code cancel} signal {@link com.solesonic.service.redis.RedisStreamingChatService}'s
+     * {@code cancelEvents} already listens for, without requiring a pending elicitation to decline. This is
+     * what lets a stop button end a turn that never asked the user anything.
+     * <p>
+     * Pub/sub delivers only to whoever is already subscribed — there is no replay. A signal sent in the
+     * narrow window before {@code registerChat}'s listener is live is dropped with a zero receiver count,
+     * silently, so that count is logged rather than discarded.
+     */
+    public Mono<Void> cancelChat(UUID chatId) {
+        return redisTemplate.convertAndSend(eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION))
+                .doOnNext(receiverCount -> {
+                    if (receiverCount == 0) {
+                        log.warn("Cancel signal for chat {} had no live subscriber — the turn may have missed it", chatId);
+                    }
+                })
+                .then();
+    }
+
     public ElicitationHandle prepareElicitation(UUID chatId) {
         UUID elicitationId = UUID.randomUUID();
         redisTemplate.opsForSet()

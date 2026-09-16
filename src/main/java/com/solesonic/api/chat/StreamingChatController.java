@@ -106,6 +106,36 @@ public class StreamingChatController {
         return streamResumeService.resume(authentication, chatId, userId, lastEventId);
     }
 
+    /**
+     * Stops a turn in flight. Firing this endpoint publishes the same signal
+     * {@link ElicitationService#cancelChat(UUID)} already sends for an elicitation decline, so a
+     * cancelled turn ends through the one termination path {@code RedisStreamingChatService} already
+     * has: a {@code SYSTEM} "Chat canceled." message, then {@code chunk} and {@code done} frames on
+     * the still-open (or resumed) stream. The response here only confirms the signal was sent —
+     * outcome arrives asynchronously, same as everywhere else in this controller.
+     */
+    @PostMapping(value = "/{chatId}/users/{userId}/cancel")
+    public Mono<ResponseEntity<Void>> cancel(@PathVariable UUID chatId,
+                                             @PathVariable UUID userId,
+                                             Authentication authentication) {
+        log.info("Cancelling streaming chat {} for user {}", chatId, userId);
+
+        ChatAccess chatAccess = chatStreamAccessService.forExistingChat(authentication, chatId, userId);
+
+        if (chatAccess == ChatAccess.FORBIDDEN) {
+            return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN).build());
+        }
+
+        if (chatAccess == ChatAccess.NOT_FOUND) {
+            return Mono.just(ResponseEntity.notFound().build());
+        }
+
+        return streamingChatService.cancel(chatId, userId)
+                .map(outcome -> outcome == RedisStreamingChatService.CancelOutcome.NOTHING_TO_CANCEL
+                        ? ResponseEntity.noContent().build()
+                        : ResponseEntity.accepted().build());
+    }
+
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
     public Mono<ResponseEntity<Void>> submitElicitationResponse(@PathVariable UUID chatId,
                                                                 @PathVariable UUID elicitationId,

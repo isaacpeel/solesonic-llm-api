@@ -47,6 +47,11 @@ public class RedisStreamingChatService {
     public record ChunkPayload(String content) {
     }
 
+    public enum CancelOutcome {
+        CANCEL_REQUESTED,
+        NOTHING_TO_CANCEL
+    }
+
     private final ChatRepository chatRepository;
     private final PromptService promptService;
     private final ElicitationService elicitationService;
@@ -121,6 +126,20 @@ public class RedisStreamingChatService {
     }
 
     private record StreamStart(String offset, ChatMessage chatMessage) {
+    }
+
+    /**
+     * Stops a turn in flight. A {@code done} tail means the turn already finished — nothing to
+     * signal — and an empty tail means the chat never streamed at all; either way there is no live
+     * subscriber on the elicitation channel to receive a cancel, so this checks first rather than
+     * firing blind.
+     */
+    public Mono<CancelOutcome> cancel(UUID chatId, UUID userId) {
+        return redisStreamService.tail(chatId, userId)
+                .flatMap(tail -> DONE.equalsIgnoreCase(tail.type())
+                        ? Mono.just(CancelOutcome.NOTHING_TO_CANCEL)
+                        : elicitationService.cancelChat(chatId).thenReturn(CancelOutcome.CANCEL_REQUESTED))
+                .defaultIfEmpty(CancelOutcome.NOTHING_TO_CANCEL);
     }
 
     private void publishToRedisStream(UUID chatId,

@@ -79,6 +79,27 @@ which returns the persisted turn.
 Frames are retained for `redis.stream.retention-seconds` (default 900) past a chat's most recent
 frame, on a sliding expiry.
 
+### Cancel a Streaming Turn
+
+- **Endpoint**: `POST /streaming/chats/{chatId}/users/{userId}/cancel`
+
+Stops a turn in flight. The same ownership rule as every other streaming endpoint applies:
+`{userId}` must be the caller, and `{chatId}` must be a chat that user owns.
+
+| Status | Meaning |
+|--------|---------|
+| `202` | A cancel signal was sent. The turn is still finishing asynchronously |
+| `204` | Nothing to cancel — the turn already finished, or this chat never streamed |
+| `403` | The chat is not the caller's |
+| `404` | No such chat |
+
+This endpoint only confirms the signal was sent — it does not wait for the turn to actually stop.
+The outcome arrives the same way every other frame does: on the already-open stream, or on a
+`GET .../stream` resume, as a `chunk` carrying "Chat canceled." followed by `done` with a `SYSTEM`
+message. Content the model had already streamed before the cancel lands is not persisted; only that
+system message is. See [Delete a Chat](#delete-a-chat) — unlike a delete, this is the way to
+actually stop a turn rather than merely disown it.
+
 ### Event IDs
 
 Every frame carries an `id:` — a Redis stream entry id of the form
@@ -519,7 +540,7 @@ group, not a deleted one.
 Deleting a conversation does not cancel a turn that is already streaming. Generation is deliberately
 independent of any listener, so a turn in flight runs to completion and writes a message that lands
 on a conversation that no longer exists — unreachable from every read path, but written. Wait for
-`done` before deleting.
+`done` before deleting, or send [Cancel a Streaming Turn](#cancel-a-streaming-turn) first.
 
 ---
 
