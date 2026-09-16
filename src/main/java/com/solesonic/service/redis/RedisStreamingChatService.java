@@ -14,6 +14,7 @@ import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
+import com.solesonic.util.ResponseSanitizer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -196,6 +197,7 @@ public class RedisStreamingChatService {
         Flux<String> chunkFlow = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
+                .transform(ResponseSanitizer.sanitize())
                 .doOnNext(assembled::append)
                 .takeUntilOther(cancelEvents.doOnNext(_ -> cancelled.set(true)));
 
