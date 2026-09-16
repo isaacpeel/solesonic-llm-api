@@ -17,7 +17,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -164,11 +163,15 @@ public class ChatMessageService {
                     .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
 
             for(ChatMessage chatMessage : chatMessages) {
-                if (chatMessage.getProgressData() != null) {
+                // Every persisted SYSTEM row is a UI-only notification (cancellation, progress,
+                // failure, elicitation prompt) rather than a real conversation turn — the actual
+                // system prompt is rebuilt fresh per turn in PromptService and never stored as a
+                // row. Replaying one back to the model puts a system-role message outside position
+                // zero, which some chat templates (via litellm) reject outright.
+                if (chatMessage.getMessageType() == MessageType.SYSTEM) {
                     continue;
                 }
 
-                // Remove <think>...</think> tags from message
                 String messageText = chatMessage.getMessage();
 
                 Message message;
@@ -192,10 +195,8 @@ public class ChatMessageService {
                         assert messageText != null;
                         message = new AssistantMessage(messageText);
                     }
-                    default -> {
-                        assert messageText != null;
-                        message = new SystemMessage(messageText);
-                    }
+                    default -> throw new IllegalStateException(
+                            "Unexpected message type in chat history: " + chatMessage.getMessageType());
                 }
 
                 messages.add(message);

@@ -181,6 +181,28 @@ class ChatMessageServiceTest {
                 .noneMatch(text -> text != null && text.contains("a login form"));
     }
 
+    /**
+     * A cancelled turn persists a SYSTEM "Chat canceled." row mid-history for the UI to display.
+     * Replaying it to the model would put a system-role message outside position zero, which some
+     * chat templates reject outright — so every SYSTEM row (cancellation, progress, failure,
+     * elicitation prompt) is UI-only and must never reach the model.
+     */
+    @Test
+    void findByChatIdExcludesSystemMessagesFromReplay() {
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                chatMessage(MessageType.USER, "first question"),
+                chatMessage(MessageType.ASSISTANT, "first answer"),
+                chatMessage(MessageType.SYSTEM, "Chat canceled."),
+                chatMessage(MessageType.USER, "second question"),
+                chatMessage(MessageType.ASSISTANT, "second answer")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).hasSize(4);
+        assertThat(messages).extracting(Message::getMessageType)
+                .containsExactly(MessageType.USER, MessageType.ASSISTANT, MessageType.USER, MessageType.ASSISTANT);
+    }
+
     @Test
     void findByChatIdReturnsEmptyForEmptyHistory() {
         when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of());
