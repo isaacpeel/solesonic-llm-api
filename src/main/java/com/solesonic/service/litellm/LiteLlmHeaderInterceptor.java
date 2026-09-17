@@ -46,6 +46,8 @@ public class LiteLlmHeaderInterceptor implements Interceptor {
     static final String MODEL_API_BASE_HEADER = "x-litellm-model-api-base";
     static final String ATTEMPTED_RETRIES_HEADER = "x-litellm-attempted-retries";
     static final String ATTEMPTED_FALLBACKS_HEADER = "x-litellm-attempted-fallbacks";
+    static final String RESPONSE_DURATION_HEADER = "x-litellm-response-duration-ms";
+    static final String OVERHEAD_DURATION_HEADER = "x-litellm-overhead-duration-ms";
 
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
     private final JsonMapper jsonMapper;
@@ -71,7 +73,9 @@ public class LiteLlmHeaderInterceptor implements Interceptor {
                 header(response, MODEL_NAME_HEADER),
                 header(response, MODEL_API_BASE_HEADER),
                 intHeader(response, ATTEMPTED_RETRIES_HEADER),
-                intHeader(response, ATTEMPTED_FALLBACKS_HEADER));
+                intHeader(response, ATTEMPTED_FALLBACKS_HEADER),
+                doubleHeader(response, RESPONSE_DURATION_HEADER),
+                doubleHeader(response, OVERHEAD_DURATION_HEADER));
 
         if (liteLlmCallMetadata.hasAnyValue()) {
             liteLlmHeaderRegistry.record(correlationId, liteLlmCallMetadata);
@@ -132,6 +136,20 @@ public class LiteLlmHeaderInterceptor implements Interceptor {
 
         try {
             return Integer.valueOf(value);
+        } catch (NumberFormatException numberFormatException) {
+            return null;
+        }
+    }
+
+    private static @Nullable Double doubleHeader(Response response, String name) {
+        String value = header(response, name);
+
+        if (value == null) {
+            return null;
+        }
+
+        try {
+            return Double.valueOf(value);
         } catch (NumberFormatException numberFormatException) {
             return null;
         }

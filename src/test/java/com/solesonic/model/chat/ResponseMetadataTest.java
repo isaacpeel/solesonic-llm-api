@@ -52,6 +52,7 @@ class ResponseMetadataTest {
         assertThat(responseMetadata.totalTokens()).isEqualTo(1301);
         assertThat(responseMetadata.promptMillis()).isEqualTo(130.079);
         assertThat(responseMetadata.predictedMillis()).isEqualTo(4232.71);
+        assertThat(responseMetadata.totalMillis()).isEqualTo(4362.789);
     }
 
     /**
@@ -72,6 +73,7 @@ class ResponseMetadataTest {
         assertThat(responseMetadata.totalTokens()).isEqualTo(4692);
         assertThat(responseMetadata.promptMillis()).isEqualTo(390.0);
         assertThat(responseMetadata.predictedMillis()).isEqualTo(8300.25);
+        assertThat(responseMetadata.totalMillis()).isEqualTo(8690.25);
     }
 
     /**
@@ -98,6 +100,34 @@ class ResponseMetadataTest {
         assertThat(responseMetadata.createdAt()).isNull();
         assertThat(responseMetadata.promptMillis()).isNull();
         assertThat(responseMetadata.predictedMillis()).isNull();
+        assertThat(responseMetadata.totalMillis()).isNull();
+    }
+
+    /**
+     * llama.cpp's own timings cover only its generation work, not the network hop to and from it or
+     * LiteLLM's own routing overhead — so once a call went through the proxy, its measured duration
+     * is the more honest number and wins.
+     */
+    @Test
+    void prefersLiteLlmsMeasuredDurationOverTheServersOwnTimings() {
+        ModelCallMetadata proxiedCall = call(1042, 259, 130.079, 4232.71)
+                .withLiteLlm(new LiteLlmCallMetadata(
+                        "e58baedb-3369-48d3-b889-98df98eb431f",
+                        "qwen3.5-9b",
+                        "http://izzy-bot:8585/v1",
+                        0,
+                        0,
+                        1930.898,
+                        14.345));
+
+        ResponseMetadata responseMetadata = ResponseMetadata.of("auto-model", "chatcmpl-1", CREATED_AT, "stop",
+                List.of(proxiedCall));
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.promptMillis()).isEqualTo(130.079);
+        assertThat(responseMetadata.predictedMillis()).isEqualTo(4232.71);
+        assertThat(responseMetadata.totalMillis()).isEqualTo(1945.243);
+        assertThat(responseMetadata.routedModel()).isEqualTo("qwen3.5-9b");
     }
 
     /**
@@ -129,6 +159,7 @@ class ResponseMetadataTest {
         assertThat(root.get("totalTokens").asLong()).isEqualTo(1301L);
         assertThat(root.get("modelCalls").asLong()).isEqualTo(1L);
         assertThat(root.get("promptMillis").asDouble()).isEqualTo(130.079);
+        assertThat(root.get("totalMillis").asDouble()).isEqualTo(4362.789);
 
         assertThat(root.get("createdAt").isString()).isTrue();
         assertThat(root.get("createdAt").asString()).isEqualTo("2026-08-27T19:22:45Z");
@@ -158,5 +189,6 @@ class ResponseMetadataTest {
         assertThat(roundTripped.finishReason()).isNull();
         assertThat(roundTripped.promptMillis()).isNull();
         assertThat(roundTripped.predictedMillis()).isNull();
+        assertThat(roundTripped.totalMillis()).isNull();
     }
 }

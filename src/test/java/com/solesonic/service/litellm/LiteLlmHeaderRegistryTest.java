@@ -19,7 +19,7 @@ class LiteLlmHeaderRegistryTest {
     private static final Instant NOW = Instant.parse("2026-09-11T13:14:41Z");
 
     private static LiteLlmCallMetadata call(String callId, String modelName) {
-        return new LiteLlmCallMetadata(callId, modelName, "http://izzy-bot-spark:8585/v1", 0, 0);
+        return new LiteLlmCallMetadata(callId, modelName, "http://izzy-bot-spark:8585/v1", 0, 0, null, null);
     }
 
     @Test

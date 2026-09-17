@@ -30,22 +30,16 @@ import java.util.function.Function;
 public record ResponseMetadata(
         @Nullable String model,
         @Nullable String id,
-        //Pinned to a string so it goes back out in ISO-8601 form rather than the numeric timestamp a
-        //mapper left to its own defaults could choose.
         @JsonFormat(shape = JsonFormat.Shape.STRING)
         @Nullable Instant createdAt,
         @Nullable String finishReason,
-        //Nullable like everything else, because a row persisted under an older shape has no count to
-        //read back and a primitive would fail the whole record rather than come back unknown.
         @Nullable Integer modelCalls,
         @Nullable Integer promptTokens,
         @Nullable Integer completionTokens,
         @Nullable Integer totalTokens,
         @Nullable Double promptMillis,
         @Nullable Double predictedMillis,
-        //The model LiteLLM actually routed to, which model() cannot answer: a request against a
-        //model group reports the group that was asked for, the same "what was requested, not what
-        //ran" gap this record exists to close. Null when nothing is proxying.
+        @Nullable Double totalMillis,
         @Nullable String routedModel) {
 
     /**
@@ -76,7 +70,32 @@ public record ResponseMetadata(
                 sumIntegers(calls, ModelCallMetadata::totalTokens),
                 sumDoubles(calls, ModelCallMetadata::promptMillis),
                 sumDoubles(calls, ModelCallMetadata::predictedMillis),
+                sumDoubles(calls, ResponseMetadata::callTotalMillis),
                 routedModel(calls));
+    }
+
+    /**
+     * Prefers LiteLLM's own measured response time over the model server's self-reported
+     * {@code prompt_ms}/{@code predicted_ms}: those cover only the server's own generation work, not
+     * the network hop to and from it or LiteLLM's routing overhead, so they consistently undercount
+     * the call's real wall-clock time. Falls back to the server's timings when the call was not
+     * proxied. Null when neither source reported anything, rather than zero.
+     */
+    private static @Nullable Double callTotalMillis(ModelCallMetadata call) {
+        LiteLlmCallMetadata liteLlm = call.liteLlm();
+
+        if (liteLlm != null && liteLlm.responseDurationMillis() != null) {
+            double overheadMillis = liteLlm.overheadDurationMillis() == null ? 0.0 : liteLlm.overheadDurationMillis();
+
+            return liteLlm.responseDurationMillis() + overheadMillis;
+        }
+
+        if (call.promptMillis() == null && call.predictedMillis() == null) {
+            return null;
+        }
+
+        return (call.promptMillis() == null ? 0.0 : call.promptMillis())
+                + (call.predictedMillis() == null ? 0.0 : call.predictedMillis());
     }
 
     /**

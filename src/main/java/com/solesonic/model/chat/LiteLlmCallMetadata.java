@@ -17,13 +17,21 @@ import org.jspecify.annotations.Nullable;
  * configured for the model in LiteLLM, and a persisted zero reads as "this turn was free" rather
  * than "nobody priced it". {@link #callId()} is the join key to LiteLLM's own spend logs, which is
  * where cost can be answered properly once it exists.
+ * <p>
+ * {@link #responseDurationMillis()} and {@link #overheadDurationMillis()} are the proxy's own
+ * measured wall-clock time for the call, and are what {@link ResponseMetadata#totalMillis()} prefers
+ * over the model server's self-reported {@code prompt_ms}/{@code predicted_ms}: llama.cpp's timings
+ * cover only its own generation work, not the network hop to and from it or LiteLLM's routing, so
+ * they consistently undercount what the call actually took.
  */
 public record LiteLlmCallMetadata(
         @Nullable String callId,
         @Nullable String modelName,
         @Nullable String modelApiBase,
         @Nullable Integer attemptedRetries,
-        @Nullable Integer attemptedFallbacks) {
+        @Nullable Integer attemptedFallbacks,
+        @Nullable Double responseDurationMillis,
+        @Nullable Double overheadDurationMillis) {
 
     /**
      * Whether the proxy said anything at all. A response from a server that is not LiteLLM carries
@@ -42,6 +50,8 @@ public record LiteLlmCallMetadata(
                 || modelName != null
                 || modelApiBase != null
                 || attemptedRetries != null
-                || attemptedFallbacks != null;
+                || attemptedFallbacks != null
+                || responseDurationMillis != null
+                || overheadDurationMillis != null;
     }
 }

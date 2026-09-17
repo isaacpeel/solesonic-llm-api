@@ -43,7 +43,9 @@ class ModelCallMetadataPersistenceTest {
                         "qwen3.5-9b",
                         "http://izzy-bot-spark:8585/v1",
                         0,
-                        0));
+                        0,
+                        1930.898,
+                        14.345));
     }
 
     @Test
@@ -76,6 +78,7 @@ class ModelCallMetadataPersistenceTest {
         assertThat(HIBERNATE_STYLE_MAPPER.readTree(json).properties())
                 .extracting(Map.Entry::getKey)
                 .containsExactlyInAnyOrder("callId", "modelName", "modelApiBase",
-                        "attemptedRetries", "attemptedFallbacks");
+                        "attemptedRetries", "attemptedFallbacks",
+                        "responseDurationMillis", "overheadDurationMillis");
     }
 }

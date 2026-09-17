@@ -101,6 +101,7 @@ class ResponseMetadataCaptureTest {
         assertThat(responseMetadata.totalTokens()).isEqualTo(1301);
         assertThat(responseMetadata.promptMillis()).isEqualTo(130.079);
         assertThat(responseMetadata.predictedMillis()).isEqualTo(4232.71);
+        assertThat(responseMetadata.totalMillis()).isEqualTo(4362.789);
 
         assertThat(responseMetadataCapture.calls()).singleElement()
                 .satisfies(call -> {
@@ -157,6 +158,7 @@ class ResponseMetadataCaptureTest {
         assertThat(responseMetadata.totalTokens()).isEqualTo(12);
         assertThat(responseMetadata.promptMillis()).isNull();
         assertThat(responseMetadata.predictedMillis()).isNull();
+        assertThat(responseMetadata.totalMillis()).isNull();
     }
 
     /**
