@@ -3,6 +3,7 @@ package com.solesonic.service.redis;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.InitPayload;
+import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
@@ -216,7 +217,8 @@ public class RedisStreamingChatService {
                                                String content) {
         return Mono.fromCallable(() -> new CompletedTurn(
                         generatedImageService.forChatSince(chatId, turnStarted),
-                        chatMessageService.responseMetadata(chatId, turnStarted)))
+                        chatMessageService.responseMetadata(chatId, turnStarted),
+                        chatMessageService.responseMetadataCalls(chatId, turnStarted)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(completedTurn -> {
                     ChatMessage responseMessage = new ChatMessage();
@@ -233,6 +235,7 @@ public class RedisStreamingChatService {
                     //completes, both of which are behind us by here. Null for a turn no chat model
                     //answered.
                     responseMessage.setResponseMetadata(completedTurn.responseMetadata());
+                    responseMessage.setResponseMetadataCalls(completedTurn.responseMetadataCalls());
 
                     log.debug("Publishing done event to Redis for chat id {}", chatId);
 
@@ -243,11 +246,12 @@ public class RedisStreamingChatService {
     }
 
     /**
-     * The two blocking reads the done frame needs, fetched together so the turn pays one hop onto
-     * {@code boundedElastic} rather than two.
+     * The three blocking reads the done frame needs, fetched together so the turn pays one hop onto
+     * {@code boundedElastic} rather than three.
      */
     private record CompletedTurn(List<GeneratedImageSummary> generatedImages,
-                                 ResponseMetadata responseMetadata) {
+                                 ResponseMetadata responseMetadata,
+                                 List<ModelCallMetadata> responseMetadataCalls) {
     }
 
     private Mono<Void> publishCancelledOutcome(UUID chatId, UUID userId) {

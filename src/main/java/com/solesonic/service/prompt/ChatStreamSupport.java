@@ -29,6 +29,15 @@ import static com.solesonic.service.litellm.LiteLlmHeaderInterceptor.TURN_ID;
 public final class ChatStreamSupport {
     private static final Logger log = LoggerFactory.getLogger(ChatStreamSupport.class);
 
+    /**
+     * llama.cpp's own streaming flag: without it, a streamed response carries no {@code timings}
+     * object at all — confirmed against a raw SSE capture where the final usage-only chunk had
+     * every standard field but no {@code timings} — unlike a non-streaming completion, which
+     * includes the aggregate object regardless of this flag. LiteLLM passes it through unmodified
+     * to any OpenAI-compatible custom provider, the same way it does the turn-id metadata below.
+     */
+    private static final String TIMINGS_PER_TOKEN = "timings_per_token";
+
     private ChatStreamSupport() {
     }
 
@@ -56,13 +65,20 @@ public final class ChatStreamSupport {
      * that caused them; see {@code LiteLlmHeaderRegistry} for why the two cannot simply share a
      * thread. Set here, alongside {@code streamUsage}, so that no route can build options without
      * it and quietly lose its proxy accounting.
+     * <p>
+     * {@link #TIMINGS_PER_TOKEN} rides in the same {@code extraBody}, for the same reason: a route
+     * that built its own options could otherwise stream from a llama.cpp-backed model and never see
+     * {@code timings} at all, which is what {@link com.solesonic.model.chat.ResponseMetadataCapture}
+     * needs for everything but {@code cachedPromptTokens}, {@code totalMillis} and {@code routedModel}.
      */
     public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout, UUID correlationId) {
         return OpenAiChatOptions.builder()
                 .model(model)
                 .streamUsage(true)
                 .timeout(timeout)
-                .extraBody(Map.of(METADATA, Map.of(TURN_ID, correlationId.toString())));
+                .extraBody(Map.of(
+                        METADATA, Map.of(TURN_ID, correlationId.toString()),
+                        TIMINGS_PER_TOKEN, true));
     }
 
     /**
@@ -149,6 +165,9 @@ public final class ChatStreamSupport {
         if (responseMetadata == null) {
             return;
         }
+
+        log.info("Captured response metadata for chat {}: {}, calls: {}",
+                chatId, responseMetadata, responseMetadataCapture.calls());
 
         try {
             chatMessageService.updateResponseMetadata(chatId, since, responseMetadata, responseMetadataCapture.calls());

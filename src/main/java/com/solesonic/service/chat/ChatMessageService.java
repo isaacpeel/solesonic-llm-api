@@ -139,6 +139,20 @@ public class ChatMessageService {
                 .orElse(null);
     }
 
+    /**
+     * The per-call breakdown counterpart to {@link #responseMetadata}, for the same reason and by the
+     * same lookup: the {@code done} frame's message is built from scratch, so
+     * {@code responseMetadataCalls} has to be read back explicitly or it stays null on that frame even
+     * though the persisted row carries it.
+     */
+    @Transactional(readOnly = true)
+    public List<ModelCallMetadata> responseMetadataCalls(UUID chatId, ZonedDateTime since) {
+        return chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .map(ChatMessage::getResponseMetadataCalls)
+                .orElse(null);
+    }
+
     public List<Message> findByChatId(UUID chatId) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 

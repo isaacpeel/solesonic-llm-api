@@ -46,9 +46,17 @@ public final class ResponseMetadataCapture {
      * server that does not send one simply leaves every timing null.
      */
     static final String TIMINGS = "timings";
+    static final String CACHE_N = "cache_n";
+    static final String PROMPT_N = "prompt_n";
     static final String PROMPT_MS = "prompt_ms";
+    static final String PROMPT_PER_TOKEN_MS = "prompt_per_token_ms";
+    static final String PROMPT_PER_SECOND = "prompt_per_second";
+    static final String PREDICTED_N = "predicted_n";
     static final String PREDICTED_MS = "predicted_ms";
+    static final String PREDICTED_PER_TOKEN_MS = "predicted_per_token_ms";
     static final String PREDICTED_PER_SECOND = "predicted_per_second";
+    static final String DRAFT_N = "draft_n";
+    static final String DRAFT_N_ACCEPTED = "draft_n_accepted";
 
     /**
      * What Spring AI's OpenAI model reports for a streamed chunk that carries no finish reason of
@@ -102,6 +110,14 @@ public final class ResponseMetadataCapture {
             pending.promptTokens = usage.getPromptTokens();
             pending.completionTokens = usage.getCompletionTokens();
             pending.totalTokens = usage.getTotalTokens();
+
+            //Prefers the portable usage-level count over timings.cache_n, which applyTimings above
+            //already set as a llama.cpp-only fallback — usage runs second, so it wins when reported.
+            Long cacheReadInputTokens = usage.getCacheReadInputTokens();
+
+            if (cacheReadInputTokens != null) {
+                pending.cachedPromptTokens = Math.toIntExact(cacheReadInputTokens);
+            }
 
             //Usage is the last thing a call reports, so this closes it. Flushing here rather than on
             //the next call's first chunk is what keeps the following round trip's finish reason from
@@ -160,6 +176,14 @@ public final class ResponseMetadataCapture {
                         pending.promptMillis,
                         pending.predictedMillis,
                         pending.predictedPerSecond,
+                        pending.cachedPromptTokens,
+                        pending.promptTokensEvaluated,
+                        pending.promptPerTokenMillis,
+                        pending.promptPerSecond,
+                        pending.predictedTokensGenerated,
+                        pending.predictedPerTokenMillis,
+                        pending.draftTokens,
+                        pending.draftAcceptedTokens,
                         lastCall.liteLlm()));
 
                 pending.reset();
@@ -183,6 +207,14 @@ public final class ResponseMetadataCapture {
                 pending.promptMillis,
                 pending.predictedMillis,
                 pending.predictedPerSecond,
+                pending.cachedPromptTokens,
+                pending.promptTokensEvaluated,
+                pending.promptPerTokenMillis,
+                pending.promptPerSecond,
+                pending.predictedTokensGenerated,
+                pending.predictedPerTokenMillis,
+                pending.draftTokens,
+                pending.draftAcceptedTokens,
                 null));
 
         pending.reset();
@@ -219,6 +251,14 @@ public final class ResponseMetadataCapture {
         Double promptMillis = millis(timingsMap, PROMPT_MS);
         Double predictedMillis = millis(timingsMap, PREDICTED_MS);
         Double predictedPerSecond = millis(timingsMap, PREDICTED_PER_SECOND);
+        Integer cacheN = count(timingsMap, CACHE_N);
+        Integer promptN = count(timingsMap, PROMPT_N);
+        Double promptPerTokenMillis = millis(timingsMap, PROMPT_PER_TOKEN_MS);
+        Double promptPerSecond = millis(timingsMap, PROMPT_PER_SECOND);
+        Integer predictedN = count(timingsMap, PREDICTED_N);
+        Double predictedPerTokenMillis = millis(timingsMap, PREDICTED_PER_TOKEN_MS);
+        Integer draftN = count(timingsMap, DRAFT_N);
+        Integer draftNAccepted = count(timingsMap, DRAFT_N_ACCEPTED);
 
         if (promptMillis != null) {
             pending.promptMillis = promptMillis;
@@ -231,6 +271,40 @@ public final class ResponseMetadataCapture {
         if (predictedPerSecond != null) {
             pending.predictedPerSecond = predictedPerSecond;
         }
+
+        //llama.cpp-only fallback: accept()'s usage handling overwrites this with the portable
+        //usage.prompt_tokens_details.cached_tokens count whenever the response reports one.
+        if (cacheN != null) {
+            pending.cachedPromptTokens = cacheN;
+        }
+
+        if (promptN != null) {
+            pending.promptTokensEvaluated = promptN;
+        }
+
+        if (promptPerTokenMillis != null) {
+            pending.promptPerTokenMillis = promptPerTokenMillis;
+        }
+
+        if (promptPerSecond != null) {
+            pending.promptPerSecond = promptPerSecond;
+        }
+
+        if (predictedN != null) {
+            pending.predictedTokensGenerated = predictedN;
+        }
+
+        if (predictedPerTokenMillis != null) {
+            pending.predictedPerTokenMillis = predictedPerTokenMillis;
+        }
+
+        if (draftN != null) {
+            pending.draftTokens = draftN;
+        }
+
+        if (draftNAccepted != null) {
+            pending.draftAcceptedTokens = draftNAccepted;
+        }
     }
 
     private static @Nullable Double millis(Map<?, ?> timings, String key) {
@@ -238,6 +312,16 @@ public final class ResponseMetadataCapture {
 
         if (value instanceof Number number) {
             return number.doubleValue();
+        }
+
+        return null;
+    }
+
+    private static @Nullable Integer count(Map<?, ?> timings, String key) {
+        Object value = timings.get(key);
+
+        if (value instanceof Number number) {
+            return number.intValue();
         }
 
         return null;
@@ -303,9 +387,21 @@ public final class ResponseMetadataCapture {
         private @Nullable Double promptMillis;
         private @Nullable Double predictedMillis;
         private @Nullable Double predictedPerSecond;
+        private @Nullable Integer cachedPromptTokens;
+        private @Nullable Integer promptTokensEvaluated;
+        private @Nullable Double promptPerTokenMillis;
+        private @Nullable Double promptPerSecond;
+        private @Nullable Integer predictedTokensGenerated;
+        private @Nullable Double predictedPerTokenMillis;
+        private @Nullable Integer draftTokens;
+        private @Nullable Integer draftAcceptedTokens;
 
         private boolean hasTimings() {
-            return promptMillis != null || predictedMillis != null || predictedPerSecond != null;
+            return promptMillis != null || predictedMillis != null || predictedPerSecond != null
+                    || cachedPromptTokens != null || promptTokensEvaluated != null
+                    || promptPerTokenMillis != null || promptPerSecond != null
+                    || predictedTokensGenerated != null || predictedPerTokenMillis != null
+                    || draftTokens != null || draftAcceptedTokens != null;
         }
 
         private void reset() {
@@ -319,6 +415,14 @@ public final class ResponseMetadataCapture {
             promptMillis = null;
             predictedMillis = null;
             predictedPerSecond = null;
+            cachedPromptTokens = null;
+            promptTokensEvaluated = null;
+            promptPerTokenMillis = null;
+            promptPerSecond = null;
+            predictedTokensGenerated = null;
+            predictedPerTokenMillis = null;
+            draftTokens = null;
+            draftAcceptedTokens = null;
         }
     }
 }

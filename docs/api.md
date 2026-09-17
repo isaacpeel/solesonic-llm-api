@@ -201,8 +201,45 @@ De-duplicate by `imageId`.
       "totalTokens": 1301,
       "promptMillis": 130.079,
       "predictedMillis": 4232.71,
+      "totalMillis": 4362.789,
+      "cachedPromptTokens": 7,
+      "promptTokensEvaluated": 4,
+      "predictedTokensGenerated": 227,
+      "draftTokens": 192,
+      "draftAcceptedTokens": 164,
       "routedModel": "qwen3.5-9b"
-    }
+    },
+    "responseMetadataCalls": [
+      {
+        "model": "qwen3-8b",
+        "id": "chatcmpl-abc123",
+        "createdAt": "2026-08-27T19:22:45Z",
+        "finishReason": "stop",
+        "promptTokens": 1042,
+        "completionTokens": 259,
+        "totalTokens": 1301,
+        "promptMillis": 130.079,
+        "predictedMillis": 4232.71,
+        "predictedPerSecond": 61.2,
+        "cachedPromptTokens": 7,
+        "promptTokensEvaluated": 4,
+        "promptPerTokenMillis": 12.456,
+        "promptPerSecond": 80.284,
+        "predictedTokensGenerated": 227,
+        "predictedPerTokenMillis": 5.674,
+        "draftTokens": 192,
+        "draftAcceptedTokens": 164,
+        "liteLlm": {
+          "callId": "e58baedb-3369-48d3-b889-98df98eb431f",
+          "modelName": "qwen3.5-9b",
+          "modelApiBase": "http://izzy-bot:8585/v1",
+          "attemptedRetries": 0,
+          "attemptedFallbacks": 0,
+          "responseDurationMillis": 1930.898,
+          "overheadDurationMillis": 14.345
+        }
+      }
+    ]
   }
 }
 ```
@@ -233,17 +270,53 @@ numbers, not an approximation of them.
   **These two are a llama.cpp extension**, taken from the non-standard `timings` object llama-server
   adds to its final response; against any other OpenAI-compatible server they are simply absent.
   Neither covers retrieval, vision description, or anything else the turn did around the model call.
+- `totalMillis` is the turn's own measured wall-clock time, and is **not** simply
+  `promptMillis + predictedMillis`. When a call went through a LiteLLM-style proxy it prefers the
+  proxy's own measured response time (network hop and routing overhead included) over llama.cpp's
+  self-reported timings, which cover only the server's own generation work. It falls back to
+  `promptMillis + predictedMillis` when the call was not proxied, and is absent when neither source
+  reported anything.
+- `cachedPromptTokens` is how many prompt tokens were served from the model server's own prompt
+  cache rather than freshly evaluated. It is the one count here that is not llama.cpp-specific — it
+  is read from the standard `usage.prompt_tokens_details.cached_tokens` field when a server reports
+  it, falling back to llama.cpp's `timings.cache_n` only when that is absent.
+- `promptTokensEvaluated` and `predictedTokensGenerated` are llama.cpp's own token counts for the
+  turn (`timings.prompt_n` / `timings.predicted_n`), summed across round trips the same way
+  `promptTokens`/`completionTokens` are. They can differ slightly from those portable counts —
+  `promptTokensEvaluated` excludes cache hits, while `promptTokens` includes them.
+- `draftTokens` and `draftAcceptedTokens` are speculative-decoding stats (`timings.draft_n` /
+  `timings.draft_n_accepted`): how many tokens a draft model proposed for the turn, and how many the
+  main model kept. Both are absent unless the server is llama.cpp running with a draft model
+  configured. This API does not compute an acceptance rate — divide the two yourself if you want one.
 - `routedModel` is the model a LiteLLM-style proxy actually routed the turn to, which `model` cannot
   answer: a request against a model group reports the group that was asked for (`auto-model`), not
   what served it. **This one is not from the response body** — it is taken from the proxy's
   `x-litellm-model-name` response header, so it is absent against a server that is not behind such a
   proxy. When several round trips were routed differently it is the *last* call's, which is the one
   that produced the answer being read.
-- There is no tokens-per-second: a single rate would be meaningless across several round trips, and
-  this API does not compute what the server did not report. Divide `completionTokens` by
-  `predictedMillis / 1000` if you want one.
+- There is no top-level tokens-per-second on `responseMetadata`: a single rate summed across several
+  round trips would be meaningless, and this API does not compute what the server did not report. If
+  you want a turn-level rate anyway, divide `completionTokens` by `predictedMillis / 1000` yourself.
+  The per-call rate the server actually measured is on `responseMetadataCalls`, described next.
 
-`responseMetadata` is `null` on any message the model server never reported on:
+`responseMetadataCalls` is the per-round-trip breakdown behind `responseMetadata`'s summed totals —
+one entry per model call, so a tool-calling turn has several and an ordinary turn has exactly one.
+Every field mirrors its counterpart on `responseMetadata` for that single call, plus fields that only
+make sense per call and are never summed onto the totals:
+
+- `predictedPerSecond` and `promptPerSecond` are llama.cpp's own measured throughput for that one
+  call — generation and prompt-evaluation tokens per second, respectively. `promptPerTokenMillis` and
+  `predictedPerTokenMillis` are the same measurements inverted (milliseconds per token). All four are
+  llama.cpp-only and absent against any other server.
+- `liteLlm` is present only when the call went through a LiteLLM-style proxy, taken from its
+  `x-litellm-*` response headers rather than the response body: `callId` is the proxy's own call id
+  (the join key to LiteLLM's spend logs), `modelName`/`modelApiBase` are what actually served the
+  call, `attemptedRetries`/`attemptedFallbacks` count the proxy's own retry/fallback behavior, and
+  `responseDurationMillis`/`overheadDurationMillis` are what `responseMetadata.totalMillis` prefers
+  over llama.cpp's self-reported timings when both are available.
+
+`responseMetadata` and `responseMetadataCalls` are both `null` on any message the model server never
+reported on:
 
 - `USER` and `SYSTEM` messages, including the `SYSTEM` message a cancelled turn writes in place of an
   answer.
@@ -251,9 +324,10 @@ numbers, not an approximation of them.
   entirely by the remote agent, which has no token accounting to report.
 - `ASSISTANT` messages for turns that ended before the model reported any usage.
 
-Treat the whole object as optional, and every field within it as nullable — a model server that
-reports less than the documented set leaves the missing fields out, and messages persisted before
-this shape existed carry only what could be carried forward.
+Treat both objects as optional, and every field within either as nullable — a model server that
+reports less than the documented set leaves the missing fields out, `liteLlm` itself is absent on any
+call not made through a proxy, and messages persisted before a given field existed carry only what
+could be carried forward.
 
 ### init Event Payload
 

@@ -29,7 +29,8 @@ class ResponseMetadataTest {
     private static ModelCallMetadata call(int promptTokens, int completionTokens, double promptMillis, double predictedMillis) {
         return new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "stop",
                 promptTokens, completionTokens, promptTokens + completionTokens,
-                promptMillis, predictedMillis, 61.2, null);
+                promptMillis, predictedMillis, 61.2,
+                null, null, null, null, null, null, null, null, null);
     }
 
     private static ResponseMetadata singleCallMetadata() {
@@ -77,6 +78,32 @@ class ResponseMetadataTest {
     }
 
     /**
+     * The llama.cpp-only counts (cache hits, the server's own prompt/predicted token counts, and
+     * speculative-decoding draft stats) sum the same way the portable counts do. Their four sibling
+     * rate fields on {@link ModelCallMetadata} have no equivalent on {@link ResponseMetadata} at all —
+     * a rate from one round trip does not mean anything added to another's.
+     */
+    @Test
+    void sumsLlamaCppExtraCountsAcrossEveryCallInTheTurn() {
+        ModelCallMetadata firstCall = new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "tool_calls",
+                1042, 88, 1130, 130.0, 900.0, 97.8,
+                7, 4, 12.456, 80.284, 227, 5.674, 192, 164, null);
+        ModelCallMetadata secondCall = new ModelCallMetadata("qwen3-8b", "chatcmpl-2", CREATED_AT, "stop",
+                1380, 165, 1545, 150.5, 2100.25, 78.5,
+                3, 9, 16.7, 59.9, 165, 12.7, 200, 171, null);
+
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", CREATED_AT, "stop",
+                List.of(firstCall, secondCall));
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.cachedPromptTokens()).isEqualTo(10);
+        assertThat(responseMetadata.promptTokensEvaluated()).isEqualTo(13);
+        assertThat(responseMetadata.predictedTokensGenerated()).isEqualTo(392);
+        assertThat(responseMetadata.draftTokens()).isEqualTo(392);
+        assertThat(responseMetadata.draftAcceptedTokens()).isEqualTo(335);
+    }
+
+    /**
      * A turn that called no chat model has nothing to report, and must come out as a whole absent
      * record rather than a hollow one full of zeroes.
      */
@@ -93,7 +120,8 @@ class ResponseMetadataTest {
     void leavesUnreportedFieldsNullRatherThanZero() {
         ResponseMetadata responseMetadata = ResponseMetadata.of("gpt-oss", "chatcmpl-4", null, "stop",
                 List.of(new ModelCallMetadata("gpt-oss", "chatcmpl-4", null, "stop",
-                        10, 2, 12, null, null, null, null)));
+                        10, 2, 12, null, null, null,
+                        null, null, null, null, null, null, null, null, null)));
 
         assertThat(responseMetadata).isNotNull();
         assertThat(responseMetadata.totalTokens()).isEqualTo(12);

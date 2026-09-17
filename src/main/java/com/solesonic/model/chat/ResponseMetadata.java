@@ -23,6 +23,13 @@ import java.util.function.Function;
  * {@code timings} object, which Spring AI passes through as an unrecognised top-level property. A
  * model server that does not send one leaves them null; the token counts are the portable part.
  * <p>
+ * {@link #cachedPromptTokens()}, {@link #promptTokensEvaluated()},
+ * {@link #predictedTokensGenerated()}, {@link #draftTokens()} and {@link #draftAcceptedTokens()} are
+ * summed the same way the other counts are. The four llama.cpp rate fields that sit alongside them on
+ * {@link ModelCallMetadata} (per-token millis, per-second throughput) are deliberately not summed or
+ * repeated here, for the same reason there is no top-level tokens-per-second: a rate from one round
+ * trip does not mean anything added to another's.
+ * <p>
  * The whole record is {@code null} on a message for any turn no chat model answered: an A2A agent
  * delegation, which never reaches a chat model at all, and a turn cancelled before any usage was
  * reported.
@@ -40,6 +47,11 @@ public record ResponseMetadata(
         @Nullable Double promptMillis,
         @Nullable Double predictedMillis,
         @Nullable Double totalMillis,
+        @Nullable Integer cachedPromptTokens,
+        @Nullable Integer promptTokensEvaluated,
+        @Nullable Integer predictedTokensGenerated,
+        @Nullable Integer draftTokens,
+        @Nullable Integer draftAcceptedTokens,
         @Nullable String routedModel) {
 
     /**
@@ -71,6 +83,11 @@ public record ResponseMetadata(
                 sumDoubles(calls, ModelCallMetadata::promptMillis),
                 sumDoubles(calls, ModelCallMetadata::predictedMillis),
                 sumDoubles(calls, ResponseMetadata::callTotalMillis),
+                sumIntegers(calls, ModelCallMetadata::cachedPromptTokens),
+                sumIntegers(calls, ModelCallMetadata::promptTokensEvaluated),
+                sumIntegers(calls, ModelCallMetadata::predictedTokensGenerated),
+                sumIntegers(calls, ModelCallMetadata::draftTokens),
+                sumIntegers(calls, ModelCallMetadata::draftAcceptedTokens),
                 routedModel(calls));
     }
 

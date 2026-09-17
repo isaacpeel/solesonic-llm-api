@@ -227,8 +227,10 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.of(assistantMessage));
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null, null),
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null, null));
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null,
+                        null, null, null, null, null, null, null, null, null),
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", null, "stop", calls);
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted, responseMetadata, calls);
@@ -252,7 +254,8 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null, null));
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted,
                 ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls), calls);
@@ -270,7 +273,8 @@ class ChatMessageServiceTest {
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null));
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
 
         assistantMessage.setResponseMetadata(responseMetadata);
@@ -297,5 +301,41 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThat(chatMessageService.responseMetadata(chatId, turnStarted)).isNull();
+    }
+
+    /**
+     * The per-call breakdown counterpart to {@link #responseMetadataReadsBackWhatTheTurnRecorded}:
+     * the {@code done} frame needs this read back explicitly too, or it stays null on that frame even
+     * though the persisted row carries it.
+     */
+    @Test
+    void responseMetadataCallsReadsBackWhatTheTurnRecorded() {
+        ChatMessage assistantMessage = chatMessage(MessageType.ASSISTANT, "the answer");
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
+
+        assistantMessage.setResponseMetadataCalls(calls);
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.of(assistantMessage));
+
+        assertThat(chatMessageService.responseMetadataCalls(chatId, turnStarted)).isEqualTo(calls);
+    }
+
+    @Test
+    void responseMetadataCallsIsNullWhenNoAssistantRowMatches() {
+        ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        when(chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(
+                        chatId, MessageType.ASSISTANT, turnStarted))
+                .thenReturn(Optional.empty());
+
+        assertThat(chatMessageService.responseMetadataCalls(chatId, turnStarted)).isNull();
     }
 }
