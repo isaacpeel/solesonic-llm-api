@@ -27,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -223,5 +224,41 @@ class ChatAttachmentServiceTest {
         verify(ingestedDocumentService).deleteByChatId(chatId);
         verify(vectorStoreService).deleteByChatId(chatId);
         verify(chatAttachmentRepository).deleteByChatId(chatId);
+    }
+
+    /**
+     * The same leak as {@link #deleteAlsoClearsTheIngestedDocumentRow}, at message scope: neither
+     * {@code ingested_document} nor the vector store carries a {@code chatMessageId} to bulk-delete
+     * by, so each attachment bound to the message is swept individually first.
+     */
+    @Test
+    void deleteForChatMessageAlsoClearsEveryIngestedDocumentRow() {
+        UUID chatMessageId = UUID.randomUUID();
+        UUID firstAttachmentId = UUID.randomUUID();
+        UUID secondAttachmentId = UUID.randomUUID();
+
+        when(chatAttachmentRepository.findIdsByChatMessageId(chatMessageId))
+                .thenReturn(List.of(firstAttachmentId, secondAttachmentId));
+
+        chatAttachmentService.deleteForChatMessage(chatMessageId);
+
+        verify(ingestedDocumentService).deleteByChatAttachmentId(firstAttachmentId);
+        verify(vectorStoreService).deleteByChatAttachmentId(firstAttachmentId);
+        verify(ingestedDocumentService).deleteByChatAttachmentId(secondAttachmentId);
+        verify(vectorStoreService).deleteByChatAttachmentId(secondAttachmentId);
+        verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
+    }
+
+    @Test
+    void deleteForChatMessageIsANoOpWithoutAttachments() {
+        UUID chatMessageId = UUID.randomUUID();
+
+        when(chatAttachmentRepository.findIdsByChatMessageId(chatMessageId)).thenReturn(List.of());
+
+        chatAttachmentService.deleteForChatMessage(chatMessageId);
+
+        verify(ingestedDocumentService, never()).deleteByChatAttachmentId(any());
+        verify(vectorStoreService, never()).deleteByChatAttachmentId(any());
+        verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
     }
 }

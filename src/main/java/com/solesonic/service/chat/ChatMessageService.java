@@ -9,6 +9,7 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import org.apache.commons.collections4.CollectionUtils;
@@ -18,8 +19,10 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -35,15 +38,21 @@ public class ChatMessageService {
     private final ChatRepository chatRepository;
     private final UserPreferencesService userPreferencesService;
     private final ChatAttachmentService chatAttachmentService;
+    private final ChatService chatService;
+    private final GeneratedImageService generatedImageService;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
                               ChatRepository chatRepository,
                               UserPreferencesService userPreferencesService,
-                              ChatAttachmentService chatAttachmentService) {
+                              ChatAttachmentService chatAttachmentService,
+                              ChatService chatService,
+                              GeneratedImageService generatedImageService) {
         this.chatMessageRepository = chatMessageRepository;
         this.chatRepository = chatRepository;
         this.userPreferencesService = userPreferencesService;
         this.chatAttachmentService = chatAttachmentService;
+        this.chatService = chatService;
+        this.generatedImageService = generatedImageService;
     }
 
     public ChatMessage save(ChatMessage message) {
@@ -88,6 +97,32 @@ public class ChatMessageService {
         chatAttachmentService.bind(userId, chatId, saved.getId(), chatRequest.attachmentIds());
 
         return saved;
+    }
+
+    /**
+     * Deletes one message and everything stored under it: its attachments and the images generated
+     * on its turn.
+     * <p>
+     * Scoped exactly as {@link ChatService#requireOwned(UUID)} is: a chat owned by someone else must
+     * be indistinguishable from one that does not exist, and a message id from another chat must be
+     * equally so — the second check is why {@code messageId} alone cannot be trusted, even after
+     * ownership of {@code chatId} is established.
+     */
+    @Transactional
+    public void delete(UUID chatId, UUID messageId) {
+        chatService.requireOwned(chatId);
+
+        ChatMessage chatMessage = chatMessageRepository.findById(messageId)
+                .filter(message -> chatId.equals(message.getChatId()))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Chat message not found: " + messageId));
+
+        log.info("Deleting chat message {} from chat {}", messageId, chatId);
+
+        chatAttachmentService.deleteForChatMessage(messageId);
+        generatedImageService.deleteForChatMessage(messageId);
+
+        chatMessageRepository.delete(chatMessage);
     }
 
     public void updateElicitationResponse(UUID chatId, UUID elicitationId, Map<String, Object> elicitationResponse) {

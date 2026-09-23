@@ -7,6 +7,7 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -17,6 +18,8 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
@@ -24,7 +27,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -53,6 +58,12 @@ class ChatMessageServiceTest {
 
     @Mock
     private ChatAttachmentService chatAttachmentService;
+
+    @Mock
+    private ChatService chatService;
+
+    @Mock
+    private GeneratedImageService generatedImageService;
 
     @InjectMocks
     private ChatMessageService chatMessageService;
@@ -337,5 +348,74 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         assertThat(chatMessageService.responseMetadataCalls(chatId, turnStarted)).isNull();
+    }
+
+    /**
+     * The cascade a deleted message takes with it: its own attachments and the images generated on
+     * its turn, mirroring {@link ChatService#delete(UUID)}'s whole-chat cascade at message scope.
+     */
+    @Test
+    void deleteAlsoClearsAttachmentsAndGeneratedImages() {
+        ChatMessage message = chatMessage(MessageType.ASSISTANT, "the answer");
+
+        when(chatMessageRepository.findById(message.getId())).thenReturn(Optional.of(message));
+
+        chatMessageService.delete(chatId, message.getId());
+
+        verify(chatService).requireOwned(chatId);
+        verify(chatAttachmentService).deleteForChatMessage(message.getId());
+        verify(generatedImageService).deleteForChatMessage(message.getId());
+        verify(chatMessageRepository).delete(message);
+    }
+
+    /**
+     * Without this, any authenticated caller who knew or guessed another user's {@code chatId}
+     * could delete that chat's messages.
+     */
+    @Test
+    void deletePropagatesNotFoundForAChatTheCallerDoesNotOwn() {
+        UUID messageId = UUID.randomUUID();
+
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND))
+                .when(chatService).requireOwned(chatId);
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageId))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+
+        verify(chatMessageRepository, never()).delete(any(ChatMessage.class));
+    }
+
+    /**
+     * A message id from another chat must be indistinguishable from one that does not exist —
+     * ownership of {@code chatId} alone is not enough to trust {@code messageId}.
+     */
+    @Test
+    void deleteReportsAMessageFromAnotherChatAsNotFound() {
+        ChatMessage messageFromAnotherChat = chatMessage(MessageType.ASSISTANT, "not this chat's answer");
+        messageFromAnotherChat.setChatId(UUID.randomUUID());
+
+        when(chatMessageRepository.findById(messageFromAnotherChat.getId()))
+                .thenReturn(Optional.of(messageFromAnotherChat));
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageFromAnotherChat.getId()))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+
+        verify(chatMessageRepository, never()).delete(any(ChatMessage.class));
+    }
+
+    @Test
+    void deleteReportsAMissingMessageAsNotFound() {
+        UUID messageId = UUID.randomUUID();
+
+        when(chatMessageRepository.findById(messageId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageId))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
     }
 }

@@ -91,4 +91,27 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
              where attachment.chatId = :chatId
            """)
     int deleteByChatId(UUID chatId);
+
+    /**
+     * The attachment ids of one message, read before the bulk delete below so each one's
+     * {@code ingested_document} row and vector chunks can be swept individually — neither carries a
+     * {@code chatMessageId} of its own to bulk-delete by.
+     */
+    @Query("""
+            select attachment.id
+              from ChatAttachment attachment
+             where attachment.chatMessageId = :chatMessageId
+           """)
+    List<UUID> findIdsByChatMessageId(UUID chatMessageId);
+
+    /**
+     * Every attachment bound to one message. Deleting a message has to take these with it for the
+     * same reason {@link #deleteByChatId} does: image bytes with no foreign key to remove them.
+     */
+    @Modifying
+    @Query("""
+            delete from ChatAttachment attachment
+             where attachment.chatMessageId = :chatMessageId
+           """)
+    int deleteByChatMessageId(UUID chatMessageId);
 }

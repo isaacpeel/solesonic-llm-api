@@ -184,6 +184,31 @@ public class ChatAttachmentService {
     }
 
     /**
+     * Discards every attachment bound to one message that is being deleted.
+     * <p>
+     * Not user-scoped, unlike {@link #delete(UUID)}: the caller has already established that the
+     * message's chat is theirs. Each attachment's {@code ingested_document} row and vector chunks
+     * are swept individually first, the same way {@link #delete(UUID)} does for one attachment —
+     * neither carries a {@code chatMessageId} to bulk-delete by, only {@code chatAttachmentId} and
+     * {@code chatId}.
+     */
+    @Transactional
+    public void deleteForChatMessage(UUID chatMessageId) {
+        List<UUID> attachmentIds = chatAttachmentRepository.findIdsByChatMessageId(chatMessageId);
+
+        for (UUID attachmentId : attachmentIds) {
+            ingestedDocumentService.deleteByChatAttachmentId(attachmentId);
+            vectorStoreService.deleteByChatAttachmentId(attachmentId);
+        }
+
+        int deleted = chatAttachmentRepository.deleteByChatMessageId(chatMessageId);
+
+        if (deleted > 0) {
+            log.info("Deleted {} attachment(s) of chat message {}", deleted, chatMessageId);
+        }
+    }
+
+    /**
      * Loads the attachments named by one send, image bytes included, so they can be described.
      * <p>
      * {@code userId} is a parameter rather than read from {@link UserRequestContext} for the same

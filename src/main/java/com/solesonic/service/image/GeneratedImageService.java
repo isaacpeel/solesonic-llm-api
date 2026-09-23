@@ -145,6 +145,22 @@ public class GeneratedImageService {
     }
 
     /**
+     * Discards every image generated for one message that is being deleted.
+     * <p>
+     * Not user-scoped, unlike {@link #get(UUID)}: the caller has already established that the
+     * message's chat is theirs. A plain bulk delete — unlike an attachment, an image has no
+     * vector-store or {@code ingested_document} dependents to sweep first.
+     */
+    @Transactional
+    public void deleteForChatMessage(UUID chatMessageId) {
+        int deleted = generatedImageRepository.deleteByChatMessageId(chatMessageId);
+
+        if (deleted > 0) {
+            log.info("Deleted {} generated image(s) of chat message {}", deleted, chatMessageId);
+        }
+    }
+
+    /**
      * Images generated since a turn began — what that turn's {@code done} payload carries.
      */
     @Transactional(readOnly = true)

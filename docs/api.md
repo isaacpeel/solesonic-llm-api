@@ -616,6 +616,26 @@ independent of any listener, so a turn in flight runs to completion and writes a
 on a conversation that no longer exists — unreachable from every read path, but written. Wait for
 `done` before deleting, or send [Cancel a Streaming Turn](#cancel-a-streaming-turn) first.
 
+### Delete a Chat Message
+
+- **Endpoint**: `DELETE /chats/{chatId}/messages/{messageId}`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation the message belongs to
+  - `messageId` (UUID): The message to delete
+- **Response**: `204 No Content`
+
+Deletes one message and everything stored under it — its own attachments and the images generated
+on its turn — as one transaction. Nothing is recoverable afterwards, and there is no soft-delete.
+Deleting a `USER` or `ASSISTANT` message does not delete the other side of the turn; delete both ids
+if the whole exchange should go.
+
+A chat that does not exist, or is not owned by the caller, is `404`. A `messageId` that does not
+belong to `chatId` is also `404`, the same as one that does not exist at all.
+
+Deleting the in-flight `USER` message of a turn that is still streaming is not guarded against, the
+same as [Delete a Chat](#delete-a-chat): wait for `done` first, or send
+[Cancel a Streaming Turn](#cancel-a-streaming-turn).
+
 ---
 
 ## Conversation Groups
