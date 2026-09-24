@@ -136,7 +136,7 @@ public class GeneratedImageToolInterceptor {
         }
 
         //Emitted before the model has written a word, so it reaches the client well ahead of the
-        //done frame that closes the turn.
+        //RUN_FINISHED frame that closes the turn.
         if (chatId != null) {
             notificationService.emitGeneratedImage(chatId, generatedImageSummary);
         }

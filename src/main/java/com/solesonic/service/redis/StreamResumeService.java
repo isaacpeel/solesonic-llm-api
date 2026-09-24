@@ -20,7 +20,7 @@ import java.time.Duration;
 import java.util.Optional;
 import java.util.UUID;
 
-import static com.solesonic.service.redis.RedisStreamingChatService.DONE;
+import static com.solesonic.redis.model.TerminalEvents.isTerminal;
 
 /**
  * Resumes a turn a client stopped listening to.
@@ -151,11 +151,11 @@ public class StreamResumeService {
     }
 
     /**
-     * The client already holds every frame of a finished turn, {@code done} included. Subscribing
-     * would wait forever on a stream nothing will ever write to again.
+     * The client already holds every frame of a finished turn, the terminal frame included.
+     * Subscribing would wait forever on a stream nothing will ever write to again.
      */
     private boolean isCaughtUpOnFinishedTurn(String cursor, RedisStreamService.StreamTail tail) {
-        if (!DONE.equalsIgnoreCase(tail.type())) {
+        if (!isTerminal(tail.type())) {
             return false;
         }
 

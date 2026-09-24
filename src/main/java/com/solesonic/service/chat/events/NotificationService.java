@@ -31,7 +31,6 @@ public class NotificationService {
     private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
     public static final String EVENT = "event";
     public static final String DATA = "data";
-    public static final String ERROR = "error";
 
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
@@ -89,7 +88,7 @@ public class NotificationService {
      * it rather than routing it through progress and printing the JSON as step text.
      * <p>
      * Emitted from the tool result, which lands before the model has written a word — so it always
-     * reaches the client ahead of the {@code done} frame that finalises the assistant bubble.
+     * reaches the client ahead of the {@code RUN_FINISHED} frame that finalises the assistant bubble.
      * <p>
      * Like {@link #emitAttachment} this writes no {@code SYSTEM} chat message: the durable half of
      * the signal is the {@code generated_image} row, replayed onto the assistant message by
@@ -133,8 +132,15 @@ public class NotificationService {
         emitProgress(chatId, notificationEventMessage);
     }
 
-    public void emitFailure(UUID chatId, String message) {
-        log.warn("Emitting failure notification for chat id {} with message: {}", chatId, message);
+    /**
+     * Records a failed turn in history and returns the failure payload for the caller to publish.
+     * <p>
+     * Deliberately not published over pub/sub like the other notifications: that path reaches the
+     * durable stream a hop later than the caller's own {@code RUN_ERROR}, so the frame would land
+     * after the terminal frame, where no client reads.
+     */
+    public Map<String, Object> recordFailure(UUID chatId, String message) {
+        log.warn("Recording failure notification for chat id {} with message: {}", chatId, message);
 
         Map<String, Object> errorData = new HashMap<>();
         errorData.put(CHAT_ID, chatId.toString());
@@ -147,10 +153,7 @@ public class NotificationService {
         chatMessage.setProgressData(errorData);
         chatMessageService.save(chatMessage);
 
-        String payload = serializeEventMessage(ERROR, errorData);
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), payload)
-                .subscribe(subscriberCount ->
-                        log.debug("Emitted error event to {} subscribers for chat {}", subscriberCount, chatId));
+        return errorData;
     }
 
     private String serializeEventMessage(String eventType, Object data) {

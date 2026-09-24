@@ -35,6 +35,7 @@
         <spring-ai.version>2.0.1</spring-ai.version>
         <java.version>25</java.version>
         <a2a-java-sdk.version>1.0.0.Final</a2a-java-sdk.version>
+        <ag-ui.version>0.1.1</ag-ui.version>
     </properties>
     <dependencies>
         <dependency>
@@ -252,6 +253,12 @@
             <groupId>org.a2aproject.sdk</groupId>
             <artifactId>a2a-java-sdk-spec</artifactId>
             <version>${a2a-java-sdk.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.ag-ui.community</groupId>
+            <artifactId>java-core</artifactId>
+            <version>${ag-ui.version}</version>
         </dependency>
     </dependencies>
     <dependencyManagement>

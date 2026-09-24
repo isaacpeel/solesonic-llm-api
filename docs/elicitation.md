@@ -1,281 +1,164 @@
 # Elicitation Guide
 
-This document explains the interactive elicitation feature used to gather structured input from users during an LLM conversation. It covers architecture, flow, API endpoints, configuration, and implementation examples.
+Elicitation lets an MCP tool pause mid-call and ask the user a structured question — a confirmation,
+a choice, a small form — while the conversation is still streaming. This document covers how the
+request travels to the client, how the answer travels back, and what the wire looks like.
 
 ## Overview
 
-Elicitation is an interactive request for structured input from the user while an LLM conversation is streaming. Instead of relying on free‑form replies, the backend emits an elicitation event via Server‑Sent Events (SSE), the frontend renders an appropriate form, and then submits the results back. This enables safer, more reliable tool invocation (e.g., confirmations, delete prompts, form fields) without breaking the streaming experience.
+The stream speaks [AG-UI](https://docs.ag-ui.com) (see [Stream Event Types](api.md#stream-event-types)).
+An elicitation is presented as an AG-UI **tool call** inside the running turn, and answered with the
+AG-UI **`ToolMessage`** for that tool call:
 
-Key benefits:
-- Real‑time prompts rendered by the frontend while streaming continues
-- Clear accept/decline/cancel semantics
-- Structured results for tool execution and auditing
-- Resumable stream with `Last-Event-ID`
+1. The MCP tool sends an `ElicitRequest` and its thread parks, waiting for an answer.
+2. The stream carries `TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`, with
+   `toolCallId` = the elicitation id and the request as the arguments.
+3. The client renders the question and `POST`s a `ToolMessage` back.
+4. The parked tool call resumes with the answer, and the turn carries on streaming on the same
+   connection.
+
+### Why not an AG-UI interrupt
+
+AG-UI's native human-in-the-loop mechanism is an interrupt: the run ends with an interrupt outcome
+and the client starts a new run carrying a `resume` entry. This API deliberately does not do that.
+The turn is not driven by the HTTP response, the MCP tool call is a real thread parked mid-call
+rather than a checkpoint that can be restarted, and the single long-lived stream is what gives
+resume-by-cursor, keepalives and mid-turn image frames their guarantees. So an elicitation never
+ends the run: no `RUN_FINISHED`, no new run, no reconnect. The answer is a side-channel `POST` that
+wakes the parked call in place.
 
 ## Architecture
 
-The elicitation flow is orchestrated by `ElicitationService` and driven by an MCP provider:
+- **`ElicitationProvider`** (`mcp/client/elicitation/`, `@McpElicitation`) receives the MCP
+  `ElicitRequest`. It requires `chatId` in the request's `_meta`, asks `ElicitationService` for an
+  elicitation id, emits the request, and **blocks** on the answer.
+- **`ElicitationService`** (`service/chat/events/`):
+  - `prepareElicitation` mints the id and adds it to `elicitation:pending:{chatId}`.
+  - `emitElicitation` writes a `SYSTEM` chat message carrying the id (for history replay), stores
+    the requested schema's property names at `elicitation:schema:{chatId}:{elicitationId}`, and
+    publishes the request on the Redis pub/sub channel `elicitation:events:{chatId}`. The names are
+    stored before the request is published, so they are in place before any client can answer.
+  - `actionResult` reads the action, and the form values sent alongside it, out of the client's
+    `ToolMessage`.
+  - `completeFromFrontend` narrows the values to the stored property names (on `accept` only),
+    records `{action, content}` in history, stores it, and publishes the action on
+    `elicitation:result:{chatId}:{elicitationId}`. On `cancel` it also publishes the cancel signal
+    that stops the turn.
+  - `awaitResultAsync` is what the provider is blocked on. It wakes on that result channel, or
+    after the timeout, and resolves to the `ElicitResult` the provider returns to the MCP server.
+- **`RedisStreamingChatService`** subscribes to `elicitation:events:{chatId}` once per turn, and
+  `SideChannelEventTranslator` turns each event into AG-UI frames on the durable Redis stream. That
+  is what gives an elicitation an SSE `id:` and makes it replayable through `Last-Event-ID`.
 
-- `ElicitationService` (server)
-  - Manages chat SSE streams and emits `elicitation` events
-  - Tracks pending elicitations and submitted results
-  - Converts frontend fields into `StructuredElicitResult` used downstream
-  - Handles cancellation and timeout
+## Wire format
 
-- `ElicitationProvider` (MCP bridge)
-  - Receives `McpSchema.ElicitRequest` from MCP servers (`@McpElicitation`)
-  - Prepares the elicitation with `ElicitationService.prepareElicitation()`
-  - Emits the request with `ElicitationService.emitElicitation()`
-  - Awaits the result using `ElicitationService.awaitResultAsync()` and returns a `StructuredElicitResult`
+### The request — a tool call
 
-SSE is used for real‑time updates to the frontend. The chat streaming service merges regular LLM chunks and elicitation events on the same stream.
+```
+event: TOOL_CALL_START
+data: {"type":"TOOL_CALL_START","toolCallId":"9c41...","toolCallName":"elicitation"}
 
-## Core Concepts
+event: TOOL_CALL_ARGS
+data: {"type":"TOOL_CALL_ARGS","toolCallId":"9c41...","delta":"{\"message\":\"Delete PROJ-12?\",\"requestedSchema\":{...},\"_meta\":{...},\"elicitationId\":\"9c41...\",\"chatId\":\"0a4b...\"}"}
 
-### ElicitationHandle
+event: TOOL_CALL_END
+data: {"type":"TOOL_CALL_END","toolCallId":"9c41..."}
+```
 
-`ElicitationService.prepareElicitation(UUID chatId, String name)` returns an `ElicitationHandle` containing:
-- `elicitationId` — the unique ID for this elicitation
-- `future` — completed when the frontend submits a result
+- `toolCallName` is always `elicitation`.
+- `delta` is the whole `ElicitRequest` as **one** JSON string, never split — parse it once
+  `TOOL_CALL_ARGS` arrives. It carries `message`, `requestedSchema`, `_meta`, and the
+  `elicitationId`/`chatId` added by this API.
 
-Lifecycle:
-1. Prepare a new elicitation, optionally with a `name`
-2. Emit the elicitation request on the chat’s SSE stream
-3. Frontend submits a response
-4. Awaited future completes and result is propagated to the MCP tool caller
+### The answer — a `ToolMessage`
 
-### Pending elicitations
+```
+POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response
+Content-Type: application/json
 
-`ElicitationService` maintains concurrent maps:
-- `pendingById` — composite key per chat and elicitation ID → `CompletableFuture<ElicitResult>`
-- `nameIndex` — composite key per chat and elicitation name → elicitation ID (supports named elicitations)
-- `resultFieldsById` — raw submitted fields per elicitation used to construct structured results
-
-### Frontend ↔ Backend communication
-
-- Backend emits an `elicitation` SSE event with the request payload, plus `elicitationId` and `chatId`
-- Frontend renders UI, collects user input, and submits response via REST (`POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`)
-- On user cancellation, backend emits a `cancel` SSE event; the streaming chat composes a final `done` event
-
-### Named vs ID‑based elicitations
-
-When `name` is provided during `prepareElicitation`, the frontend may submit results using the `name` (as included in the request payload), even if the `elicitationId` isn’t available in the UI. The backend maintains a `nameIndex` to resolve the effective elicitation ID.
-
-## API Endpoints
-
-All paths are relative to the application context path (e.g., `/${BASE_URI}`) and secured per deployment profile.
-
-### Streaming Chat (SSE)
-
-- POST `/streaming/chats/users/{userId}`
-  - Starts a streaming chat session for a user and returns an SSE stream of events
-  - Request body: `ChatRequest`
-  - Headers: optional `Last-Event-ID` to resume from a specific SSE id
-  - Events on the stream:
-    - `init` — initialization marker
-    - `chunk` — assistant text chunks
-    - `elicitation` — an elicitation request (see payload below)
-    - `cancel` — emitted when user cancels an elicitation
-    - `done` — final chat result for that turn
-
-- PUT `/streaming/chats/{chatId}/users/{userId}`
-  - Continues an existing streaming chat; same event types and headers as above
-
-#### Elicitation event payload
-
-Event name: `elicitation`
-
-Example payload (subset of `McpSchema.ElicitRequest`):
-```json
 {
-  "id": "...",           
-  "type": "form",
-  "name": "delete-confirmation",
-  "message": "Delete this item?",
-  "meta": { "chatId": "<uuid>" },
-  "elicitationId": "<uuid>",
-  "chatId": "<uuid>"
+  "id": "b8e2...",
+  "role": "tool",
+  "toolCallId": "9c41...",
+  "content": "{\"action\":\"accept\",\"assigneeAccountId\":\"70121:629f...\"}"
 }
 ```
 
-Event name: `cancel`
+- `toolCallId` must equal `{elicitationId}` in the path.
+- `content` is a JSON **string**, as AG-UI defines a tool message's content: a flat object holding
+  an `action` — `accept`, `decline`, or `cancel` (case-insensitive) — and the form values, keyed by
+  the `requestedSchema` property names.
+- **What the MCP tool receives** is a standard MCP `ElicitResult`: the action, and on `accept` a
+  `content` holding **only** the keys the elicitation's `requestedSchema.properties` named. Anything
+  else the client sends is dropped. On `decline`/`cancel`, and on timeout, `content` is absent. If the
+  stored property names have expired (they live `timeout-seconds + 60`), nothing is forwarded rather
+  than the raw payload. Nothing of this API's is put in the result's `_meta`.
 
-Payload: the string "cancel".
+| Status | Meaning |
+|--------|---------|
+| `200` | Answer accepted; the parked tool call resumes |
+| `400` | `toolCallId` does not match the path, or `content` names no known action |
+| `404` | The chat does not exist or is not the caller's |
 
-### Submit Elicitation Response
+The chat must belong to the caller, and that is checked before anything else. Without it, any
+authenticated user holding a chat id and an elicitation id could answer someone else's question.
 
-- POST `/streaming/chats/{chatId}/{elicitationId}/elicitation-response`
-  - Submits the user’s form result or action
-  - Request body:
-    ```json
-    {
-      "elicitationResponse": {
-        "name": "delete-confirmation",     
-        "fields": {                         
-          "confirmed": "accept"           
-        },
-        "action": "accept"                 
-      }
-    }
-    ```
-  - Notes:
-    - `action` may be `accept`, `decline`, or `cancel`
-    - If `action` is `decline`, `fields` are ignored by the backend
-    - If `name` is provided, backend may resolve the elicitation by name (in addition to the path ID)
-  - Responses:
-    - `200 OK` — accepted and delivered to the waiting operation
-    - `400 Bad Request` — invalid payload
-    - `404 Not Found` — no matching pending elicitation
+### Cancelling
 
-## User Flows
+An `action` of `cancel` also stops the turn. The stream then ends the way every cancelled turn does:
+`TEXT_MESSAGE_END` if a reply was open, a `CUSTOM` event named `cancel`, then `RUN_FINISHED` carrying
+the `SYSTEM` "Chat canceled." message.
 
-### 1) Initiated by MCP server
-1. MCP tool calls `ElicitationProvider.handleElicitationRequest()` with an `ElicitRequest` containing `meta.chatId`
-2. Provider prepares and emits the elicitation via `ElicitationService`
-3. Frontend receives `elicitation` SSE event and shows a form
+### Timeout
 
-### 2) Frontend form submission
-1. User completes the form and chooses an action: `accept`, `decline`, or `cancel`
-2. Frontend POSTs to `/streaming/chats/{chatId}/{elicitationId}/elicitation-response`
-3. Backend completes the pending future; on `cancel`, a `cancel` SSE event is also emitted for the active chat
+`solesonic.elicitation.timeout-seconds` (default `600`, env `SOLESONIC_ELICITATION_TIMEOUT_SECONDS`)
+bounds how long the tool call stays parked. On timeout — or when the turn ends with the question
+still open — the tool receives `DECLINE`.
 
-### 3) Result handling and completion
-1. `ElicitationService.awaitResultAsync()` resolves to a `StructuredElicitResult`
-2. The MCP tool resumes with the structured outcome
-3. The streaming chat either continues or completes with `done`
-
-### 4) Cancellation and timeout
-- Cancellation: Frontend indicates `cancel`; backend emits `cancel` SSE and completes with `CANCEL` action
-- Timeout: Controlled by `solesonic.elicitation.timeout-seconds` (default 600). On timeout, backend returns `DECLINE` and cleans up maps
-
-## Configuration
-
-Property (application*.properties):
-- `solesonic.elicitation.timeout-seconds` — Max seconds to wait for a frontend response (default: 600)
-
-Environment variable mapping (Spring relaxed binding examples):
-- `SOLESONIC_ELICITATION_TIMEOUT_SECONDS=600`
-
-## Best Practices for Clients
-
-- Always listen for both `elicitation` and `cancel` events on the SSE stream
-- If the page reloads or network blips, resume with the `Last-Event-ID` header
-- Use `name` from the elicitation payload if you don’t have `elicitationId` bound to the UI controls
-- Submit only the fields requested plus a clear `action`: `accept`, `decline`, or `cancel`
-- Treat `decline` as a neutral outcome; the operation will not proceed
-- Show clear UI affordances for cancel/decline to avoid ambiguous submissions
-
-## Examples
-
-### TypeScript (Browser) — listen and submit
+## Client example (TypeScript)
 
 ```typescript
-type ElicitationEvent = {
-  name?: string;
-  message?: string;
-  meta?: Record<string, unknown> & { chatId?: string };
-  elicitationId: string;
-  chatId: string;
-};
+function openChatStream(baseUrl: string, userId: string) {
+  const eventSource = new EventSource(`${baseUrl}/streaming/chats/users/${userId}`);
 
-function openChatStream(baseUrl: string, userId: string, jwt?: string) {
-  const url = `${baseUrl}/streaming/chats/users/${userId}`;
-  const eventSource = new EventSource(url, { withCredentials: false });
+  eventSource.addEventListener('TOOL_CALL_ARGS', async (raw) => {
+    const { toolCallId, delta } = JSON.parse((raw as MessageEvent<string>).data);
+    const elicitation = JSON.parse(delta);
 
-  eventSource.addEventListener('elicitation', (raw) => {
-    const event = raw as MessageEvent<string>;
-    const payload = JSON.parse(event.data) as ElicitationEvent;
-    // Render your form using payload.name/message/fields (if present)
-    console.log('Elicitation received', payload);
-  });
+    const { action, values } = await askTheUser(elicitation.message, elicitation.requestedSchema);
 
-  eventSource.addEventListener('cancel', () => {
-    console.log('Elicitation canceled by user');
+    const response = await fetch(
+      `${baseUrl}/streaming/chats/${elicitation.chatId}/${toolCallId}/elicitation-response`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          role: 'tool',
+          toolCallId,
+          content: JSON.stringify({ ...values, action })
+        })
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Submit failed: ${response.status}`);
+    }
   });
 
   return eventSource;
 }
-
-async function submitElicitation(
-  baseUrl: string,
-  chatId: string,
-  elicitationId: string,
-  name: string,
-  action: 'accept' | 'decline' | 'cancel',
-  fields?: Record<string, unknown>
-) {
-  const body = {
-    elicitationResponse: {
-      name,
-      fields,
-      action
-    }
-  };
-
-  const response = await fetch(
-    `${baseUrl}/streaming/chats/${chatId}/${elicitationId}/elicitation-response`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error(`Submit failed: ${response.status}`);
-  }
-}
 ```
 
-### Python — submit form result
+## Best practices for clients
 
-```python
-import requests
+- Dispatch on `TOOL_CALL_*` with `toolCallName: "elicitation"`; ignore other tool names.
+- If the page reloads or the network blips, resume with `Last-Event-ID` — an elicitation frame is
+  replayed like any other, so an unanswered question reappears.
+- Treat `decline` as a neutral outcome: the operation does not proceed, and the turn continues.
 
-def submit_elicitation(base_url: str, chat_id: str, elicitation_id: str, name: str, action: str, fields: dict | None = None):
-    payload = {
-        "elicitationResponse": {
-            "name": name,
-            "fields": fields,
-            "action": action
-        }
-    }
-
-    resp = requests.post(
-        f"{base_url}/streaming/chats/{chat_id}/{elicitation_id}/elicitation-response",
-        json=payload,
-        headers={"Content-Type": "application/json"}
-    )
-    resp.raise_for_status()
-    return True
-```
-
-## Integration with MCP Servers
-
-- Provider: `com.solesonic.mcp.client.elicitation.ElicitationProvider`
-  - Annotation: `@McpElicitation(clients = {"solesonic","mcp-client - solesonic"})`
-  - Bridges MCP `ElicitRequest` to the application’s elicitation flow
-  - Returns `StructuredElicitResult<DeleteConfirmation>` where:
-    - `action` ∈ { `ACCEPT`, `DECLINE`, `CANCEL` }
-    - `DeleteConfirmation` fields include `confirmed` (boolean) and `chatId` (string)
-
-## Error Handling
-
-Common cases:
-- 400 invalid body for submit endpoint (missing `elicitationResponse` or invalid types)
-- 404 unknown or completed elicitation
-- Timeout → treated as `DECLINE` with cleanup
-
-## Performance & Security
-
-- SSE streams are per chat; the streaming service merges LLM chunks, elicitation events, and cancellation
-- Use CORS settings appropriate for your frontend origin(s)
-- Do not expose internal IDs beyond what is necessary for the UI to submit results
-- Avoid storing sensitive input in logs; application logs record high‑level actions
-
-## Related Documentation
+## Related documentation
 
 - [API](api.md)
 - [Configuration](configuration.md)
 - [MCP Integration](mcp-integration.md)
-- [Getting Started](getting-started.md)

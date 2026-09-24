@@ -7,7 +7,7 @@ import java.util.UUID;
  * It closes the {@code progress} frame that opens the vision or extraction pass, which on its own
  * never says whether the pass finished.
  * <p>
- * Exactly one of these is emitted per id in {@code ChatRequest.attachmentIds}, before {@code done},
+ * Exactly one of these is emitted per id in {@code ChatRequest.attachmentIds}, before {@code RUN_FINISHED},
  * whether the attachment was handled or skipped — a client cannot distinguish a missing frame from
  * a failure, so there are no missing frames.
  * <p>

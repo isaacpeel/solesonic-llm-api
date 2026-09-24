@@ -1,13 +1,24 @@
 package com.solesonic.service.redis;
 
+import com.agui.community.core.agent.RunAgentInput;
+import com.agui.community.core.event.CustomEvent;
+import com.agui.community.core.event.Event;
+import com.agui.community.core.event.RunErrorEvent;
+import com.agui.community.core.event.RunFinishedEvent;
+import com.agui.community.core.event.RunStartedEvent;
+import com.agui.community.core.event.TextMessageContentEvent;
+import com.agui.community.core.event.TextMessageEndEvent;
+import com.agui.community.core.event.TextMessageStartEvent;
+import com.agui.community.core.message.Role;
+import com.agui.community.core.message.UserMessage;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
-import com.solesonic.model.chat.InitPayload;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.GeneratedImageSummary;
+import com.solesonic.redis.model.TerminalEvents;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -19,6 +30,7 @@ import com.solesonic.util.ResponseSanitizer;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
@@ -29,6 +41,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,17 +50,23 @@ import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
+/**
+ * Runs a chat turn and writes it to the durable Redis stream as AG-UI events.
+ * <p>
+ * A turn is one AG-UI run: {@code RUN_STARTED}, the assistant's text as one
+ * {@code TEXT_MESSAGE_START}/{@code CONTENT}/{@code END} message, then exactly one terminal frame —
+ * {@code RUN_FINISHED}, or {@code RUN_ERROR} alone. An elicitation arrives mid-run as a tool call and
+ * is answered out of band without ending the run: unlike AG-UI's interrupt model, the connection and
+ * the parked MCP tool call both stay open across it.
+ */
 @Service
 public class RedisStreamingChatService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamingChatService.class);
-    public static final String CHUNK = "chunk";
-    public static final String INIT = "init";
-    public static final String DONE = "done";
-    public static final String ERROR = "error";
     public static final String CHAT_CANCELED = "Chat canceled.";
-
-    public record ChunkPayload(String content) {
-    }
+    public static final String TIMEOUT_CODE = "timeout";
+    public static final String INTERNAL_CODE = "internal";
+    public static final String FAILURE = "failure";
+    private static final String MESSAGE = "message";
 
     public enum CancelOutcome {
         CANCEL_REQUESTED,
@@ -62,6 +81,7 @@ public class RedisStreamingChatService {
     private final ActiveStreamTracker activeStreamTracker;
     private final NotificationService notificationService;
     private final GeneratedImageService generatedImageService;
+    private final SideChannelEventTranslator sideChannelEventTranslator;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -70,7 +90,8 @@ public class RedisStreamingChatService {
                                      RedisStreamService redisStreamService,
                                      ActiveStreamTracker activeStreamTracker,
                                      NotificationService notificationService,
-                                     GeneratedImageService generatedImageService) {
+                                     GeneratedImageService generatedImageService,
+                                     SideChannelEventTranslator sideChannelEventTranslator) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -79,6 +100,7 @@ public class RedisStreamingChatService {
         this.activeStreamTracker = activeStreamTracker;
         this.notificationService = notificationService;
         this.generatedImageService = generatedImageService;
+        this.sideChannelEventTranslator = sideChannelEventTranslator;
     }
 
     private Chat save(Chat chat) {
@@ -107,22 +129,27 @@ public class RedisStreamingChatService {
      * Resuming an existing turn is deliberately not this method's job — see
      * {@link StreamResumeService}. A turn runs to completion whether or not anyone is listening,
      * so replaying one must never re-enter this path.
+     * <p>
+     * {@code RUN_STARTED} carries the persisted user message in its {@code input}, which is how a
+     * client learns the real id of the bubble it just sent.
      */
     public Flux<ServerSentEvent<?>> update(UUID chatId,
                                            UUID userId,
                                            ChatRequest chatRequest,
                                            Authentication authentication) {
 
+        UUID runId = UUID.randomUUID();
+
         return redisStreamService.getLatestOffset(chatId, userId)
                 .flatMap(offset -> Mono
                         .fromCallable(() -> chatMessageService.saveUserMessage(chatId, userId, chatRequest))
                         .subscribeOn(Schedulers.boundedElastic())
                         .map(chatMessage -> new StreamStart(offset, chatMessage)))
-                .flatMap(streamStart -> redisStreamService
-                        .publish(chatId, userId, INIT, new InitPayload(chatId, streamStart.chatMessage().getId()))
+                .flatMap(streamStart -> publish(chatId, userId,
+                        runStarted(chatId, runId, streamStart.chatMessage(), chatRequest))
                         .thenReturn(streamStart))
                 .flatMapMany(streamStart -> {
-                    publishToRedisStream(chatId, userId, chatRequest, authentication);
+                    publishToRedisStream(chatId, userId, runId, chatRequest, authentication);
                     return redisStreamService.subscribe(chatId, userId, streamStart.offset());
                 });
     }
@@ -130,15 +157,22 @@ public class RedisStreamingChatService {
     private record StreamStart(String offset, ChatMessage chatMessage) {
     }
 
+    private static RunStartedEvent runStarted(UUID chatId, UUID runId, ChatMessage userMessage, ChatRequest chatRequest) {
+        RunAgentInput input = new RunAgentInput(chatId.toString(), runId.toString(),
+                List.of(new UserMessage(String.valueOf(userMessage.getId()), chatRequest.chatMessage())),
+                List.of());
+
+        return new RunStartedEvent(chatId.toString(), runId.toString(), null, input, null, null);
+    }
+
     /**
-     * Stops a turn in flight. A {@code done} tail means the turn already finished — nothing to
-     * signal — and an empty tail means the chat never streamed at all; either way there is no live
-     * subscriber on the elicitation channel to receive a cancel, so this checks first rather than
-     * firing blind.
+     * Stops a turn in flight. A terminal tail means the turn already finished — nothing to signal —
+     * and an empty tail means the chat never streamed at all; either way there is no live subscriber
+     * on the elicitation channel to receive a cancel, so this checks first rather than firing blind.
      */
     public Mono<CancelOutcome> cancel(UUID chatId, UUID userId) {
         return redisStreamService.tail(chatId, userId)
-                .flatMap(tail -> DONE.equalsIgnoreCase(tail.type())
+                .flatMap(tail -> TerminalEvents.isTerminal(tail.type())
                         ? Mono.just(CancelOutcome.NOTHING_TO_CANCEL)
                         : elicitationService.cancelChat(chatId).thenReturn(CancelOutcome.CANCEL_REQUESTED))
                 .defaultIfEmpty(CancelOutcome.NOTHING_TO_CANCEL);
@@ -146,9 +180,10 @@ public class RedisStreamingChatService {
 
     private void publishToRedisStream(UUID chatId,
                                       UUID userId,
+                                      UUID runId,
                                       ChatRequest chatRequest,
                                       Authentication authentication) {
-        runTurn(chatId, userId, chatRequest, authentication).subscribe();
+        runTurn(chatId, userId, runId, chatRequest, authentication).subscribe();
     }
 
     /**
@@ -157,11 +192,12 @@ public class RedisStreamingChatService {
      */
     Mono<Void> runTurn(UUID chatId,
                        UUID userId,
+                       UUID runId,
                        ChatRequest chatRequest,
                        Authentication authentication) {
         trackActiveStream(userId, chatId);
 
-        //Marks the start of this turn, so the done payload can name the images the turn produced.
+        //Marks the start of this turn, so the finished payload can name the images the turn produced.
         //Time rather than message id because the assistant message is written by the chat memory
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
@@ -176,49 +212,78 @@ public class RedisStreamingChatService {
 
         forwardElicitationEvents(chatId, userId, elicitationEvents);
 
-        return streamTurn(chatId, userId, chatRequest, authentication, cancelEvents, turnStarted)
+        Turn turn = new Turn(chatId, userId, runId, UUID.randomUUID().toString(), turnStarted);
+
+        return streamTurn(turn, chatRequest, authentication, cancelEvents)
                 .onErrorResume(error -> handleStreamError(chatId, userId, error))
                 .doFinally(_ -> cleanup(chatId, userId));
     }
 
     /**
-     * Runs one turn: stream chunks until the model stops or the user cancels, then publish exactly one
+     * The identifiers one turn's frames carry. {@code messageId} is a wire id for the assistant's
+     * text message only: the persisted assistant row is written by the chat memory advisor, which
+     * assigns its own id and never hands it back here.
+     */
+    private record Turn(UUID chatId, UUID userId, UUID runId, String messageId, ZonedDateTime started) {
+    }
+
+    /**
+     * Runs one turn: stream text until the model stops or the user cancels, then publish exactly one
      * terminal frame saying which of the two happened.
      */
-    private Mono<Void> streamTurn(UUID chatId,
-                                  UUID userId,
+    private Mono<Void> streamTurn(Turn turn,
                                   ChatRequest chatRequest,
                                   Authentication authentication,
-                                  Flux<ServerSentEvent<?>> cancelEvents,
-                                  ZonedDateTime turnStarted) {
+                                  Flux<ServerSentEvent<?>> cancelEvents) {
 
         StringBuilder assembled = new StringBuilder();
         AtomicBoolean cancelled = new AtomicBoolean();
+        AtomicBoolean messageStarted = new AtomicBoolean();
 
-        Flux<String> chunkFlow = Flux.defer(() -> promptService.stream(chatId, userId, chatRequest, authentication))
+        Flux<String> chunkFlow = Flux.defer(() -> promptService.stream(turn.chatId(), turn.userId(), chatRequest, authentication))
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .transform(ResponseSanitizer.sanitize())
                 .doOnNext(assembled::append)
                 .takeUntilOther(cancelEvents.doOnNext(_ -> cancelled.set(true)));
 
+        //concatMap, not flatMap: a text message's frames are only meaningful in order, and the start
+        //frame has to land before the first delta that refers to it.
         Mono<Void> publishChunks = chunkFlow
-                .flatMap(chunk -> redisStreamService.publish(chatId, userId, CHUNK, new ChunkPayload(chunk)))
+                .concatMap(chunk -> startMessageOnce(turn, messageStarted)
+                        .then(publish(turn, new TextMessageContentEvent(turn.messageId(), chunk, null, null))))
                 .then();
 
-        return publishChunks.then(Mono.defer(() -> cancelled.get()
-                ? publishCancelledOutcome(chatId, userId)
-                : publishCompletedOutcome(chatId, userId, turnStarted, assembled.toString())));
+        return publishChunks
+                .then(Mono.defer(() -> endMessageIfStarted(turn, messageStarted)))
+                .then(Mono.defer(() -> cancelled.get()
+                        ? publishCancelledOutcome(turn)
+                        : publishCompletedOutcome(turn, assembled.toString())));
     }
 
-    private Mono<Void> publishCompletedOutcome(UUID chatId,
-                                               UUID userId,
-                                               ZonedDateTime turnStarted,
-                                               String content) {
+    private Mono<Void> startMessageOnce(Turn turn, AtomicBoolean messageStarted) {
+        if (!messageStarted.compareAndSet(false, true)) {
+            return Mono.empty();
+        }
+
+        return publish(turn, new TextMessageStartEvent(turn.messageId(), Role.ASSISTANT, null, null)).then();
+    }
+
+    private Mono<Void> endMessageIfStarted(Turn turn, AtomicBoolean messageStarted) {
+        if (!messageStarted.get()) {
+            return Mono.empty();
+        }
+
+        return publish(turn, new TextMessageEndEvent(turn.messageId(), null, null)).then();
+    }
+
+    private Mono<Void> publishCompletedOutcome(Turn turn, String content) {
+        UUID chatId = turn.chatId();
+
         return Mono.fromCallable(() -> new CompletedTurn(
-                        generatedImageService.forChatSince(chatId, turnStarted),
-                        chatMessageService.responseMetadata(chatId, turnStarted),
-                        chatMessageService.responseMetadataCalls(chatId, turnStarted)))
+                        generatedImageService.forChatSince(chatId, turn.started()),
+                        chatMessageService.responseMetadata(chatId, turn.started()),
+                        chatMessageService.responseMetadataCalls(chatId, turn.started())))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(completedTurn -> {
                     ChatMessage responseMessage = new ChatMessage();
@@ -237,38 +302,46 @@ public class RedisStreamingChatService {
                     responseMessage.setResponseMetadata(completedTurn.responseMetadata());
                     responseMessage.setResponseMetadataCalls(completedTurn.responseMetadataCalls());
 
-                    log.debug("Publishing done event to Redis for chat id {}", chatId);
+                    log.debug("Publishing run finished event to Redis for chat id {}", chatId);
 
-                    return redisStreamService.publish(chatId, userId, DONE,
-                            new SolesonicChatResponse(chatId, responseMessage));
+                    return publish(turn, runFinished(turn, responseMessage));
                 })
                 .then();
     }
 
     /**
-     * The three blocking reads the done frame needs, fetched together so the turn pays one hop onto
-     * {@code boundedElastic} rather than three.
+     * The three blocking reads the finished frame needs, fetched together so the turn pays one hop
+     * onto {@code boundedElastic} rather than three.
      */
     private record CompletedTurn(List<GeneratedImageSummary> generatedImages,
                                  ResponseMetadata responseMetadata,
                                  List<ModelCallMetadata> responseMetadataCalls) {
     }
 
-    private Mono<Void> publishCancelledOutcome(UUID chatId, UUID userId) {
+    /**
+     * A cancelled run still finishes rather than erroring — the user asked for it — and says so with a
+     * {@code CUSTOM cancel} frame ahead of {@code RUN_FINISHED}, whose result is the {@code SYSTEM}
+     * message recording the cancellation.
+     */
+    private Mono<Void> publishCancelledOutcome(Turn turn) {
         return Mono.fromCallable(() -> {
                     ChatMessage responseMessage = new ChatMessage();
-                    responseMessage.setChatId(chatId);
+                    responseMessage.setChatId(turn.chatId());
                     responseMessage.setMessageType(SYSTEM);
                     responseMessage.setMessage(CHAT_CANCELED);
 
                     return chatMessageService.save(responseMessage);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(responseMessage -> redisStreamService
-                        .publish(chatId, userId, CHUNK, new ChunkPayload(CHAT_CANCELED))
-                        .then(redisStreamService.publish(chatId, userId, DONE,
-                                new SolesonicChatResponse(chatId, responseMessage))))
+                .flatMap(responseMessage -> publish(turn,
+                        new CustomEvent(CANCEL_ACTION, Map.of(MESSAGE, CHAT_CANCELED), null, null))
+                        .then(Mono.defer(() -> publish(turn, runFinished(turn, responseMessage)))))
                 .then();
+    }
+
+    private static RunFinishedEvent runFinished(Turn turn, ChatMessage responseMessage) {
+        return new RunFinishedEvent(turn.chatId().toString(), turn.runId().toString(), null,
+                new SolesonicChatResponse(turn.chatId(), responseMessage), null, null);
     }
 
     private Mono<Void> handleStreamError(UUID chatId, UUID userId, Throwable error) {
@@ -281,23 +354,37 @@ public class RedisStreamingChatService {
 
         log.error("Redis stream error for chat id {}", chatId, error);
 
-        String userMessage = (unwrapped instanceof TimeoutException)
+        boolean timedOut = unwrapped instanceof TimeoutException;
+
+        String userMessage = timedOut
                 ? "The request timed out. Please try again."
                 : "An unexpected error occurred. Please try again.";
 
-        notificationService.emitFailure(chatId, userMessage);
+        RunErrorEvent runError = new RunErrorEvent(userMessage, timedOut ? TIMEOUT_CODE : INTERNAL_CODE, null, null);
 
-        return redisStreamService.publish(chatId, userId, ERROR, new ChunkPayload(userMessage))
-                .then(redisStreamService.publish(chatId, userId, DONE))
+        //Written straight to the stream, ahead of RUN_ERROR, rather than through the pub/sub side
+        //channel: that path is a hop longer, and a frame landing after the terminal one is never read.
+        return Mono.fromCallable(() -> notificationService.recordFailure(chatId, userMessage))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(failure -> publish(chatId, userId, new CustomEvent(FAILURE, failure, null, null)))
+                .then(Mono.defer(() -> publish(chatId, userId, runError)))
                 .then();
     }
 
     private void forwardElicitationEvents(UUID chatId, UUID userId, Flux<ServerSentEvent<?>> elicitationEvents) {
         elicitationEvents
                 .filter(serverSentEvent -> !CANCEL_ACTION.equalsIgnoreCase(serverSentEvent.event()))
-                .flatMap(serverSentEvent -> redisStreamService.publish(chatId, userId,
-                        serverSentEvent.event(), serverSentEvent.data()))
+                .concatMap(serverSentEvent -> Flux.fromIterable(sideChannelEventTranslator.translate(serverSentEvent))
+                        .concatMap(event -> publish(chatId, userId, event)))
                 .subscribe();
+    }
+
+    private Mono<RecordId> publish(Turn turn, Event event) {
+        return publish(turn.chatId(), turn.userId(), event);
+    }
+
+    private Mono<RecordId> publish(UUID chatId, UUID userId, Event event) {
+        return redisStreamService.publish(chatId, userId, event.type().value(), event);
     }
 
     private void trackActiveStream(UUID userId, UUID chatId) {

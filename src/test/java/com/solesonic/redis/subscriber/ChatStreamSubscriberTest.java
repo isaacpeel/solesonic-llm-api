@@ -48,7 +48,7 @@ class ChatStreamSubscriberTest {
     void staysQuietWhileFramesAreFlowing() {
         Flux<ServerSentEvent<?>> busy = Flux.interval(Duration.ofMillis(100))
                 .take(12)
-                .map(_ -> frame("chunk"));
+                .map(_ -> frame("TEXT_MESSAGE_CONTENT"));
 
         List<ServerSentEvent<?>> emitted = subscriber()
                 .withKeepalive(busy)
@@ -62,14 +62,25 @@ class ChatStreamSubscriberTest {
     }
 
     @Test
-    void completesOnDoneAndDropsAnythingAfterIt() {
+    void completesOnRunFinishedAndDropsAnythingAfterIt() {
         List<ServerSentEvent<?>> emitted = subscriber()
-                .withKeepalive(Flux.just(frame("chunk"), frame("done"), frame("chunk")))
+                .withKeepalive(Flux.just(frame("TEXT_MESSAGE_CONTENT"), frame("RUN_FINISHED"), frame("TEXT_MESSAGE_CONTENT")))
                 .collectList()
                 .block(Duration.ofSeconds(10));
 
         assertThat(emitted).hasSize(2);
         assertThat(emitted).last().satisfies(serverSentEvent ->
-                assertThat(serverSentEvent.event()).isEqualTo("done"));
+                assertThat(serverSentEvent.event()).isEqualTo("RUN_FINISHED"));
+    }
+
+    @Test
+    void completesOnRunErrorWithoutWaitingForRunFinished() {
+        List<ServerSentEvent<?>> emitted = subscriber()
+                .withKeepalive(Flux.just(frame("TEXT_MESSAGE_CONTENT"), frame("RUN_ERROR")).concatWith(Flux.never()))
+                .collectList()
+                .block(Duration.ofSeconds(10));
+
+        assertThat(emitted).last().satisfies(serverSentEvent ->
+                assertThat(serverSentEvent.event()).isEqualTo("RUN_ERROR"));
     }
 }

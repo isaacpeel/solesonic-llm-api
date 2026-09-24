@@ -76,7 +76,7 @@ public class ChatMessageService {
 
     /**
      * Persists the in-flight user message before the stream starts, so its id is known and can be
-     * published on the {@code init} event.
+     * published on the {@code RUN_STARTED} event.
      * <p>
      * This is deliberately the caller's job rather than the chat memory advisor's: the advisor never
      * runs on the A2A route, so user messages were previously not persisted there at all.
@@ -161,7 +161,7 @@ public class ChatMessageService {
      * Reads back what {@link #updateResponseMetadata} recorded for a turn, by the same {@code since}
      * the caller wrote it with.
      * <p>
-     * The {@code done} frame needs this because it builds its message from scratch rather than from
+     * The {@code RUN_FINISHED} frame needs this because it builds its message from scratch rather than from
      * the persisted row — without it the accounting reaches chat history but is null on the frame a
      * client finalises the turn with. Null means no chat model reported on the turn: an A2A
      * delegation, or a turn that ended before any usage arrived.
@@ -176,7 +176,7 @@ public class ChatMessageService {
 
     /**
      * The per-call breakdown counterpart to {@link #responseMetadata}, for the same reason and by the
-     * same lookup: the {@code done} frame's message is built from scratch, so
+     * same lookup: the {@code RUN_FINISHED} frame's message is built from scratch, so
      * {@code responseMetadataCalls} has to be read back explicitly or it stays null on that frame even
      * though the persisted row carries it.
      */

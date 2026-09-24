@@ -10,7 +10,7 @@ import reactor.core.publisher.Flux;
  * bytes moving.
  * <p>
  * {@code X-Accel-Buffering: no} is the load-bearing one. nginx buffers a proxied response by
- * default, which holds back exactly the frames whose value is in arriving early — the {@code init}
+ * default, which holds back exactly the frames whose value is in arriving early — the {@code RUN_STARTED}
  * frame a client needs before it can recover anything, and the keepalive comments that stop a
  * silent connection from being reaped. Setting it on the response means the guarantee travels with
  * the endpoint instead of depending on every deployment getting its proxy config right.

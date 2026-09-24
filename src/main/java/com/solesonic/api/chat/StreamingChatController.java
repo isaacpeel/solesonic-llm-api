@@ -1,7 +1,8 @@
 package com.solesonic.api.chat;
 
-import com.solesonic.mcp.client.elicitation.ElicitationProvider;
+import com.agui.community.core.message.ToolMessage;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.chat.ChatStreamAccessService;
 import com.solesonic.service.chat.ChatStreamAccessService.ChatAccess;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -32,15 +33,18 @@ public class StreamingChatController {
     private final ElicitationService elicitationService;
     private final StreamResumeService streamResumeService;
     private final ChatStreamAccessService chatStreamAccessService;
+    private final ChatService chatService;
 
     public StreamingChatController(RedisStreamingChatService streamingChatService,
                                    ElicitationService elicitationService,
                                    StreamResumeService streamResumeService,
-                                   ChatStreamAccessService chatStreamAccessService) {
+                                   ChatStreamAccessService chatStreamAccessService,
+                                   ChatService chatService) {
         this.streamingChatService = streamingChatService;
         this.elicitationService = elicitationService;
         this.streamResumeService = streamResumeService;
         this.chatStreamAccessService = chatStreamAccessService;
+        this.chatService = chatService;
     }
 
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -85,7 +89,7 @@ public class StreamingChatController {
     }
 
     /**
-     * Replays the frames a client missed and then continues live through {@code done}.
+     * Replays the frames a client missed and then continues live through the terminal frame.
      * <p>
      * A {@code GET} rather than a repeat of the {@code PUT}: resuming must never re-run the turn,
      * and the request that recovers a turn should be the one method a client can safely retry.
@@ -110,7 +114,7 @@ public class StreamingChatController {
      * Stops a turn in flight. Firing this endpoint publishes the same signal
      * {@link ElicitationService#cancelChat(UUID)} already sends for an elicitation decline, so a
      * cancelled turn ends through the one termination path {@code RedisStreamingChatService} already
-     * has: a {@code SYSTEM} "Chat canceled." message, then {@code chunk} and {@code done} frames on
+     * has: a {@code SYSTEM} "Chat canceled." message, then {@code CUSTOM cancel} and {@code RUN_FINISHED} frames on
      * the still-open (or resumed) stream. The response here only confirms the signal was sent —
      * outcome arrives asynchronously, same as everywhere else in this controller.
      */
@@ -136,17 +140,32 @@ public class StreamingChatController {
                         : ResponseEntity.accepted().build());
     }
 
+    /**
+     * Answers an elicitation, shaped as the AG-UI {@link ToolMessage} that answers the tool call the
+     * elicitation was streamed as: {@code toolCallId} is the elicitation id, and {@code content} is a
+     * JSON string naming the action. This resumes the parked MCP tool call inside the same run — no
+     * new run is started, unlike AG-UI's interrupt model.
+     * <p>
+     * Ownership is checked before anything else. The chat id is attacker-controlled, and without the
+     * check any authenticated caller holding two ids could answer someone else's elicitation.
+     */
     @PostMapping(value = "/{chatId}/{elicitationId}/elicitation-response")
     public Mono<ResponseEntity<Void>> submitElicitationResponse(@PathVariable UUID chatId,
                                                                 @PathVariable UUID elicitationId,
-                                                                @RequestBody ElicitationProvider.ElicitationActionResult elicitationActionResult) {
+                                                                @RequestBody ToolMessage toolMessage) {
         log.info("Received elicitation response for chat {}", chatId);
 
-        assert elicitationActionResult.elicitationId().equals(elicitationId);
+        chatService.requireOwned(chatId);
 
-        return elicitationService.completeFromFrontend(elicitationActionResult)
-                .map(completed -> completed
-                        ? ResponseEntity.ok().build()
-                        : ResponseEntity.notFound().build());
+        if (!elicitationId.toString().equals(toolMessage.toolCallId())) {
+            return Mono.just(ResponseEntity.badRequest().build());
+        }
+
+        return elicitationService.actionResult(chatId, elicitationId, toolMessage)
+                .map(actionResult -> elicitationService.completeFromFrontend(actionResult)
+                        .map(completed -> completed
+                                ? ResponseEntity.ok().<Void>build()
+                                : ResponseEntity.notFound().<Void>build()))
+                .orElseGet(() -> Mono.just(ResponseEntity.badRequest().build()));
     }
 }

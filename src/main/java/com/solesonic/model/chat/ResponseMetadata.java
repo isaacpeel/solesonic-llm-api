@@ -8,7 +8,7 @@ import java.util.List;
 import java.util.function.Function;
 
 /**
- * What the model server reported about one assistant turn, carried on the {@code done} SSE event and
+ * What the model server reported about one assistant turn, carried on the {@code RUN_FINISHED} SSE event and
  * persisted on the message row.
  * <p>
  * Every field is the server's own accounting, copied verbatim — nothing here is measured or derived

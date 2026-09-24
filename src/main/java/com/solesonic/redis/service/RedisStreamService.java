@@ -4,7 +4,6 @@ import com.solesonic.redis.model.RedisChatEvent;
 import com.solesonic.redis.model.StreamEventId;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
-import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -42,12 +41,6 @@ public class RedisStreamService {
         this.redisTemplate = redisTemplate;
     }
 
-    public Mono<RecordId> publish(UUID chatId, UUID userId, String type) {
-        RedisStreamingChatService.ChunkPayload emptyPayload = new RedisStreamingChatService.ChunkPayload("");
-
-        return publish(chatId, userId, type, emptyPayload);
-    }
-
     public Mono<RecordId> publish(UUID chatId, UUID userId, String type, Object payload) {
         String serializePayload = serializePayload(payload);
         String streamKey = buildStreamKey(chatId, userId);
@@ -68,7 +61,7 @@ public class RedisStreamService {
      * The last frame of a stream: its id, and the event type that produced it.
      * <p>
      * The type is what tells a resuming client's request apart from a turn still in flight — a
-     * tail of {@code done} means the turn is over and there is nothing more coming.
+     * terminal tail ({@code RUN_FINISHED} or {@code RUN_ERROR}) means the turn is over and there is nothing more coming.
      */
     public record StreamTail(String eventId, String type) {
     }

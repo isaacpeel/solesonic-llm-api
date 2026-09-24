@@ -59,13 +59,13 @@ otherwise `403`. An unknown `{chatId}` is `404`.
     replays the whole retained stream.
 
 Replays every buffered frame after the cursor — progress frames included, so a client's step log
-survives — then continues live through `done`. Resuming never re-runs a turn: generation and
+survives — then continues live through the terminal frame (`RUN_FINISHED` or `RUN_ERROR`). Resuming never re-runs a turn: generation and
 persistence are already independent of any listener, so this is purely a second view of work that
 is happening regardless.
 
 | Status | Meaning |
 |--------|---------|
-| `200` | Replaying, then live through `done` |
+| `200` | Replaying, then live through the terminal frame |
 | `204` | The turn finished and the cursor already covers every frame of it |
 | `400` | `Last-Event-ID` is not a stream id — see the id format below |
 | `403` | The chat is not the caller's |
@@ -95,7 +95,8 @@ Stops a turn in flight. The same ownership rule as every other streaming endpoin
 
 This endpoint only confirms the signal was sent — it does not wait for the turn to actually stop.
 The outcome arrives the same way every other frame does: on the already-open stream, or on a
-`GET .../stream` resume, as a `chunk` carrying "Chat canceled." followed by `done` with a `SYSTEM`
+`GET .../stream` resume, as `TEXT_MESSAGE_END` (when the assistant had started a message), a
+`CUSTOM` event named `cancel`, then `RUN_FINISHED` whose `result` carries a `SYSTEM` "Chat canceled."
 message. Content the model had already streamed before the cancel lands is not persisted; only that
 system message is. See [Delete a Chat](#delete-a-chat) — unlike a delete, this is the way to
 actually stop a turn rather than merely disown it.
@@ -132,24 +133,43 @@ an nginx in front of the API does not buffer away the frames whose value is in a
 
 ### Stream Event Types
 
-Both streaming endpoints emit the following SSE event types:
+Every frame is an [AG-UI](https://docs.ag-ui.com) event. The event type is sent twice: as the SSE
+`event:` field, and as `type` inside the JSON `data:`, so a client that dispatches on either works.
+A turn is one AG-UI run, with `threadId` = the chat id.
 
 | Event | Description |
 |-------|-------------|
-| `init` | Sent at stream start. Payload carries the persisted user message id — see below |
-| `chunk` | Incremental assistant response text |
-| `progress` | A long-running step started — an MCP tool, or the vision pass on one attached image |
-| `attachment` | Terminal outcome for one attached image — see below |
-| `image` | An image generated during this turn, by reference — see below |
-| `elicitation` | Interactive form request from an MCP tool |
-| `cancel` | Emitted when a user cancels an elicitation |
-| `done` | Final event containing the structured chat response — see below |
+| `RUN_STARTED` | First frame of every turn. `input.messages[0]` is the persisted user message — see below |
+| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"` |
+| `TEXT_MESSAGE_CONTENT` | Incremental assistant response text, in `delta` |
+| `TEXT_MESSAGE_END` | The assistant's reply is complete |
+| `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | An MCP tool is asking the user something — see [elicitation.md](elicitation.md) |
+| `CUSTOM` `name: "progress"` | A long-running step started — an MCP tool, or the vision pass on one attached image |
+| `CUSTOM` `name: "attachment"` | Terminal outcome for one attached image or document — see below |
+| `CUSTOM` `name: "image"` | An image generated during this turn, by reference — see below |
+| `CUSTOM` `name: "failure"` | A failure notification — the same text `RUN_ERROR` carries |
+| `CUSTOM` `name: "cancel"` | The turn was cancelled; `RUN_FINISHED` follows |
+| `RUN_FINISHED` | Terminal. `result` is the structured chat response — see below |
+| `RUN_ERROR` | Terminal. `message` is user-facing; `code` is `timeout` or `internal`. No `RUN_FINISHED` follows |
+
+A turn ends with exactly one of `RUN_FINISHED` or `RUN_ERROR`. `CUSTOM` values are the payloads
+documented below, unchanged — only the envelope moved.
+
+`messageId` on the `TEXT_MESSAGE_*` frames is a wire id for the streamed reply. It is **not** the
+id of the persisted assistant row, which the chat memory writes on its own; read that from history.
+
+**One deliberate departure from AG-UI.** AG-UI's native human-in-the-loop mechanism is an
+interrupt: the run finishes with an interrupt outcome, and the client starts a new run to resume.
+This API does not do that. An elicitation is streamed as a tool call inside the still-running turn,
+the MCP tool call that asked stays parked, and the answer is a separate `POST` that resumes it in
+place — the SSE connection stays open and no new run starts. That is what keeps resume-by-cursor,
+keepalives and mid-turn image frames working across an elicitation. It is not an oversight.
 
 ### image Event Payload
 
 Emitted when a turn generates an image — `/generate_image`, or the model calling the tool itself.
-The payload is a `GeneratedImageSummary`, identical in shape to the `complete` frame of
-[explicit generation](#image-generation):
+It is sent as `CUSTOM` with `name: "image"`; its `value` is a `GeneratedImageSummary`, identical
+in shape to the `complete` frame of [explicit generation](#image-generation):
 
 ```json
 {
@@ -171,15 +191,26 @@ The payload is a `GeneratedImageSummary`, identical in shape to the `complete` f
 Never bytes. The image data stops at the API boundary and is fetched separately from `imageUrl`.
 
 The frame is emitted from the tool result, which lands before the model has written its first word,
-so it always arrives ahead of `chunk` text and well ahead of `done`. `chatMessageId` is `null` here —
+so it always arrives ahead of `TEXT_MESSAGE_CONTENT` and well ahead of `RUN_FINISHED`. `chatMessageId` is `null` here —
 the assistant turn it belongs to has not been written yet — and is filled in by the time the same
 image appears in history.
 
-The same references are repeated on the `done` payload as `message.generatedImages`, so a client
+The same references are repeated on the `RUN_FINISHED` result as `message.generatedImages`, so a client
 that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
 De-duplicate by `imageId`.
 
-### done Event Payload
+### RUN_FINISHED Event Payload
+
+```json
+{
+  "type": "RUN_FINISHED",
+  "threadId": "0a4b...",
+  "runId": "5d1e...",
+  "result": { ... }
+}
+```
+
+`result` is the structured chat response:
 
 ```json
 {
@@ -329,20 +360,31 @@ reports less than the documented set leaves the missing fields out, `liteLlm` it
 call not made through a proxy, and messages persisted before a given field existed carry only what
 could be carried forward.
 
-### init Event Payload
+### RUN_STARTED Event Payload
 
 ```json
 {
-  "chatId": "0a4b...",
-  "messageId": "7f3c..."
+  "type": "RUN_STARTED",
+  "threadId": "0a4b...",
+  "runId": "5d1e...",
+  "input": {
+    "threadId": "0a4b...",
+    "runId": "5d1e...",
+    "messages": [
+      { "id": "7f3c...", "role": "user", "content": "Your message here" }
+    ],
+    "tools": []
+  }
 }
 ```
 
-`messageId` is the id of the user message persisted at the start of the turn. Clients that
-uploaded attachments (see [Chat Attachments](#chat-attachments)) use it to associate them with the
-rendered message. Clients that ignore the `init` body are unaffected.
+`threadId` is the chat id. `input.messages[0].id` is the id of the user message persisted at the
+start of the turn. Clients that uploaded attachments (see [Chat Attachments](#chat-attachments)) use
+it to associate them with the rendered message.
 
 ### attachment Event Payload
+
+Sent as `CUSTOM` with `name: "attachment"`; its `value` is:
 
 ```json
 {
@@ -362,12 +404,12 @@ moves `indexed`/`extractionReason`/`chunkCount` and leaves `described` at `false
 `reason`.
 
 The attachment pass opens with a `progress` event per attachment and closes with an `attachment`
-event per attachment. Guarantees a client can rely on:
+event per attachment (both `CUSTOM`). Guarantees a client can rely on:
 
 - **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including attachments
   skipped before any work started, and ones the server could not resolve at all. A client never
   has to interpret a missing event.
-- **Always before `done`**, so the event lands while the assistant message is still streaming.
+- **Always before `RUN_FINISHED`**, so the event lands while the assistant message is still streaming.
 
 Nothing else in the turn distinguishes a handled attachment from a skipped one: a skipped attachment
 still produces a normal answer, just one written as though nothing were attached.
@@ -415,27 +457,31 @@ is `false`. The durable form of this signal is `indexed` on the attachment summa
 
 ### Submit Elicitation Response
 
-When an MCP tool issues an elicitation, the frontend receives an `elicitation` SSE event and must POST the user's response before the stream can continue.
+When an MCP tool issues an elicitation, the stream carries it as an AG-UI tool call
+(`TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`) whose `toolCallId` is the elicitation id.
+The client answers with the AG-UI `ToolMessage` for that tool call. The turn stays open meanwhile.
 
 - **Endpoint**: `POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`
 - **Path Parameters**:
-  - `chatId` (UUID): The active chat session
-  - `elicitationId` (UUID): The specific elicitation to respond to
-- **Request Body**:
+  - `chatId` (UUID): The active chat session. Must belong to the caller
+  - `elicitationId` (UUID): The `toolCallId` from `TOOL_CALL_START`
+- **Request Body** — an AG-UI `ToolMessage`. `content` is a JSON *string*, as AG-UI defines it,
+  holding a flat object: the `action` plus the form values keyed by `requestedSchema` property name:
 ```json
 {
-  "elicitationResponse": {
-    "name": "delete-confirmation",
-    "fields": { "confirmed": "accept" },
-    "action": "accept"
-  }
+  "id": "b8e2...",
+  "role": "tool",
+  "toolCallId": "9c41...",
+  "content": "{\"action\":\"accept\",\"assigneeAccountId\":\"70121:629f...\"}"
 }
 ```
-- **Action values**: `accept`, `decline`, `cancel`
+- **Action values**: `accept`, `decline`, `cancel` (case-insensitive)
+- **Forwarded to the MCP tool**: on `accept`, only the values whose keys the elicitation's
+  `requestedSchema.properties` named; nothing on `decline`/`cancel`. See [elicitation.md](elicitation.md).
 - **Responses**:
   - `200 OK` - Response accepted
-  - `400 Bad Request` - Invalid payload
-  - `404 Not Found` - No matching pending elicitation
+  - `400 Bad Request` - `toolCallId` does not match `{elicitationId}`, or `content` names no known action
+  - `404 Not Found` - The chat does not exist or is not the caller's
 
 See [elicitation.md](elicitation.md) for full architecture and examples.
 
@@ -455,24 +501,33 @@ curl -N -X POST "http://localhost:8080/streaming/chats/users/${USER_ID}" \
 ```typescript
 const eventSource = new EventSource(`${baseUrl}/streaming/chats/users/${userId}`);
 
-eventSource.addEventListener('chunk', (event) => {
-  console.log('Text chunk:', event.data);
+eventSource.addEventListener('TEXT_MESSAGE_CONTENT', (event) => {
+  console.log('Text chunk:', JSON.parse(event.data).delta);
 });
 
-eventSource.addEventListener('elicitation', async (event) => {
-  const payload = JSON.parse(event.data);
-  // Render form and collect user input, then:
-  await fetch(`${baseUrl}/streaming/chats/${payload.chatId}/${payload.elicitationId}/elicitation-response`, {
+eventSource.addEventListener('TOOL_CALL_ARGS', async (event) => {
+  const { toolCallId, delta } = JSON.parse(event.data);
+  const elicitation = JSON.parse(delta);
+  // Render elicitation.message / elicitation.requestedSchema, collect the answer, then:
+  await fetch(`${baseUrl}/streaming/chats/${elicitation.chatId}/${toolCallId}/elicitation-response`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      elicitationResponse: { name: payload.name, fields: { confirmed: 'accept' }, action: 'accept' }
+      id: crypto.randomUUID(),
+      role: 'tool',
+      toolCallId,
+      content: JSON.stringify({ action: 'accept' })
     })
   });
 });
 
-eventSource.addEventListener('done', (event) => {
-  console.log('Chat complete:', JSON.parse(event.data));
+eventSource.addEventListener('RUN_FINISHED', (event) => {
+  console.log('Chat complete:', JSON.parse(event.data).result);
+  eventSource.close();
+});
+
+eventSource.addEventListener('RUN_ERROR', (event) => {
+  console.error('Chat failed:', JSON.parse(event.data).message);
   eventSource.close();
 });
 ```
@@ -614,7 +669,7 @@ group, not a deleted one.
 Deleting a conversation does not cancel a turn that is already streaming. Generation is deliberately
 independent of any listener, so a turn in flight runs to completion and writes a message that lands
 on a conversation that no longer exists — unreachable from every read path, but written. Wait for
-`done` before deleting, or send [Cancel a Streaming Turn](#cancel-a-streaming-turn) first.
+`RUN_FINISHED` before deleting, or send [Cancel a Streaming Turn](#cancel-a-streaming-turn) first.
 
 ### Delete a Chat Message
 
@@ -633,7 +688,7 @@ A chat that does not exist, or is not owned by the caller, is `404`. A `messageI
 belong to `chatId` is also `404`, the same as one that does not exist at all.
 
 Deleting the in-flight `USER` message of a turn that is still streaming is not guarded against, the
-same as [Delete a Chat](#delete-a-chat): wait for `done` first, or send
+same as [Delete a Chat](#delete-a-chat): wait for `RUN_FINISHED` first, or send
 [Cancel a Streaming Turn](#cancel-a-streaming-turn).
 
 ---
@@ -1528,7 +1583,7 @@ the bytes.
 2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
    itself. The image is intercepted out of the tool result before that result re-enters the model's
    context, and reaches the client as an [`image` stream event](#image-event-payload) and as
-   `message.generatedImages` on [`done`](#stream-event-types). It is persisted against the assistant
+   `message.generatedImages` on [`RUN_FINISHED`](#stream-event-types). It is persisted against the assistant
    turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
 
 ### Generate an Image (streaming)

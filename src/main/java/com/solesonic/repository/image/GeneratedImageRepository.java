@@ -43,7 +43,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
     List<GeneratedImageSummary> findSummariesByChatId(UUID chatId);
 
     /**
-     * Images produced during one turn, for the {@code done} payload. Bounded by time rather than by
+     * Images produced during one turn, for the {@code RUN_FINISHED} payload. Bounded by time rather than by
      * message id because the assistant message is written by the chat memory advisor, which does
      * not hand its id back to the stream that is about to finish.
      */

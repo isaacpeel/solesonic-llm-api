@@ -161,7 +161,7 @@ public class GeneratedImageService {
     }
 
     /**
-     * Images generated since a turn began — what that turn's {@code done} payload carries.
+     * Images generated since a turn began — what that turn's {@code RUN_FINISHED} payload carries.
      */
     @Transactional(readOnly = true)
     public List<GeneratedImageSummary> forChatSince(UUID chatId, ZonedDateTime since) {

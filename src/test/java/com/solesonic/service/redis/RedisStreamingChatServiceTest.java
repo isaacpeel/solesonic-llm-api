@@ -1,5 +1,16 @@
 package com.solesonic.service.redis;
 
+import com.agui.community.core.agent.RunAgentInput;
+import com.agui.community.core.event.CustomEvent;
+import com.agui.community.core.event.RunErrorEvent;
+import com.agui.community.core.event.RunFinishedEvent;
+import com.agui.community.core.event.RunStartedEvent;
+import com.agui.community.core.event.TextMessageContentEvent;
+import com.agui.community.core.event.TextMessageEndEvent;
+import com.agui.community.core.event.TextMessageStartEvent;
+import com.agui.community.core.event.ToolCallStartEvent;
+import com.agui.community.core.message.Role;
+import com.solesonic.config.JacksonConfig;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
@@ -28,18 +39,16 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static com.solesonic.service.redis.RedisStreamingChatService.CHAT_CANCELED;
-import static com.solesonic.service.redis.RedisStreamingChatService.CHUNK;
-import static com.solesonic.service.redis.RedisStreamingChatService.DONE;
-import static com.solesonic.service.redis.RedisStreamingChatService.ERROR;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -53,14 +62,24 @@ import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
 /**
- * Pins the turn lifecycle of {@link RedisStreamingChatService}: exactly one terminal frame per turn, of the
- * right kind, published before cleanup runs.
+ * Pins the turn lifecycle of {@link RedisStreamingChatService} as AG-UI frames: one run, at most one
+ * text message, and exactly one terminal frame per turn, of the right kind, published before cleanup
+ * runs.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class RedisStreamingChatServiceTest {
     private static final UUID CHAT_ID = UUID.randomUUID();
     private static final UUID USER_ID = UUID.randomUUID();
+    private static final UUID RUN_ID = UUID.randomUUID();
+
+    private static final String TEXT_MESSAGE_START = "TEXT_MESSAGE_START";
+    private static final String TEXT_MESSAGE_CONTENT = "TEXT_MESSAGE_CONTENT";
+    private static final String TEXT_MESSAGE_END = "TEXT_MESSAGE_END";
+    private static final String RUN_STARTED = "RUN_STARTED";
+    private static final String RUN_FINISHED = "RUN_FINISHED";
+    private static final String RUN_ERROR = "RUN_ERROR";
+    private static final String CUSTOM = "CUSTOM";
 
     @Mock
     private ChatRepository chatRepository;
@@ -91,7 +110,7 @@ class RedisStreamingChatServiceTest {
 
     private RedisStreamingChatService redisStreamingChatService;
 
-    private final List<PublishedEvent> published = new ArrayList<>();
+    private final List<PublishedEvent> published = new CopyOnWriteArrayList<>();
 
     private record PublishedEvent(String type, Object payload) {
     }
@@ -105,17 +124,13 @@ class RedisStreamingChatServiceTest {
                 redisStreamService,
                 activeStreamTracker,
                 notificationService,
-                generatedImageService);
+                generatedImageService,
+                new SideChannelEventTranslator(new JacksonConfig().jsonMapper()));
 
         published.clear();
 
         when(redisStreamService.publish(any(), any(), anyString(), any())).thenAnswer(invocation -> {
             published.add(new PublishedEvent(invocation.getArgument(2), invocation.getArgument(3)));
-            return Mono.just(RecordId.of("1-0"));
-        });
-
-        when(redisStreamService.publish(any(), any(), anyString())).thenAnswer(invocation -> {
-            published.add(new PublishedEvent(invocation.getArgument(2), null));
             return Mono.just(RecordId.of("1-0"));
         });
 
@@ -128,7 +143,7 @@ class RedisStreamingChatServiceTest {
 
     private void runTurn() {
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
                 .verifyComplete();
     }
 
@@ -140,34 +155,78 @@ class RedisStreamingChatServiceTest {
         return ServerSentEvent.builder(CANCEL_ACTION).event(CANCEL_ACTION).build();
     }
 
+    private List<String> publishedTypes() {
+        return published.stream().map(PublishedEvent::type).toList();
+    }
+
     private List<PublishedEvent> eventsOfType(String type) {
         return published.stream().filter(event -> type.equals(event.type())).toList();
     }
 
-    private ChatMessage doneMessage() {
-        List<PublishedEvent> doneEvents = eventsOfType(DONE);
-        assertThat(doneEvents).hasSize(1);
-        assertThat(doneEvents.getFirst().payload()).isInstanceOf(SolesonicChatResponse.class);
-        return ((SolesonicChatResponse) doneEvents.getFirst().payload()).message();
+    private RunFinishedEvent runFinished() {
+        List<PublishedEvent> finishedEvents = eventsOfType(RUN_FINISHED);
+        assertThat(finishedEvents).hasSize(1);
+        assertThat(finishedEvents.getFirst().payload()).isInstanceOf(RunFinishedEvent.class);
+        return (RunFinishedEvent) finishedEvents.getFirst().payload();
+    }
+
+    private ChatMessage finishedMessage() {
+        assertThat(runFinished().result()).isInstanceOf(SolesonicChatResponse.class);
+        return ((SolesonicChatResponse) runFinished().result()).message();
     }
 
     /**
-     * Case 1 — the normal path. Also the canary for a turn that never terminates: an outcome branch that
+     * The normal path. Also the canary for a turn that never terminates: an outcome branch that
      * re-subscribes to the cancel signal hangs here instead of completing.
      */
     @Test
-    void normalTurnPublishesExactlyOneAssistantDone() {
+    void normalTurnIsOneTextMessageThenRunFinished() {
         modelStreams("Hello ", "world");
 
         runTurn();
 
-        assertThat(eventsOfType(CHUNK)).hasSize(2);
-        assertThat(eventsOfType(DONE)).hasSize(1);
+        assertThat(publishedTypes()).containsExactly(
+                TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
 
-        ChatMessage responseMessage = doneMessage();
+        TextMessageStartEvent start = (TextMessageStartEvent) eventsOfType(TEXT_MESSAGE_START).getFirst().payload();
+        assertThat(start.role()).isEqualTo(Role.ASSISTANT);
+
+        List<TextMessageContentEvent> contents = eventsOfType(TEXT_MESSAGE_CONTENT).stream()
+                .map(event -> (TextMessageContentEvent) event.payload())
+                .toList();
+        assertThat(contents).allSatisfy(content -> assertThat(content.messageId()).isEqualTo(start.messageId()));
+        assertThat(contents).extracting(TextMessageContentEvent::delta).containsExactly("Hello ", "world");
+
+        TextMessageEndEvent end = (TextMessageEndEvent) eventsOfType(TEXT_MESSAGE_END).getFirst().payload();
+        assertThat(end.messageId()).isEqualTo(start.messageId());
+    }
+
+    @Test
+    void runFinishedCarriesTheRunAndTheAssistantMessage() {
+        modelStreams("Hello ", "world");
+
+        runTurn();
+
+        assertThat(runFinished().threadId()).isEqualTo(CHAT_ID.toString());
+        assertThat(runFinished().runId()).isEqualTo(RUN_ID.toString());
+
+        ChatMessage responseMessage = finishedMessage();
         assertThat(responseMessage.getMessageType()).isEqualTo(ASSISTANT);
         assertThat(responseMessage.getMessage()).isEqualTo("Hello world");
         assertThat(responseMessage.getChatId()).isEqualTo(CHAT_ID);
+    }
+
+    /**
+     * A text message with no content is not a message. A turn the model answered with nothing goes
+     * straight to the terminal frame rather than opening and closing an empty one.
+     */
+    @Test
+    void emptyTurnOpensNoTextMessage() {
+        modelStreams();
+
+        runTurn();
+
+        assertThat(publishedTypes()).containsExactly(RUN_FINISHED);
     }
 
     @Test
@@ -177,12 +236,12 @@ class RedisStreamingChatServiceTest {
         runTurn();
 
         verify(generatedImageService).forChatSince(eq(CHAT_ID), any());
-        assertThat(doneMessage().getGeneratedImages()).isEmpty();
+        assertThat(finishedMessage().getGeneratedImages()).isEmpty();
     }
 
     /**
-     * The done message is built from scratch rather than read from the row the chat memory advisor
-     * wrote, so what the model server reported has to be fetched back onto it — otherwise the
+     * The finished message is built from scratch rather than read from the row the chat memory
+     * advisor wrote, so what the model server reported has to be fetched back onto it — otherwise the
      * accounting lands in history but is null on the frame the client finalises the turn with.
      */
     @Test
@@ -199,62 +258,61 @@ class RedisStreamingChatServiceTest {
 
         runTurn();
 
-        assertThat(doneMessage().getResponseMetadata()).isEqualTo(responseMetadata);
-        assertThat(doneMessage().getResponseMetadataCalls()).isEqualTo(calls);
+        assertThat(finishedMessage().getResponseMetadata()).isEqualTo(responseMetadata);
+        assertThat(finishedMessage().getResponseMetadataCalls()).isEqualTo(calls);
     }
 
-    /**
-     * A turn no chat model reported on leaves the field null rather than failing the frame.
-     */
     @Test
     void normalTurnLeavesResponseMetadataNullWhenNothingWasReported() {
         modelStreams("Hello");
 
         runTurn();
 
-        assertThat(doneMessage().getResponseMetadata()).isNull();
+        assertThat(finishedMessage().getResponseMetadata()).isNull();
     }
 
     /**
-     * Case 2 — cancellation mid-turn. The cancel signal is emitted once the model has already produced
-     * output, which is the shape that previously raced two DONE publishers against one another.
+     * Cancellation mid-turn. The cancel signal is emitted once the model has already produced output,
+     * which is the shape that previously raced two terminal publishers against one another. The open
+     * text message is closed, and exactly one {@code CUSTOM cancel} is published — the one saying the
+     * turn was cancelled, not a forwarded copy of the signal itself.
      */
     @Test
-    void cancelledTurnPublishesExactlyOneSystemDone() {
+    void cancelledTurnClosesTheMessageThenAnnouncesTheCancelThenFinishes() {
         cancelAfterChunks("Partial ", "answer");
 
         runTurn();
 
-        assertThat(eventsOfType(DONE)).hasSize(1);
+        assertThat(publishedTypes()).containsExactly(
+                TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, CUSTOM, RUN_FINISHED);
 
-        ChatMessage responseMessage = doneMessage();
+        CustomEvent cancel = (CustomEvent) eventsOfType(CUSTOM).getFirst().payload();
+        assertThat(cancel.name()).isEqualTo(CANCEL_ACTION);
+
+        ChatMessage responseMessage = finishedMessage();
         assertThat(responseMessage.getMessageType()).isEqualTo(SYSTEM);
         assertThat(responseMessage.getMessage()).isEqualTo(CHAT_CANCELED);
-
-        List<PublishedEvent> chunks = eventsOfType(CHUNK);
-        assertThat(chunks).hasSize(3);
-        assertThat(chunks.getLast().payload())
-                .isEqualTo(new RedisStreamingChatService.ChunkPayload(CHAT_CANCELED));
     }
 
     /**
-     * Case 3 — the duplicate-DONE regression, stated as a negative. Asserting only on the last frame would
+     * The duplicate-terminal regression, stated as a negative. Asserting only on the last frame would
      * let the old behaviour pass, so this inspects every published event.
      */
     @Test
-    void cancelledTurnNeverPublishesAnAssistantDone() {
+    void cancelledTurnNeverPublishesAnAssistantFinish() {
         cancelAfterChunks("Partial ", "answer");
 
         runTurn();
 
         assertThat(published)
-                .filteredOn(event -> DONE.equals(event.type()))
-                .extracting(event -> ((SolesonicChatResponse) event.payload()).message().getMessageType())
+                .filteredOn(event -> RUN_FINISHED.equals(event.type()))
+                .extracting(event -> ((SolesonicChatResponse) ((RunFinishedEvent) event.payload()).result())
+                        .message().getMessageType())
                 .containsExactly(SYSTEM);
     }
 
     /**
-     * Case 4 — the cancel-path save must not run on the thread that delivered the pub/sub signal.
+     * The cancel-path save must not run on the thread that delivered the pub/sub signal.
      */
     @Test
     void cancelledTurnSavesTheSystemMessageOffThePubSubThread() {
@@ -273,18 +331,30 @@ class RedisStreamingChatServiceTest {
         assertThat(savingThread.get()).startsWith("boundedElastic-");
     }
 
+    /**
+     * {@code RUN_ERROR} is terminal on its own in AG-UI; a {@code RUN_FINISHED} after it would be a
+     * second terminal frame. The failure notification has to land <em>before</em> it: a client stops
+     * reading at the terminal frame, and a resume whose cursor covers it answers {@code 204}, so a
+     * frame written after {@code RUN_ERROR} is unreachable.
+     */
     @Test
-    void timeoutErrorPublishesErrorThenDoneAndNotifies() {
+    void timeoutErrorPublishesTheFailureThenRunError() {
+        Map<String, Object> failure = Map.of("message", "The request timed out. Please try again.");
+        when(notificationService.recordFailure(CHAT_ID, "The request timed out. Please try again.")).thenReturn(failure);
         when(promptService.stream(any(), any(), any(), any()))
                 .thenReturn(Flux.error(new TimeoutException("too slow")));
 
         runTurn();
 
-        assertThat(published).extracting(PublishedEvent::type).containsExactly(ERROR, DONE);
-        assertThat(eventsOfType(ERROR).getFirst().payload())
-                .isEqualTo(new RedisStreamingChatService.ChunkPayload("The request timed out. Please try again."));
+        assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
 
-        verify(notificationService).emitFailure(CHAT_ID, "The request timed out. Please try again.");
+        CustomEvent failureEvent = (CustomEvent) eventsOfType(CUSTOM).getFirst().payload();
+        assertThat(failureEvent.name()).isEqualTo(RedisStreamingChatService.FAILURE);
+        assertThat(failureEvent.value()).isEqualTo(failure);
+
+        RunErrorEvent runError = (RunErrorEvent) eventsOfType(RUN_ERROR).getFirst().payload();
+        assertThat(runError.message()).isEqualTo("The request timed out. Please try again.");
+        assertThat(runError.code()).isEqualTo(RedisStreamingChatService.TIMEOUT_CODE);
     }
 
     @Test
@@ -294,12 +364,13 @@ class RedisStreamingChatServiceTest {
 
         runTurn();
 
-        assertThat(eventsOfType(ERROR).getFirst().payload())
-                .isEqualTo(new RedisStreamingChatService.ChunkPayload("An unexpected error occurred. Please try again."));
+        RunErrorEvent runError = (RunErrorEvent) eventsOfType(RUN_ERROR).getFirst().payload();
+        assertThat(runError.message()).isEqualTo("An unexpected error occurred. Please try again.");
+        assertThat(runError.code()).isEqualTo(RedisStreamingChatService.INTERNAL_CODE);
     }
 
     /**
-     * Case 6 — an interrupted turn is a graceful stop, not a failure the user should be told about.
+     * An interrupted turn is a graceful stop, not a failure the user should be told about.
      */
     @Test
     void interruptedTurnPublishesNothingAndDoesNotNotify() {
@@ -309,21 +380,21 @@ class RedisStreamingChatServiceTest {
         runTurn();
 
         assertThat(published).isEmpty();
-        verify(notificationService, never()).emitFailure(any(), anyString());
+        verify(notificationService, never()).recordFailure(any(), anyString());
     }
 
     /**
-     * Case 7 — cleanup must not race the terminal frame. Closing the elicitation channel before DONE has
-     * been written is what the fire-and-forget publish used to allow.
+     * Cleanup must not race the terminal frame. Closing the elicitation channel before the run has
+     * finished is what the fire-and-forget publish used to allow.
      */
     @Test
-    void cleanupRunsAfterTheDoneFrameIsPublished() {
+    void cleanupRunsAfterTheTerminalFrameIsPublished() {
         modelStreams("Hello");
 
         runTurn();
 
         InOrder order = inOrder(redisStreamService, elicitationService, activeStreamTracker);
-        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(DONE), any());
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_FINISHED), any());
         order.verify(elicitationService).closeChat(CHAT_ID);
         order.verify(activeStreamTracker).remove(USER_ID, CHAT_ID);
     }
@@ -343,40 +414,87 @@ class RedisStreamingChatServiceTest {
         modelStreams("Hello");
 
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, null, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
                 .verifyComplete();
 
         verify(activeStreamTracker, never()).put(any(), any());
         verify(activeStreamTracker, never()).remove(any(), any());
     }
 
-    /**
-     * Case 8 — the elicitation side channel forwards prompts, and does not republish the cancel signal as a
-     * generic event.
-     */
     @Test
-    void forwardsElicitationEventsButNotTheCancelSignal() {
-        ServerSentEvent<?> elicitation = ServerSentEvent.builder("ask").event("elicitation").build();
+    void forwardsAnElicitationAsAToolCall() {
+        UUID elicitationId = UUID.randomUUID();
+        ServerSentEvent<?> elicitation = ServerSentEvent
+                .builder("{\"message\":\"Sure?\",\"elicitationId\":\"%s\"}".formatted(elicitationId))
+                .event("elicitation")
+                .build();
 
-        when(elicitationService.registerChat(CHAT_ID))
-                .thenReturn(Flux.just(elicitation, cancelEvent()));
-
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.just("Hello"));
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(elicitation));
+        modelStreams("Hello");
 
         runTurn();
 
-        assertThat(eventsOfType("elicitation")).hasSize(1);
-        assertThat(eventsOfType(CANCEL_ACTION)).isEmpty();
+        assertThat(publishedTypes()).containsSubsequence("TOOL_CALL_START", "TOOL_CALL_ARGS", "TOOL_CALL_END");
+
+        ToolCallStartEvent start = (ToolCallStartEvent) eventsOfType("TOOL_CALL_START").getFirst().payload();
+        assertThat(start.toolCallId()).isEqualTo(elicitationId.toString());
+    }
+
+    @Test
+    void forwardsProgressAsACustomEvent() {
+        ServerSentEvent<?> progress = ServerSentEvent.builder("{\"message\":\"Searching\"}").event("progress").build();
+
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(progress));
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(eventsOfType(CUSTOM))
+                .extracting(event -> ((CustomEvent) event.payload()).name())
+                .containsExactly("progress");
     }
 
     /**
-     * A non-{@code done} tail means a turn is still writing to this stream, so there is a live
-     * subscriber on the elicitation channel for the signal to reach.
+     * {@code RUN_STARTED} is the first frame of a turn and carries the persisted user message, which
+     * is how a client that sent a bubble learns its real id.
+     */
+    @Test
+    void updatePublishesRunStartedWithThePersistedUserMessage() {
+        UUID userMessageId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
+
+        StepVerifier.create(redisStreamingChatService
+                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                .verifyComplete();
+
+        assertThat(published.getFirst().type()).isEqualTo(RUN_STARTED);
+
+        RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
+        assertThat(runStarted.threadId()).isEqualTo(CHAT_ID.toString());
+        assertThat(runStarted.runId()).isNotBlank();
+
+        RunAgentInput input = (RunAgentInput) runStarted.input();
+        assertThat(input.messages()).singleElement().satisfies(message -> {
+            assertThat(message.id()).isEqualTo(userMessageId.toString());
+            assertThat(message.role()).isEqualTo(Role.USER);
+            assertThat(message.content()).isEqualTo("hello");
+        });
+    }
+
+    /**
+     * A non-terminal tail means a turn is still writing to this stream, so there is a live subscriber
+     * on the elicitation channel for the signal to reach.
      */
     @Test
     void cancelSignalsWhenATurnIsInFlight() {
         when(redisStreamService.tail(CHAT_ID, USER_ID))
-                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", CHUNK)));
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", TEXT_MESSAGE_CONTENT)));
         when(elicitationService.cancelChat(CHAT_ID)).thenReturn(Mono.empty());
 
         StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
@@ -389,7 +507,19 @@ class RedisStreamingChatServiceTest {
     @Test
     void cancelIsANoOpOnceTheTurnHasFinished() {
         when(redisStreamService.tail(CHAT_ID, USER_ID))
-                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", DONE)));
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", RUN_FINISHED)));
+
+        StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
+                .expectNext(RedisStreamingChatService.CancelOutcome.NOTHING_TO_CANCEL)
+                .verifyComplete();
+
+        verify(elicitationService, never()).cancelChat(any());
+    }
+
+    @Test
+    void cancelIsANoOpOnceTheTurnHasFailed() {
+        when(redisStreamService.tail(CHAT_ID, USER_ID))
+                .thenReturn(Mono.just(new RedisStreamService.StreamTail("5-0", RUN_ERROR)));
 
         StepVerifier.create(redisStreamingChatService.cancel(CHAT_ID, USER_ID))
                 .expectNext(RedisStreamingChatService.CancelOutcome.NOTHING_TO_CANCEL)

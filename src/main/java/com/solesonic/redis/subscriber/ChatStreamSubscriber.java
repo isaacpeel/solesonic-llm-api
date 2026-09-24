@@ -1,5 +1,6 @@
 package com.solesonic.redis.subscriber;
 
+import com.solesonic.redis.model.TerminalEvents;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,7 +19,6 @@ import java.util.concurrent.atomic.AtomicLong;
 @Service
 public class ChatStreamSubscriber {
     private static final Logger log = LoggerFactory.getLogger(ChatStreamSubscriber.class);
-    private static final String DONE_EVENT_TYPE = "done";
     private static final String KEEPALIVE_COMMENT = "keepalive";
 
     private final ReactiveStringRedisTemplate redisTemplate;
@@ -75,10 +75,10 @@ public class ChatStreamSubscriber {
                 .doOnNext(_ -> lastFrameNanos.set(System.nanoTime()))
                 .map(_ -> ServerSentEvent.builder().comment(KEEPALIVE_COMMENT).build());
 
-        //takeUntil on the merged flux, so the done frame both reaches the client and cancels the
+        //takeUntil on the merged flux, so the terminal frame both reaches the client and cancels the
         //interval. Left on the events flux alone, a finished turn would hold the response open.
         return tracked.mergeWith(keepalives)
-                .takeUntil(serverSentEvent -> DONE_EVENT_TYPE.equalsIgnoreCase(serverSentEvent.event()));
+                .takeUntil(serverSentEvent -> TerminalEvents.isTerminal(serverSentEvent.event()));
     }
 
     private StreamOffset<String> resolveOffset(String streamKey, String lastEventId) {
