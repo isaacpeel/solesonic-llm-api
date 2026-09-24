@@ -1,0 +1,24 @@
+### Generate an image, streaming progress
+POST {{api-uri}}/izzybot/images
+Accept: text/event-stream
+Content-Type: application/json
+
+{
+  "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic"
+}
+
+### Generate an image, one JSON response (blocks 5-15s)
+POST {{api-uri}}}/izzybot/images/sync
+Content-Type: application/json
+
+{
+  "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic"
+}
+
+### Download a generated image
+GET {{api-uri}}/izzybot/images/{{imageId}}
+
+### Read a generated image's provenance without the bytes
+GET {{api-uri}}/izzybot/images/{{imageId}}/metadata
+
+###

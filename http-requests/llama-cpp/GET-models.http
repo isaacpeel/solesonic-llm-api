@@ -1,0 +1,11 @@
+###
+GET {{lite-llm-uri}}/v1/models
+x-litellm-api-key: sk-eqc8k3v-6OItiGPhKycVHg
+
+###
+GET {{llama-cpp-uri}}v1/models
+
+###
+GET {{llama-cpp-uri}}/v1/models
+
+###

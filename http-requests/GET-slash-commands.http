@@ -1,0 +1,4 @@
+### GET slash commands
+GET {{api-uri}}/izzybot/slash/commands?command=nb
+
+###
