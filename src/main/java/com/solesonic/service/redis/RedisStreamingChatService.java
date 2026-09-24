@@ -11,6 +11,8 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.message.Role;
 import com.agui.community.core.message.UserMessage;
+import com.openai.errors.OpenAIIoException;
+import com.openai.errors.OpenAIServiceException;
 import com.solesonic.exception.ChatException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
@@ -34,6 +36,7 @@ import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.util.ResponseSanitizer;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -52,6 +55,8 @@ import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -79,6 +84,8 @@ public class RedisStreamingChatService {
     private static final String UPSTREAM_UNAVAILABLE_MESSAGE = "An upstream service is temporarily unavailable. Please try again.";
     private static final String RATE_LIMITED_MESSAGE = "An upstream service is rate limiting requests. Please try again shortly.";
     private static final String TOOL_FAILURE_MESSAGE = "A tool call failed while answering. Please try again.";
+    private static final String CONTEXT_LENGTH_EXCEEDED_MESSAGE = "This conversation is too long for the model to "
+            + "process. Start a new conversation, or remove an attachment or some earlier messages, and try again.";
     private static final String INTERNAL_MESSAGE = "An unexpected error occurred. Please try again.";
 
     public enum CancelOutcome {
@@ -358,7 +365,7 @@ public class RedisStreamingChatService {
     }
 
     private Mono<Void> handleStreamError(UUID chatId, UUID userId, Throwable error) {
-        Throwable unwrapped = Exceptions.unwrap(error);
+        Throwable unwrapped = unwrapAsync(error);
 
         if (Exceptions.isCancel(unwrapped) || unwrapped instanceof InterruptedException) {
             log.info("Redis stream cancelled gracefully for chat id {}", chatId);
@@ -379,6 +386,27 @@ public class RedisStreamingChatService {
                 .flatMap(failure -> publish(chatId, userId, new CustomEvent(FAILURE, failure, null, null)))
                 .then(Mono.defer(() -> publish(chatId, userId, runError)))
                 .then();
+    }
+
+    /**
+     * Peels off the JDK's own async-composition wrappers ({@link CompletionException},
+     * {@link ExecutionException}) around a turn failure, in addition to Reactor's
+     * {@link Exceptions#unwrap(Throwable)}. The OpenAI Java SDK bridges its
+     * {@code CompletableFuture}-based async HTTP client into the reactive chain
+     * ({@code OpenAiChatModel.stream}), and a stage failing inside that chain wraps the real
+     * cause ({@code com.openai.errors.BadRequestException}, etc.) in a {@code CompletionException}
+     * that Reactor never sees and therefore never unwraps — left alone, every such failure falls
+     * through {@link #classify(Throwable)} to {@link TurnErrorCode#INTERNAL}.
+     */
+    private static Throwable unwrapAsync(Throwable throwable) {
+        Throwable current = Exceptions.unwrap(throwable);
+
+        while ((current instanceof CompletionException || current instanceof ExecutionException)
+                && current.getCause() != null) {
+            current = Exceptions.unwrap(current.getCause());
+        }
+
+        return current;
     }
 
     /**
@@ -422,6 +450,14 @@ public class RedisStreamingChatService {
             return TurnErrorCode.TOOL_FAILURE;
         }
 
+        if (unwrapped instanceof OpenAIIoException) {
+            return TurnErrorCode.UPSTREAM_UNAVAILABLE;
+        }
+
+        if (unwrapped instanceof OpenAIServiceException openAiServiceException) {
+            return classifyOpenAiFailure(openAiServiceException);
+        }
+
         return TurnErrorCode.INTERNAL;
     }
 
@@ -435,6 +471,43 @@ public class RedisStreamingChatService {
         }
 
         return TurnErrorCode.TOOL_FAILURE;
+    }
+
+    /**
+     * Classifies a failure the model server (or the LiteLLM proxy in front of it) returned for the
+     * chat completion request itself — not a tool call, so {@link #classifyStatus(HttpStatusCode)}'s
+     * {@link TurnErrorCode#TOOL_FAILURE} default does not apply here; an otherwise-unclassified 4xx
+     * is {@link TurnErrorCode#VALIDATION} instead, since it is the request that was rejected, before
+     * generation started.
+     */
+    private static TurnErrorCode classifyOpenAiFailure(OpenAIServiceException openAiServiceException) {
+        if (isContextLengthExceeded(openAiServiceException)) {
+            return TurnErrorCode.CONTEXT_LENGTH_EXCEEDED;
+        }
+
+        if (openAiServiceException.statusCode() == 429) {
+            return TurnErrorCode.RATE_LIMITED;
+        }
+
+        if (openAiServiceException.statusCode() >= 500) {
+            return TurnErrorCode.UPSTREAM_UNAVAILABLE;
+        }
+
+        return TurnErrorCode.VALIDATION;
+    }
+
+    /**
+     * LiteLLM reports a context-window overflow as a 400 whose message embeds
+     * {@code litellm.ContextWindowExceededError} — there is no dedicated status code or
+     * {@code OpenAIServiceException} subtype for it, so the message is the only signal available.
+     */
+    private static boolean isContextLengthExceeded(OpenAIServiceException openAiServiceException) {
+        String message = openAiServiceException.getMessage();
+
+        return message != null
+                && (Strings.CI.contains(message, "ContextWindowExceededError")
+                        || Strings.CI.contains(message, "context_length_exceeded")
+                        || Strings.CI.contains(message, "maximum context length"));
     }
 
     /**
@@ -453,6 +526,7 @@ public class RedisStreamingChatService {
             case UPSTREAM_UNAVAILABLE -> UPSTREAM_UNAVAILABLE_MESSAGE;
             case RATE_LIMITED -> RATE_LIMITED_MESSAGE;
             case TOOL_FAILURE -> TOOL_FAILURE_MESSAGE;
+            case CONTEXT_LENGTH_EXCEEDED -> CONTEXT_LENGTH_EXCEEDED_MESSAGE;
             case RECONNECT_REQUIRED, VALIDATION, STREAM_UNAVAILABLE, INTERNAL -> INTERNAL_MESSAGE;
         };
     }

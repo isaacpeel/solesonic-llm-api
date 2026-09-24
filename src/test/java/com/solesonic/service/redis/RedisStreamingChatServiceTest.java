@@ -10,6 +10,12 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.agui.community.core.message.Role;
+import com.openai.core.http.Headers;
+import com.openai.errors.BadRequestException;
+import com.openai.errors.InternalServerException;
+import com.openai.errors.OpenAIIoException;
+import com.openai.errors.RateLimitException;
+import com.openai.models.ErrorObject;
 import com.solesonic.config.JacksonConfig;
 import com.solesonic.exception.ChatException;
 import com.solesonic.exception.google.GoogleApiException;
@@ -54,6 +60,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -461,6 +468,64 @@ class RedisStreamingChatServiceTest {
 
         assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
         assertThat(publishedRunError().message()).doesNotContain("/does-not-exist");
+    }
+
+    /**
+     * Pins the production failure this method exists to fix: the OpenAI Java SDK bridges its async
+     * HTTP client into the reactive chain via a {@code CompletableFuture}, and a failed stage there
+     * wraps the real cause in a {@link CompletionException} that Reactor's own unwrap never sees.
+     * Left alone, this fell through to {@link TurnErrorCode#INTERNAL} with no actionable message.
+     */
+    @Test
+    void contextWindowExceededWrappedInACompletionExceptionIsClassifiedWithAnActionableMessage() {
+        errorTurn(new CompletionException(litellmBadRequest(
+                "litellm.ContextWindowExceededError: litellm.BadRequestError: ContextWindowExceededError: "
+                        + "OpenAIException - request (152057 tokens) exceeds the available context size "
+                        + "(87552 tokens), try increasing it")));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.CONTEXT_LENGTH_EXCEEDED.wireValue());
+        assertThat(publishedRunError().message()).isEqualTo("This conversation is too long for the model to "
+                + "process. Start a new conversation, or remove an attachment or some earlier messages, "
+                + "and try again.");
+    }
+
+    @Test
+    void badRequestWithNoContextWindowSignalIsClassifiedValidation() {
+        errorTurn(litellmBadRequest("model=auto-model does not support tool calling"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.VALIDATION.wireValue());
+    }
+
+    @Test
+    void rateLimitFromTheModelServerIsClassifiedRateLimited() {
+        errorTurn(RateLimitException.builder().headers(Headers.builder().build()).build());
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.RATE_LIMITED.wireValue());
+    }
+
+    @Test
+    void serverErrorFromTheModelServerIsClassifiedUpstreamUnavailable() {
+        errorTurn(InternalServerException.builder().statusCode(503).headers(Headers.builder().build()).build());
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+    }
+
+    @Test
+    void ioFailureReachingTheModelServerIsClassifiedUpstreamUnavailable() {
+        errorTurn(new OpenAIIoException("Connection refused"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+    }
+
+    private static BadRequestException litellmBadRequest(String message) {
+        ErrorObject errorObject = ErrorObject.builder()
+                .code((String) null)
+                .message(message)
+                .param((String) null)
+                .type("invalid_request_error")
+                .build();
+
+        return BadRequestException.builder().headers(Headers.builder().build()).error(errorObject).build();
     }
 
     /**

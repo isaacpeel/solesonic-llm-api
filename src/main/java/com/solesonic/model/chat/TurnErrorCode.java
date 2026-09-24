@@ -45,6 +45,13 @@ public enum TurnErrorCode {
     VALIDATION("VALIDATION"),
 
     /**
+     * The prompt — conversation history, retrieved documents, and attachments combined — exceeds
+     * the model's context window. Retrying the identical request will fail again; the user has to
+     * shorten the conversation (start a new chat, or drop an attachment) before retrying.
+     */
+    CONTEXT_LENGTH_EXCEEDED("CONTEXT_LENGTH_EXCEEDED"),
+
+    /**
      * The durable Redis stream a client's response is built from failed to read. The turn itself may
      * still be running; only the connection broke.
      */

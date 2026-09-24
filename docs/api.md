@@ -177,6 +177,7 @@ keepalives and mid-turn image frames working across an elicitation. It is not an
 | `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
 | `RECONNECT_REQUIRED` | An integration's grant is gone or was never given | Nothing a retry fixes — the user must reconnect that integration |
 | `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
+| `CONTEXT_LENGTH_EXCEEDED` | The conversation — history, retrieved documents, and attachments combined — exceeds the model's context window | Nothing to retry as-is — start a new conversation, or remove an attachment or some earlier messages |
 | `STREAM_UNAVAILABLE` | The durable Redis stream this response is built from failed to read; the turn itself may still be running | Reconnect via `GET .../stream` to resume — see [Resume a Stream](#resume-a-stream) |
 | `internal` | Anything else | Retry; if it keeps failing, it is a server bug |
 

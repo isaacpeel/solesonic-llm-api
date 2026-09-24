@@ -1,5 +1,5 @@
 ###
-GET {{lite-llm-uri}}v1/models
+GET {{lite-llm-uri}}/v1/models
 Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
