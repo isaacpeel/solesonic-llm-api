@@ -1,14 +1,11 @@
 package com.solesonic.exception.handler;
 
 import com.solesonic.exception.atlassian.AtlassianTokenException;
-import com.solesonic.exception.atlassian.DuplicateJiraCreationException;
 import com.solesonic.exception.atlassian.JiraException;
 import com.solesonic.exception.atlassian.JiraExceptionResponse;
 import com.solesonic.model.SolesonicChatResponse;
-import com.solesonic.model.atlassian.jira.issue.JiraIssue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -27,40 +24,27 @@ import static org.springframework.http.HttpStatus.TOO_MANY_REQUESTS;
 public class AtlassianExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(AtlassianExceptionHandler.class);
 
+    private static final String JIRA_ERROR_MESSAGE = "Jira API error. Please try again.";
+
     private final ExceptionService exceptionService;
-
-    @Value("${solesonic.llm.jira.url.template}")
-    private String jiraUrlTemplate;
-
-    private static final String DUPLICATE_JIRA_MESSAGE_TEMPLATE = """
-            I've gone into an error state but still managed managed to create your Jira issue.
-            Here is a link: {issueLink}
-            """;
-
-    public static final String ISSUE_ID = "{issueId}";
-    public static final String ISSUE_LINK = "{issueLink}";
 
     public AtlassianExceptionHandler(ExceptionService exceptionService) {
         this.exceptionService = exceptionService;
     }
 
+    /**
+     * Jira's own response body is logged, never returned — it can carry internal identifiers and is
+     * written for developers, not a caller.
+     */
     @ExceptionHandler(JiraException.class)
     public ResponseEntity<JiraExceptionResponse> handleJiraException(JiraException jiraException) {
         ClientResponse clientResponse = jiraException.getResponse();
         URI requestUri = clientResponse.request().getURI();
 
-        JiraExceptionResponse jiraExceptionResponse = new JiraExceptionResponse(requestUri.toASCIIString(), jiraException.getMessage());
+        log.error("Jira API error calling {}: {}", requestUri, jiraException.getMessage());
+
+        JiraExceptionResponse jiraExceptionResponse = new JiraExceptionResponse(requestUri.toASCIIString(), JIRA_ERROR_MESSAGE);
         return new ResponseEntity<>(jiraExceptionResponse, HttpStatus.INTERNAL_SERVER_ERROR);
-    }
-
-    @ExceptionHandler(DuplicateJiraCreationException.class)
-    public ResponseEntity<SolesonicChatResponse> handleDuplicateJiraException(DuplicateJiraCreationException duplicateJiraCreationException) {
-        JiraIssue jiraIssue = duplicateJiraCreationException.getJiraIssue();
-        String jiraUri = jiraUrlTemplate.replace(ISSUE_ID, jiraIssue.key());
-
-        String responseMessage = DUPLICATE_JIRA_MESSAGE_TEMPLATE.replace(ISSUE_LINK, jiraUri);
-
-        return exceptionService.buildResponse(responseMessage);
     }
 
     @ExceptionHandler(WebClientResponseException.class)

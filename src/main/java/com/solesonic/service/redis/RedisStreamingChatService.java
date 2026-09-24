@@ -11,10 +11,16 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.message.Role;
 import com.agui.community.core.message.UserMessage;
+import com.solesonic.exception.ChatException;
+import com.solesonic.exception.google.GoogleApiException;
+import com.solesonic.exception.image.ImageGenerationException;
+import com.solesonic.exception.rag.DocumentReadException;
+import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.GeneratedImageSummary;
@@ -31,9 +37,12 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -63,10 +72,14 @@ import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 public class RedisStreamingChatService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamingChatService.class);
     public static final String CHAT_CANCELED = "Chat canceled.";
-    public static final String TIMEOUT_CODE = "timeout";
-    public static final String INTERNAL_CODE = "internal";
     public static final String FAILURE = "failure";
     private static final String MESSAGE = "message";
+
+    private static final String TIMEOUT_MESSAGE = "The request timed out. Please try again.";
+    private static final String UPSTREAM_UNAVAILABLE_MESSAGE = "An upstream service is temporarily unavailable. Please try again.";
+    private static final String RATE_LIMITED_MESSAGE = "An upstream service is rate limiting requests. Please try again shortly.";
+    private static final String TOOL_FAILURE_MESSAGE = "A tool call failed while answering. Please try again.";
+    private static final String INTERNAL_MESSAGE = "An unexpected error occurred. Please try again.";
 
     public enum CancelOutcome {
         CANCEL_REQUESTED,
@@ -354,21 +367,94 @@ public class RedisStreamingChatService {
 
         log.error("Redis stream error for chat id {}", chatId, error);
 
-        boolean timedOut = unwrapped instanceof TimeoutException;
+        TurnErrorCode code = classify(unwrapped);
+        String userMessage = userMessage(unwrapped, code);
 
-        String userMessage = timedOut
-                ? "The request timed out. Please try again."
-                : "An unexpected error occurred. Please try again.";
-
-        RunErrorEvent runError = new RunErrorEvent(userMessage, timedOut ? TIMEOUT_CODE : INTERNAL_CODE, null, null);
+        RunErrorEvent runError = new RunErrorEvent(userMessage, code.wireValue(), null, null);
 
         //Written straight to the stream, ahead of RUN_ERROR, rather than through the pub/sub side
         //channel: that path is a hop longer, and a frame landing after the terminal one is never read.
-        return Mono.fromCallable(() -> notificationService.recordFailure(chatId, userMessage))
+        return Mono.fromCallable(() -> notificationService.recordFailure(chatId, userMessage, code))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(failure -> publish(chatId, userId, new CustomEvent(FAILURE, failure, null, null)))
                 .then(Mono.defer(() -> publish(chatId, userId, runError)))
                 .then();
+    }
+
+    /**
+     * Sorts an unwrapped turn failure onto the closed set of codes the client renders copy for.
+     * <p>
+     * Most branches mirror how the same exception type is already classified where it is thrown
+     * from a synchronous REST endpoint ({@code GoogleExceptionHandler}, the Jira/Xero handlers) —
+     * the streaming path just has nowhere to route to but this one method, since
+     * {@code @ControllerAdvice} never sees an exception a fire-and-forget {@code .subscribe()}'d
+     * turn throws. {@link XeroApiException} is the one deliberate exception: its REST handler
+     * always answers {@code UPSTREAM_UNAVAILABLE}, but here a non-429 defaults to
+     * {@link TurnErrorCode#TOOL_FAILURE} instead — {@code docs/api.md} gives a client identical
+     * guidance ("retry") for both, and {@code TOOL_FAILURE}'s own contract already names Xero as
+     * an example.
+     */
+    private static TurnErrorCode classify(Throwable unwrapped) {
+        if (unwrapped instanceof TimeoutException) {
+            return TurnErrorCode.TIMEOUT;
+        }
+
+        if (unwrapped instanceof WebClientResponseException webClientResponseException) {
+            return classifyStatus(webClientResponseException.getStatusCode());
+        }
+
+        if (unwrapped instanceof GoogleApiException) {
+            return TurnErrorCode.UPSTREAM_UNAVAILABLE;
+        }
+
+        if (unwrapped instanceof XeroApiException xeroApiException) {
+            ClientResponse response = xeroApiException.getResponse();
+
+            if (response != null && classifyStatus(response.statusCode()) == TurnErrorCode.RATE_LIMITED) {
+                return TurnErrorCode.RATE_LIMITED;
+            }
+
+            return TurnErrorCode.TOOL_FAILURE;
+        }
+
+        if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException
+                || unwrapped instanceof ChatException) {
+            return TurnErrorCode.TOOL_FAILURE;
+        }
+
+        return TurnErrorCode.INTERNAL;
+    }
+
+    private static TurnErrorCode classifyStatus(HttpStatusCode statusCode) {
+        if (statusCode.value() == 429) {
+            return TurnErrorCode.RATE_LIMITED;
+        }
+
+        if (statusCode.is5xxServerError()) {
+            return TurnErrorCode.UPSTREAM_UNAVAILABLE;
+        }
+
+        return TurnErrorCode.TOOL_FAILURE;
+    }
+
+    /**
+     * The text a client sees. Only {@link ImageGenerationException} and {@link DocumentReadException}
+     * carry a message already vetted as user-safe at every current throw site — everything else gets
+     * a generic per-code sentence, because {@link ChatException}, {@link GoogleApiException} and
+     * {@link XeroApiException} can and do wrap an upstream's own wording.
+     */
+    private static String userMessage(Throwable unwrapped, TurnErrorCode code) {
+        if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException) {
+            return unwrapped.getMessage();
+        }
+
+        return switch (code) {
+            case TIMEOUT -> TIMEOUT_MESSAGE;
+            case UPSTREAM_UNAVAILABLE -> UPSTREAM_UNAVAILABLE_MESSAGE;
+            case RATE_LIMITED -> RATE_LIMITED_MESSAGE;
+            case TOOL_FAILURE -> TOOL_FAILURE_MESSAGE;
+            case RECONNECT_REQUIRED, VALIDATION, STREAM_UNAVAILABLE, INTERNAL -> INTERNAL_MESSAGE;
+        };
     }
 
     private void forwardElicitationEvents(UUID chatId, UUID userId, Flux<ServerSentEvent<?>> elicitationEvents) {

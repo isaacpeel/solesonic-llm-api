@@ -1,5 +1,8 @@
 package com.solesonic.redis.service;
 
+import com.agui.community.core.event.EventType;
+import com.agui.community.core.event.RunErrorEvent;
+import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.redis.model.RedisChatEvent;
 import com.solesonic.redis.model.StreamEventId;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
@@ -24,6 +27,8 @@ import static org.springframework.data.redis.connection.Limit.limit;
 public class RedisStreamService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamService.class);
     private static final String STREAM_KEY_TEMPLATE = "chat:%s:%s";
+    private static final String STREAM_UNAVAILABLE_MESSAGE =
+            "The connection to the chat stream was lost. Reconnect to resume.";
 
     private final ChatStreamPublisher chatStreamPublisher;
     private final ChatStreamSubscriber chatStreamSubscriber;
@@ -118,7 +123,25 @@ public class RedisStreamService {
 
         log.info("Subscribing to Redis stream {} for chat {}", streamKey, chatId);
 
-        return chatStreamSubscriber.subscribe(streamKey, lastEventId);
+        //The turn itself may still be running — only this read broke. Without this, a Redis read
+        //failure propagates as an error straight through the SSE response, and the client's
+        //connection just dies with nothing to act on.
+        return chatStreamSubscriber.subscribe(streamKey, lastEventId)
+                .onErrorResume(error -> {
+                    log.error("Redis stream read failed for chat {}", chatId, error);
+
+                    return Flux.just(streamUnavailableEvent());
+                });
+    }
+
+    private ServerSentEvent<?> streamUnavailableEvent() {
+        RunErrorEvent runError = new RunErrorEvent(STREAM_UNAVAILABLE_MESSAGE,
+                TurnErrorCode.STREAM_UNAVAILABLE.wireValue(), null, null);
+
+        return ServerSentEvent.builder()
+                .event(EventType.RUN_ERROR.value())
+                .data(jsonMapper.writeValueAsString(runError))
+                .build();
     }
 
     public String buildStreamKey(UUID chatId, UUID userId) {

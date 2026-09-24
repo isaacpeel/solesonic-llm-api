@@ -147,10 +147,10 @@ A turn is one AG-UI run, with `threadId` = the chat id.
 | `CUSTOM` `name: "progress"` | A long-running step started — an MCP tool, or the vision pass on one attached image |
 | `CUSTOM` `name: "attachment"` | Terminal outcome for one attached image or document — see below |
 | `CUSTOM` `name: "image"` | An image generated during this turn, by reference — see below |
-| `CUSTOM` `name: "failure"` | A failure notification — the same text `RUN_ERROR` carries |
+| `CUSTOM` `name: "failure"` | A failure notification — the same `message`/`code` `RUN_ERROR` carries |
 | `CUSTOM` `name: "cancel"` | The turn was cancelled; `RUN_FINISHED` follows |
 | `RUN_FINISHED` | Terminal. `result` is the structured chat response — see below |
-| `RUN_ERROR` | Terminal. `message` is user-facing; `code` is `timeout` or `internal`. No `RUN_FINISHED` follows |
+| `RUN_ERROR` | Terminal. `message` is user-facing; `code` is one of a closed set — see below. No `RUN_FINISHED` follows |
 
 A turn ends with exactly one of `RUN_FINISHED` or `RUN_ERROR`. `CUSTOM` values are the payloads
 documented below, unchanged — only the envelope moved.
@@ -164,6 +164,24 @@ This API does not do that. An elicitation is streamed as a tool call inside the 
 the MCP tool call that asked stays parked, and the answer is a separate `POST` that resumes it in
 place — the SSE connection stays open and no new run starts. That is what keeps resume-by-cursor,
 keepalives and mid-turn image frames working across an elicitation. It is not an oversight.
+
+### RUN_ERROR / failure Codes
+
+`code` on both `RUN_ERROR` and the `failure` `CUSTOM` event is one of:
+
+| Code | Meaning | What a client should do |
+|------|---------|--------------------------|
+| `timeout` | Generation did not finish inside the turn's deadline | Retry |
+| `UPSTREAM_UNAVAILABLE` | The model server, an MCP server, or an integration it called failed in a way that may succeed on a retry | Retry |
+| `RATE_LIMITED` | An upstream is throttling | Back off, then retry |
+| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
+| `RECONNECT_REQUIRED` | An integration's grant is gone or was never given | Nothing a retry fixes — the user must reconnect that integration |
+| `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
+| `STREAM_UNAVAILABLE` | The durable Redis stream this response is built from failed to read; the turn itself may still be running | Reconnect via `GET .../stream` to resume — see [Resume a Stream](#resume-a-stream) |
+| `internal` | Anything else | Retry; if it keeps failing, it is a server bug |
+
+`timeout` and `internal` are lowercase for backward compatibility — they predate this table. Every
+other code is upper snake case.
 
 ### image Event Payload
 

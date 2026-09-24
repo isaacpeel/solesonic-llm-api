@@ -11,11 +11,18 @@ import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.agui.community.core.message.Role;
 import com.solesonic.config.JacksonConfig;
+import com.solesonic.exception.ChatException;
+import com.solesonic.exception.google.GoogleApiException;
+import com.solesonic.exception.image.ImageGenerationException;
+import com.solesonic.exception.rag.DocumentReadException;
+import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.ImageGenerationErrorCode;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
@@ -32,8 +39,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -54,6 +65,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -139,6 +151,24 @@ class RedisStreamingChatServiceTest {
         when(generatedImageService.forChatSince(any(), any())).thenReturn(List.of());
         when(chatMessageService.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.never());
+
+        when(notificationService.recordFailure(any(), anyString(), any())).thenAnswer(invocation ->
+                Map.of("message", invocation.getArgument(1),
+                        "code", ((TurnErrorCode) invocation.getArgument(2)).wireValue()));
+    }
+
+    private void errorTurn(Throwable throwable) {
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.error(throwable));
+
+        runTurn();
+    }
+
+    private RunErrorEvent publishedRunError() {
+        return (RunErrorEvent) eventsOfType(RUN_ERROR).getFirst().payload();
+    }
+
+    private static WebClientResponseException webClientResponseException(int status) {
+        return WebClientResponseException.create(status, "status " + status, HttpHeaders.EMPTY, new byte[0], null);
     }
 
     private void runTurn() {
@@ -339,34 +369,98 @@ class RedisStreamingChatServiceTest {
      */
     @Test
     void timeoutErrorPublishesTheFailureThenRunError() {
-        Map<String, Object> failure = Map.of("message", "The request timed out. Please try again.");
-        when(notificationService.recordFailure(CHAT_ID, "The request timed out. Please try again.")).thenReturn(failure);
-        when(promptService.stream(any(), any(), any(), any()))
-                .thenReturn(Flux.error(new TimeoutException("too slow")));
-
-        runTurn();
+        errorTurn(new TimeoutException("too slow"));
 
         assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
 
         CustomEvent failureEvent = (CustomEvent) eventsOfType(CUSTOM).getFirst().payload();
         assertThat(failureEvent.name()).isEqualTo(RedisStreamingChatService.FAILURE);
-        assertThat(failureEvent.value()).isEqualTo(failure);
+        assertThat(failureEvent.value()).isEqualTo(Map.of(
+                "message", "The request timed out. Please try again.",
+                "code", TurnErrorCode.TIMEOUT.wireValue()));
 
-        RunErrorEvent runError = (RunErrorEvent) eventsOfType(RUN_ERROR).getFirst().payload();
-        assertThat(runError.message()).isEqualTo("The request timed out. Please try again.");
-        assertThat(runError.code()).isEqualTo(RedisStreamingChatService.TIMEOUT_CODE);
+        assertThat(publishedRunError().message()).isEqualTo("The request timed out. Please try again.");
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TIMEOUT.wireValue());
     }
 
     @Test
     void unexpectedErrorPublishesTheGenericMessage() {
-        when(promptService.stream(any(), any(), any(), any()))
-                .thenReturn(Flux.error(new IllegalStateException("boom")));
+        errorTurn(new IllegalStateException("boom"));
 
-        runTurn();
+        assertThat(publishedRunError().message()).isEqualTo("An unexpected error occurred. Please try again.");
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.INTERNAL.wireValue());
+    }
 
-        RunErrorEvent runError = (RunErrorEvent) eventsOfType(RUN_ERROR).getFirst().payload();
-        assertThat(runError.message()).isEqualTo("An unexpected error occurred. Please try again.");
-        assertThat(runError.code()).isEqualTo(RedisStreamingChatService.INTERNAL_CODE);
+    @Test
+    void serverErrorFromAToolCallIsClassifiedUpstreamUnavailable() {
+        errorTurn(webClientResponseException(503));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+    }
+
+    @Test
+    void tooManyRequestsFromAToolCallIsClassifiedRateLimited() {
+        errorTurn(webClientResponseException(429));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.RATE_LIMITED.wireValue());
+    }
+
+    @Test
+    void otherClientErrorFromAToolCallIsClassifiedToolFailure() {
+        errorTurn(webClientResponseException(400));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
+    }
+
+    @Test
+    void googleApiFailureIsClassifiedUpstreamUnavailableAndNeverLeaksTheRawBody() {
+        errorTurn(new GoogleApiException("Google's internal error body", null));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+        assertThat(publishedRunError().message()).doesNotContain("Google's internal error body");
+    }
+
+    @Test
+    void xeroRateLimitIsClassifiedRateLimited() {
+        ClientResponse response = mock(ClientResponse.class);
+        when(response.statusCode()).thenReturn(HttpStatus.TOO_MANY_REQUESTS);
+
+        errorTurn(new XeroApiException("Xero's internal error body", response));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.RATE_LIMITED.wireValue());
+        assertThat(publishedRunError().message()).doesNotContain("Xero's internal error body");
+    }
+
+    @Test
+    void xeroFailureWithNoResponseIsClassifiedToolFailure() {
+        errorTurn(new XeroApiException("Xero returned a bulk envelope with no invoice"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
+    }
+
+    @Test
+    void imageGenerationFailureKeepsItsOwnUserSafeMessage() {
+        errorTurn(new ImageGenerationException(ImageGenerationErrorCode.BACKEND_UNAVAILABLE,
+                "The image server is unavailable. Please try again."));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
+        assertThat(publishedRunError().message()).isEqualTo("The image server is unavailable. Please try again.");
+    }
+
+    @Test
+    void documentReadFailureKeepsItsOwnUserSafeMessage() {
+        errorTurn(new DocumentReadException("No readable text extracted from notes.pdf"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
+        assertThat(publishedRunError().message()).isEqualTo("No readable text extracted from notes.pdf");
+    }
+
+    @Test
+    void chatExceptionIsClassifiedToolFailureWithAGenericMessage() {
+        errorTurn(new ChatException("No commands found for commands: [/does-not-exist]"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
+        assertThat(publishedRunError().message()).doesNotContain("/does-not-exist");
     }
 
     /**
@@ -380,7 +474,7 @@ class RedisStreamingChatServiceTest {
         runTurn();
 
         assertThat(published).isEmpty();
-        verify(notificationService, never()).recordFailure(any(), anyString());
+        verify(notificationService, never()).recordFailure(any(), anyString(), any());
     }
 
     /**
