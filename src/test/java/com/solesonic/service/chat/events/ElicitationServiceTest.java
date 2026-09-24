@@ -156,7 +156,7 @@ class ElicitationServiceTest {
     }
 
     @Test
-    void emitStoresThePropertyNamesTheElicitationAskedFor() {
+    void emitStoresThePropertiesTheElicitationAskedFor() {
         UUID chatId = UUID.randomUUID();
         UUID elicitationId = UUID.randomUUID();
 
@@ -168,7 +168,9 @@ class ElicitationServiceTest {
         ArgumentCaptor<String> storedSchema = ArgumentCaptor.forClass(String.class);
         verify(valueOperations).set(eq(schemaKey(chatId, elicitationId)), storedSchema.capture(), any(Duration.class));
 
-        assertThat(jsonMapper.readValue(storedSchema.getValue(), String[].class)).containsExactly("assigneeAccountId");
+        Map<String, Object> storedProperties = jsonMapper.readValue(storedSchema.getValue(), new TypeReference<>() {
+        });
+        assertThat(storedProperties).containsOnlyKeys("assigneeAccountId");
     }
 
     @Test
@@ -190,7 +192,8 @@ class ElicitationServiceTest {
         UUID chatId = UUID.randomUUID();
         UUID elicitationId = UUID.randomUUID();
 
-        when(valueOperations.getAndDelete(schemaKey(chatId, elicitationId))).thenReturn(Mono.just("[\"assigneeAccountId\"]"));
+        when(valueOperations.getAndDelete(schemaKey(chatId, elicitationId)))
+                .thenReturn(Mono.just("{\"assigneeAccountId\":{\"type\":\"string\"}}"));
         when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
 
         StepVerifier.create(elicitationService.completeFromFrontend(actionResult(chatId, elicitationId,
@@ -202,6 +205,56 @@ class ElicitationServiceTest {
         verify(chatMessageService).updateElicitationResponse(eq(chatId), eq(elicitationId),
                 argThat(response -> "ACCEPT".equals(response.get("action"))
                         && Map.of("assigneeAccountId", "account-1").equals(response.get("content"))));
+    }
+
+    /**
+     * The bug this pins: after a page refresh, chat history only has the raw submitted value (an
+     * opaque account id) to show, because nothing resolved it against the schema's labels before
+     * persisting. {@code summary} is what lets history show "Isaac" instead of the id, or "Accept"
+     * as a last resort.
+     */
+    @Test
+    void acceptedAnswerRecordsAHumanReadableSummaryResolvedAgainstTheSchemasOneOfLabels() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        String schemaJson = "{\"assigneeAccountId\":{\"type\":\"string\",\"title\":\"Assignee\",\"oneOf\":["
+                + "{\"const\":\"70121:ad77bd3b-88c0-4373-ab9d-db11b7b9dae9\",\"title\":\"Isaac\"},"
+                + "{\"const\":\"712020:dcd2f546\",\"title\":\"Evan\"}]}}";
+
+        when(valueOperations.getAndDelete(schemaKey(chatId, elicitationId))).thenReturn(Mono.just(schemaJson));
+        when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        StepVerifier.create(elicitationService.completeFromFrontend(actionResult(chatId, elicitationId,
+                        McpSchema.ElicitResult.Action.ACCEPT,
+                        Map.of("assigneeAccountId", "70121:ad77bd3b-88c0-4373-ab9d-db11b7b9dae9", "chatId", "chat-1"))))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(chatMessageService).updateElicitationResponse(eq(chatId), eq(elicitationId),
+                argThat(response -> "Isaac".equals(response.get("summary"))));
+    }
+
+    /**
+     * A value that matches no listed option (free text, or a stale const) still has to show
+     * something in history rather than silently dropping the field.
+     */
+    @Test
+    void acceptedAnswerSummaryFallsBackToTheRawValueWhenNoLabelMatches() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        when(valueOperations.getAndDelete(schemaKey(chatId, elicitationId)))
+                .thenReturn(Mono.just("{\"note\":{\"type\":\"string\",\"title\":\"Note\"}}"));
+        when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        StepVerifier.create(elicitationService.completeFromFrontend(actionResult(chatId, elicitationId,
+                        McpSchema.ElicitResult.Action.ACCEPT, Map.of("note", "Ship it Friday"))))
+                .expectNext(true)
+                .verifyComplete();
+
+        verify(chatMessageService).updateElicitationResponse(eq(chatId), eq(elicitationId),
+                argThat(response -> "Ship it Friday".equals(response.get("summary"))));
     }
 
     @Test

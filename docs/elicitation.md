@@ -35,15 +35,19 @@ wakes the parked call in place.
 - **`ElicitationService`** (`service/chat/events/`):
   - `prepareElicitation` mints the id and adds it to `elicitation:pending:{chatId}`.
   - `emitElicitation` writes a `SYSTEM` chat message carrying the id (for history replay), stores
-    the requested schema's property names at `elicitation:schema:{chatId}:{elicitationId}`, and
-    publishes the request on the Redis pub/sub channel `elicitation:events:{chatId}`. The names are
-    stored before the request is published, so they are in place before any client can answer.
+    the requested schema's `properties` — the full per-field definitions, not just their names — at
+    `elicitation:schema:{chatId}:{elicitationId}`, and publishes the request on the Redis pub/sub
+    channel `elicitation:events:{chatId}`. The properties are stored before the request is
+    published, so they are in place before any client can answer.
   - `actionResult` reads the action, and the form values sent alongside it, out of the client's
     `ToolMessage`.
   - `completeFromFrontend` narrows the values to the stored property names (on `accept` only),
-    records `{action, content}` in history, stores it, and publishes the action on
-    `elicitation:result:{chatId}:{elicitationId}`. On `cancel` it also publishes the cancel signal
-    that stops the turn.
+    resolves each narrowed value against its property's `oneOf`/`enum` labels — falling back to the
+    raw value when nothing matches — into a `summary` string, records `{action, content, summary}`
+    in history, stores it, and publishes the action on `elicitation:result:{chatId}:{elicitationId}`.
+    On `cancel` it also publishes the cancel signal that stops the turn. `summary` is what lets chat
+    history show the label the user picked (e.g. "Isaac") instead of the raw value (an account id)
+    after a page refresh.
   - `awaitResultAsync` is what the provider is blocked on. It wakes on that result channel, or
     after the timeout, and resolves to the `ElicitResult` the provider returns to the MCP server.
 - **`RedisStreamingChatService`** subscribes to `elicitation:events:{chatId}` once per turn, and
@@ -91,8 +95,14 @@ Content-Type: application/json
 - **What the MCP tool receives** is a standard MCP `ElicitResult`: the action, and on `accept` a
   `content` holding **only** the keys the elicitation's `requestedSchema.properties` named. Anything
   else the client sends is dropped. On `decline`/`cancel`, and on timeout, `content` is absent. If the
-  stored property names have expired (they live `timeout-seconds + 60`), nothing is forwarded rather
-  than the raw payload. Nothing of this API's is put in the result's `_meta`.
+  stored property definitions have expired (they live `timeout-seconds + 60`), nothing is forwarded
+  rather than the raw payload. Nothing of this API's is put in the result's `_meta`.
+- **What chat history shows**: the `SYSTEM` message's `elicitationResponse` (returned as-is by
+  `GET /chats/{chatId}`) is `{action, content, summary}`. `summary` is a human-readable rendering of
+  `content` — each value resolved against its property's `oneOf`/`enum` labels, e.g. an
+  `assigneeAccountId` of `70121:629f...` becomes `"Isaac"` — and is only present on `accept` when at
+  least one value was forwarded. A client should prefer `summary` over `content` for display and fall
+  back to `action` only when `summary` is absent (decline, cancel, or an expired schema).
 
 | Status | Meaning |
 |--------|---------|

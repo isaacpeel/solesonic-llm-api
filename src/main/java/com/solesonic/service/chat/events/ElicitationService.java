@@ -22,6 +22,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,7 +42,13 @@ public class ElicitationService {
     public static final String CANCEL_ACTION = "cancel";
     private static final String ACTION = "action";
     private static final String CONTENT = "content";
+    private static final String SUMMARY = "summary";
     private static final String PROPERTIES = "properties";
+    private static final String ONE_OF = "oneOf";
+    private static final String CONST = "const";
+    private static final String TITLE = "title";
+    private static final String ENUM = "enum";
+    private static final String ENUM_NAMES = "enumNames";
     private static final String SCHEMA_KEY_PREFIX = "elicitation:schema:";
 
     private static final String CLOSE_EVENT = "__close__";
@@ -142,9 +149,9 @@ public class ElicitationService {
 
             String message = jsonMapper.writeValueAsString(Map.of("event", ELICITATION, "data", requestJson));
 
-            //The requested property names are stored before the question is published, so they are
+            //The requested properties are stored before the question is published, so they are
             //already in place by the time any client can answer it.
-            storeRequestedPropertyNames(chatId, elicitationId, request)
+            storeRequestedProperties(chatId, elicitationId, request)
                     .then(Mono.defer(() -> redisTemplate.convertAndSend(eventsChannelKey(chatId), message)))
                     .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
         } catch (IllegalArgumentException illegalArgumentException) {
@@ -171,10 +178,22 @@ public class ElicitationService {
         log.info("Response for chat id: {}", chatId);
         log.info("Response for elicitationId: {}", elicitationId);
 
-        return acceptedContent(elicitationActionResult)
+        return acceptedAnswer(elicitationActionResult)
                 .map(Optional::of)
                 .defaultIfEmpty(Optional.empty())
-                .flatMap(content -> storeAndSignal(chatId, elicitationId, action, content.orElse(null)));
+                .flatMap(answer -> storeAndSignal(chatId, elicitationId, action,
+                        answer.map(AcceptedAnswer::content).orElse(null),
+                        answer.map(AcceptedAnswer::summary).orElse(null)));
+    }
+
+    /**
+     * The narrowed content the MCP tool receives, paired with a human-readable rendering of the same
+     * values — resolved against the stored {@code requestedSchema} property definitions, not just
+     * their names, so an {@code enum}/{@code oneOf} const can be turned back into the label the user
+     * was shown (e.g. an account id back into "Isaac"). {@code summary} is what chat history displays;
+     * {@code content} is unchanged from what the tool receives.
+     */
+    private record AcceptedAnswer(Map<String, Object> content, String summary) {
     }
 
     /**
@@ -184,7 +203,7 @@ public class ElicitationService {
      * or a schema entry that has expired, since forwarding the raw payload then would hand the tool
      * whatever the client chose to send.
      */
-    private Mono<Map<String, Object>> acceptedContent(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
+    private Mono<AcceptedAnswer> acceptedAnswer(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
         if (elicitationActionResult.action() != ACCEPT || elicitationActionResult.content() == null) {
             return Mono.empty();
         }
@@ -193,17 +212,17 @@ public class ElicitationService {
         UUID elicitationId = elicitationActionResult.elicitationId();
 
         return redisTemplate.opsForValue().getAndDelete(schemaKey(chatId, elicitationId))
-                .flatMap(propertyNamesJson -> Mono.justOrEmpty(readPropertyNames(propertyNamesJson)))
-                .map(propertyNames -> {
+                .flatMap(propertiesJson -> Mono.justOrEmpty(readProperties(propertiesJson)))
+                .map(properties -> {
                     Map<String, Object> narrowed = new LinkedHashMap<>();
 
-                    for (String propertyName : propertyNames) {
+                    for (String propertyName : properties.keySet()) {
                         if (elicitationActionResult.content().containsKey(propertyName)) {
                             narrowed.put(propertyName, elicitationActionResult.content().get(propertyName));
                         }
                     }
 
-                    return narrowed;
+                    return new AcceptedAnswer(narrowed, summarize(properties, narrowed));
                 });
     }
 
@@ -211,9 +230,10 @@ public class ElicitationService {
      * An unreadable entry is treated as an expired one. Letting it error would skip the signal the
      * parked tool call is waiting on, leaving it to sit out the whole timeout.
      */
-    private Optional<String[]> readPropertyNames(String propertyNamesJson) {
+    private Optional<Map<String, Object>> readProperties(String propertiesJson) {
         try {
-            return Optional.of(jsonMapper.readValue(propertyNamesJson, String[].class));
+            return Optional.of(jsonMapper.readValue(propertiesJson, new TypeReference<LinkedHashMap<String, Object>>() {
+            }));
         } catch (JacksonException jacksonException) {
             log.warn("Unreadable stored elicitation schema: {}", jacksonException.getClass().getSimpleName());
 
@@ -221,13 +241,81 @@ public class ElicitationService {
         }
     }
 
+    /**
+     * Renders the narrowed answer the way the user picked it, not the value the tool receives: for
+     * each field, the matching {@code oneOf}/{@code enum} entry's label when the schema names one,
+     * the raw value otherwise. Multiple fields join with {@code ", "}; a single field is its label
+     * alone, which is what a one-question elicitation like an assignee picker resolves to.
+     */
+    private static String summarize(Map<String, Object> properties, Map<String, Object> content) {
+        if (content.isEmpty()) {
+            return null;
+        }
+
+        List<String> labels = new ArrayList<>();
+
+        for (Map.Entry<String, Object> entry : content.entrySet()) {
+            String label = label(properties.get(entry.getKey()), entry.getValue());
+
+            if (label != null) {
+                labels.add(label);
+            }
+        }
+
+        if (labels.isEmpty()) {
+            return null;
+        }
+
+        return String.join(", ", labels);
+    }
+
+    /**
+     * The display label for one field's submitted value, resolved against that field's own JSON
+     * Schema fragment: a {@code oneOf} list of {@code {const, title}} entries first, then a parallel
+     * {@code enum}/{@code enumNames} pair, falling back to the raw value when the schema names no
+     * label for it (a free-text field, or a value that matches no listed option).
+     */
+    private static String label(Object propertySchema, Object value) {
+        if (value == null) {
+            return null;
+        }
+
+        if (propertySchema instanceof Map<?, ?> schema) {
+            if (schema.get(ONE_OF) instanceof List<?> oneOf) {
+                for (Object candidate : oneOf) {
+                    if (candidate instanceof Map<?, ?> entry
+                            && String.valueOf(value).equals(String.valueOf(entry.get(CONST)))
+                            && entry.get(TITLE) instanceof String title) {
+                        return title;
+                    }
+                }
+            }
+
+            if (schema.get(ENUM) instanceof List<?> enumValues && schema.get(ENUM_NAMES) instanceof List<?> enumNames) {
+                for (int index = 0; index < enumValues.size() && index < enumNames.size(); index++) {
+                    if (String.valueOf(value).equals(String.valueOf(enumValues.get(index)))
+                            && enumNames.get(index) instanceof String enumName) {
+                        return enumName;
+                    }
+                }
+            }
+        }
+
+        return String.valueOf(value);
+    }
+
     private Mono<Boolean> storeAndSignal(UUID chatId,
                                          UUID elicitationId,
                                          McpSchema.ElicitResult.Action action,
-                                         Map<String, Object> content) {
+                                         Map<String, Object> content,
+                                         String summary) {
         Map<String, Object> answer = new HashMap<>();
         answer.put(ACTION, action.name());
         answer.put(CONTENT, content);
+
+        if (summary != null) {
+            answer.put(SUMMARY, summary);
+        }
 
         String answerJson = jsonMapper.writeValueAsString(answer);
 
@@ -337,31 +425,35 @@ public class ElicitationService {
         }
     }
 
-    private Mono<Boolean> storeRequestedPropertyNames(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
-        List<String> propertyNames = requestedPropertyNames(request);
+    private Mono<Boolean> storeRequestedProperties(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
+        Map<String, Object> properties = requestedProperties(request);
 
-        if (propertyNames.isEmpty()) {
+        if (properties.isEmpty()) {
             return Mono.just(false);
         }
 
         return redisTemplate.opsForValue().set(schemaKey(chatId, elicitationId),
-                jsonMapper.writeValueAsString(propertyNames), Duration.ofSeconds(timeoutSeconds + 60));
+                jsonMapper.writeValueAsString(properties), Duration.ofSeconds(timeoutSeconds + 60));
     }
 
     /**
      * Only a form elicitation asks for values; a URL elicitation sends the user elsewhere and has
-     * nothing to forward.
+     * nothing to forward. Stored by full property schema rather than name alone, so an accepted
+     * answer can later be resolved back to the label the user picked, not just narrowed by key.
      */
-    private static List<String> requestedPropertyNames(McpSchema.ElicitRequest request) {
+    private static Map<String, Object> requestedProperties(McpSchema.ElicitRequest request) {
         if (!(request instanceof McpSchema.ElicitFormRequest formRequest) || formRequest.requestedSchema() == null) {
-            return List.of();
+            return Map.of();
         }
 
         if (!(formRequest.requestedSchema().get(PROPERTIES) instanceof Map<?, ?> properties)) {
-            return List.of();
+            return Map.of();
         }
 
-        return properties.keySet().stream().map(String::valueOf).toList();
+        Map<String, Object> byName = new LinkedHashMap<>();
+        properties.forEach((name, schema) -> byName.put(String.valueOf(name), schema));
+
+        return byName;
     }
 
     private String serializeEventMessage(String event, Object data) {
