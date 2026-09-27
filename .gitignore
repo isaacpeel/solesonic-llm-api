@@ -7,4 +7,4 @@
 /logs/
 /docker/.env.prod
 /docker/.env.redis
-/http-requests/litellm/http-client.env.json
+/http-requests/llm/http-client.env.json

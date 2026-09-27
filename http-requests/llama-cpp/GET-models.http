@@ -1,3 +1,0 @@
-###
-GET {{llm-uri}}/models
-x-litellm-api-key: {{lite-llm-key}}

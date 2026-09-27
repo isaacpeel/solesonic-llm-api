@@ -1,10 +1,10 @@
 ###
-POST {{lite-llm-uri}}v1/chat/completions
+POST {{llm-uri}}/chat/completions
 Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "auto-model",
+  "model": "Intel/Qwen3.5-122B-A10B-int4-AutoRound",
   "messages": [
     {
       "role": "user",
@@ -14,7 +14,7 @@ x-litellm-api-key: {{lite-llm-key}}
 }
 
 ### Streaming with timings_per_token — llama.cpp omits timings on a stream unless this is set
-POST {{lite-llm-uri}}/v1/chat/completions
+POST {{llm-uri}}/v1/chat/completions
 Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
