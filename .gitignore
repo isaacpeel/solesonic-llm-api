@@ -1,8 +1,10 @@
 /docker/.env
 /.env
 /.env.*
+!/.env.example
 /target/
 /*.log
 /logs/
 /docker/.env.prod
 /docker/.env.redis
+/http-requests/litellm/http-client.env.json

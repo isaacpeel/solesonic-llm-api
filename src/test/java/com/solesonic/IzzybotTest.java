@@ -34,8 +34,9 @@ public class IzzybotTest {
         userId = UUID.randomUUID();
         userPreferences = new UserPreferences();
         userPreferences.setUserId(userId);
-        userPreferences.setModel("llama3");
-        userPreferences.setSimilarityThreshold(0.7);
+        userPreferences.setChatSimilarityThreshold(0.5);
+        userPreferences.setUserSimilarityThreshold(0.7);
+        userPreferences.setGlobalSimilarityThreshold(0.7);
         userPreferences.setCreated(ZonedDateTime.now());
         userPreferences.setUpdated(ZonedDateTime.now());
 

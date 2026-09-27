@@ -17,6 +17,7 @@ public class AtlassianScope {
             "read:application-role:jira",
             "read:avatar:jira",
             "read:board-scope:jira-software",
+            "read:board-scope.admin:jira-software",
             "read:field-configuration:jira",
             "read:group:jira",
             "read:issue-details:jira",

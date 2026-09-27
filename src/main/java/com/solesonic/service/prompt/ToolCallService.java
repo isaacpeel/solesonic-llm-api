@@ -1,7 +1,9 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.apache.commons.lang3.StringUtils;
@@ -17,6 +19,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.UUID;
 
@@ -34,13 +37,16 @@ public class ToolCallService {
     private final McpSyncClient mcpClient;
     private final SlashCommandService slashCommandService;
     private final LocalToolRegistry localToolRegistry;
+    private final ChatMessageService chatMessageService;
 
     public ToolCallService(McpSyncClient mcpClient,
                            SlashCommandService slashCommandService,
-                           LocalToolRegistry localToolRegistry) {
+                           LocalToolRegistry localToolRegistry,
+                           ChatMessageService chatMessageService) {
         this.mcpClient = mcpClient;
         this.slashCommandService = slashCommandService;
         this.localToolRegistry = localToolRegistry;
+        this.chatMessageService = chatMessageService;
     }
 
     public Flux<String> stream(UUID chatId,
@@ -71,6 +77,10 @@ public class ToolCallService {
 
         log.info("Tool invoke: {}", toolName);
 
+        //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
+        //chat memory advisor is about to write rather than the previous turn's.
+        ZonedDateTime since = ZonedDateTime.now();
+
         ChatClient taskClient = slashCommandService.taskClient(toolCallback);
 
         SystemPromptTemplate taskSystemPromptTemplate = new SystemPromptTemplate(taskPrompt);
@@ -87,6 +97,15 @@ public class ToolCallService {
             log.warn("No response received for tool: {}", toolName);
             return Flux.empty();
         }
+
+        //Ahead of the blank-answer return on purpose: a blank answer still cost the tokens it cost,
+        //and whether the model ran is a different question from whether it said anything. One
+        //accept is enough — .call() hands back a response with both the answer and the final usage,
+        //and the capture closes a call the moment it sees a non-empty usage.
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+        responseMetadataCapture.accept(chatResponse);
+
+        ChatStreamSupport.persist(responseMetadataCapture, chatMessageService, chatId, since);
 
         String result = chatResponse.getResult().getOutput().getText();
 

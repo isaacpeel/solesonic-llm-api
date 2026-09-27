@@ -63,7 +63,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysFromTheCursorOnALiveTurn() {
-        tailIs("chunk");
+        tailIs("TEXT_MESSAGE_CONTENT");
 
         assertThat(resume(MIDDLE_FRAME).getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -72,7 +72,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysWholeTurnWhenTheCursorIsTheBeginning() {
-        tailIs("done");
+        tailIs("RUN_FINISHED");
 
         assertThat(resume("0").getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -81,7 +81,7 @@ class StreamResumeServiceTest {
 
     @Test
     void replaysTailOfAFinishedTurn() {
-        tailIs("done");
+        tailIs("RUN_FINISHED");
 
         assertThat(resume(MIDDLE_FRAME).getStatusCode()).isEqualTo(HttpStatus.OK);
 
@@ -94,7 +94,16 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersNoContentWhenTheClientAlreadyHasTheWholeFinishedTurn() {
-        tailIs("done");
+        tailIs("RUN_FINISHED");
+
+        assertThat(resume(LAST_FRAME).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+
+        verify(redisStreamService, never()).subscribe(any(), any(), any());
+    }
+
+    @Test
+    void answersNoContentWhenTheClientAlreadyHasTheWholeFailedTurn() {
+        tailIs("RUN_ERROR");
 
         assertThat(resume(LAST_FRAME).getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
 
@@ -116,7 +125,7 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersGoneWhenTheCursorPredatesTheOldestRetainedFrame() {
-        tailIs("chunk");
+        tailIs("TEXT_MESSAGE_CONTENT");
 
         assertThat(resume("1754062830000-0").getStatusCode()).isEqualTo(HttpStatus.GONE);
 
@@ -130,7 +139,7 @@ class StreamResumeServiceTest {
      */
     @Test
     void answersBadRequestOnACursorThatIsNotAStreamId() {
-        tailIs("chunk");
+        tailIs("TEXT_MESSAGE_CONTENT");
 
         assertThat(resume("seven").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 
@@ -159,7 +168,7 @@ class StreamResumeServiceTest {
 
     @Test
     void treatsAMissingCursorAsTheBeginning() {
-        tailIs("chunk");
+        tailIs("TEXT_MESSAGE_CONTENT");
 
         assertThat(resume(null).getStatusCode()).isEqualTo(HttpStatus.OK);
 

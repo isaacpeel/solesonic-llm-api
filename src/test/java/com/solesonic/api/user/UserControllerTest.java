@@ -1,7 +1,11 @@
 package com.solesonic.api.user;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
+import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.service.security.ResourceOwnershipService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,8 +22,12 @@ import tools.jackson.databind.json.JsonMapper;
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -38,6 +46,9 @@ public class UserControllerTest {
     @Mock
     private UserPreferencesService userPreferencesService;
 
+    @Mock
+    private ResourceOwnershipService resourceOwnershipService;
+
     @InjectMocks
     private UserController userController;
 
@@ -51,10 +62,14 @@ public class UserControllerTest {
         // Set up UserPreferences
         userPreferences = new UserPreferences();
         userPreferences.setUserId(userId);
-        userPreferences.setModel("llama3");
-        userPreferences.setSimilarityThreshold(0.7);
+        userPreferences.setChatSimilarityThreshold(0.5);
+        userPreferences.setUserSimilarityThreshold(0.7);
+        userPreferences.setGlobalSimilarityThreshold(0.7);
         userPreferences.setCreated(ZonedDateTime.now());
         userPreferences.setUpdated(ZonedDateTime.now());
+
+        // The matching-subject path succeeds unless a test below stubs otherwise.
+        lenient().when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(true);
 
         // Set up MockMvc
         mockMvc = MockMvcBuilders.standaloneSetup(userController).build();
@@ -70,8 +85,9 @@ public class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))
-                .andExpect(jsonPath("$.model").value("llama3"))
-                .andExpect(jsonPath("$.similarityThreshold").value(0.7));
+                .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
+                .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
+                .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));
     }
 
     @Test
@@ -85,8 +101,9 @@ public class UserControllerTest {
                 .content(jsonMapper.writeValueAsString(userPreferences)))
                 .andExpect(status().isCreated())
                 .andExpect(header().exists("Location"))
-                .andExpect(jsonPath("$.model").value("llama3"))
-                .andExpect(jsonPath("$.similarityThreshold").value(0.7));
+                .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
+                .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
+                .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));
     }
 
     @Test
@@ -101,7 +118,117 @@ public class UserControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(MediaType.APPLICATION_JSON))
                 .andExpect(jsonPath("$.userId").value(userId.toString()))
-                .andExpect(jsonPath("$.model").value("llama3"))
-                .andExpect(jsonPath("$.similarityThreshold").value(0.7));
+                .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5))
+                .andExpect(jsonPath("$.userSimilarityThreshold").value(0.7))
+                .andExpect(jsonPath("$.globalSimilarityThreshold").value(0.7));
+    }
+
+    /**
+     * The response body must never carry either integration's tokens. This endpoint serializes the
+     * JPA entity directly, so a field added without {@code @JsonIgnore} silently publishes an
+     * access <em>and refresh</em> token to the browser. The connection state the client actually
+     * needs travels as a boolean instead.
+     */
+    @Test
+    void neverSerializesStoredTokens() throws Exception {
+        userPreferences.setAtlassianAccessToken(AtlassianAccessToken.builder()
+                .accessToken("atlassian-access-token")
+                .refreshToken("atlassian-refresh-token")
+                .build());
+
+        userPreferences.setGoogleAccessToken(GoogleAccessToken.builder()
+                .accessToken("google-access-token")
+                .refreshToken("google-refresh-token")
+                .build());
+
+        userPreferences.setXeroAccessToken(XeroAccessToken.builder()
+                .accessToken("xero-access-token")
+                .refreshToken("xero-refresh-token")
+                .tenantId("xero-tenant-id")
+                .tenantName("xero-tenant-name")
+                .build());
+
+        userPreferences.setAtlassianAuthentication(true);
+        userPreferences.setGoogleAuthentication(true);
+        userPreferences.setXeroAuthentication(true);
+
+        when(userPreferencesService.get(userId)).thenReturn(userPreferences);
+
+        String responseBody = mockMvc.perform(get("/users/{userId}/preferences", userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.atlassianAccessToken").doesNotExist())
+                .andExpect(jsonPath("$.googleAccessToken").doesNotExist())
+                .andExpect(jsonPath("$.xeroAccessToken").doesNotExist())
+                .andExpect(jsonPath("$.atlassianAuthentication").value(true))
+                .andExpect(jsonPath("$.googleAuthentication").value(true))
+                .andExpect(jsonPath("$.xeroAuthentication").value(true))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        assertThat(responseBody)
+                .doesNotContain("atlassian-access-token")
+                .doesNotContain("atlassian-refresh-token")
+                .doesNotContain("google-access-token")
+                .doesNotContain("google-refresh-token")
+                .doesNotContain("xero-access-token")
+                .doesNotContain("xero-refresh-token");
+    }
+
+    @Test
+    void deniesGettingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(get("/users/{userId}/preferences", userId))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).get(any());
+    }
+
+    @Test
+    void deniesSavingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(post("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(userPreferences)))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).save(any(), any(UserPreferences.class));
+    }
+
+    @Test
+    void deniesUpdatingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(put("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonMapper.writeValueAsString(userPreferences)))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).update(any(), any(UserPreferences.class));
+    }
+
+    @Test
+    void testLinkAddress() throws Exception {
+        UUID addressId = UUID.randomUUID();
+        userPreferences.setAddressId(addressId);
+
+        when(userPreferencesService.linkAddress(userId, addressId)).thenReturn(userPreferences);
+
+        mockMvc.perform(put("/users/{userId}/preferences/{addressId}", userId, addressId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.addressId").value(addressId.toString()));
+    }
+
+    @Test
+    void deniesLinkingAddressToAnotherUsersPreferences() throws Exception {
+        UUID addressId = UUID.randomUUID();
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(put("/users/{userId}/preferences/{addressId}", userId, addressId))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).linkAddress(any(), any());
     }
 }

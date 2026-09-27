@@ -1,6 +1,8 @@
 package com.solesonic.model.chat.history;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.solesonic.model.chat.ModelCallMetadata;
+import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.image.GeneratedImageSummary;
 import jakarta.persistence.*;
@@ -32,8 +34,6 @@ public class ChatMessage {
     @Column(columnDefinition = "TEXT")
     private String message;
 
-    private String model;
-
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Set<String> commands;
@@ -47,6 +47,42 @@ public class ChatMessage {
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
     private Map<String, Object> progressData;
+
+    /**
+     * What the model server reported about this turn, including which model answered it — set only on
+     * {@code ASSISTANT} messages, and only after the chat memory advisor has already written the row.
+     * That ordering is forced: the token counts arrive on the final, generation-less chunk of the
+     * stream, which is long after the advisor saves. Stays null for a turn no chat model answered, an
+     * A2A delegation above all. Persisted, unlike {@link #generatedImages}, because there is no other
+     * table to reconstruct it from.
+     * <p>
+     * This is the only place a message records its model. The former {@code model} column held the
+     * user's configured preference at save time, which is what was asked for rather than what
+     * actually ran; {@link ResponseMetadata#model()} is the server's own answer to the same question.
+     */
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    private ResponseMetadata responseMetadata;
+
+    /**
+     * The per-model-call breakdown behind {@link #responseMetadata}'s summed totals — one entry per
+     * round trip, so a tool-calling turn has several. This is where the per-call rate fields
+     * ({@code predictedPerSecond}, {@code promptPerSecond}, and their per-token-millis counterparts)
+     * and the LiteLLM proxy breakdown live, none of which are meaningful summed across round trips
+     * and so never appear on {@link ResponseMetadata} itself.
+     * <p>
+     * {@code READ_ONLY} rather than unrestricted: it is a genuine server-reported value, and nothing
+     * currently binds a {@link ChatMessage} from client-supplied JSON, but the same access
+     * restriction {@link #id} already carries is cheap insurance against a future endpoint doing so
+     * and letting a client fabricate its own accounting. It is a column of its own rather than a
+     * component of {@link ResponseMetadata} for the same reason as always — that record is both the
+     * persisted value and the returned one, and no annotation can hide a field from one without
+     * hiding it from the other.
+     */
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private List<ModelCallMetadata> responseMetadataCalls;
 
     @Transient
     private List<ChatAttachmentSummary> attachments;
@@ -100,14 +136,6 @@ public class ChatMessage {
         this.chatId = chatId;
     }
 
-    public String getModel() {
-        return model;
-    }
-
-    public void setModel(String model) {
-        this.model = model;
-    }
-
     public Set<String> getCommands() {
         return commands;
     }
@@ -138,6 +166,22 @@ public class ChatMessage {
 
     public void setProgressData(Map<String, Object> progressData) {
         this.progressData = progressData;
+    }
+
+    public ResponseMetadata getResponseMetadata() {
+        return responseMetadata;
+    }
+
+    public void setResponseMetadata(ResponseMetadata responseMetadata) {
+        this.responseMetadata = responseMetadata;
+    }
+
+    public List<ModelCallMetadata> getResponseMetadataCalls() {
+        return responseMetadataCalls;
+    }
+
+    public void setResponseMetadataCalls(List<ModelCallMetadata> responseMetadataCalls) {
+        this.responseMetadataCalls = responseMetadataCalls;
     }
 
     public List<ChatAttachmentSummary> getAttachments() {

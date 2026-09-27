@@ -1,0 +1,44 @@
+flowchart TD
+    INIT["PromptService constructor (once, at startup):\nbuild basic-prompt PromptTemplate\n(basicSystemPrompt resource + agentName)\n→ defaultSystemPrompt field"]
+
+    U0["streamBasicPrompt(chatId, userId, message,\nattachmentContext, contextMap, model, capture)"]
+
+    INIT -.->|"reused on every call"| U2
+
+    U0 --> U2["chatClient.prompt()\n.system(defaultSystemPrompt.getContents())\n.user(message)"]
+
+    U2 --> U3["attach RAG advisor\nvectorStoreService.retrievalAugmentationAdvisor(userId, chatId)\n+ advisor param CONVERSATION_ID = chatId"]
+
+    U3 --> U4[".toolContext(contextMap)\n.options(chatOptions(model))\n→ streamUsage(true)"]
+
+    U4 --> U5{"attachmentContext\nnon-empty?"}
+
+    U5 -->|Yes| U6["promptSpec.messages(new UserMessage(attachmentContext))\ninserted between system and user message"]
+    U5 -->|No| U7
+
+    U6 --> U7["promptSpec.stream().chatResponse()"]
+
+    U7 --> U8["RAG advisor chain runs:\nvector search + rewrites last user message\nwith retrieved context"]
+
+    U8 --> U9["OpenAiChatModel opens SSE stream\nto CHAT_OPENAI_HOST (okhttp)"]
+
+    U9 -->|chunks arrive| U10["MessageAggregator accumulates\nChatResponse chunks + usage"]
+    U9 -->|"no bytes for read-timeout window"| ERR["okhttp read timeout\nSocketException: Socket closed\n→ OpenAIIoException: Stream failed\n→ MessageAggregator Aggregation Error"]
+
+    U10 --> U11["contentFlux:\ncapture ResponseMetadata per chunk\nextract Generation text, filter empty"]
+
+    U11 --> U12(["Flux&lt;String&gt; returned\n(consumed by SSE/Redis publish path)"])
+
+    classDef entry fill:#dbeafe,stroke:#1d4ed8,color:#1e3a8a,stroke-width:1.5px;
+    classDef step fill:#e8eaed,stroke:#5f6368,color:#202124,stroke-width:1px;
+    classDef decision fill:#ede9fe,stroke:#6d28d9,color:#4c1d95,stroke-width:1.5px;
+    classDef outcome fill:#dcfce7,stroke:#15803d,color:#14532d,stroke-width:1.5px;
+    classDef error fill:#fee2e2,stroke:#b91c1c,color:#7f1d1d,stroke-width:2px;
+    classDef init fill:#fef3c7,stroke:#b45309,color:#78350f,stroke-width:1.5px,stroke-dasharray: 4 3;
+
+    class U0 entry;
+    class U2,U3,U4,U6,U7,U8,U9,U10,U11 step;
+    class U5 decision;
+    class U12 outcome;
+    class ERR error;
+    class INIT init;

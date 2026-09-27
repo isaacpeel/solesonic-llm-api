@@ -2,19 +2,19 @@ package com.solesonic.service.etl;
 
 import org.springframework.ai.document.Document;
 import org.springframework.ai.model.transformer.SummaryMetadataEnricher;
-import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
-import static com.solesonic.config.olllama.EtlOllamaConfig.ETL_METADATA_CHAT_MODEL;
+import static com.solesonic.config.openai.EtlOpenAiConfig.ETL_METADATA_CHAT_MODEL;
 
 @Component
 public class EtlMetadataEnricher {
-    private final OllamaChatModel chatModel;
+    private final OpenAiChatModel chatModel;
 
-    public EtlMetadataEnricher(@Qualifier(ETL_METADATA_CHAT_MODEL) OllamaChatModel chatModel) {
+    public EtlMetadataEnricher(@Qualifier(ETL_METADATA_CHAT_MODEL) OpenAiChatModel chatModel) {
         this.chatModel = chatModel;
     }
 

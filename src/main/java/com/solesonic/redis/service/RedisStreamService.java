@@ -1,10 +1,12 @@
 package com.solesonic.redis.service;
 
+import com.agui.community.core.event.EventType;
+import com.agui.community.core.event.RunErrorEvent;
+import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.redis.model.RedisChatEvent;
 import com.solesonic.redis.model.StreamEventId;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
-import com.solesonic.service.redis.RedisStreamingChatService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -25,6 +27,8 @@ import static org.springframework.data.redis.connection.Limit.limit;
 public class RedisStreamService {
     private static final Logger log = LoggerFactory.getLogger(RedisStreamService.class);
     private static final String STREAM_KEY_TEMPLATE = "chat:%s:%s";
+    private static final String STREAM_UNAVAILABLE_MESSAGE =
+            "The connection to the chat stream was lost. Reconnect to resume.";
 
     private final ChatStreamPublisher chatStreamPublisher;
     private final ChatStreamSubscriber chatStreamSubscriber;
@@ -40,12 +44,6 @@ public class RedisStreamService {
         this.chatStreamSubscriber = chatStreamSubscriber;
         this.jsonMapper = jsonMapper;
         this.redisTemplate = redisTemplate;
-    }
-
-    public Mono<RecordId> publish(UUID chatId, UUID userId, String type) {
-        RedisStreamingChatService.ChunkPayload emptyPayload = new RedisStreamingChatService.ChunkPayload("");
-
-        return publish(chatId, userId, type, emptyPayload);
     }
 
     public Mono<RecordId> publish(UUID chatId, UUID userId, String type, Object payload) {
@@ -68,7 +66,7 @@ public class RedisStreamService {
      * The last frame of a stream: its id, and the event type that produced it.
      * <p>
      * The type is what tells a resuming client's request apart from a turn still in flight — a
-     * tail of {@code done} means the turn is over and there is nothing more coming.
+     * terminal tail ({@code RUN_FINISHED} or {@code RUN_ERROR}) means the turn is over and there is nothing more coming.
      */
     public record StreamTail(String eventId, String type) {
     }
@@ -125,7 +123,25 @@ public class RedisStreamService {
 
         log.info("Subscribing to Redis stream {} for chat {}", streamKey, chatId);
 
-        return chatStreamSubscriber.subscribe(streamKey, lastEventId);
+        //The turn itself may still be running — only this read broke. Without this, a Redis read
+        //failure propagates as an error straight through the SSE response, and the client's
+        //connection just dies with nothing to act on.
+        return chatStreamSubscriber.subscribe(streamKey, lastEventId)
+                .onErrorResume(error -> {
+                    log.error("Redis stream read failed for chat {}", chatId, error);
+
+                    return Flux.just(streamUnavailableEvent());
+                });
+    }
+
+    private ServerSentEvent<?> streamUnavailableEvent() {
+        RunErrorEvent runError = new RunErrorEvent(STREAM_UNAVAILABLE_MESSAGE,
+                TurnErrorCode.STREAM_UNAVAILABLE.wireValue(), null, null);
+
+        return ServerSentEvent.builder()
+                .event(EventType.RUN_ERROR.value())
+                .data(jsonMapper.writeValueAsString(runError))
+                .build();
     }
 
     public String buildStreamKey(UUID chatId, UUID userId) {
@@ -144,10 +160,13 @@ public class RedisStreamService {
         return jsonMapper.writeValueAsString(payload);
     }
 
-    @SuppressWarnings("unused")
+    /**
+     * Drops a chat's buffer outright, rather than waiting out its retention window. Used when the
+     * conversation itself is deleted: there is nothing left for a resuming client to resume into.
+     */
     public Mono<Boolean> deleteStream(UUID chatId, UUID userId) {
         String streamKey = buildStreamKey(chatId, userId);
-        log.debug("Deleting Redis stream {} before new exchange", streamKey);
+        log.debug("Deleting Redis stream {}", streamKey);
         return redisTemplate.delete(streamKey).map(count -> count > 0);
     }
 }

@@ -1,0 +1,75 @@
+package com.solesonic.model.chat;
+
+import com.fasterxml.jackson.annotation.JsonFormat;
+import org.jspecify.annotations.Nullable;
+
+import java.time.Instant;
+
+/**
+ * What the model server reported about one model call.
+ * <p>
+ * A chat turn is not always a single call: a tool-calling turn runs the model again after every tool
+ * result, and each of those round trips reports its own token counts. {@link ResponseMetadata} sums
+ * them into the turn's total, which is what a client is given; this record is the breakdown behind
+ * that total, persisted alongside it on {@code chat_message.response_metadata_calls} so a turn's cost
+ * can be attributed later.
+ * <p>
+ * Every field is the server's own accounting, copied verbatim — nothing here is measured or derived
+ * by this application. {@link #promptMillis()}, {@link #predictedMillis()},
+ * {@link #predictedPerSecond()}, {@link #promptTokensEvaluated()}, {@link #promptPerTokenMillis()},
+ * {@link #promptPerSecond()}, {@link #predictedTokensGenerated()},
+ * {@link #predictedPerTokenMillis()}, {@link #draftTokens()} and {@link #draftAcceptedTokens()} all
+ * come from llama.cpp's non-standard {@code timings} object and are null against a model server that
+ * does not send one. {@link #cachedPromptTokens()} is the one field here that is not llama.cpp-only:
+ * it prefers the portable {@code usage.prompt_tokens_details.cached_tokens}, falling back to
+ * llama.cpp's own {@code timings.cache_n} only when the response carries no usage-level count.
+ */
+public record ModelCallMetadata(
+        @Nullable String model,
+        @Nullable String id,
+        //Pinned to a string so it goes back out in ISO-8601 form rather than the numeric timestamp a
+        //mapper left to its own defaults could choose.
+        @JsonFormat(shape = JsonFormat.Shape.STRING)
+        @Nullable Instant createdAt,
+        @Nullable String finishReason,
+        @Nullable Integer promptTokens,
+        @Nullable Integer completionTokens,
+        @Nullable Integer totalTokens,
+        @Nullable Double promptMillis,
+        @Nullable Double predictedMillis,
+        @Nullable Double predictedPerSecond,
+        @Nullable Integer cachedPromptTokens,
+        @Nullable Integer promptTokensEvaluated,
+        @Nullable Double promptPerTokenMillis,
+        @Nullable Double promptPerSecond,
+        @Nullable Integer predictedTokensGenerated,
+        @Nullable Double predictedPerTokenMillis,
+        @Nullable Integer draftTokens,
+        @Nullable Integer draftAcceptedTokens,
+        //Null against a server that is not behind LiteLLM, and against a call whose headers never
+        //reached the turn that made it.
+        @Nullable LiteLlmCallMetadata liteLlm) {
+
+    public ModelCallMetadata withLiteLlm(LiteLlmCallMetadata liteLlmCallMetadata) {
+        return new ModelCallMetadata(
+                model,
+                id,
+                createdAt,
+                finishReason,
+                promptTokens,
+                completionTokens,
+                totalTokens,
+                promptMillis,
+                predictedMillis,
+                predictedPerSecond,
+                cachedPromptTokens,
+                promptTokensEvaluated,
+                promptPerTokenMillis,
+                promptPerSecond,
+                predictedTokensGenerated,
+                predictedPerTokenMillis,
+                draftTokens,
+                draftAcceptedTokens,
+                liteLlmCallMetadata);
+    }
+}

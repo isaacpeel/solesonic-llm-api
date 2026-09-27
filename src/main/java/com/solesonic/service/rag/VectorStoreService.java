@@ -1,18 +1,18 @@
 package com.solesonic.service.rag;
 
 import com.solesonic.model.VectorSearch;
-import com.solesonic.model.training.VectorDocument;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.rag.RetrievalMetadata;
+import com.solesonic.model.ingestion.VectorDocument;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.repository.ollama.VectorStoreRepository;
+import com.solesonic.repository.rag.VectorStoreRepository;
 import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
-import org.springframework.ai.ollama.OllamaChatModel;
-import org.springframework.ai.ollama.api.OllamaApi;
-import org.springframework.ai.ollama.api.OllamaChatOptions;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.preretrieval.query.expansion.MultiQueryExpander;
@@ -21,13 +21,22 @@ import org.springframework.ai.rag.preretrieval.query.transformation.RewriteQuery
 import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
+import org.springframework.ai.vectorstore.filter.Filter;
+import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
+
+import static com.solesonic.config.openai.RagTaskOpenAiConfig.RAG_TASK_CHAT_MODEL;
+import static com.solesonic.model.rag.RetrievalMetadata.ENTITLEMENTS;
 
 @Service
 public class VectorStoreService {
@@ -36,15 +45,20 @@ public class VectorStoreService {
     private static final int RETRIEVAL_TOP_K = 15;
     private static final int RERANK_TOP_N = 5;
     private static final int EXPANSION_QUERIES = 3;
-    private static final String TASK_MODEL_KEEP_ALIVE = "30m";
 
     private final VectorStore vectorStore;
     private final VectorStoreRepository vectorStoreRepository;
     private final UserPreferencesService userPreferencesService;
-    private final OllamaChatModel taskChatModel;
+    private final OpenAiChatModel taskChatModel;
 
-    @Value("${spring.ai.similarity-threshold}")
-    private Double defaultSimilarityThreshold;
+    @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")
+    private Double defaultChatSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.user}")
+    private Double defaultUserSimilarityThreshold;
+
+    @Value("${solesonic.llm.retrieval.similarity-threshold.global}")
+    private Double defaultGlobalSimilarityThreshold;
 
     @Value("${solesonic.llm.embedding.max-query-chars}")
     private int maxQueryChars;
@@ -52,37 +66,31 @@ public class VectorStoreService {
     public VectorStoreService(VectorStore vectorStore,
                               VectorStoreRepository vectorStoreRepository,
                               UserPreferencesService userPreferencesService,
-                              OllamaApi ollamaApi,
-                              @Value("${solesonic.llm.tool-call.model:qwen2.5:7b}") String taskModel) {
+                              @Qualifier(RAG_TASK_CHAT_MODEL) OpenAiChatModel taskChatModel) {
         this.vectorStore = vectorStore;
         this.vectorStoreRepository = vectorStoreRepository;
         this.userPreferencesService = userPreferencesService;
-
-        OllamaChatOptions taskOptions = OllamaChatOptions.builder()
-                .model(taskModel)
-                .numCtx(8192)
-                .keepAlive(TASK_MODEL_KEEP_ALIVE)
-                .temperature(0.0)
-                .disableThinking()
-                .build();
-
-        this.taskChatModel = OllamaChatModel.builder()
-                .ollamaApi(ollamaApi)
-                .options(taskOptions)
-                .build();
+        this.taskChatModel = taskChatModel;
     }
 
-    public Advisor retrievalAugmentationAdvisor(UUID userId) {
+    /**
+     * Builds the per-request RAG advisor, retrieving at conversation, user and global scope in that
+     * order of precedence.
+     * <p>
+     * {@code chatId} may be null for a call that belongs to no conversation, in which case the
+     * conversation tier is simply absent rather than filtered to nothing.
+     */
+    @SuppressWarnings("unused")
+    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
-
-        Double similarityThreshold = Optional.ofNullable(userPreferences.getSimilarityThreshold())
-                .orElse(defaultSimilarityThreshold);
 
         QueryTransformer truncatingTransformer = query -> {
             String text = query.text();
+
             if (text.length() <= maxQueryChars) {
                 return query;
             }
+
             log.warn("Query text truncated from {} to {} characters for embedding", text.length(), maxQueryChars);
             return query.mutate().text(text.substring(0, maxQueryChars)).build();
         };
@@ -96,24 +104,74 @@ public class VectorStoreService {
                 .numberOfQueries(EXPANSION_QUERIES)
                 .build();
 
-        LlmDocumentReranker documentReranker =
-                new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
+        LlmDocumentReranker documentReranker = new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
 
         RetrievalLoggingPostProcessor retrievalLoggingPostProcessor = new RetrievalLoggingPostProcessor();
+        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K, tiers(userId, chatId, userPreferences));
+
+        VectorStoreDocumentRetriever vectorStoreDocumentRetriever = VectorStoreDocumentRetriever.builder()
+                .similarityThreshold(0.5)
+                .topK(RETRIEVAL_TOP_K)
+                .vectorStore(vectorStore)
+                .build();
 
         return RetrievalAugmentationAdvisor.builder()
-                .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
-                .queryExpander(multiQueryExpander)
-                .documentRetriever(VectorStoreDocumentRetriever.builder()
-                        .similarityThreshold(similarityThreshold)
-                        .topK(RETRIEVAL_TOP_K)
-                        .vectorStore(vectorStore)
-                        .build())
-                .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
+//                .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
+//                .queryExpander(multiQueryExpander)
+                .documentRetriever(scopedDocumentRetriever)
+//                .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
                 .queryAugmenter(ContextualQueryAugmenter.builder()
                         .allowEmptyContext(true)
                         .build())
                 .build();
+    }
+
+    /**
+     * The scope tiers to search, most specific first.
+     * <p>
+     * Built with {@link FilterExpressionBuilder} against the metadata keys every ingestion path
+     * stamps, which pgvector converts to a JSON path predicate over the {@code metadata} column.
+     * The ids are compared as strings because that is how they are written — a UUID serialized into
+     * JSON is a string, and a filter comparing against anything else matches nothing.
+     */
+    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId, UserPreferences userPreferences) {
+        List<ScopedDocumentRetriever.ScopedTier> tiers = new ArrayList<>(3);
+
+        if (chatId != null) {
+            Double chatSimilarityThreshold = Optional.ofNullable(userPreferences.getChatSimilarityThreshold())
+                    .orElse(defaultChatSimilarityThreshold);
+
+            tiers.add(tier(DocumentPrincipal.chat(chatId), chatSimilarityThreshold));
+        }
+
+        Double userSimilarityThreshold = Optional.ofNullable(userPreferences.getUserSimilarityThreshold())
+                .orElse(defaultUserSimilarityThreshold);
+
+        tiers.add(tier(DocumentPrincipal.user(userId), userSimilarityThreshold));
+
+        Double globalSimilarityThreshold = Optional.ofNullable(userPreferences.getGlobalSimilarityThreshold())
+                .orElse(defaultGlobalSimilarityThreshold);
+
+        tiers.add(tier(DocumentPrincipal.global(), globalSimilarityThreshold));
+
+        return tiers;
+    }
+
+    /**
+     * One principal's tier: a single equality against {@link RetrievalMetadata#ENTITLEMENTS}.
+     * <p>
+     * A single {@code eq} rather than the two-key {@code and} each tier used to need, because a
+     * chunk now names its audiences directly instead of carrying a scope plus whichever id that
+     * scope implied. It still matches a chunk granted to several principals: pgvector renders this
+     * as a jsonpath predicate and Postgres evaluates {@code @@} in lax mode, which unwraps the array
+     * before comparing.
+     */
+    private static ScopedDocumentRetriever.ScopedTier tier(DocumentPrincipal principal, Double similarityThreshold) {
+        Filter.Expression filterExpression = new FilterExpressionBuilder()
+                .eq(ENTITLEMENTS, principal.key())
+                .build();
+
+        return new ScopedDocumentRetriever.ScopedTier(principal, filterExpression, similarityThreshold);
     }
 
     public void save(List<Document> documents) {
@@ -135,8 +193,8 @@ public class VectorStoreService {
         return vectorStore.similaritySearch(searchRequest);
     }
 
-    public List<VectorDocument> findByTrainingDocumentId(UUID trainingDocumentId) {
-        return vectorStoreRepository.findByTrainingDocumentId(trainingDocumentId.toString())
+    public List<VectorDocument> findByIngestedDocumentId(UUID ingestedDocumentId) {
+        return vectorStoreRepository.findByIngestedDocumentId(ingestedDocumentId.toString())
                 .orElse(Collections.emptyList());
     }
 
@@ -144,7 +202,58 @@ public class VectorStoreService {
         vectorStoreRepository.deleteAll(vectorDocuments);
     }
 
-    public void delete(UUID trainingDocumentId) {
-        vectorStoreRepository.deleteById(trainingDocumentId);
+    public void delete(UUID ingestedDocumentId) {
+        vectorStoreRepository.deleteById(ingestedDocumentId);
+    }
+
+    /**
+     * Re-points every chunk of one document at a new audience, clearing the chat provenance that
+     * would otherwise take it with the conversation it came from.
+     * <p>
+     * The keys are rendered to a JSON array here rather than by the caller, so the one place that
+     * produces an entitlement key ({@code DocumentEntitlementService.retrievalKeys}) stays the one
+     * place, and the array a chunk carries is written the same way whether it was stamped at
+     * ingestion or rewritten by a promotion.
+     */
+    @Transactional
+    public void promoteChunks(UUID ingestedDocumentId, List<String> entitlements) {
+        if (entitlements.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Refusing to rewrite chunks of " + ingestedDocumentId + " to no entitlements at all");
+        }
+
+        String entitlementsJson = entitlements.stream()
+                .map(entitlement -> "\"" + entitlement.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
+                .collect(Collectors.joining(",", "[", "]"));
+
+        int updated = vectorStoreRepository.promoteChunks(ingestedDocumentId.toString(), entitlementsJson);
+
+        log.info("Re-pointed {} chunk(s) of document {} at {}", updated, ingestedDocumentId, entitlements);
+    }
+
+    /**
+     * Discards every chunk that came from one chat. Joins the caller's transaction so that a
+     * conversation and the documents that were attached to it go together or not at all.
+     */
+    @Transactional
+    public void deleteByChatId(UUID chatId) {
+        int deleted = vectorStoreRepository.deleteByChatId(chatId.toString());
+
+        if (deleted > 0) {
+            log.info("Deleted {} vector store chunk(s) of chat {}", deleted, chatId);
+        }
+    }
+
+    /**
+     * Discards the chunks of one attachment, for a user removing a single document from a
+     * conversation they are keeping.
+     */
+    @Transactional
+    public void deleteByChatAttachmentId(UUID chatAttachmentId) {
+        int deleted = vectorStoreRepository.deleteByChatAttachmentId(chatAttachmentId.toString());
+
+        if (deleted > 0) {
+            log.info("Deleted {} vector store chunk(s) of attachment {}", deleted, chatAttachmentId);
+        }
     }
 }

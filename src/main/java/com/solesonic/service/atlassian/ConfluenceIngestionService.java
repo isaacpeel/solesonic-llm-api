@@ -1,0 +1,222 @@
+package com.solesonic.service.atlassian;
+
+import com.solesonic.model.atlassian.confluence.ConfluencePagesResponse;
+import com.solesonic.model.atlassian.confluence.Page;
+import com.solesonic.model.atlassian.confluence.ResponseLinks;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.rag.VectorStoreService;
+import org.apache.commons.collections4.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Service;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import static com.solesonic.config.atlassian.AtlassianConstants.ATLASSIAN_API_INTERNAL_CLIENT;
+import static com.solesonic.model.document.DocumentSource.CONFLUENCE;
+import static com.solesonic.model.ingestion.IngestedDocument.*;
+import static com.solesonic.service.atlassian.ConfluenceConstants.*;
+import static org.springframework.http.MediaType.TEXT_HTML_VALUE;
+
+@Service
+public class ConfluenceIngestionService {
+    private static final Logger log = LoggerFactory.getLogger(ConfluenceIngestionService.class);
+    private final IngestedDocumentService ingestedDocumentService;
+    private final VectorStoreService vectorStoreService;
+    private final WebClient webClient;
+
+    private static final String CONFLUENCE_DOCUMENT_FILENAME_TEMPLATE = "[Confluence] %s (v%s)";
+    private static final String CURSOR_PARAM = "cursor";
+    private static final int PAGE_FETCH_LIMIT = 250;
+
+    public ConfluenceIngestionService(IngestedDocumentService ingestedDocumentService,
+                                      VectorStoreService vectorStoreService,
+                                      @Qualifier(ATLASSIAN_API_INTERNAL_CLIENT) WebClient webClient) {
+        this.ingestedDocumentService = ingestedDocumentService;
+        this.vectorStoreService = vectorStoreService;
+        this.webClient = webClient;
+    }
+
+    public void pageScan() {
+        //get all confluence pages across every pagination cursor
+        List<Page> pages = allPages();
+
+        Set<String> livePageIds = new HashSet<>();
+
+        if (CollectionUtils.isNotEmpty(pages)) {
+            for (Page confluencePage : pages) {
+                String pageId = confluencePage.getId();
+                livePageIds.add(pageId);
+
+                //look for existing ingested documents, have we added this confluence page to rag before?
+                List<IngestedDocument> ingestedDocuments = ingestedDocumentService.findByConfluencePageId(pageId);
+
+                if (CollectionUtils.isNotEmpty(ingestedDocuments)) {
+                    //Get the ingested document with the highest version number;
+                    IngestedDocument newestIngestedDocument = ingestedDocuments.stream()
+                            .max(Comparator.comparing(doc -> (Integer) doc.getMetadata().get(CONFLUENCE_PAGE_VERSION)))
+                            .orElse(null);
+
+                    assert newestIngestedDocument != null;
+                    Map<String, Object> ingestedDocumentMetadata = newestIngestedDocument.getMetadata();
+                    Object documentVersion = ingestedDocumentMetadata.get(CONFLUENCE_PAGE_VERSION);
+
+                    if (documentVersion != null) {
+                        int confluencePageVersion = confluencePage.getVersion().getNumber();
+                        int ingestedDocumentPageVersion = Integer.parseInt(documentVersion.toString());
+
+                        //there is a new version in confluence, remove the old version and add the new one
+                        if (confluencePageVersion > ingestedDocumentPageVersion) {
+                            List<VectorDocument> vectorDocuments = vectorStoreService.findByIngestedDocumentId(newestIngestedDocument.getId());
+                            vectorStoreService.delete(vectorDocuments);
+
+                            //queue the new version of the confluence page to add it to rag
+                            IngestedDocument queuedIngestedDocument = queue(confluencePage);
+                            ingestedDocumentMetadata.put(REPLACED_BY_ID, queuedIngestedDocument.getId());
+                            ingestedDocumentService.update(newestIngestedDocument, DocumentStatus.REPLACED);
+                        }
+                    }
+                } else {
+                    //if the confluence page has never been added to rag then queue it
+                    queue(confluencePage);
+                }
+            }
+        }
+
+        //remove documents whose confluence pages no longer exist
+        removeDeletedPages(livePageIds);
+    }
+
+    private void removeDeletedPages(Set<String> livePageIds) {
+        if (livePageIds.isEmpty()) {
+            //an empty live set almost always signals a fetch problem, not that confluence is empty.
+            //bail out rather than delete every tracked document.
+            log.warn("No live confluence pages retrieved; skipping deletion pass to avoid removing all tracked documents.");
+            return;
+        }
+
+        List<String> trackedPageIds = ingestedDocumentService.findConfluencePageIds();
+
+        for (String trackedPageId : trackedPageIds) {
+            if (livePageIds.contains(trackedPageId)) {
+                continue;
+            }
+
+            log.info("Confluence page {} no longer exists; removing its tracked documents.", trackedPageId);
+
+            List<IngestedDocument> ingestedDocuments = ingestedDocumentService.findByConfluencePageId(trackedPageId);
+
+            if (CollectionUtils.isEmpty(ingestedDocuments)) {
+                continue;
+            }
+
+            for (IngestedDocument ingestedDocument : ingestedDocuments) {
+                ingestedDocumentService.delete(ingestedDocument);
+            }
+        }
+    }
+
+    public IngestedDocument queue(Page confluencePage) {
+        String title = confluencePage.getTitle();
+        byte[] fileData = confluencePage.getBody().getStorage().getValue().getBytes();
+        String pageId = confluencePage.getId();
+        int version = confluencePage.getVersion().getNumber();
+
+        String ingestedDocumentFilename = CONFLUENCE_DOCUMENT_FILENAME_TEMPLATE.formatted(title, version);
+
+        Map<String, Object> metadata = new HashMap<>();
+        metadata.put(CONFLUENCE_PAGE_ID, pageId);
+        metadata.put(CONFLUENCE_PAGE_VERSION, version);
+
+        IngestedDocument ingestedDocument = new IngestedDocument();
+        ingestedDocument.setDocumentStatus(DocumentStatus.QUEUED);
+        ingestedDocument.setFileName(ingestedDocumentFilename);
+        ingestedDocument.setContentType(TEXT_HTML_VALUE);
+        ingestedDocument.setMetadata(metadata);
+        ingestedDocument.setDocumentSource(CONFLUENCE);
+        ingestedDocument.setCreated(ZonedDateTime.now());
+        ingestedDocument.setUpdated(ZonedDateTime.now());
+
+        // A scanned page joins the shared corpus and is managed by the rag-admin role -- the same
+        // ownership a global upload gets. There is no granted_by: the scheduler ingested this, not
+        // a person.
+        return ingestedDocumentService.saveWithOwnership(ingestedDocument,
+                DocumentPrincipal.global(),
+                DocumentPrincipal.ragAdmin(),
+                null,
+                fileData);
+    }
+
+    public List<Page> allPages() {
+        log.info("Getting Confluence documents.");
+
+        List<Page> pages = new ArrayList<>();
+        String cursor = null;
+
+        do {
+            ConfluencePagesResponse confluencePagesResponse = pageBatch(cursor);
+
+            if (confluencePagesResponse == null) {
+                break;
+            }
+
+            List<Page> results = confluencePagesResponse.getResults();
+
+            if (CollectionUtils.isNotEmpty(results)) {
+                pages.addAll(results);
+            }
+
+            cursor = nextCursor(confluencePagesResponse);
+        } while (cursor != null);
+
+        return pages;
+    }
+
+    private ConfluencePagesResponse pageBatch(String cursor) {
+        return webClient.get()
+                .uri(uriBuilder -> {
+                    uriBuilder
+                            .pathSegment(basePathSegments)
+                            .pathSegment(PAGES_PATH)
+                            .queryParam("body-format", STORAGE_FORMAT)
+                            .queryParam("limit", PAGE_FETCH_LIMIT);
+
+                    if (cursor != null) {
+                        uriBuilder.queryParam(CURSOR_PARAM, cursor);
+                    }
+
+                    return uriBuilder.build();
+                })
+                .exchangeToMono(response -> response.bodyToMono(ConfluencePagesResponse.class))
+                .block();
+    }
+
+    private String nextCursor(ConfluencePagesResponse confluencePagesResponse) {
+        ResponseLinks links = confluencePagesResponse.getLinks();
+
+        if (links == null || links.getNext() == null) {
+            return null;
+        }
+
+        MultiValueMap<String, String> queryParams = UriComponentsBuilder.fromUriString(links.getNext())
+                .build()
+                .getQueryParams();
+
+        return queryParams.getFirst(CURSOR_PARAM);
+    }
+}

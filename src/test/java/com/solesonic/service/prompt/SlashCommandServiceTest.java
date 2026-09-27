@@ -17,7 +17,7 @@ class SlashCommandServiceTest {
 //    @Mock
 //    private ChatMemory chatMemory;
 //    @Mock
-//    private OllamaApi ollamaApi;
+//    private OpenAiChatModel taskChatModel;
 //    @Mock
 //    private ReactiveValueOperations<String, String> valueOperations;
 //
@@ -30,11 +30,10 @@ class SlashCommandServiceTest {
 //                redisTemplate,
 //                jsonMapper,
 //                chatMemory,
-//                ollamaApi,
+//                taskChatModel,
 //                Optional.empty(),
 //                3600L,
-//                false,
-//                "llama3");
+//                false);
 //    }
 //
 //    private void stubCacheHit(String payload) {

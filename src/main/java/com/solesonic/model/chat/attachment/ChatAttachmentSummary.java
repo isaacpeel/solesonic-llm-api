@@ -11,6 +11,11 @@ import java.util.UUID;
  *                                 it is a paragraph of prose per image
  * @param descriptionFailureReason why {@code described} is false, null when it is true or when the
  *                                 image has not been through the vision pass yet
+ * @param indexed                  whether a document attachment's text reached the vector store, so
+ *                                 that a reloaded conversation still shows which documents the
+ *                                 assistant can actually read. Always false for an image
+ * @param extractionFailureReason  why {@code indexed} is false, null when it is true or when the
+ *                                 document has not been through the extraction pass yet
  */
 public record ChatAttachmentSummary(UUID id,
                                     UUID chatMessageId,
@@ -19,5 +24,7 @@ public record ChatAttachmentSummary(UUID id,
                                     String contentType,
                                     long fileSizeBytes,
                                     boolean described,
-                                    VisionFailureReason descriptionFailureReason) {
+                                    VisionFailureReason descriptionFailureReason,
+                                    boolean indexed,
+                                    ExtractionFailureReason extractionFailureReason) {
 }

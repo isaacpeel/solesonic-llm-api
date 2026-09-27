@@ -1,8 +1,13 @@
 package com.solesonic.model.user;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.atlassian.auth.AtlassianAccessTokenConverter;
+import com.solesonic.model.google.auth.GoogleAccessToken;
+import com.solesonic.model.google.auth.GoogleAccessTokenConverter;
+import com.solesonic.model.xero.auth.XeroAccessToken;
+import com.solesonic.model.xero.auth.XeroAccessTokenConverter;
 import jakarta.persistence.*;
 
 import java.time.ZonedDateTime;
@@ -18,16 +23,57 @@ public class UserPreferences {
 
     private ZonedDateTime updated;
 
-    private String model;
+    private Double chatSimilarityThreshold;
 
-    private Double similarityThreshold;
+    private Double userSimilarityThreshold;
+
+    private Double globalSimilarityThreshold;
+
+    private UUID addressId;
+
+    private String timeZone;
 
     @Transient
     private boolean atlassianAuthentication;
 
+    /**
+     * {@code @JsonIgnore} because this entity is serialized straight to the client by
+     * {@code UserController}. Without it, {@code GET /users/{userId}/preferences} answers with the
+     * user's Atlassian access <em>and refresh</em> token in the response body, where it lands in
+     * browser memory, any intermediary cache and every HAR file support ever asks for. The client
+     * learns whether Atlassian is connected from {@link #atlassianAuthentication}.
+     */
+    @JsonIgnore
     @Convert(converter = AtlassianAccessTokenConverter.class)
     @Column(name = "atlassian_access_token", columnDefinition = "bytea")
     private AtlassianAccessToken atlassianAccessToken;
+
+    @Transient
+    private boolean googleAuthentication;
+
+    /**
+     * {@code @JsonIgnore} for the same reason as {@link #atlassianAccessToken}: the client learns
+     * whether Google is connected from {@link #googleAuthentication} and has no reason to ever
+     * receive the tokens themselves.
+     */
+    @JsonIgnore
+    @Convert(converter = GoogleAccessTokenConverter.class)
+    @Column(name = "google_access_token", columnDefinition = "bytea")
+    private GoogleAccessToken googleAccessToken;
+
+    @Transient
+    private boolean xeroAuthentication;
+
+    /**
+     * {@code @JsonIgnore} for the same reason as {@link #atlassianAccessToken}: the client learns
+     * whether Xero is connected from {@link #xeroAuthentication} and has no reason to ever receive
+     * the tokens themselves. This one additionally carries the organisation's {@code tenantId},
+     * which is the identifier every Accounting API call is scoped by.
+     */
+    @JsonIgnore
+    @Convert(converter = XeroAccessTokenConverter.class)
+    @Column(name = "xero_access_token", columnDefinition = "bytea")
+    private XeroAccessToken xeroAccessToken;
 
     public UUID getUserId() {
         return userId;
@@ -35,14 +81,6 @@ public class UserPreferences {
 
     public void setUserId(UUID userId) {
         this.userId = userId;
-    }
-
-    public String getModel() {
-        return model;
-    }
-
-    public void setModel(String model) {
-        this.model = model;
     }
 
     public ZonedDateTime getCreated() {
@@ -71,12 +109,44 @@ public class UserPreferences {
         this.atlassianAuthentication = atlassianAuthentication;
     }
 
-    public Double getSimilarityThreshold() {
-        return similarityThreshold;
+    public Double getChatSimilarityThreshold() {
+        return chatSimilarityThreshold;
     }
 
-    public void setSimilarityThreshold(Double similarityThreshold) {
-        this.similarityThreshold = similarityThreshold;
+    public void setChatSimilarityThreshold(Double chatSimilarityThreshold) {
+        this.chatSimilarityThreshold = chatSimilarityThreshold;
+    }
+
+    public Double getUserSimilarityThreshold() {
+        return userSimilarityThreshold;
+    }
+
+    public void setUserSimilarityThreshold(Double userSimilarityThreshold) {
+        this.userSimilarityThreshold = userSimilarityThreshold;
+    }
+
+    public Double getGlobalSimilarityThreshold() {
+        return globalSimilarityThreshold;
+    }
+
+    public void setGlobalSimilarityThreshold(Double globalSimilarityThreshold) {
+        this.globalSimilarityThreshold = globalSimilarityThreshold;
+    }
+
+    public UUID getAddressId() {
+        return addressId;
+    }
+
+    public void setAddressId(UUID addressId) {
+        this.addressId = addressId;
+    }
+
+    public String getTimeZone() {
+        return timeZone;
+    }
+
+    public void setTimeZone(String timeZone) {
+        this.timeZone = timeZone;
     }
 
     public AtlassianAccessToken getAtlassianAccessToken() {
@@ -85,5 +155,38 @@ public class UserPreferences {
 
     public void setAtlassianAccessToken(AtlassianAccessToken atlassianAccessToken) {
         this.atlassianAccessToken = atlassianAccessToken;
+    }
+
+    @SuppressWarnings("unused")
+    public boolean isGoogleAuthentication() {
+        return googleAuthentication;
+    }
+
+    public void setGoogleAuthentication(boolean googleAuthentication) {
+        this.googleAuthentication = googleAuthentication;
+    }
+
+    public GoogleAccessToken getGoogleAccessToken() {
+        return googleAccessToken;
+    }
+
+    public void setGoogleAccessToken(GoogleAccessToken googleAccessToken) {
+        this.googleAccessToken = googleAccessToken;
+    }
+
+    public boolean isXeroAuthentication() {
+        return xeroAuthentication;
+    }
+
+    public void setXeroAuthentication(boolean xeroAuthentication) {
+        this.xeroAuthentication = xeroAuthentication;
+    }
+
+    public XeroAccessToken getXeroAccessToken() {
+        return xeroAccessToken;
+    }
+
+    public void setXeroAccessToken(XeroAccessToken xeroAccessToken) {
+        this.xeroAccessToken = xeroAccessToken;
     }
 }

@@ -4,6 +4,8 @@ import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -23,6 +27,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -34,6 +40,12 @@ class ChatAttachmentServiceTest {
     @Mock
     private UserRequestContext userRequestContext;
 
+    @Mock
+    private VectorStoreService vectorStoreService;
+
+    @Mock
+    private IngestedDocumentService ingestedDocumentService;
+
     private ChatAttachmentService chatAttachmentService;
 
     private final UUID userId = UUID.randomUUID();
@@ -41,7 +53,11 @@ class ChatAttachmentServiceTest {
     @BeforeEach
     void setUp() {
         chatAttachmentService = new ChatAttachmentService(
-                chatAttachmentRepository, userRequestContext, Duration.ofHours(24));
+                chatAttachmentRepository,
+                userRequestContext,
+                vectorStoreService,
+                ingestedDocumentService,
+                Duration.ofHours(24));
 
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
         lenient().when(chatAttachmentRepository.save(any(ChatAttachment.class)))
@@ -64,12 +80,69 @@ class ChatAttachmentServiceTest {
 
     @Test
     void stageRejectsUnsupportedContentType() {
-        MockMultipartFile pdf = file("application/pdf");
+        MockMultipartFile executable = file("application/x-msdownload");
 
-        assertThatThrownBy(() -> chatAttachmentService.stage(pdf, null))
+        assertThatThrownBy(() -> chatAttachmentService.stage(executable, null))
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
                 .isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    @Test
+    void stageAcceptsSupportedDocumentType() {
+        ChatAttachmentSummary summary = chatAttachmentService.stage(file("application/pdf"), "the contract");
+
+        assertThat(summary.contentType()).isEqualTo("application/pdf");
+        assertThat(summary.indexed()).isFalse();
+        assertThat(summary.extractionFailureReason()).isNull();
+    }
+
+    /**
+     * The split decides which pass an attachment goes through, and each pass owns the SSE events for
+     * the ids it is handed — so an id landing in neither set, or in both, is a client hang.
+     */
+    @Test
+    void partitionSplitsImagesFromDocuments() {
+        ChatAttachment image = attachment("image/png");
+        ChatAttachment document = attachment("application/pdf");
+        Set<UUID> attachmentIds = Set.of(image.getId(), document.getId());
+
+        when(chatAttachmentRepository.findByIdInAndUserIdOrderByCreatedAsc(attachmentIds, userId))
+                .thenReturn(List.of(image, document));
+
+        ChatAttachmentService.AttachmentPartition partition =
+                chatAttachmentService.partition(userId, attachmentIds);
+
+        assertThat(partition.imageIds()).containsExactly(image.getId());
+        assertThat(partition.documentIds()).containsExactly(document.getId());
+    }
+
+    /**
+     * An id resolving to no row still has to be signalled, so it has to land in a bucket. It goes
+     * with the images, which is where an unresolvable id was already reported from.
+     */
+    @Test
+    void partitionKeepsAnUnresolvableIdWithTheImages() {
+        UUID unknownAttachmentId = UUID.randomUUID();
+        Set<UUID> attachmentIds = Set.of(unknownAttachmentId);
+
+        when(chatAttachmentRepository.findByIdInAndUserIdOrderByCreatedAsc(attachmentIds, userId))
+                .thenReturn(List.of());
+
+        ChatAttachmentService.AttachmentPartition partition =
+                chatAttachmentService.partition(userId, attachmentIds);
+
+        assertThat(partition.imageIds()).containsExactly(unknownAttachmentId);
+        assertThat(partition.documentIds()).isEmpty();
+    }
+
+    private ChatAttachment attachment(String contentType) {
+        ChatAttachment chatAttachment = new ChatAttachment();
+        chatAttachment.setId(UUID.randomUUID());
+        chatAttachment.setUserId(userId);
+        chatAttachment.setContentType(contentType);
+
+        return chatAttachment;
     }
 
     @Test
@@ -117,5 +190,75 @@ class ChatAttachmentServiceTest {
     @Test
     void bindIsANoOpWithoutAttachmentIds() {
         chatAttachmentService.bind(userId, UUID.randomUUID(), UUID.randomUUID(), null);
+    }
+
+    /**
+     * Removing one document from a conversation must remove its {@code ingested_document} and
+     * {@code status_history} rows too. Before this, the row outlived the attachment with no chunks
+     * behind it and no listing that would ever surface it — a silent, permanent leak.
+     */
+    @Test
+    void deleteAlsoClearsTheIngestedDocumentRow() {
+        ChatAttachment document = attachment("application/pdf");
+
+        when(chatAttachmentRepository.findByIdAndUserId(document.getId(), userId))
+                .thenReturn(Optional.of(document));
+
+        chatAttachmentService.delete(document.getId());
+
+        verify(ingestedDocumentService).deleteByChatAttachmentId(document.getId());
+        verify(vectorStoreService).deleteByChatAttachmentId(document.getId());
+        verify(chatAttachmentRepository).delete(document);
+    }
+
+    /**
+     * The same leak, in bulk. A deleted conversation takes every row its attachments opened, not
+     * just its chunks.
+     */
+    @Test
+    void deleteForChatAlsoClearsEveryIngestedDocumentRow() {
+        UUID chatId = UUID.randomUUID();
+
+        chatAttachmentService.deleteForChat(chatId);
+
+        verify(ingestedDocumentService).deleteByChatId(chatId);
+        verify(vectorStoreService).deleteByChatId(chatId);
+        verify(chatAttachmentRepository).deleteByChatId(chatId);
+    }
+
+    /**
+     * The same leak as {@link #deleteAlsoClearsTheIngestedDocumentRow}, at message scope: neither
+     * {@code ingested_document} nor the vector store carries a {@code chatMessageId} to bulk-delete
+     * by, so each attachment bound to the message is swept individually first.
+     */
+    @Test
+    void deleteForChatMessageAlsoClearsEveryIngestedDocumentRow() {
+        UUID chatMessageId = UUID.randomUUID();
+        UUID firstAttachmentId = UUID.randomUUID();
+        UUID secondAttachmentId = UUID.randomUUID();
+
+        when(chatAttachmentRepository.findIdsByChatMessageId(chatMessageId))
+                .thenReturn(List.of(firstAttachmentId, secondAttachmentId));
+
+        chatAttachmentService.deleteForChatMessage(chatMessageId);
+
+        verify(ingestedDocumentService).deleteByChatAttachmentId(firstAttachmentId);
+        verify(vectorStoreService).deleteByChatAttachmentId(firstAttachmentId);
+        verify(ingestedDocumentService).deleteByChatAttachmentId(secondAttachmentId);
+        verify(vectorStoreService).deleteByChatAttachmentId(secondAttachmentId);
+        verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
+    }
+
+    @Test
+    void deleteForChatMessageIsANoOpWithoutAttachments() {
+        UUID chatMessageId = UUID.randomUUID();
+
+        when(chatAttachmentRepository.findIdsByChatMessageId(chatMessageId)).thenReturn(List.of());
+
+        chatAttachmentService.deleteForChatMessage(chatMessageId);
+
+        verify(ingestedDocumentService, never()).deleteByChatAttachmentId(any());
+        verify(vectorStoreService, never()).deleteByChatAttachmentId(any());
+        verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
     }
 }

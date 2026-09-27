@@ -66,16 +66,54 @@ The migrations are organized in major versions:
 
 1. **V1_x**: Initial schema setup with tables for:
    - Jira access tokens
-   - Ollama models
-   - Training documents
+   - The model catalog (`llm_model`, entity `LlmModel`; the table was renamed from its original
+     name in `V3_21`)
+   - Ingested documents
    - User preferences
    - Vector store
    - Chats and chat messages
 
+### Ingested documents — three tables (V3_28)
+
+An ingested document is a descriptor, its bytes, and its grants:
+
+| Table | Holds |
+|---|---|
+| `ingested_document` | `id`, `file_name`, `content_type`, `document_source` (NOT NULL), `created`/`updated`, `metadata jsonb` |
+| `ingested_document_content` | `ingested_document_id` PK/FK, `data bytea`, `size_bytes`. Absent where the bytes live elsewhere |
+| `document_entitlement` | one row per `(document, principal_type, principal_id, grant_kind)` |
+
+**`ingested_document` carries no ownership columns.** `scope`, `user_id` and `chat_id` were a
+nullable-column discriminated union whose invariant — exactly one owning column set, agreeing with
+the scope — was enforced by nothing but every call site remembering, and the table's migration
+history is a record of call sites forgetting. Ownership is now rows in `document_entitlement`, so a
+new ownership shape is a new row rather than a new column and another unenforced rule.
+
+`grant_kind` separates `RETRIEVE` (who may have this come back from a search) from `MANAGE` (whose
+library it appears in). A chat document is retrievable by the conversation and managed by whoever
+uploaded it — two different principals, which is what makes "every document I uploaded to any chat"
+a single indexed query. `principal_id` is text because `GLOBAL` has no owner (the `'-'` sentinel, not
+null, so the unique constraint still bites) and `ROLE` is named. Both foreign keys cascade, so
+deleting a document takes its bytes and its grants without any code remembering to.
+
+`metadata` is **provenance only** — `CHAT_ID`, `CHAT_ATTACHMENT_ID`, `SOURCE_URI`,
+`CONFLUENCE_PAGE_ID`, `ORIGINAL_FILE_NAME`, `FILE_SIZE_BYTES`, `REPLACED_BY_ID`. Where a document
+came from and where it may be retrieved are now different facts: teardown reads provenance,
+retrieval reads entitlement, and promotion touches only the latter.
+
+> **`data` is `bytea`, and the entity field must never carry `@Lob`.** That annotation is what made
+> the old `ingested_document.file_data` a Postgres large object — an `oid` *reference* whose target
+> outlives the row pointing at it unless `lo_unlink` is called, which nothing ever did. By the time
+> this was noticed there were 351,476 orphaned objects totalling roughly 6 GB, accumulated one per
+> document per re-ingestion cycle — reclaimed by `scripts/reclaim-orphaned-large-objects.sql`, a
+> standalone maintenance script run manually rather than a Flyway migration, because the batched
+> `lo_unlink` sweep needs a real mid-script `COMMIT` between batches to avoid overflowing Postgres's
+> shared lock table, and OSS `flyway-core` has no way to disable a SQL migration's enclosing
+> transaction. A row delete reclaims `bytea` by itself going forward.
+
 The `chat_attachment` table (V3_4) stores images attached to chat messages. Image bytes are held in
-a `bytea` column — deliberately not the `oid` large object used by `training_document`, because
-attachments are routinely deleted and large objects would be orphaned in `pg_largeobject`. A row
-with a null `chat_message_id` is *staged*: uploaded but not yet sent on a message.
+a `bytea` column — the same choice, made earlier and for the same reason. A row with a null
+`chat_message_id` is *staged*: uploaded but not yet sent on a message.
 
 `vision_description` and `vision_model` (V3_5) hold the description a vision model produced for the
 image, and the name of the model that produced it. A null `vision_description` means the image has
@@ -115,6 +153,58 @@ setting deliberately — `delete from public.generated_image where created < now
 is the shape of it, but nothing runs it today. Note that deleting an image a conversation references
 leaves that turn rendering a broken reference, so a retention policy and chat retention want to
 agree with each other.
+
+The `chat_group` table (V3_11) holds the optional sections a user files conversations under, and
+`chat.chat_group_id` is the membership. It is a nullable column rather than a join table because a
+chat belongs to at most one group: the group is a property of the conversation, so a chat can be
+read without a second query to find its section. Every chat starts ungrouped and stays that way
+until a client files it — nothing in the chat pipeline writes this column.
+
+The foreign key is `on delete set null`, so deleting a group ungroups its conversations rather than
+deleting them; losing a section of the sidebar must never lose the chats filed under it. To find
+what a group holds, or what is unfiled:
+
+```sql
+select id, name from public.chat where chat_group_id = '<group uuid>' order by timestamp desc;
+select id, name from public.chat where user_id = '<user uuid>' and chat_group_id is null;
+```
+
+`chat.sort_order` and `chat.group_sort_order` (V3_12) are where a conversation has been placed by
+hand. Two columns rather than one, because a chat appears in two independently ordered lists — the
+user's whole list and, when it is filed, its group's — and a single column would make a move in one
+reshuffle the other. Both are null until a client moves the conversation, and null is what makes the
+ordering fall back to `timestamp desc`: a chat nobody has arranged sorts exactly as it did before
+these columns existed, and a new one still arrives at the top rather than the bottom. A move
+renumbers a list densely from zero, but the values are not an index: deleting a placed chat, or
+moving one out of a group, leaves a gap that stays until the next move closes it. Only the relative
+order is meaningful. `group_sort_order` is cleared whenever the chat changes group.
+
+`chat_group.sort_order` (V3_13) is the same idea one level up: where a *section* has been placed in
+the caller's list of sections. One column, not two, because a group appears in exactly one list. It
+is null until a client places the group, and null falls back to name ordering, so a section nobody
+has arranged sits exactly where it did before the column existed.
+
+Unlike the two columns on `chat`, this one is written exactly as the client sends it — the update is
+a pure update of one row and renumbers nothing — so gaps and duplicates are both normal here rather
+than a transient state. The listing breaks a tie by `name` and then by `id`, which is what keeps two
+groups sharing a rank from swapping places between requests:
+
+```sql
+select id, name, sort_order from public.chat_group where user_id = '<user uuid>'
+order by sort_order asc nulls last, name asc, id asc;
+```
+
+Deleting a conversation is **not** cascaded by the database. Nothing in `chat_message`,
+`chat_attachment`, or `generated_image` carries a foreign key to `chat`, so `DELETE /chats/{chatId}`
+clears all three by hand inside one transaction (`ChatService.delete`). Deleting a `chat` row
+directly in SQL leaves the transcript and the image bytes behind, unreachable but still stored:
+
+```sql
+delete from public.chat_attachment where chat_id = '<chat uuid>';
+delete from public.generated_image where chat_id = '<chat uuid>';
+delete from public.chat_message where chat_id = '<chat uuid>';
+delete from public.chat where id = '<chat uuid>';
+```
    - Status history
 
 2. **V2_x**: Schema updates including:

@@ -44,13 +44,18 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
      * {@code described} is derived rather than stored: a non-null {@code visionDescription} is the
      * one authoritative record that the vision pass produced something. The description text is not
      * selected — it is a paragraph per image, and callers only need the flag.
+     * <p>
+     * {@code indexed} is derived the same way from {@code chunkCount}, which is the document-side
+     * record that extraction produced something retrievable.
      */
     @Query("""
             select new com.solesonic.model.chat.attachment.ChatAttachmentSummary(
                        attachment.id, attachment.chatMessageId, attachment.fileName,
                        attachment.description, attachment.contentType, attachment.fileSizeBytes,
                        case when attachment.visionDescription is not null then true else false end,
-                       attachment.visionFailureReason)
+                       attachment.visionFailureReason,
+                       case when attachment.chunkCount is not null then true else false end,
+                       attachment.extractionFailureReason)
               from ChatAttachment attachment
              where attachment.chatId = :chatId
              order by attachment.created asc
@@ -74,4 +79,39 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
              where attachment.chatMessageId is null and attachment.created < :cutoff
            """)
     int deleteStagedOlderThan(ZonedDateTime cutoff);
+
+    /**
+     * Every attachment bound to one conversation. Deleting a chat has to take these with it: the
+     * rows carry image bytes, and there is no foreign key that would remove them on its own.
+     * Staged attachments are untouched — they have no {@code chatId} yet, and the sweep owns them.
+     */
+    @Modifying
+    @Query("""
+            delete from ChatAttachment attachment
+             where attachment.chatId = :chatId
+           """)
+    int deleteByChatId(UUID chatId);
+
+    /**
+     * The attachment ids of one message, read before the bulk delete below so each one's
+     * {@code ingested_document} row and vector chunks can be swept individually — neither carries a
+     * {@code chatMessageId} of its own to bulk-delete by.
+     */
+    @Query("""
+            select attachment.id
+              from ChatAttachment attachment
+             where attachment.chatMessageId = :chatMessageId
+           """)
+    List<UUID> findIdsByChatMessageId(UUID chatMessageId);
+
+    /**
+     * Every attachment bound to one message. Deleting a message has to take these with it for the
+     * same reason {@link #deleteByChatId} does: image bytes with no foreign key to remove them.
+     */
+    @Modifying
+    @Query("""
+            delete from ChatAttachment attachment
+             where attachment.chatMessageId = :chatMessageId
+           """)
+    int deleteByChatMessageId(UUID chatMessageId);
 }

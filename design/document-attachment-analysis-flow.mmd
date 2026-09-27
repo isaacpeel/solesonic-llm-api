@@ -1,0 +1,53 @@
+flowchart TD
+    A["POST /chats/attachments\nChatAttachmentController"] --> B["ChatAttachmentService.stage\nsaves bytes + content type\n(staged, unbound)"]
+
+    C["POST/PUT chat stream request\nStreamingChatController.update"] --> D["ChatAttachmentService.bind\nclaims staged ids for this\nchat + chat message"]
+    D --> E["PromptService.stream\nChatAttachmentService.partition\nsplit by content type, never file name"]
+
+    E -->|imageIds| Z["ImageDescriptionService.describe\n(vision model — separate pass,\nnot part of this flow)"]
+    E -->|documentIds| F["ChatDocumentIngestionService.ingest\n(guarantees one attachment event per id)"]
+
+    F --> FA{"more than 4\ndocument attachments\non this send?"}
+    FA -->|"beyond MAX_DOCUMENTS_PER_MESSAGE"| FB["saveExtractionFailure\nEXCEEDED_DOCUMENT_LIMIT"]
+    FA -->|"first 4"| G{"already indexed?\nchunkCount != null"}
+
+    G -->|yes| H["reuse stored chunkCount\n(never re-embeds)"]
+    G -->|no| I{"fileSizeBytes <=\nmax-size-bytes?"}
+
+    I -->|no| J["saveExtractionFailure\nDOCUMENT_TOO_LARGE"]
+    I -->|yes| KP["NotificationService.emitProgress\n'Reading attached document &lt;name&gt;'"]
+
+    KP --> K["DocumentService.read\n(PDF reader, or Tika for the rest)"]
+    K -->|throws| L["saveExtractionFailure\nDOCUMENT_UNREADABLE"]
+    K --> M["EtlTextSplitter.split\ninto chunks"]
+    M -->|"no chunks produced"| L
+    M --> N["scope each chunk's metadata:\nSCOPE=CHAT, CHAT_ID, USER_ID,\nCHAT_ATTACHMENT_ID, FILE_NAME\n(strings — filters compare JSON strings)"]
+
+    N --> O["VectorStoreService.save\nembeds + writes pgvector\n(vector_store table)"]
+    O -->|throws| P["saveExtractionFailure\nEMBEDDING_UNAVAILABLE"]
+    O --> Q["saveChunkCount\n(this is what makes future\nsends reuse, not re-embed)"]
+
+    H --> R["attachment SSE event\n(indexed / not-indexed + reason)"]
+    FB --> R
+    J --> R
+    L --> R
+    P --> R
+    Q --> R
+
+    Q --> S["file name appended to\nindexedDocuments (send order)"]
+    S --> T["AttachmentContextFormatter.documentContext\n'N document(s) attached: ...\nanswer from retrieved passages, say so if they don't cover it'"]
+    T --> U["carried as its own UserMessage\nbefore the live user turn\n(never folded into it)"]
+
+    U --> V["default ChatClient.prompt\nsystem + attachmentContext message + user message"]
+    V --> W["RetrievalAugmentationAdvisor\n(VectorStoreService.retrievalAugmentationAdvisor)"]
+    W --> X["ScopedDocumentRetriever\nwaterfall over RETRIEVAL_TOP_K:\nCHAT scope first, then USER, then GLOBAL"]
+    X --> Y["pgvector similarity search\nfiltered by scope + chatId/userId\n(JSON path predicate on metadata column)"]
+    Y --> AA["matching chunks rewritten into\nthe last user message as retrieved context\n(ContextualQueryAugmenter)"]
+    AA --> AB["OpenAiChatModel.stream\nmodel answers from retrieved\npassages of the attached document"]
+
+    style J fill:#f8d7da,stroke:#c0392b
+    style L fill:#f8d7da,stroke:#c0392b
+    style P fill:#f8d7da,stroke:#c0392b
+    style FB fill:#f8d7da,stroke:#c0392b
+    style Q fill:#d4edda,stroke:#28a745
+    style AB fill:#d4edda,stroke:#28a745

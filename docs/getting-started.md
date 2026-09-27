@@ -8,7 +8,7 @@ Before you begin, ensure you have the following installed:
 
 - **Java 25** - The application requires Java 25 or later
 - **Docker and Docker Compose** - For running the PostgreSQL database with pgvector
-- **Ollama** - For LLM chat and embedding models
+- **An OpenAI-compatible model server** - llama.cpp `llama-server` or equivalent, for chat, ETL, vision, embedding and the two task models
 - **Redis** - For streaming chat and caching (required at runtime)
 - **Git** - To clone the repository (if applicable)
 
@@ -31,15 +31,21 @@ docker --version
 docker-compose --version
 ```
 
-#### Ollama
-Install Ollama from [ollama.ai](https://ollama.ai/) and ensure it's running locally.
+#### An OpenAI-compatible model server
 
-Verify installation:
+Every LLM call this application makes goes out over the OpenAI chat-completions protocol, so any
+server that speaks it will do — llama.cpp's `llama-server` is what this project is developed
+against. A `llama-server` process serves one model for its lifetime, so run one per model you need,
+or point several of the six configured interactions at the same one while getting started.
+
+Verify a server is reachable and see what it serves:
 ```bash
-ollama --version
+curl -s http://localhost:8080/v1/models
 ```
 
-The application expects Ollama to be available at `http://localhost:11434`.
+The six host variables are documented in
+[docs/configuration.md](configuration.md#model-server-configuration). Each is a **full base URL
+including the `/v1` path**, and all six are required — the application will not start without them.
 
 #### Redis
 Install Redis using Docker or your platform's package manager.
@@ -103,20 +109,37 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000
 
 For a complete list of all available configuration options, see [docs/configuration.md](configuration.md).
 
-### 3. Start Ollama Models
+### 3. Start the Model Servers
 
-Ensure Ollama is running and pull the required models:
+Start an OpenAI-compatible server for each model you need, and point the matching `*_OPENAI_HOST`
+variable at it:
 
 ```bash
-# Chat model (default for local development)
-ollama pull qwen2.5:7b
-
-# Embedding model (default for local development)
-ollama pull twine/mxbai-embed-xsmall-v1:latest
-
-# Intent classification model (default for local development)
-ollama pull qwen3:0.6b
+# One llama-server per model. Give the chat and vision servers a context window large enough for
+# their prompts — that is a launch flag, not something the application can set per request.
+llama-server -m ./models/qwen3.5-9b.gguf      --port 8080 --ctx-size 32768
+llama-server -m ./models/mxbai-embed-large.gguf --port 8081 --embeddings
+llama-server -m ./models/qwen2.5-vl.gguf      --port 8082 --ctx-size 32768
 ```
+
+Then in `.env`:
+
+```bash
+CHAT_OPENAI_HOST=http://localhost:8080/v1
+ETL_OPENAI_HOST=http://localhost:8080/v1
+ETL_MODEL=llama3.1:8b
+EMBEDDING_OPENAI_HOST=http://localhost:8081/v1
+VISION_OPENAI_HOST=http://localhost:8082/v1
+VISION_MODEL=qwen2.5vl
+RAG_TASK_OPENAI_HOST=http://localhost:8080/v1
+TOOL_CALL_OPENAI_HOST=http://localhost:8080/v1
+```
+
+The model names the application sends are fixed per profile in
+`application-local.properties` (`solesonic.llm.chat.model`, `solesonic.llm.embedding.model`,
+`solesonic.llm.rag-task.model`, `solesonic.llm.tool-call.model`). A `llama-server` answers with
+whichever model it was launched with regardless, so those names mainly label the request and seed a
+new user's default preference.
 
 ### 4. Build and Run the Application
 
@@ -202,7 +225,7 @@ The application uses the following ports by default:
 | Application | 8443 | Main application (prod profile with TLS) |
 | PostgreSQL | 5445 | Database with pgvector |
 | Redis | 6379 | Streaming and caching |
-| Ollama | 11434 | LLM service |
+| Model servers | 8080+ | OpenAI-compatible LLM endpoints (one port per server) |
 
 ## Troubleshooting
 
@@ -249,24 +272,21 @@ If you see errors about missing environment variables:
 2. Check that the variable names match exactly (case-sensitive)
 3. For security variables (`ISSUER_URI`, `JWK_SET_URI`), these are optional for local development
 
-#### Ollama Connection Issues
+#### Model Server Connection Issues
 
-1. **Ollama not responding:**
+1. **A server is not responding:**
    ```bash
-   # Check if Ollama is running
-   ollama list
-
-   # Start Ollama service if needed
-   ollama serve
+   # Every configured *_OPENAI_HOST should answer this
+   curl -s http://localhost:8080/v1/models
    ```
+   Connection refused means the process is down; a 404 usually means the URL is missing its `/v1`.
 
-2. **Models not found:**
-   ```bash
-   # Pull required models
-   ollama pull qwen2.5:7b
-   ollama pull twine/mxbai-embed-xsmall-v1:latest
-   ollama pull qwen3:0.6b
-   ```
+2. **Model not found:** an OpenAI-compatible server serves whichever model it was launched with —
+   there is nothing to pull. Either launch the server with the configured model or change the
+   configured name to match what `/v1/models` reports.
+
+3. **Startup fails on a missing placeholder:** all six `*_OPENAI_HOST` variables are required and
+   none has a default. The error names the missing property.
 
 #### Java Version Issues
 

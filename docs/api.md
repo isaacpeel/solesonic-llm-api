@@ -59,13 +59,13 @@ otherwise `403`. An unknown `{chatId}` is `404`.
     replays the whole retained stream.
 
 Replays every buffered frame after the cursor — progress frames included, so a client's step log
-survives — then continues live through `done`. Resuming never re-runs a turn: generation and
+survives — then continues live through the terminal frame (`RUN_FINISHED` or `RUN_ERROR`). Resuming never re-runs a turn: generation and
 persistence are already independent of any listener, so this is purely a second view of work that
 is happening regardless.
 
 | Status | Meaning |
 |--------|---------|
-| `200` | Replaying, then live through `done` |
+| `200` | Replaying, then live through the terminal frame |
 | `204` | The turn finished and the cursor already covers every frame of it |
 | `400` | `Last-Event-ID` is not a stream id — see the id format below |
 | `403` | The chat is not the caller's |
@@ -78,6 +78,28 @@ which returns the persisted turn.
 
 Frames are retained for `redis.stream.retention-seconds` (default 900) past a chat's most recent
 frame, on a sliding expiry.
+
+### Cancel a Streaming Turn
+
+- **Endpoint**: `POST /streaming/chats/{chatId}/users/{userId}/cancel`
+
+Stops a turn in flight. The same ownership rule as every other streaming endpoint applies:
+`{userId}` must be the caller, and `{chatId}` must be a chat that user owns.
+
+| Status | Meaning |
+|--------|---------|
+| `202` | A cancel signal was sent. The turn is still finishing asynchronously |
+| `204` | Nothing to cancel — the turn already finished, or this chat never streamed |
+| `403` | The chat is not the caller's |
+| `404` | No such chat |
+
+This endpoint only confirms the signal was sent — it does not wait for the turn to actually stop.
+The outcome arrives the same way every other frame does: on the already-open stream, or on a
+`GET .../stream` resume, as `TEXT_MESSAGE_END` (when the assistant had started a message), a
+`CUSTOM` event named `cancel`, then `RUN_FINISHED` whose `result` carries a `SYSTEM` "Chat canceled."
+message. Content the model had already streamed before the cancel lands is not persisted; only that
+system message is. See [Delete a Chat](#delete-a-chat) — unlike a delete, this is the way to
+actually stop a turn rather than merely disown it.
 
 ### Event IDs
 
@@ -111,24 +133,62 @@ an nginx in front of the API does not buffer away the frames whose value is in a
 
 ### Stream Event Types
 
-Both streaming endpoints emit the following SSE event types:
+Every frame is an [AG-UI](https://docs.ag-ui.com) event. The event type is sent twice: as the SSE
+`event:` field, and as `type` inside the JSON `data:`, so a client that dispatches on either works.
+A turn is one AG-UI run, with `threadId` = the chat id.
 
 | Event | Description |
 |-------|-------------|
-| `init` | Sent at stream start. Payload carries the persisted user message id — see below |
-| `chunk` | Incremental assistant response text |
-| `progress` | A long-running step started — an MCP tool, or the vision pass on one attached image |
-| `attachment` | Terminal outcome for one attached image — see below |
-| `image` | An image generated during this turn, by reference — see below |
-| `elicitation` | Interactive form request from an MCP tool |
-| `cancel` | Emitted when a user cancels an elicitation |
-| `done` | Final event containing the structured chat response |
+| `RUN_STARTED` | First frame of every turn. `input.messages[0]` is the persisted user message — see below |
+| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"` |
+| `TEXT_MESSAGE_CONTENT` | Incremental assistant response text, in `delta` |
+| `TEXT_MESSAGE_END` | The assistant's reply is complete |
+| `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | An MCP tool is asking the user something — see [elicitation.md](elicitation.md) |
+| `CUSTOM` `name: "progress"` | A long-running step started — an MCP tool, or the vision pass on one attached image |
+| `CUSTOM` `name: "attachment"` | Terminal outcome for one attached image or document — see below |
+| `CUSTOM` `name: "image"` | An image generated during this turn, by reference — see below |
+| `CUSTOM` `name: "failure"` | A failure notification — the same `message`/`code` `RUN_ERROR` carries |
+| `CUSTOM` `name: "cancel"` | The turn was cancelled; `RUN_FINISHED` follows |
+| `RUN_FINISHED` | Terminal. `result` is the structured chat response — see below |
+| `RUN_ERROR` | Terminal. `message` is user-facing; `code` is one of a closed set — see below. No `RUN_FINISHED` follows |
+
+A turn ends with exactly one of `RUN_FINISHED` or `RUN_ERROR`. `CUSTOM` values are the payloads
+documented below, unchanged — only the envelope moved.
+
+`messageId` on the `TEXT_MESSAGE_*` frames is a wire id for the streamed reply. It is **not** the
+id of the persisted assistant row, which the chat memory writes on its own; read that from history.
+
+**One deliberate departure from AG-UI.** AG-UI's native human-in-the-loop mechanism is an
+interrupt: the run finishes with an interrupt outcome, and the client starts a new run to resume.
+This API does not do that. An elicitation is streamed as a tool call inside the still-running turn,
+the MCP tool call that asked stays parked, and the answer is a separate `POST` that resumes it in
+place — the SSE connection stays open and no new run starts. That is what keeps resume-by-cursor,
+keepalives and mid-turn image frames working across an elicitation. It is not an oversight.
+
+### RUN_ERROR / failure Codes
+
+`code` on both `RUN_ERROR` and the `failure` `CUSTOM` event is one of:
+
+| Code | Meaning | What a client should do |
+|------|---------|--------------------------|
+| `timeout` | Generation did not finish inside the turn's deadline | Retry |
+| `UPSTREAM_UNAVAILABLE` | The model server, an MCP server, or an integration it called failed in a way that may succeed on a retry | Retry |
+| `RATE_LIMITED` | An upstream is throttling | Back off, then retry |
+| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
+| `RECONNECT_REQUIRED` | An integration's grant is gone or was never given | Nothing a retry fixes — the user must reconnect that integration |
+| `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
+| `CONTEXT_LENGTH_EXCEEDED` | The conversation — history, retrieved documents, and attachments combined — exceeds the model's context window | Nothing to retry as-is — start a new conversation, or remove an attachment or some earlier messages |
+| `STREAM_UNAVAILABLE` | The durable Redis stream this response is built from failed to read; the turn itself may still be running | Reconnect via `GET .../stream` to resume — see [Resume a Stream](#resume-a-stream) |
+| `internal` | Anything else | Retry; if it keeps failing, it is a server bug |
+
+`timeout` and `internal` are lowercase for backward compatibility — they predate this table. Every
+other code is upper snake case.
 
 ### image Event Payload
 
 Emitted when a turn generates an image — `/generate_image`, or the model calling the tool itself.
-The payload is a `GeneratedImageSummary`, identical in shape to the `complete` frame of
-[explicit generation](#image-generation):
+It is sent as `CUSTOM` with `name: "image"`; its `value` is a `GeneratedImageSummary`, identical
+in shape to the `complete` frame of [explicit generation](#image-generation):
 
 ```json
 {
@@ -150,50 +210,230 @@ The payload is a `GeneratedImageSummary`, identical in shape to the `complete` f
 Never bytes. The image data stops at the API boundary and is fetched separately from `imageUrl`.
 
 The frame is emitted from the tool result, which lands before the model has written its first word,
-so it always arrives ahead of `chunk` text and well ahead of `done`. `chatMessageId` is `null` here —
+so it always arrives ahead of `TEXT_MESSAGE_CONTENT` and well ahead of `RUN_FINISHED`. `chatMessageId` is `null` here —
 the assistant turn it belongs to has not been written yet — and is filled in by the time the same
 image appears in history.
 
-The same references are repeated on the `done` payload as `message.generatedImages`, so a client
+The same references are repeated on the `RUN_FINISHED` result as `message.generatedImages`, so a client
 that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
 De-duplicate by `imageId`.
 
-### init Event Payload
+### RUN_FINISHED Event Payload
 
 ```json
 {
-  "chatId": "0a4b...",
-  "messageId": "7f3c..."
+  "type": "RUN_FINISHED",
+  "threadId": "0a4b...",
+  "runId": "5d1e...",
+  "result": { ... }
 }
 ```
 
-`messageId` is the id of the user message persisted at the start of the turn. Clients that
-uploaded attachments (see [Chat Attachments](#chat-attachments)) use it to associate them with the
-rendered message. Clients that ignore the `init` body are unaffected.
+`result` is the structured chat response:
+
+```json
+{
+  "id": "0a4b...",
+  "message": {
+    "id": "7f3c...",
+    "chatId": "0a4b...",
+    "messageType": "ASSISTANT",
+    "message": "...",
+    "generatedImages": [],
+    "responseMetadata": {
+      "model": "qwen3-8b",
+      "id": "chatcmpl-abc123",
+      "createdAt": "2026-08-27T19:22:45Z",
+      "finishReason": "stop",
+      "modelCalls": 1,
+      "promptTokens": 1042,
+      "completionTokens": 259,
+      "totalTokens": 1301,
+      "promptMillis": 130.079,
+      "predictedMillis": 4232.71,
+      "totalMillis": 4362.789,
+      "cachedPromptTokens": 7,
+      "promptTokensEvaluated": 4,
+      "predictedTokensGenerated": 227,
+      "draftTokens": 192,
+      "draftAcceptedTokens": 164,
+      "routedModel": "qwen3.5-9b"
+    },
+    "responseMetadataCalls": [
+      {
+        "model": "qwen3-8b",
+        "id": "chatcmpl-abc123",
+        "createdAt": "2026-08-27T19:22:45Z",
+        "finishReason": "stop",
+        "promptTokens": 1042,
+        "completionTokens": 259,
+        "totalTokens": 1301,
+        "promptMillis": 130.079,
+        "predictedMillis": 4232.71,
+        "predictedPerSecond": 61.2,
+        "cachedPromptTokens": 7,
+        "promptTokensEvaluated": 4,
+        "promptPerTokenMillis": 12.456,
+        "promptPerSecond": 80.284,
+        "predictedTokensGenerated": 227,
+        "predictedPerTokenMillis": 5.674,
+        "draftTokens": 192,
+        "draftAcceptedTokens": 164,
+        "liteLlm": {
+          "callId": "e58baedb-3369-48d3-b889-98df98eb431f",
+          "modelName": "qwen3.5-9b",
+          "modelApiBase": "http://izzy-bot:8585/v1",
+          "attemptedRetries": 0,
+          "attemptedFallbacks": 0,
+          "responseDurationMillis": 1930.898,
+          "overheadDurationMillis": 14.345
+        }
+      }
+    ]
+  }
+}
+```
+
+`responseMetadata` lives on `message`, not on the envelope — it is a genuine column on `chat_message`
+(`response_metadata jsonb`), so it persists and comes back on every later read of this message,
+including `GET /chats/{chatId}` history.
+
+Every field is the model server's own accounting for the turn, copied verbatim and named after the
+field it comes from. Nothing here is measured or derived by this API, so these are the server's
+numbers, not an approximation of them.
+
+- `model` is the model that actually answered, as the server named it. **A message no longer carries
+  a top-level `model` field** — that column held the user's configured preference at save time, which
+  is what was asked for rather than what ran, and it was stamped even onto messages no model
+  produced. Read `responseMetadata.model` instead.
+- `id` is the server's own completion id, and `createdAt` its timestamp for the response.
+- `finishReason` is why generation stopped — `stop` for a normal completion, `tool_calls` for a turn
+  that ended by calling a tool, `length` for one cut off at the token limit. It is the *last* model
+  call's reason, which is the turn's.
+- **The counts are the whole turn's, not one model call's.** A turn that calls a tool runs the model
+  again after every tool result, and each of those round trips reports its own usage; what you get is
+  the sum, with `modelCalls` saying how many went into it. `modelCalls` is 1 for an ordinary turn.
+- `promptTokens` and `completionTokens` are input and output tokens; `totalTokens` is the server's
+  own total, not necessarily the sum of the other two — a server that reports cached or reasoning
+  tokens counts them there.
+- `promptMillis` and `predictedMillis` are milliseconds spent on prompt evaluation and on generation.
+  **These two are a llama.cpp extension**, taken from the non-standard `timings` object llama-server
+  adds to its final response; against any other OpenAI-compatible server they are simply absent.
+  Neither covers retrieval, vision description, or anything else the turn did around the model call.
+- `totalMillis` is the turn's own measured wall-clock time, and is **not** simply
+  `promptMillis + predictedMillis`. When a call went through a LiteLLM-style proxy it prefers the
+  proxy's own measured response time (network hop and routing overhead included) over llama.cpp's
+  self-reported timings, which cover only the server's own generation work. It falls back to
+  `promptMillis + predictedMillis` when the call was not proxied, and is absent when neither source
+  reported anything.
+- `cachedPromptTokens` is how many prompt tokens were served from the model server's own prompt
+  cache rather than freshly evaluated. It is the one count here that is not llama.cpp-specific — it
+  is read from the standard `usage.prompt_tokens_details.cached_tokens` field when a server reports
+  it, falling back to llama.cpp's `timings.cache_n` only when that is absent.
+- `promptTokensEvaluated` and `predictedTokensGenerated` are llama.cpp's own token counts for the
+  turn (`timings.prompt_n` / `timings.predicted_n`), summed across round trips the same way
+  `promptTokens`/`completionTokens` are. They can differ slightly from those portable counts —
+  `promptTokensEvaluated` excludes cache hits, while `promptTokens` includes them.
+- `draftTokens` and `draftAcceptedTokens` are speculative-decoding stats (`timings.draft_n` /
+  `timings.draft_n_accepted`): how many tokens a draft model proposed for the turn, and how many the
+  main model kept. Both are absent unless the server is llama.cpp running with a draft model
+  configured. This API does not compute an acceptance rate — divide the two yourself if you want one.
+- `routedModel` is the model a LiteLLM-style proxy actually routed the turn to, which `model` cannot
+  answer: a request against a model group reports the group that was asked for (`auto-model`), not
+  what served it. **This one is not from the response body** — it is taken from the proxy's
+  `x-litellm-model-name` response header, so it is absent against a server that is not behind such a
+  proxy. When several round trips were routed differently it is the *last* call's, which is the one
+  that produced the answer being read.
+- There is no top-level tokens-per-second on `responseMetadata`: a single rate summed across several
+  round trips would be meaningless, and this API does not compute what the server did not report. If
+  you want a turn-level rate anyway, divide `completionTokens` by `predictedMillis / 1000` yourself.
+  The per-call rate the server actually measured is on `responseMetadataCalls`, described next.
+
+`responseMetadataCalls` is the per-round-trip breakdown behind `responseMetadata`'s summed totals —
+one entry per model call, so a tool-calling turn has several and an ordinary turn has exactly one.
+Every field mirrors its counterpart on `responseMetadata` for that single call, plus fields that only
+make sense per call and are never summed onto the totals:
+
+- `predictedPerSecond` and `promptPerSecond` are llama.cpp's own measured throughput for that one
+  call — generation and prompt-evaluation tokens per second, respectively. `promptPerTokenMillis` and
+  `predictedPerTokenMillis` are the same measurements inverted (milliseconds per token). All four are
+  llama.cpp-only and absent against any other server.
+- `liteLlm` is present only when the call went through a LiteLLM-style proxy, taken from its
+  `x-litellm-*` response headers rather than the response body: `callId` is the proxy's own call id
+  (the join key to LiteLLM's spend logs), `modelName`/`modelApiBase` are what actually served the
+  call, `attemptedRetries`/`attemptedFallbacks` count the proxy's own retry/fallback behavior, and
+  `responseDurationMillis`/`overheadDurationMillis` are what `responseMetadata.totalMillis` prefers
+  over llama.cpp's self-reported timings when both are available.
+
+`responseMetadata` and `responseMetadataCalls` are both `null` on any message the model server never
+reported on:
+
+- `USER` and `SYSTEM` messages, including the `SYSTEM` message a cancelled turn writes in place of an
+  answer.
+- `ASSISTANT` messages for turns that never called a chat model — an A2A agent delegation is handled
+  entirely by the remote agent, which has no token accounting to report.
+- `ASSISTANT` messages for turns that ended before the model reported any usage.
+
+Treat both objects as optional, and every field within either as nullable — a model server that
+reports less than the documented set leaves the missing fields out, `liteLlm` itself is absent on any
+call not made through a proxy, and messages persisted before a given field existed carry only what
+could be carried forward.
+
+### RUN_STARTED Event Payload
+
+```json
+{
+  "type": "RUN_STARTED",
+  "threadId": "0a4b...",
+  "runId": "5d1e...",
+  "input": {
+    "threadId": "0a4b...",
+    "runId": "5d1e...",
+    "messages": [
+      { "id": "7f3c...", "role": "user", "content": "Your message here" }
+    ],
+    "tools": []
+  }
+}
+```
+
+`threadId` is the chat id. `input.messages[0].id` is the id of the user message persisted at the
+start of the turn. Clients that uploaded attachments (see [Chat Attachments](#chat-attachments)) use
+it to associate them with the rendered message.
 
 ### attachment Event Payload
+
+Sent as `CUSTOM` with `name: "attachment"`; its `value` is:
 
 ```json
 {
   "attachmentId": "3f9a...",
   "chatId": "0a4b...",
   "described": true,
-  "reason": null
+  "reason": null,
+  "indexed": false,
+  "extractionReason": null,
+  "chunkCount": null
 }
 ```
 
-The vision pass opens with a `progress` event per image and closes with an `attachment` event per
-image. Guarantees a client can rely on:
+One event shape covers both kinds of attachment, because a client renders one attachment chip either
+way. An **image** moves `described`/`reason` and leaves the document fields empty. A **document**
+moves `indexed`/`extractionReason`/`chunkCount` and leaves `described` at `false` with a `null`
+`reason`.
 
-- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including images
-  skipped before any work started, and images the server could not resolve at all. A client never
+The attachment pass opens with a `progress` event per attachment and closes with an `attachment`
+event per attachment (both `CUSTOM`). Guarantees a client can rely on:
+
+- **Exactly one `attachment` event per id in `ChatRequest.attachmentIds`** — including attachments
+  skipped before any work started, and ones the server could not resolve at all. A client never
   has to interpret a missing event.
-- **Always before `done`**, so the event lands while the assistant message is still streaming.
+- **Always before `RUN_FINISHED`**, so the event lands while the assistant message is still streaming.
 
-Nothing else in the turn distinguishes a described image from a skipped one: a skipped image still
-produces a normal answer, just one written as though no image were attached.
+Nothing else in the turn distinguishes a handled attachment from a skipped one: a skipped attachment
+still produces a normal answer, just one written as though nothing were attached.
 
-When `described` is `false`, `reason` is one of a closed set:
+When `described` is `false` on an image, `reason` is one of a closed set:
 
 | Reason | Meaning |
 |--------|---------|
@@ -206,6 +446,18 @@ When `described` is `false`, `reason` is one of a closed set:
 `reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
 `SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment
 summary in chat history.
+
+When `indexed` is `false` on a document, `extractionReason` is one of its own closed set:
+
+| Reason | Meaning |
+|--------|---------|
+| `DOCUMENT_TOO_LARGE` | The document exceeds `solesonic.llm.attachment.document.max-size-bytes` |
+| `DOCUMENT_UNREADABLE` | The file could not be parsed, or parsed to no text — an encrypted PDF, or a scan carrying images rather than text |
+| `EMBEDDING_UNAVAILABLE` | The embedding model could not be reached, so the extracted text could not be indexed |
+| `EXCEEDED_DOCUMENT_LIMIT` | More documents were attached to one message than the extraction pass indexes |
+
+`chunkCount` says how many retrievable chunks the document became, and is `null` whenever `indexed`
+is `false`. The durable form of this signal is `indexed` on the attachment summary in chat history.
 
 ### ChatRequest Body
 
@@ -224,27 +476,31 @@ summary in chat history.
 
 ### Submit Elicitation Response
 
-When an MCP tool issues an elicitation, the frontend receives an `elicitation` SSE event and must POST the user's response before the stream can continue.
+When an MCP tool issues an elicitation, the stream carries it as an AG-UI tool call
+(`TOOL_CALL_START` → `TOOL_CALL_ARGS` → `TOOL_CALL_END`) whose `toolCallId` is the elicitation id.
+The client answers with the AG-UI `ToolMessage` for that tool call. The turn stays open meanwhile.
 
 - **Endpoint**: `POST /streaming/chats/{chatId}/{elicitationId}/elicitation-response`
 - **Path Parameters**:
-  - `chatId` (UUID): The active chat session
-  - `elicitationId` (UUID): The specific elicitation to respond to
-- **Request Body**:
+  - `chatId` (UUID): The active chat session. Must belong to the caller
+  - `elicitationId` (UUID): The `toolCallId` from `TOOL_CALL_START`
+- **Request Body** — an AG-UI `ToolMessage`. `content` is a JSON *string*, as AG-UI defines it,
+  holding a flat object: the `action` plus the form values keyed by `requestedSchema` property name:
 ```json
 {
-  "elicitationResponse": {
-    "name": "delete-confirmation",
-    "fields": { "confirmed": "accept" },
-    "action": "accept"
-  }
+  "id": "b8e2...",
+  "role": "tool",
+  "toolCallId": "9c41...",
+  "content": "{\"action\":\"accept\",\"assigneeAccountId\":\"70121:629f...\"}"
 }
 ```
-- **Action values**: `accept`, `decline`, `cancel`
+- **Action values**: `accept`, `decline`, `cancel` (case-insensitive)
+- **Forwarded to the MCP tool**: on `accept`, only the values whose keys the elicitation's
+  `requestedSchema.properties` named; nothing on `decline`/`cancel`. See [elicitation.md](elicitation.md).
 - **Responses**:
   - `200 OK` - Response accepted
-  - `400 Bad Request` - Invalid payload
-  - `404 Not Found` - No matching pending elicitation
+  - `400 Bad Request` - `toolCallId` does not match `{elicitationId}`, or `content` names no known action
+  - `404 Not Found` - The chat does not exist or is not the caller's
 
 See [elicitation.md](elicitation.md) for full architecture and examples.
 
@@ -264,24 +520,33 @@ curl -N -X POST "http://localhost:8080/streaming/chats/users/${USER_ID}" \
 ```typescript
 const eventSource = new EventSource(`${baseUrl}/streaming/chats/users/${userId}`);
 
-eventSource.addEventListener('chunk', (event) => {
-  console.log('Text chunk:', event.data);
+eventSource.addEventListener('TEXT_MESSAGE_CONTENT', (event) => {
+  console.log('Text chunk:', JSON.parse(event.data).delta);
 });
 
-eventSource.addEventListener('elicitation', async (event) => {
-  const payload = JSON.parse(event.data);
-  // Render form and collect user input, then:
-  await fetch(`${baseUrl}/streaming/chats/${payload.chatId}/${payload.elicitationId}/elicitation-response`, {
+eventSource.addEventListener('TOOL_CALL_ARGS', async (event) => {
+  const { toolCallId, delta } = JSON.parse(event.data);
+  const elicitation = JSON.parse(delta);
+  // Render elicitation.message / elicitation.requestedSchema, collect the answer, then:
+  await fetch(`${baseUrl}/streaming/chats/${elicitation.chatId}/${toolCallId}/elicitation-response`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      elicitationResponse: { name: payload.name, fields: { confirmed: 'accept' }, action: 'accept' }
+      id: crypto.randomUUID(),
+      role: 'tool',
+      toolCallId,
+      content: JSON.stringify({ action: 'accept' })
     })
   });
 });
 
-eventSource.addEventListener('done', (event) => {
-  console.log('Chat complete:', JSON.parse(event.data));
+eventSource.addEventListener('RUN_FINISHED', (event) => {
+  console.log('Chat complete:', JSON.parse(event.data).result);
+  eventSource.close();
+});
+
+eventSource.addEventListener('RUN_ERROR', (event) => {
+  console.error('Chat failed:', JSON.parse(event.data).message);
   eventSource.close();
 });
 ```
@@ -294,13 +559,27 @@ These endpoints retrieve existing chat history. They do not create or send messa
 
 ### Get All Chats for a User
 
+`{userId}` must be the authenticated subject — otherwise `403`.
+
 - **Endpoint**: `GET /chats/users/{userId}`
 - **Path Parameters**:
   - `userId` (UUID): The user whose chats to retrieve
 - **Query Parameters**:
   - `page` (int, default `0`): Zero-based page index
   - `size` (int, default `20`, max `100`): Page size
-- **Response**: A page of chat objects, newest first (`timestamp` descending, `id` as a tiebreaker)
+  - `ungrouped` (boolean, default `false`): Return only the conversations that are not filed under a
+    [group](#conversation-groups)
+- **Response**: A page of chat objects — hand-placed conversations first, in the order the user
+  arranged them, then everything else newest first (`timestamp` descending, `id` as a tiebreaker).
+  See [Move a Chat](#move-a-chat)
+
+`ungrouped` is opt-in, and omitting it returns every chat the user owns, grouped ones included — what
+every existing client already receives. It exists for a client that renders group sections above this
+list: without it, every grouped conversation appears twice, and filtering them out client-side leaves
+`totalElements` and `totalPages` describing more rows than the client will render, so an infinite
+scroll stalls whenever a whole page filters away to nothing. With `ungrouped=true` the counters cover
+only the ungrouped chats, and the page shape, message hydration, and ordering rule are otherwise
+identical.
 
 Parameters are bounded rather than rejected: a negative `page` is treated as `0`, a `size` above the
 `spring.data.web.pageable.max-page-size` limit is capped at it, and scrolling past the last page
@@ -310,7 +589,16 @@ but ignored: the ordering is fixed by the repository query, so that pages cannot
 ```json
 {
   "content": [
-    { "id": "...", "userId": "...", "timestamp": "...", "chatMessages": [] }
+    {
+      "id": "...",
+      "userId": "...",
+      "timestamp": "...",
+      "name": "Trip planning",
+      "chatGroupId": null,
+      "sortOrder": null,
+      "groupSortOrder": null,
+      "chatMessages": []
+    }
   ],
   "page": {
     "size": 20,
@@ -331,56 +619,503 @@ The ordering is deterministic, so pages never overlap or skip a chat.
   - `chatId` (UUID): The chat session to retrieve
 - **Response**: Complete chat object with message history
 
+Scoped to the caller exactly as [Rename a Chat](#rename-a-chat) is: a chat that does not exist, or
+is not owned by the caller, is `404`.
+
+### Rename a Chat
+
+- **Endpoint**: `PUT /chats/{chatId}/name`
+- **Path Parameters**:
+  - `chatId` (UUID): The chat session to rename
+- **Request Body**: `ChatRenameRequest` — `{ "name": "..." }`
+- **Response**: The updated chat object
+
+The caller's identity comes only from the bearer token (`UserRequestContext`, resolved from the JWT
+subject), never from a request parameter, so there is no `userId` to supply or spoof. A chat that
+does not exist, or is not owned by the caller, is `404`. A blank name or one over 255 characters is
+`400`.
+
+### Move a Chat
+
+- **Endpoint**: `PUT /chats/{chatId}/order`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation to move
+- **Request Body**: `ChatOrderRequest` — `{ "position": 0 }`
+- **Response**: The updated chat object, carrying its new `sortOrder`
+
+Moves a conversation within the caller's whole list, independently of any group it is filed under —
+a move here never disturbs a group's ordering, and a move inside a group never disturbs this one.
+
+`position` is a **zero-based index among the conversations that have already been placed by hand**,
+which are the prefix of the list. Everything else follows in `timestamp` order. This is what keeps
+manual ordering additive: a conversation nobody has moved sorts exactly as it did before, and a
+newly created one still appears at the top of the timestamp-ordered part rather than at the bottom
+of the list.
+
+| Body | Effect |
+|---|---|
+| `{"position": 0}` | Move to the head of the list |
+| `{"position": n}` | Move to index `n`; a position past the end of the placed conversations appends, since a drag into the timestamp-ordered part means "last" |
+| `{"position": null}` | Unplace the conversation — it returns to `timestamp` ordering |
+
+A move renumbers the placed conversations densely from zero. **Do not treat `sortOrder` as an index
+into the rendered list**: deleting a placed conversation, or moving one out of a group, leaves a gap
+that stays until the next move closes it, so the values can read `0, 1, 3`. Only their relative
+order is meaningful. To place something *after* the chat currently showing `3`, send the target's
+index in the list you are rendering, not `4`.
+
+A negative position is `400`. A chat that does not exist, or is not owned by the caller, is `404`.
+
+A `PUT` because it is idempotent: sending the same position twice leaves the list in the same
+arrangement.
+
+### Delete a Chat
+
+- **Endpoint**: `DELETE /chats/{chatId}`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation to delete
+- **Response**: `204 No Content`
+
+Deletes the conversation and everything stored under it — every message, the attachments bound to
+those messages, and the images generated inside it — as one transaction. Nothing is recoverable
+afterwards, and there is no soft-delete or trash. Attachments the caller uploaded but never sent are
+untouched; they belong to no conversation and are swept on their own schedule.
+
+A chat that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
+rather than `204`. Groups are unaffected: deleting the last conversation in a group leaves an empty
+group, not a deleted one.
+
+Deleting a conversation does not cancel a turn that is already streaming. Generation is deliberately
+independent of any listener, so a turn in flight runs to completion and writes a message that lands
+on a conversation that no longer exists — unreachable from every read path, but written. Wait for
+`RUN_FINISHED` before deleting, or send [Cancel a Streaming Turn](#cancel-a-streaming-turn) first.
+
+### Delete a Chat Message
+
+- **Endpoint**: `DELETE /chats/{chatId}/messages/{messageId}`
+- **Path Parameters**:
+  - `chatId` (UUID): The conversation the message belongs to
+  - `messageId` (UUID): The message to delete
+- **Response**: `204 No Content`
+
+Deletes one message and everything stored under it — its own attachments and the images generated
+on its turn — as one transaction. Nothing is recoverable afterwards, and there is no soft-delete.
+Deleting a `USER` or `ASSISTANT` message does not delete the other side of the turn; delete both ids
+if the whole exchange should go.
+
+A chat that does not exist, or is not owned by the caller, is `404`. A `messageId` that does not
+belong to `chatId` is also `404`, the same as one that does not exist at all.
+
+Deleting the in-flight `USER` message of a turn that is still streaming is not guarded against, the
+same as [Delete a Chat](#delete-a-chat): wait for `RUN_FINISHED` first, or send
+[Cancel a Streaming Turn](#cancel-a-streaming-turn).
+
 ---
 
-## Ollama Model Management
+## Conversation Groups
 
-These endpoints manage the application's catalog of Ollama model configurations stored in the database, and can also query which models are currently installed in Ollama.
+Optional, user-owned sections a conversation can be filed under. Grouping is entirely additive: a
+chat belongs to at most one group, every chat starts ungrouped, and nothing about a conversation
+changes when it is filed or unfiled. Each chat carries its membership as a read-only `chatGroupId`
+wherever a chat is returned — `null` when it is ungrouped.
+
+Like [Rename a Chat](#rename-a-chat), these endpoints take no `userId`: the caller's identity comes
+only from the bearer token. A group or a chat that does not exist, or that belongs to another user,
+is `404` in both cases — the endpoints do not confirm that an id exists to someone who cannot read
+it.
+
+Their own path rather than a segment of `/chats`, because `/chats/{chatId}` takes a UUID and a
+literal segment underneath it would be matched as a chat id.
+
+### Create a Group
+
+- **Endpoint**: `POST /chatgroups`
+- **Request Body**: `ChatGroupRequest` — `{ "name": "..." }`
+- **Response**: `201 Created`, a `Location` header, and the created group
+
+```json
+{
+  "id": "b8f1...",
+  "userId": "0c31...",
+  "name": "Work",
+  "sortOrder": null,
+  "timestamp": "2026-08-23T16:40:14Z"
+}
+```
+
+The name is trimmed. A blank name or one over 255 characters is `400`. Names are not required to be
+unique — two groups may share one, and are ordered against each other by id so a listing never
+reshuffles.
+
+A new group starts unplaced — `sortOrder` is `null` — so it is listed by name until a client places
+it with [Update a Group](#update-a-group).
+
+### Update a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}`
+- **Request Body**: `ChatGroup` — the group itself, not a request record:
+  `{ "name": "...", "sortOrder": 0 }`
+- **Response**: The updated group
+
+A pure update of the two fields a group's owner controls: its `name` and its `sortOrder`, the rank it
+holds among the caller's sections. The body is the same object the group is returned as, so `id`,
+`userId` and `timestamp` may be sent and are ignored — all three are read-only on the wire, and
+ownership comes from the bearer token while the id comes from the path.
+
+**A full update, not a patch.** Both writable fields are taken as sent, so a body that omits
+`sortOrder` unplaces the group and returns it to name ordering. Send the group as you want it to end
+up, not the part of it you changed.
+
+`sortOrder` is a **rank, not an index** — it is stored exactly as sent, and unlike a chat's position
+no other row is renumbered. Gaps and duplicates are both legal; a listing breaks a tie by name and
+then by id, so two groups sharing a rank never swap places between requests. A client rearranging
+several sections states each one with its own `PUT`. `null` unplaces the group. A negative rank is
+`400`.
+
+The same name validation `create` applies: the name is trimmed, and a blank one or one over 255
+characters is `400`. Names stay non-unique — giving a group a name another group already carries is a
+success.
+
+Ownership is resolved before the body is validated, so a bad name or a negative rank sent for a group
+the caller does not own is `404` rather than `400`: the endpoint does not tell a caller the difference
+between "your body was wrong" and "that group is not yours". Nothing else about the group changes —
+its membership, the sort orders of the chats filed under it, and its `timestamp` are all untouched.
+
+### List Groups
+
+- **Endpoint**: `GET /chatgroups`
+- **Response**: Every group the caller owns — hand-placed sections first by `sortOrder`, then the
+  rest by name, with the id as a final tiebreaker
+
+A group nobody has placed sorts by name exactly as it did before ordering existed, which is what
+keeps a newly created one among those rather than at the top of the arrangement.
+
+### Get a Group
+
+- **Endpoint**: `GET /chatgroups/{chatGroupId}`
+- **Response**: The group
+
+### Get the Conversations in a Group
+
+- **Endpoint**: `GET /chatgroups/{chatGroupId}/chats`
+- **Query Parameters**:
+  - `page` (int, default `0`): Zero-based page index
+  - `size` (int, default `20`, max `100`): Page size
+- **Response**: A page of chat objects, in the same shape and ordered on the same rule as
+  [`GET /chats/users/{userId}`](#get-all-chats-for-a-user) — hand-placed conversations first, then
+  the rest newest first, with messages hydrated. The position read here is `groupSortOrder`, the
+  group's own ordering, not the `sortOrder` the whole list uses. A `sort` parameter is accepted by
+  the resolver but ignored, for the same reason it is there.
+
+### Add a Conversation to a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}/chats/{chatId}`
+- **Response**: `204 No Content`
+
+A `PUT` because it is idempotent: filing a conversation that is already in this group is a success,
+and leaves the position it holds there alone. Filing one that is in another group moves it, since a
+chat carries at most one group, and clears its `groupSortOrder` — a position in the group it just
+left describes nothing.
+
+### Move a Conversation within a Group
+
+- **Endpoint**: `PUT /chatgroups/{chatGroupId}/chats/{chatId}/order`
+- **Request Body**: `ChatOrderRequest` — `{ "position": 0 }`
+- **Response**: The updated chat object, carrying its new `groupSortOrder`
+
+The same rules as [Move a Chat](#move-a-chat) — zero-based index among the placed conversations,
+`null` to unplace, `400` on a negative position, and the same warning against reading
+`groupSortOrder` as an index — applied to this group's own ordering. The conversation's place in the
+caller's whole list is untouched.
+
+A chat that is not in this group is `404`: a position in a group the conversation is not filed under
+describes nothing, and accepting one would leave the client's picture of the sidebar wrong.
+
+### Remove a Conversation from a Group
+
+- **Endpoint**: `DELETE /chatgroups/{chatGroupId}/chats/{chatId}`
+- **Response**: `204 No Content`
+
+Ungroups the conversation; the chat and its messages are untouched, and its `groupSortOrder` is
+cleared along with the membership. A chat that is not in this group is `404` rather than a silent
+success — the client's picture of where the conversation lives is wrong, and reporting the removal
+as done would leave it wrong.
+
+To delete the conversation itself rather than unfile it, use
+[`DELETE /chats/{chatId}`](#delete-a-chat). To delete the group rather than one of its members, use
+[`DELETE /chatgroups/{chatGroupId}`](#delete-a-group) — the two live on adjacent paths and are the
+pair most easily confused.
+
+### Delete a Group
+
+- **Endpoint**: `DELETE /chatgroups/{chatGroupId}`
+- **Path Parameters**:
+  - `chatGroupId` (UUID): The group to delete
+- **Response**: `204 No Content`
+
+**Deletes the section, never the conversations filed under it.** Every chat in the group survives and
+becomes ungrouped: `chatGroupId` and `groupSortOrder` are both cleared, since a position inside a
+group that no longer exists describes nothing. Each chat's `sortOrder` — its place in the caller's
+*whole* list — is left alone; the two orderings are independent, and a deleted group says nothing
+about the sidebar.
+
+All of it is one transaction, so the group is gone and its chats are ungrouped, or nothing happened.
+
+A group that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
+rather than `204` — the same rule [`DELETE /chats/{chatId}`](#delete-a-chat) follows. Other groups are
+unaffected.
+
+Not to be confused with [`DELETE /chatgroups/{chatGroupId}/chats/{chatId}`](#remove-a-conversation-from-a-group),
+which unfiles a single conversation and leaves the group standing.
+
+---
+
+## Model Catalog Management
+
+These endpoints manage the application's catalog of model configurations stored in the database —
+the set a user's model preference draws its options from. It is a plain CRUD catalog: nothing here
+queries a model server. An OpenAI-compatible server serves whichever single model it was launched
+with, so "which models are installed" is a deployment fact rather than a live query.
+
+Every endpoint requires the `model-admin` role.
 
 ### List All Models
 
-- **Endpoint**: `GET /ollama/models`
-- **Query Parameters**:
-  - `refresh` (boolean, default `false`): When `true`, evicts the Redis model cache before returning results
-- **Response**: Array of `OllamaModel` objects
+- **Endpoint**: `GET /models`
+- **Response**: Array of `LlmModel` objects
 
 ### Get a Specific Model
 
-- **Endpoint**: `GET /ollama/models/{id}`
+- **Endpoint**: `GET /models/{id}`
 - **Path Parameters**:
   - `id` (UUID): The model record ID
-- **Response**: `OllamaModel` object
+- **Response**: `LlmModel` object
 
 ### Create a Model Record
 
-- **Endpoint**: `POST /ollama/models`
-- **Request Body**: `OllamaModel`
-- **Response**: The created `OllamaModel`
+- **Endpoint**: `POST /models`
+- **Request Body**: `LlmModel`
+- **Response**: The created `LlmModel`
 
 ### Update a Model Record
 
-- **Endpoint**: `PUT /ollama/models/{id}`
+- **Endpoint**: `PUT /models/{id}`
 - **Path Parameters**:
   - `id` (UUID): The model record to update
-- **Request Body**: `OllamaModel`
-- **Response**: The updated `OllamaModel`
+- **Request Body**: `LlmModel`
+- **Response**: The updated `LlmModel`
 
-### List Installed Ollama Models
+### Delete a Model Record
 
-- **Endpoint**: `GET /ollama/installed`
-- **Description**: Queries the Ollama server for currently installed models, enriched with database metadata
-- **Response**: Array of `OllamaModel` objects
+- **Endpoint**: `DELETE /models/{id}`
+- **Path Parameters**:
+  - `id` (UUID): The model record to delete
+- **Response**: `204 No Content`
 
 ---
 
-## Document and Training Data
+## Document and Ingested Data
 
-### Upload a Document
+Ingested documents live in three independently CRUD-complete collections, one per scope. Which
+collection a document is in **is** its scope — there is no `scope` parameter on any request, and no
+way to create a document at the wrong scope.
 
-- **Endpoint**: `POST /documents/data/upload`
-- **Request**: `multipart/form-data` with a `file` field
-- **Description**: Queues a document for processing and ingestion into the vector store. Supported formats include PDF and plain text.
-- **Response**: `201 Created` with a `Location` header pointing to the queued training document record
+| Collection | Retrievable by | Who may read | Who may write |
+|---|---|---|---|
+| `/documents/global` | everyone | any authenticated user | `rag-admin` role |
+| `/users/{userId}/documents` | the user | the user named in the path | the user named in the path |
+| `/chats/documents` | one conversation | the uploader | the uploader |
+
+A chat document has two origins and one collection. It arrives either by being
+[attached to a message](#chat-attachments), which indexes it inline on that turn, or by being
+uploaded to `/chats/documents?chatId=…`, which queues it like any other document. Both are listed,
+renamed, refreshed and deleted through the same endpoints; `documentSource` tells them apart —
+`CHAT` for a document that came in on a message, `USER` for one uploaded to the conversation.
+
+### Entitlements, and the `scope` field
+
+A document records **who may retrieve it** and **who may manage it** as separate grants, rather than
+as a single scope. That is what makes the chat collection the *uploader's* rather than the
+conversation's: a chat document is retrievable by the conversation and managed by whoever uploaded
+it, so "every document I have ever uploaded to any chat" becomes one query.
+
+| Principal | Retrievable by | Written by |
+|-------|----------------|------------|
+| `global` | every user, in every conversation | `POST /documents/global`, `POST /documents/global/uri`, Confluence ingestion |
+| `user:<userId>` | one user, in all of their conversations | `POST /users/{userId}/documents`, `POST /users/{userId}/documents/uri`, promotion |
+| `chat:<chatId>` | one conversation | attaching a document to a chat message, `POST /chats/documents?chatId=…` |
+
+A chat turn searches these in order of precedence — **conversation, then user, then global** — over a
+shared result budget. The most specific takes what it can, the next takes what is left, so a document
+attached to the conversation is both preferentially included and ranked ahead of the shared knowledge
+base rather than competing with it on similarity alone.
+
+> **`scope` is deprecated.** It is still returned, derived from the retrieve grants, so no client
+> breaks — but a document can now be granted to more than one principal, and one value cannot
+> describe that. Where several apply the narrowest is reported (`CHAT` > `USER` > `GLOBAL`). **Read
+> `entitlements` instead**, which is the full list.
+
+### IngestedDocumentSummary
+
+Every endpoint below that returns a document returns this shape. The stored file content is never
+part of it.
+
+```json
+{
+  "id": "uuid",
+  "fileName": "handbook.pdf",
+  "contentType": "application/pdf",
+  "fileSizeBytes": 20481,
+  "documentSource": "USER",
+  "scope": "GLOBAL",
+  "chatId": null,
+  "entitlements": ["global"],
+  "chatName": null,
+  "documentStatus": "COMPLETED",
+  "created": "2026-09-02T12:00:00Z",
+  "updated": "2026-09-02T12:04:00Z"
+}
+```
+
+`documentSource` is one of `USER`, `CONFLUENCE`, `URI`, `CHAT`. `documentStatus` is one of `QUEUED`,
+`IN_PROGRESS`, `PREPARING`, `TOKEN_SPLITTING`, `KEYWORD_ENRICHING`, `METADATA_ENRICHING`,
+`COMPLETED`, `FAILED`, `REPLACED`. `fileSizeBytes` is `0` for a URI document that has not been
+fetched yet — its size is not known until the fetch happens — and for a document that came in as a
+chat attachment, whose bytes live on the attachment row rather than here.
+
+- **`entitlements`** lists every principal that may retrieve the document: `global`,
+  `user:<userId>`, `chat:<chatId>`. This is the field to read.
+- **`scope`** is derived from that list and **deprecated**; see above.
+- **`chatId`** is where the document *came from*, not where it may be retrieved. A document promoted
+  out of a conversation clears it, which is what lets the promoted copy outlive the conversation
+  being deleted.
+- **`chatName`** is the conversation's display name, so a cross-chat listing can label its rows
+  rather than showing a bare id. Null for a document that came from no conversation.
+
+### Shared documents — `/documents/global`
+
+Reads are open to any authenticated user: these documents are already retrievable by everyone
+through RAG, so the listing shows only what the assistant already answers from. **Every write
+requires the `rag-admin` role** and answers `403` without it.
+
+| Method | Path | Authorization | Response |
+|---|---|---|---|
+| `POST` | `/documents/global` | `rag-admin` | `201` + `Location`, `IngestedDocumentSummary` |
+| `POST` | `/documents/global/uri` | `rag-admin` | `202` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/documents/global` | any authenticated user | `200`, paginated |
+| `GET` | `/documents/global/{id}` | any authenticated user | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/documents/global/{id}` | `rag-admin` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/documents/global/{id}` | `rag-admin` | `204` |
+| `POST` | `/documents/global/{id}/refresh` | `rag-admin` | `202`, `IngestedDocumentSummary` |
+
+- **Upload** takes `multipart/form-data` with a `file` field. De-duplication by file name applies
+  within this collection only — a `GLOBAL` upload whose name already exists returns the existing
+  document rather than creating a second one.
+- **URI ingestion** takes `{"uri": "https://..."}`. Only `http` and `https` are accepted. Re-ingesting
+  a URI already in *this* collection supersedes the earlier document (`REPLACED`) and clears its
+  chunks; a copy of the same URI in another collection is untouched.
+- **`PATCH` renames, and only renames.** The body is `{"fileName": "new-name.pdf"}`; a blank or
+  missing name is `400`. There is no content-replacement operation — re-running extraction over the
+  stored content is what `refresh` is for, and different bytes are a different document.
+- **`DELETE`** removes the document and its vector-store chunks together.
+- **`refresh`** clears the chunks and re-queues the document for embedding.
+
+### A user's own documents — `/users/{userId}/documents`
+
+Identical operations, self-service. **Every method** checks the `{userId}` path segment against the
+JWT subject and answers `403` when they differ — the same check `/users/{userId}/preferences` applies.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/users/{userId}/documents` | `201` + `Location`, `IngestedDocumentSummary` |
+| `POST` | `/users/{userId}/documents/uri` | `202` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/users/{userId}/documents` | `200`, paginated |
+| `GET` | `/users/{userId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/users/{userId}/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/users/{userId}/documents/{documentId}` | `204` |
+| `POST` | `/users/{userId}/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+
+No de-duplication by file name applies here. Two users uploading `notes.pdf` have two separate
+documents, and so do two users ingesting the same URI.
+
+**`403` and `404` answer different questions.** A `403` means the path named someone other than the
+caller — a value the caller supplied themselves, so there is nothing to conceal. A `404` means no
+such document *in this collection*, which is the same answer whether it never existed or belongs to
+someone else.
+
+### Your chat documents — `/chats/documents`
+
+Every document the caller has uploaded to any conversation. **The collection is the caller's, not the
+conversation's** — a chat document is retrievable by the chat but managed by whoever uploaded it, so
+the conversation is a filter on this collection rather than a segment of its path.
+
+| Method | Path | Response |
+|---|---|---|
+| `POST` | `/chats/documents?chatId=…` | `201` + `Location`, `IngestedDocumentSummary` |
+| `GET` | `/chats/documents` | `200`, paginated |
+| `GET` | `/chats/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `PATCH` | `/chats/documents/{documentId}` | `200`, `IngestedDocumentSummary` |
+| `DELETE` | `/chats/documents/{documentId}` | `204` |
+| `POST` | `/chats/documents/{documentId}/refresh` | `202`, `IngestedDocumentSummary` |
+| `POST` | `/chats/documents/{documentId}/promote/user` | `200`, `IngestedDocumentSummary` |
+| `POST` | `/chats/documents/{documentId}/promote/global` | `200`, `IngestedDocumentSummary` — `rag-admin` |
+
+The caller is taken from the JWT subject, never from a path segment, so there is no `{userId}` here
+that could disagree with the token.
+
+- **`GET` spans every conversation by default.** `?chatId=` narrows to one; `?status=` filters on the
+  latest status. `?status=FAILED` is the reason that filter exists — a document that did not index is
+  otherwise invisible in every surface, and the user is never told their attachment failed.
+- **The ownership failure is `404`, not `403`.** Authorization is the manage grant applied inside the
+  query, so a document belonging to someone else is simply absent — the same answer
+  `GET /chats/{chatId}` gives. Asking about someone else's conversation returns an empty page rather
+  than a refusal.
+- **`POST` is the one place a chat id is supplied**, and the one operation that checks the
+  conversation belongs to the caller. It takes `multipart/form-data` with a `file` field and is
+  **queued**, not indexed inline: it comes back `QUEUED` and becomes retrievable at `COMPLETED`. That
+  is the one behavioural difference from attaching the same file to a message, where indexing happens
+  on the turn because the user is waiting on the answer.
+- **There is no `/uri` sibling.** A conversation's documents are the ones being discussed in it; a
+  URI worth keeping past the conversation belongs in the user's own collection.
+- **`DELETE` stops the retrieval and leaves the conversation alone.** A document that arrived on a
+  message keeps its `chat_attachment` row, because that row is what the message displays — removing
+  both is `DELETE /attachments/{attachmentId}`.
+- **`refresh` works for either origin.** A document that came in as an attachment has no bytes of its
+  own; the re-ingest re-reads them from the attachment, the same way a URI document is re-fetched.
+- No de-duplication by file name applies here.
+
+#### Promotion
+
+Moves a document out of the conversation and into a wider audience. It is not a re-ingest: the
+audience is a filter key, never part of the vectors, so the chunks are re-pointed in place rather
+than re-embedded — there is no window in which the document is unretrievable.
+
+- **`promote/user`** makes it retrievable in every one of the caller's conversations. Management does
+  not change; the caller already manages it, which is how they were allowed to ask.
+- **`promote/global`** puts it in the shared corpus and hands management to the `rag-admin` role, so
+  the promoting admin keeps no personal grant. Two endpoints rather than one taking a target, because
+  `@PreAuthorize` cannot express "admin only when the body says global".
+- **The promoted document survives its origin conversation being deleted.** Promotion copies the
+  bytes off the attachment and clears the chat provenance from the row and its chunks, so the
+  teardown that follows a deleted chat no longer reaches it.
+- **`409`** if the document is still ingesting — a promotion would race the chunk stamping it is
+  rewriting — or, for `promote/global`, if a shared document of that name already exists. An upload
+  de-duplicates by returning the existing row; a promotion cannot, because it already has a different
+  one, and merging them would discard a document.
+
+### Pagination
+
+All three listing endpoints take `page` and `size` (default `20`) and return a `PagedModel`:
+
+```json
+{
+  "content": [ { "id": "uuid", "fileName": "handbook.pdf" } ],
+  "page": { "size": 20, "number": 0, "totalElements": 42, "totalPages": 3 }
+}
+```
+
+A client-supplied `sort` is ignored. Ordering is newest-first and belongs to the query, because a
+sort appended to it is either an unknown property or a perturbation that paging cannot rely on.
 
 ### Vector Search
 
@@ -388,16 +1123,56 @@ These endpoints manage the application's catalog of Ollama model configurations 
 - **Request Body**: `VectorSearch` containing the query text
 - **Response**: Array of matching document text excerpts ranked by similarity
 
-### List Training Documents
+### Process the Ingestion Queue
 
-- **Endpoint**: `GET /trainingdocuments`
-- **Response**: Array of `TrainingDocument` objects, including processing status (`QUEUED`, `PROCESSING`, `COMPLETED`, `FAILED`)
+- **Endpoint**: `POST /documents/processQueue`
+- **Authorization**: Requires `rag-admin` role
+- **Description**: Drains whatever is queued now rather than waiting for the scheduled task. Carries
+  no id and belongs to no collection — the work it starts is chunking and embedding against the ETL
+  model, which is why it is gated.
+- **Response**: `202 Accepted`
 
 ---
 
 ## User Preferences
 
-User preferences control per-user settings such as which Ollama model to use for chat and the similarity threshold for RAG retrieval.
+`{userId}` must be the authenticated subject on all three endpoints below — otherwise `403`.
+
+User preferences control per-user settings such as which catalog model to use for chat and the
+similarity thresholds for RAG retrieval — one per retrieval tier (`chatSimilarityThreshold`,
+`userSimilarityThreshold`, `globalSimilarityThreshold`), each optional: a null value falls back to
+that tier's system default.
+
+Stored OAuth tokens are **never serialized** on any of these endpoints. Connection state travels as
+two booleans instead — `atlassianAuthentication` and `googleAuthentication` — which is what a client
+should read to decide whether to show "connected" or a "connect" link:
+
+```json
+{
+  "userId": "user-uuid-here",
+  "model": "qwen3.5:9b",
+  "chatSimilarityThreshold": 0.5,
+  "userSimilarityThreshold": 0.75,
+  "globalSimilarityThreshold": 0.75,
+  "addressId": "address-uuid-here",
+  "timeZone": "America/Chicago",
+  "atlassianAuthentication": true,
+  "googleAuthentication": false,
+  "created": "2026-08-11T16:55:00Z",
+  "updated": "2026-08-11T16:55:00Z"
+}
+```
+
+`addressId` is a plain foreign key to an [`Address`](#addresses) row — never a nested object. It is
+set only by [`PUT /users/{userId}/preferences/{addressId}`](#link-address); the address's own fields
+are read and written through `/addresses`, not through this resource.
+
+`timeZone` is a plain IANA zone id string (e.g. `"America/Chicago"`), not a fixed UTC offset — this
+is what lets it account for daylight saving time. It is optional and has no default.
+
+Because tokens cannot round-trip, a `POST` or `PUT` body that omits them does **not** clear them —
+the stored tokens are preserved. Disconnecting is an explicit action
+([`POST /google/auth/revoke`](#revoke-access)), never a side effect of saving preferences.
 
 ### Get Preferences
 
@@ -421,6 +1196,56 @@ User preferences control per-user settings such as which Ollama model to use for
   - `userId` (UUID)
 - **Request Body**: `UserPreferences`
 - **Response**: Updated `UserPreferences`
+
+### Link Address
+
+- **Endpoint**: `PUT /users/{userId}/preferences/{addressId}`
+- **Path Parameters**:
+  - `userId` (UUID)
+  - `addressId` (UUID): Must already exist — created via `POST /addresses`
+- **Response**: Updated `UserPreferences`, with `addressId` set
+- **Errors**: `404` if `addressId` does not name an existing address
+
+---
+
+## Addresses
+
+A generic postal address — `address`, `city`, `state`, `zip`, all optional. It carries no owner of
+its own; ownership is derived entirely from whichever `UserPreferences` row has linked it via
+`addressId` (see [Link Address](#link-address) above). The caller is taken from the authenticated
+subject, never a path segment.
+
+An address is invisible to `GET`/`PUT`/`DELETE` until it has been linked to the caller's own
+preferences — `POST` returns the created address directly, so the id is available immediately, but
+reading it back requires linking it first.
+
+### Create Address
+
+- **Endpoint**: `POST /addresses`
+- **Request Body**: `Address` (`address`, `city`, `state`, `zip` — all optional strings)
+- **Response**: `201 Created` with the created `Address`
+
+### Get Address
+
+- **Endpoint**: `GET /addresses/{addressId}`
+- **Response**: `Address`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+### Update Address
+
+- **Endpoint**: `PUT /addresses/{addressId}`
+- **Request Body**: `Address`
+- **Response**: Updated `Address`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+### Delete Address
+
+- **Endpoint**: `DELETE /addresses/{addressId}`
+- **Response**: `204 No Content`
+- **Errors**: `404` if `addressId` is not linked to the caller's own preferences
+
+Deleting an address nulls out `UserPreferences.addressId` at the database level
+(`on delete set null`) rather than through application code.
 
 ---
 
@@ -486,6 +1311,106 @@ The token broker provides short-lived Atlassian access tokens to MCP servers wit
   "siteId": "site-id-optional"
 }
 ```
+
+See [mcp-integration.md](mcp-integration.md) for the full token broker architecture and integration guide.
+
+---
+
+## Google Authentication
+
+These endpoints handle the OAuth2 authorization code flow for connecting a user's Google account (Gmail).
+
+### Get Authorization URI
+
+- **Endpoint**: `GET /google/auth/uri`
+- **Description**: Builds the Google consent URL. Always requests `access_type=offline` and `prompt=consent`, which is what makes Google return a refresh token.
+- **Response**: `GoogleAuthLinkResponse` containing the URL the user should visit to authorize access
+
+```json
+{
+  "uri": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=..."
+}
+```
+
+### OAuth Callback
+
+- **Endpoint**: `GET /google/auth/callback`
+- **Query Parameters**:
+  - `code` (string): The authorization code returned by Google
+- **Description**: Exchanges the code for tokens and stores them, encrypted, against the authenticated user. If Google returns no refresh token — which it does whenever the grant already existed — the previously stored one is kept rather than overwritten.
+- **Response**: `204 No Content`
+
+### Get Gmail Profile
+
+- **Endpoint**: `GET /google/auth/profile`
+- **Description**: Returns the connected mailbox's own profile. Useful as a post-connect check: a token exchange succeeds even when the Gmail API is not enabled for the project, and that misconfiguration shows up here rather than at connect time.
+- **Response**: `application/json` — the Gmail API's own profile document, passed through unchanged
+
+```json
+{
+  "emailAddress": "someone@example.com",
+  "messagesTotal": 12043,
+  "threadsTotal": 8871,
+  "historyId": "992144"
+}
+```
+
+### Revoke Access
+
+- **Endpoint**: `POST /google/auth/revoke`
+- **Description**: Revokes the grant at Google and deletes the stored token. Safe to call when nothing is connected.
+- **Response**: `204 No Content`
+
+### Google Error Responses
+
+Every Google failure — on these endpoints and on the token broker — arrives as a failing status code
+with a stable `code` to branch on. Google's own error text is logged, never returned.
+
+```json
+{
+  "code": "RECONNECT_REQUIRED",
+  "message": "Google access is no longer valid. Reconnect your Google account."
+}
+```
+
+| Code | Status | Meaning |
+|---|---|---|
+| `RECONNECT_REQUIRED` | `400` | No token stored, or Google answered `invalid_grant` (revoked, expired, or a Testing-mode token past seven days). Retrying cannot fix it — send the user through `GET /google/auth/uri` again |
+| `RATE_LIMITED` | `429` | Google is throttling. Back off and retry |
+| `UPSTREAM_UNAVAILABLE` | `503` | Google, or the call to it, failed in a way a retry may fix |
+| `INTERNAL` | `500` | Anything else |
+
+Unlike the Atlassian endpoints, which render a failure as `200 OK` carrying a chat message, these are
+plain REST: a success is `204` and a failure is a 4xx/5xx. A client can branch on the status line
+alone.
+
+---
+
+## Google Token Broker
+
+The token broker provides short-lived Google access tokens to MCP servers without exposing long-lived refresh tokens. Callers must hold the `token-mint-gmail` role.
+
+### Mint Token
+
+- **Endpoint**: `POST /broker/google/token`
+- **Authorization**: Requires `token-mint-gmail` role
+- **Request Body**:
+```json
+{
+  "subject_token": "user-uuid-here"
+}
+```
+- **Response**:
+```json
+{
+  "accessToken": "ya29.a0AfB_byC...",
+  "expiresInSeconds": 3599,
+  "issuedAt": "2026-08-11T16:55:00Z",
+  "userId": "user-uuid-here"
+}
+```
+
+A user who has never connected Google, or whose grant has been revoked, produces a message telling them to re-consent — retrying will not fix it.
 
 See [mcp-integration.md](mcp-integration.md) for the full token broker architecture and integration guide.
 
@@ -567,13 +1492,28 @@ These endpoints proxy to the Confluence REST API using the authenticated user's 
 
 ## Chat Attachments
 
-Images attached to a chat message. An attachment is uploaded **before** the message exists — it is
-staged against the uploading user, then claimed by a message when the client names its id in
-`ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
+Images and documents attached to a chat message. An attachment is uploaded **before** the message
+exists — it is staged against the uploading user, then claimed by a message when the client names
+its id in `ChatRequest.attachmentIds`. Staged attachments that are never sent are swept after
 `solesonic.llm.attachment.staged-ttl`.
 
-Accepted content types: `image/png`, `image/jpeg`, `image/gif`, `image/webp`. Upload size is bounded
-by `spring.servlet.multipart.max-file-size`.
+Upload size is bounded by `spring.servlet.multipart.max-file-size`. Accepted content types fall into
+two groups, and which group a file lands in decides how the assistant reads it:
+
+**Images** — `image/png`, `image/jpeg`, `image/gif`, `image/webp` — are described by a vision model,
+and the description is put into the prompt as prose.
+
+**Documents** — `application/pdf`, `text/plain`, `text/markdown`, `text/html`, `text/csv`,
+`text/xml`, `application/xml`, `application/json`, `application/rtf`, the Microsoft Office types
+(`application/msword`, `application/vnd.openxmlformats-officedocument.*`,
+`application/vnd.ms-excel`, `application/vnd.ms-powerpoint`) and OpenDocument text/spreadsheet — are
+extracted to text, split, and embedded into the vector store at **conversation scope**. Their
+contents reach the model through retrieval rather than being pasted into the prompt, so a long
+document costs context only for the passages that bear on the question. The model is told which
+documents were attached; it is not shown them in full.
+
+A document is indexed once, on the turn it is first sent, and stays retrievable for the rest of the
+conversation. Deleting the attachment, or the chat, deletes its chunks with it.
 
 ### Upload an Attachment
 
@@ -593,7 +1533,9 @@ by `spring.servlet.multipart.max-file-size`.
   "contentType": "image/png",
   "fileSizeBytes": 20481,
   "described": false,
-  "descriptionFailureReason": null
+  "descriptionFailureReason": null,
+  "indexed": false,
+  "extractionFailureReason": null
 }
 ```
 
@@ -629,6 +1571,8 @@ leaves the message itself intact.
 
 `described` is the durable half of the `attachment` stream event: it survives a reload, so an old
 conversation can still show that an image the assistant answered around was never actually read.
+`indexed` is the same signal for a document — whether its text is actually retrievable, or whether
+the assistant has been answering without it.
 
 ### Generated Images in Chat History
 
@@ -658,7 +1602,7 @@ the bytes.
 2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
    itself. The image is intercepted out of the tool result before that result re-enters the model's
    context, and reaches the client as an [`image` stream event](#image-event-payload) and as
-   `message.generatedImages` on [`done`](#stream-event-types). It is persisted against the assistant
+   `message.generatedImages` on [`RUN_FINISHED`](#stream-event-types). It is persisted against the assistant
    turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
 
 ### Generate an Image (streaming)
@@ -730,6 +1674,51 @@ are the provenance record: the prompt is the image's `alt` text, and the seed is
 say *this specific image* when reporting a problem. Every field except `imageId`, `imageUrl`,
 `prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
 text block, and an unparsed field costs a null rather than a failed generation.
+
+`GeneratedImageSummary` also carries `userId` (the owner) and `name` (a display name the owner has
+set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed).
+
+### Managing Generated Images
+
+Self-service endpoints, scoped to the caller the same way `GET /images/{imageId}` is — no `{userId}`
+path segment, since the identity comes from the bearer token.
+
+#### List My Images
+
+- **Endpoint**: `GET /images`
+- **Query Parameters**: standard pagination (`page`, `size`; default size 20)
+- **Response**: `200`, a page of `GeneratedImageSummary`, newest first
+
+#### Rename an Image
+
+- **Endpoint**: `PATCH /images/{imageId}`
+- **Request Body**: `{ "name": "lighthouse in a storm" }`
+- **Response**: `200`, the updated `GeneratedImageSummary`
+- **Errors**: `400` if `name` is blank, `404` if the image is not the caller's
+
+Rename only — the bytes, prompt, and every other field of a generated image are immutable once
+written.
+
+#### Delete an Image
+
+- **Endpoint**: `DELETE /images/{imageId}`
+- **Response**: `204 No Content`
+- **Errors**: `404` if the image is not the caller's
+
+Deletion is permanent and has no soft-delete. If the image was already shown in a past conversation
+turn (`chatMessageId` set), it disappears from that turn's history retroactively — there is no
+tombstone left behind.
+
+### Admin: Every User's Images
+
+These three endpoints require the **`image-admin`** role and act on any user's images, not just the
+caller's — the same idiom `rag-admin` uses for the shared document corpus.
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` narrows to one user's images |
+| `PATCH` | `/images/admin/{imageId}` | Rename any image; same request/response shape as the self-service rename |
+| `DELETE` | `/images/admin/{imageId}` | Delete any image; `204`, same retroactive-history caveat as above |
 
 ### Image Generation Errors
 

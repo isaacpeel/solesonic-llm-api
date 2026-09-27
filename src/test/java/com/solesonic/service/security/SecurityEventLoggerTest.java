@@ -69,16 +69,19 @@ class SecurityEventLoggerTest {
         List<String> routes = List.of(
                 "/streaming/chats/users/abc",
                 "/chats",
+                "/chatgroups/abc/chats",
                 "/attachments/abc",
                 "/images/abc/metadata",
                 "/documents",
-                "/trainingdocuments/abc",
-                "/ollama/installed",
+                "/documents/global/abc",
+                "/documents/users/abc",
+                "/models/abc",
                 "/users/abc",
                 "/slash/commands",
                 "/atlassian/auth",
                 "/confluence/spaces",
-                "/broker/atlassian/token");
+                "/broker/atlassian/token",
+                "/xero/invoices");
 
         routes.forEach(route -> {
             appender.list.clear();

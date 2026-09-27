@@ -5,6 +5,7 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Renders vision-model descriptions of image attachments.
@@ -24,6 +25,37 @@ public final class AttachmentContextFormatter {
             """;
 
     private AttachmentContextFormatter() {
+    }
+
+    /**
+     * Names the documents rather than carrying them. A document's text reaches the model through
+     * retrieval, so what is missing without this block is only the knowledge that the document
+     * exists — which is what a question like "summarise the attachment" depends on.
+     */
+    private static final String DOCUMENT_HEADER =
+            "The user attached %d document(s) to the message that follows: %s. "
+            + "Their contents have been indexed and the passages relevant to the question appear "
+            + "in your retrieved context; you are not being shown the documents in full. Answer "
+            + "from the retrieved passages, and say so plainly if they do not cover what was asked.";
+
+    /**
+     * Renders the attached-documents block, or {@code null} when the message carried no document
+     * that could be indexed.
+     * <p>
+     * Like {@link #context(List)} this is carried as a message of its own rather than folded into
+     * the user's, for the same reason: the retrieval augmenter rewrites the last user message, and
+     * anything inside that rewrite competes with the passages it is meant to introduce.
+     */
+    public static String documentContext(List<String> fileNames) {
+        if (CollectionUtils.isEmpty(fileNames)) {
+            return null;
+        }
+
+        String names = fileNames.stream()
+                .map(fileName -> StringUtils.defaultIfBlank(fileName, "untitled"))
+                .collect(Collectors.joining(", "));
+
+        return DOCUMENT_HEADER.formatted(fileNames.size(), names);
     }
 
     /**

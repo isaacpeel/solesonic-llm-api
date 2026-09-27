@@ -67,6 +67,8 @@ public class AtlassianTokenBrokerService {
 
         ZonedDateTime issuedAt = ZonedDateTime.now();
 
+        log.info("Issuing token for user {} siteId {} with scopes [{}]", userId, siteId, atlassianAccessToken.scope());
+
         return new TokenResponse(
                 atlassianAccessToken.accessToken(),
                 atlassianAccessToken.expiresIn(),

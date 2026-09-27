@@ -1,6 +1,6 @@
 package com.solesonic.service.chat.events;
 
-import com.solesonic.service.ollama.ChatMessageService;
+import com.solesonic.service.chat.ChatMessageService;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;

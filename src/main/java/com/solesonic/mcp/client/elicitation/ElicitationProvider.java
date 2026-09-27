@@ -6,7 +6,6 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpElicitation;
-import org.springframework.ai.mcp.annotation.context.StructuredElicitResult;
 import org.springframework.stereotype.Component;
 import reactor.core.scheduler.Schedulers;
 
@@ -25,11 +24,22 @@ public class ElicitationProvider {
         this.elicitationService = elicitationService;
     }
 
-    public record ElicitationActionResult(McpSchema.ElicitResult.Action action, UUID chatId, UUID elicitationId) {}
+    /**
+     * A user's answer as the client posted it: the action, and every form value sent alongside it.
+     * The values are narrowed to what the elicitation asked for before anything reaches the tool.
+     */
+    public record ElicitationActionResult(McpSchema.ElicitResult.Action action,
+                                          UUID chatId,
+                                          UUID elicitationId,
+                                          Map<String, Object> content) {}
 
+    /**
+     * Returns a plain {@link McpSchema.ElicitResult} rather than a {@code StructuredElicitResult}: the
+     * latter's third component is the result's {@code _meta}, which reaches the MCP server.
+     */
     @SuppressWarnings("unused")
     @McpElicitation(clients = { "solesonic"})
-    public StructuredElicitResult<ElicitationActionResult> handleElicitationRequest(McpSchema.ElicitRequest request) {
+    public McpSchema.ElicitResult handleElicitationRequest(McpSchema.ElicitRequest request) {
         log.info("Elicitation request received");
 
         Map<String, Object> requestMetadata = request.meta();

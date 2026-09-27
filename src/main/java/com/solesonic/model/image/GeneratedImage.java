@@ -47,6 +47,11 @@ public class GeneratedImage {
     private UUID chatMessageId;
 
     /**
+     * A display name the owner has set, distinct from {@link #prompt}. Null until renamed.
+     */
+    private String name;
+
+    /**
      * The prompt the user supplied, verbatim. Half of the provenance record, and the image's
      * {@code alt} text.
      */
@@ -114,6 +119,14 @@ public class GeneratedImage {
 
     public void setChatMessageId(UUID chatMessageId) {
         this.chatMessageId = chatMessageId;
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public void setName(String name) {
+        this.name = name;
     }
 
     public String getPrompt() {

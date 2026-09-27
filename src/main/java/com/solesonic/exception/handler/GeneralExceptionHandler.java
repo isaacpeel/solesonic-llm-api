@@ -1,6 +1,5 @@
 package com.solesonic.exception.handler;
 
-import com.solesonic.exception.ChatException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.security.SecurityEventReason;
 import com.solesonic.service.security.SecurityEventLogger;
@@ -25,18 +24,6 @@ public class GeneralExceptionHandler {
 
     private final ExceptionService exceptionService;
     private final SecurityEventLogger securityEventLogger;
-
-    private static final String CHAT_EXCEPTION_TEMPLATE = """
-            The AI model failed:
-            This is often due to the chosen model calling functions incorrectly.
-            
-            tip: Sometimes it helps if you have a brief conversation first then prompt
-                 for an integration to trigger i.e. Creating a Jira
-            
-            Error Message:
-            {message}
-            
-            """;
 
     private static final String GENERIC_EXCEPTION_TEMPLATE = """
             I've encountered an unknown exception.  Yell at Isaac about this.
@@ -86,14 +73,6 @@ public class GeneralExceptionHandler {
         securityEventLogger.log(METHOD_REJECTED, request, HttpStatus.BAD_REQUEST.value(), SecurityEventReason.MALFORMED_BODY);
 
         return ResponseEntity.badRequest().build();
-    }
-
-    @ExceptionHandler(ChatException.class)
-    public ResponseEntity<SolesonicChatResponse> handleChatException(RuntimeException exception) {
-        log.error(exception.getMessage(), exception);
-        String responseMessage = CHAT_EXCEPTION_TEMPLATE.replace(EXCEPTION_MESSAGE, exception.getMessage());
-
-        return exceptionService.buildResponse(responseMessage);
     }
 
     @ExceptionHandler(RuntimeException.class)

@@ -1,0 +1,259 @@
+package com.solesonic.service.chat;
+
+import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ModelCallMetadata;
+import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.repository.chat.ChatMessageRepository;
+import com.solesonic.repository.chat.ChatRepository;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
+import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.util.AttachmentContextFormatter;
+import org.apache.commons.collections4.CollectionUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.AssistantMessage;
+import org.springframework.ai.chat.messages.Message;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.time.ZonedDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
+@Service()
+public class ChatMessageService {
+    private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
+    private final ChatMessageRepository chatMessageRepository;
+    private final ChatRepository chatRepository;
+    private final UserPreferencesService userPreferencesService;
+    private final ChatAttachmentService chatAttachmentService;
+    private final ChatService chatService;
+    private final GeneratedImageService generatedImageService;
+
+    public ChatMessageService(ChatMessageRepository chatMessageRepository,
+                              ChatRepository chatRepository,
+                              UserPreferencesService userPreferencesService,
+                              ChatAttachmentService chatAttachmentService,
+                              ChatService chatService,
+                              GeneratedImageService generatedImageService) {
+        this.chatMessageRepository = chatMessageRepository;
+        this.chatRepository = chatRepository;
+        this.userPreferencesService = userPreferencesService;
+        this.chatAttachmentService = chatAttachmentService;
+        this.chatService = chatService;
+        this.generatedImageService = generatedImageService;
+    }
+
+    public ChatMessage save(ChatMessage message) {
+        UUID chatId = message.getChatId();
+
+        log.debug("Saving chat message with id {}", chatId);
+
+        Chat chat = chatRepository.findById(chatId)
+                .orElseThrow(() -> new IllegalStateException("Chat not found: " + chatId));
+
+        //Routed through the service, not the repository, so a user's first-ever message
+        //self-heals a missing preferences row instead of throwing. The result is unused — which
+        //model actually answered is the server's to report, on responseMetadata — but the row still
+        //has to exist before the turn goes on to read it.
+        userPreferencesService.get(chat.getUserId());
+
+        message.setTimestamp(ZonedDateTime.now());
+
+        return chatMessageRepository.save(message);
+    }
+
+    /**
+     * Persists the in-flight user message before the stream starts, so its id is known and can be
+     * published on the {@code RUN_STARTED} event.
+     * <p>
+     * This is deliberately the caller's job rather than the chat memory advisor's: the advisor never
+     * runs on the A2A route, so user messages were previously not persisted there at all.
+     * {@link com.solesonic.config.chat.DatabaseChatMemory} skips {@code USER} messages to avoid
+     * saving them twice.
+     */
+    @Transactional
+    public ChatMessage saveUserMessage(UUID chatId, UUID userId, ChatRequest chatRequest) {
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.USER);
+        chatMessage.setMessage(chatRequest.chatMessage());
+
+        ChatMessage saved = save(chatMessage);
+
+        //Inside the transaction on purpose: a turn that cannot claim its attachments must not
+        //persist a message either.
+        chatAttachmentService.bind(userId, chatId, saved.getId(), chatRequest.attachmentIds());
+
+        return saved;
+    }
+
+    /**
+     * Deletes one message and everything stored under it: its attachments and the images generated
+     * on its turn.
+     * <p>
+     * Scoped exactly as {@link ChatService#requireOwned(UUID)} is: a chat owned by someone else must
+     * be indistinguishable from one that does not exist, and a message id from another chat must be
+     * equally so — the second check is why {@code messageId} alone cannot be trusted, even after
+     * ownership of {@code chatId} is established.
+     */
+    @Transactional
+    public void delete(UUID chatId, UUID messageId) {
+        chatService.requireOwned(chatId);
+
+        ChatMessage chatMessage = chatMessageRepository.findById(messageId)
+                .filter(message -> chatId.equals(message.getChatId()))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Chat message not found: " + messageId));
+
+        log.info("Deleting chat message {} from chat {}", messageId, chatId);
+
+        chatAttachmentService.deleteForChatMessage(messageId);
+        generatedImageService.deleteForChatMessage(messageId);
+
+        chatMessageRepository.delete(chatMessage);
+    }
+
+    public void updateElicitationResponse(UUID chatId, UUID elicitationId, Map<String, Object> elicitationResponse) {
+        chatMessageRepository.findByChatIdAndElicitationId(chatId, elicitationId)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setElicitationResponse(elicitationResponse);
+                    chatMessageRepository.save(chatMessage);
+                });
+    }
+
+    /**
+     * Attaches token usage and timing to the assistant message {@link com.solesonic.config.chat.DatabaseChatMemory}
+     * already wrote for this turn. This has to be an update rather than something the advisor sets
+     * directly: {@code responseMetadata} isn't final until the whole stream completes, which is after
+     * that row is saved. {@code since} is the turn's start time, not the message's — the caller has
+     * no other way to name the row it wants, because the advisor never hands the id back.
+     * <p>
+     * The totals and the per-call breakdown are two columns and are written together, in the one
+     * transaction, so a reader can never see a total without the calls that produced it.
+     */
+    @Transactional
+    public void updateResponseMetadata(UUID chatId,
+                                       ZonedDateTime since,
+                                       ResponseMetadata responseMetadata,
+                                       List<ModelCallMetadata> responseMetadataCalls) {
+        chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setResponseMetadata(responseMetadata);
+                    chatMessage.setResponseMetadataCalls(responseMetadataCalls);
+                    chatMessageRepository.save(chatMessage);
+                });
+    }
+
+    /**
+     * Reads back what {@link #updateResponseMetadata} recorded for a turn, by the same {@code since}
+     * the caller wrote it with.
+     * <p>
+     * The {@code RUN_FINISHED} frame needs this because it builds its message from scratch rather than from
+     * the persisted row — without it the accounting reaches chat history but is null on the frame a
+     * client finalises the turn with. Null means no chat model reported on the turn: an A2A
+     * delegation, or a turn that ended before any usage arrived.
+     */
+    @Transactional(readOnly = true)
+    public ResponseMetadata responseMetadata(UUID chatId, ZonedDateTime since) {
+        return chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .map(ChatMessage::getResponseMetadata)
+                .orElse(null);
+    }
+
+    /**
+     * The per-call breakdown counterpart to {@link #responseMetadata}, for the same reason and by the
+     * same lookup: the {@code RUN_FINISHED} frame's message is built from scratch, so
+     * {@code responseMetadataCalls} has to be read back explicitly or it stays null on that frame even
+     * though the persisted row carries it.
+     */
+    @Transactional(readOnly = true)
+    public List<ModelCallMetadata> responseMetadataCalls(UUID chatId, ZonedDateTime since) {
+        return chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .map(ChatMessage::getResponseMetadataCalls)
+                .orElse(null);
+    }
+
+    public List<Message> findByChatId(UUID chatId) {
+        List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
+
+        // The in-flight user message is persisted before the stream starts, and the chat memory
+        // advisor supplies it again as the live user message. Without dropping it here the model
+        // would see the current turn twice, every turn.
+        if (CollectionUtils.isNotEmpty(chatMessages)
+                && chatMessages.getLast().getMessageType() == MessageType.USER) {
+            chatMessages = chatMessages.subList(0, chatMessages.size() - 1);
+        }
+
+        if(CollectionUtils.isNotEmpty(chatMessages)) {
+            List<Message> messages = new ArrayList<>(chatMessages.size());
+
+            // Image context has to be replayed, or a follow-up question about an attached image
+            // reaches the model with no idea an image was ever involved. One query per chat, not
+            // per message; the descriptions were generated when the image was first sent, so this
+            // never calls the vision model.
+            Map<UUID, List<ChatAttachmentDescription>> descriptionsByMessageId = chatAttachmentService
+                    .descriptions(chatId)
+                    .stream()
+                    .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
+
+            for(ChatMessage chatMessage : chatMessages) {
+                // Every persisted SYSTEM row is a UI-only notification (cancellation, progress,
+                // failure, elicitation prompt) rather than a real conversation turn — the actual
+                // system prompt is rebuilt fresh per turn in PromptService and never stored as a
+                // row. Replaying one back to the model puts a system-role message outside position
+                // zero, which some chat templates (via litellm) reject outright.
+                if (chatMessage.getMessageType() == MessageType.SYSTEM) {
+                    continue;
+                }
+
+                String messageText = chatMessage.getMessage();
+
+                Message message;
+                switch (chatMessage.getMessageType()) {
+                    case USER -> {
+                        assert messageText != null;
+
+                        // Adjacent to the user message it describes, not merged into it — the same
+                        // shape the live turn builds in PromptService, so a replayed turn and the
+                        // turn that produced it look identical to the model.
+                        String imageContext = AttachmentContextFormatter.context(
+                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+
+                        if (imageContext != null) {
+                            messages.add(new UserMessage(imageContext));
+                        }
+
+                        message = new UserMessage(messageText);
+                    }
+                    case ASSISTANT -> {
+                        assert messageText != null;
+                        message = new AssistantMessage(messageText);
+                    }
+                    default -> throw new IllegalStateException(
+                            "Unexpected message type in chat history: " + chatMessage.getMessageType());
+                }
+
+                messages.add(message);
+            }
+
+            return messages;
+        }
+
+        return List.of();
+    }
+}

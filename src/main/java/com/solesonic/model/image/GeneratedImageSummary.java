@@ -19,10 +19,14 @@ import java.util.UUID;
  *
  * @param chatMessageId the assistant turn this image belongs to, or null for an explicit generation
  *                      or one whose turn has not been written yet
+ * @param name          a display name the owner has set, distinct from {@code prompt}. Null until
+ *                      renamed
  */
 public record GeneratedImageSummary(UUID imageId,
+                                    UUID userId,
                                     UUID chatMessageId,
                                     String imageUrl,
+                                    String name,
                                     String prompt,
                                     String model,
                                     Long seed,
@@ -39,7 +43,7 @@ public record GeneratedImageSummary(UUID imageId,
      * history query from loading every image's bytes.
      */
     public GeneratedImageSummary withImageUrl(String imageUrl) {
-        return new GeneratedImageSummary(imageId, chatMessageId, imageUrl, prompt, model, seed,
+        return new GeneratedImageSummary(imageId, userId, chatMessageId, imageUrl, name, prompt, model, seed,
                 width, height, steps, elapsedSeconds, fileSizeBytes, created);
     }
 

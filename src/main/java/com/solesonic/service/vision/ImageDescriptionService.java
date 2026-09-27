@@ -17,7 +17,7 @@ import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.content.Media;
-import org.springframework.ai.ollama.OllamaChatModel;
+import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -39,7 +39,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeoutException;
 
-import static com.solesonic.config.olllama.VisionOllamaConfig.VISION_CHAT_MODEL;
+import static com.solesonic.config.openai.VisionOpenAiConfig.VISION_CHAT_MODEL;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
@@ -76,14 +76,14 @@ public class ImageDescriptionService {
      */
     private static final int MAX_CAUSE_DEPTH = 10;
 
-    private final OllamaChatModel visionChatModel;
+    private final OpenAiChatModel visionChatModel;
     private final ChatAttachmentService chatAttachmentService;
     private final NotificationService notificationService;
     private final String describeInstruction;
     private final DataSize maxImageBytes;
     private final String visionModel;
 
-    public ImageDescriptionService(@Qualifier(VISION_CHAT_MODEL) OllamaChatModel visionChatModel,
+    public ImageDescriptionService(@Qualifier(VISION_CHAT_MODEL) OpenAiChatModel visionChatModel,
                                    ChatAttachmentService chatAttachmentService,
                                    NotificationService notificationService,
                                    @Value("classpath:prompts/image-description-prompt.st") Resource describeInstruction,

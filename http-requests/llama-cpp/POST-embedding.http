@@ -1,0 +1,22 @@
+### Create Embedding
+POST {{lite-llm-uri}}v1/embeddings
+Content-Type: application/json
+
+{
+  "model" : "qwen3-embedding",
+  "input": "Your text to embed here"
+}
+
+###
+
+### Create Embedding
+POST {{lite-llm-uri}}/v1/embeddings
+Content-Type: application/json
+x-litellm-api-key: sk-eqc8k3v-6OItiGPhKycVHg
+
+{
+  "model" : "qwen3-embedding",
+  "input": "Your text to embed here"
+}
+
+###

@@ -26,10 +26,11 @@ public class AttachmentExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(AttachmentExceptionHandler.class);
 
     @ExceptionHandler(ResponseStatusException.class)
-    public ResponseEntity<Void> handleResponseStatus(ResponseStatusException responseStatusException) {
+    public ResponseEntity<StatusFailure> handleResponseStatus(ResponseStatusException responseStatusException) {
         log.debug("Responding {} for {}", responseStatusException.getStatusCode(), responseStatusException.getReason());
 
-        return ResponseEntity.status(responseStatusException.getStatusCode()).build();
+        return ResponseEntity.status(responseStatusException.getStatusCode())
+                .body(new StatusFailure(responseStatusException.getReason()));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)

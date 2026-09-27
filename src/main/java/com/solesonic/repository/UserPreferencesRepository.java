@@ -12,11 +12,4 @@ public interface UserPreferencesRepository extends JpaRepository<UserPreferences
             from UserPreferences userPreferences where userPreferences.userId = :userId
             """)
     Optional<UserPreferences> findByUserId(UUID userId);
-
-    @Query("""
-            select userPreferences from UserPreferences userPreferences
-            join Chat chat on chat.userId = userPreferences.userId
-            where chat.id = :chatId
-    """)
-    Optional<UserPreferences> findByChatId(UUID chatId);
 }

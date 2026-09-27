@@ -1,0 +1,32 @@
+###
+POST {{lite-llm-uri}}/v1/chat/completions
+Content-Type: application/json
+x-litellm-api-key: sk-eqc8k3v-6OItiGPhKycVHg
+
+{
+  "model": "nemotron-3.5",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ]
+}
+
+###
+
+###
+POST {{llama-cpp-uri}}}v1/chat/completions
+Content-Type: application/json
+
+{
+  "model": "qwen3.8",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hello"
+    }
+  ]
+}
+
+###
