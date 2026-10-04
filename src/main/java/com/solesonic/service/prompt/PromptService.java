@@ -8,6 +8,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
@@ -37,6 +38,7 @@ import java.util.*;
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
+import static com.solesonic.service.image.ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
@@ -65,15 +67,14 @@ public class PromptService {
             DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a (zzz)", Locale.US);
 
     /**
-     * The only MCP tools the no-slash-command default chat path may call.
+     * The fixed MCP tools the no-slash-command default chat path may call. Image tools join them from
+     * {@link ImageToolCatalog}: there is one per configured workflow and none when no workflow is.
      */
     private static final Set<String> DEFAULT_PROMPT_TOOLS = Set.of(
             "web_search",
             "web_search_advanced",
             "web_search_news",
-            "web_extract_content",
-            "generate_image"
-
+            "web_extract_content"
     );
 
     private final ChatClient chatClient;
@@ -85,6 +86,7 @@ public class PromptService {
     private final VectorStoreService vectorStoreService;
     private final UserPreferencesService userPreferencesService;
     private final McpIdentityProvider mcpIdentityProvider;
+    private final ImageToolCatalog imageToolCatalog;
     private final ChatMessageService chatMessageService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
 
@@ -107,6 +109,7 @@ public class PromptService {
             VectorStoreService vectorStoreService,
             UserPreferencesService userPreferencesService,
             McpIdentityProvider mcpIdentityProvider,
+            ImageToolCatalog imageToolCatalog,
             ChatMessageService chatMessageService,
             LiteLlmHeaderRegistry liteLlmHeaderRegistry,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
@@ -120,6 +123,7 @@ public class PromptService {
         this.vectorStoreService = vectorStoreService;
         this.userPreferencesService = userPreferencesService;
         this.mcpIdentityProvider = mcpIdentityProvider;
+        this.imageToolCatalog = imageToolCatalog;
         this.chatMessageService = chatMessageService;
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.defaultChatModel = defaultChatModel;
@@ -140,7 +144,8 @@ public class PromptService {
                 USER_TOKEN, authToken,
                 USER_ID, userId,
                 CHAT_ID, chatId,
-                PROGRESS_TOKEN, chatId);
+                PROGRESS_TOKEN, chatId,
+                REFERENCE_ATTACHMENT_IDS, attachments.imageIds());
 
         Set<String> commands = chatMessage.commands();
 
@@ -244,7 +249,7 @@ public class PromptService {
         var promptSpec = chatClient.prompt()
                 .system(defaultSystemPrompt.getContents())
                 .user(message)
-                .tools(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS))
+                .tools(mcpIdentityProvider.getToolCallbacks(defaultPromptTools()))
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
@@ -258,5 +263,12 @@ public class PromptService {
  
         return capturingContentFlux(promptSpec.stream().chatResponse(), chatMessageService, liteLlmHeaderRegistry,
                 chatId, since, correlationId);
+    }
+
+    private Set<String> defaultPromptTools() {
+        Set<String> toolNames = new LinkedHashSet<>(DEFAULT_PROMPT_TOOLS);
+        toolNames.addAll(imageToolCatalog.toolNames());
+
+        return toolNames;
     }
 }

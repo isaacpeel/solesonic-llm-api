@@ -1605,11 +1605,62 @@ the bytes.
    `message.generatedImages` on [`RUN_FINISHED`](#stream-event-types). It is persisted against the assistant
    turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
 
+### Reference Images
+
+An image tool can be guided by images the user already has — "make this photo a watercolor". The
+references are ordinary staged chat attachments (PNG, JPEG or WebP; GIF is not accepted), and the
+model never handles them in either direction:
+
+- **In a conversation**, nothing extra is sent. Image attachments on the send are passed to the image
+  tool automatically when it is called that turn, by the slash command or by the model. The model is
+  shown the tool *without* its `reference_images` parameter, plus one sentence saying attached images
+  are supplied for it; the API injects the bytes server-side and discards anything the model wrote
+  there itself. An attachment that is not the caller's, is not an image, or is not a supported type
+  is skipped, and the turn never fails over one. If the tool takes `N` images, at most the first `N`
+  are sent; sending fewer than `N` comes back from the tool as an error the model relays.
+- **Explicitly**, by listing them on `POST /images` (below). That path is strict: every id must
+  resolve and the count must be exactly what the tool takes, or the request is refused before any
+  generation starts.
+
+Whether references are accepted at all, and how many, is the MCP tool's own declaration: its
+`reference_images` schema property, `minItems = maxItems = N`. A tool — or an MCP server — that does
+not declare it is never sent references. The image's `referenceAttachmentIds` records which
+attachments were used.
+
+### List Image Tools
+
+- **Endpoint**: `GET /images/tools`
+- **Response**: `200`, the image tools a generation may name
+
+```json
+[
+  {"name": "flux_schnell", "title": "FLUX.1-schnell", "description": "Creates an image ...",
+   "referenceImageSlots": 1},
+  {"name": "kontext_edit", "title": "FLUX.1 Kontext", "description": "Edits the attached photo ...",
+   "referenceImageSlots": 1}
+]
+```
+
+The set is entirely dynamic: each tool is a stored ComfyUI workflow on the MCP server, so choosing a
+tool is choosing a workflow, and with no workflow configured the list is empty and every generation
+fails with `NO_IMAGE_TOOLS`. Tools are found by the MCP server's `_meta` tag
+(`"solesonic/kind": "image-generation"`), never by name — a workflow row can be named anything, and the
+API names none. `referenceImageSlots` is exactly how many reference images the
+tool takes when given any, `0` when it takes none. The list is the MCP catalog as this API saw it at
+startup: a workflow added on the MCP server appears after this API restarts.
+
 ### Generate an Image (streaming)
 
 - **Endpoint**: `POST /images`
 - **Produces**: `text/event-stream`
 - **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
+  - `tool`: which image tool to use, by name from [`GET /images/tools`](#list-image-tools). It may be
+    left out only when exactly one image tool exists; with several it is required
+    (`IMAGE_TOOL_REQUIRED`). A name that is not an image tool is refused with `INVALID_IMAGE_TOOL`.
+    There is no configured default.
+  - `referenceAttachmentIds` (optional): staged attachment ids to guide the image, in slot order —
+    `{ "prompt": "the same scene as a watercolor", "referenceAttachmentIds": ["3f0c..."] }`. See
+    [Reference Images](#reference-images).
 
 The stream carries any number of `progress` frames followed by exactly one terminal frame, either
 `complete` or `error`.
@@ -1624,7 +1675,8 @@ data: {"percent":85,"message":"Generating…"}
 event: complete
 data: {"imageId":"7c2f...","chatMessageId":null,"imageUrl":"/izzybot/images/7c2f...","prompt":"a lighthouse ...",
        "model":"FLUX.1-schnell","seed":8339331079448168597,"width":1024,"height":1024,"steps":4,
-       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z"}
+       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z",
+       "referenceAttachmentIds":[]}
 ```
 
 `percent` is **approximate**. It is monotonic — it never goes backwards — but between 15 and 85 it
@@ -1676,7 +1728,10 @@ say *this specific image* when reporting a problem. Every field except `imageId`
 text block, and an unparsed field costs a null rather than a failed generation.
 
 `GeneratedImageSummary` also carries `userId` (the owner) and `name` (a display name the owner has
-set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed).
+set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed), and
+`referenceAttachmentIds` — the attachments the image was guided by, in slot order, never `null` and
+empty for a prompt-only image. Those attachments may since have been deleted with their chat; the ids
+remain as provenance.
 
 ### Managing Generated Images
 
@@ -1728,6 +1783,11 @@ Failures collapse onto a closed set of codes. The message is always user-safe; t
 | Code | Status on `/images/sync` | Meaning |
 |---|---|---|
 | `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
+| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, the count is not exactly what the tool takes, or the image server rejected an image |
+| `REFERENCE_IMAGES_UNSUPPORTED` | `400` | References were requested but the image tool does not declare `reference_images` |
+| `INVALID_IMAGE_TOOL` | `400` | `tool` named something that is not one of the image tools in `GET /images/tools` |
+| `IMAGE_TOOL_REQUIRED` | `400` | `tool` was left out and there is more than one image tool to choose from |
+| `NO_IMAGE_TOOLS` | `503` | The MCP server offers no image tools: no workflow is configured |
 | `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
 | `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
 | `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |

@@ -69,7 +69,7 @@ class GeneratedImageToolInterceptorTest {
         userId = UUID.randomUUID();
         imageId = UUID.randomUUID();
 
-        when(generatedImageService.store(any(), any(), any(), any(), any(), any()))
+        when(generatedImageService.store(any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(summary(imageId));
     }
 
@@ -78,7 +78,29 @@ class GeneratedImageToolInterceptorTest {
         assertThat(generatedImageToolInterceptor.handles("generate_image")).isTrue();
         assertThat(generatedImageToolInterceptor.handles("solesonic_generate_image")).isTrue();
         assertThat(generatedImageToolInterceptor.handles("create_jira")).isFalse();
-        assertThat(generatedImageToolInterceptor.handles("generate_image_preview")).isFalse();
+    }
+
+    /**
+     * The MCP server registers one tool per workflow row, so {@code generate_image_<workflow>} is as
+     * much an image tool as the plain name, and must be guarded the same way.
+     */
+    @Test
+    void handlesPerWorkflowImageToolsButNotLookalikes() {
+        assertThat(generatedImageToolInterceptor.handles("generate_image_flux_schnell")).isTrue();
+        assertThat(generatedImageToolInterceptor.handles("solesonic_generate_image_flux_schnell")).isTrue();
+        assertThat(generatedImageToolInterceptor.handles("regenerate_image")).isFalse();
+        assertThat(generatedImageToolInterceptor.handles("generate_images")).isFalse();
+    }
+
+    @Test
+    void interceptRecordsTheReferenceAttachmentsTheImageWasGuidedBy() {
+        UUID attachmentId = UUID.randomUUID();
+
+        generatedImageToolInterceptor.intercept(TOOL_CALL_INPUT, rawResult(base64()), toolContext(),
+                List.of(attachmentId));
+
+        verify(generatedImageService).store(eq(userId), eq(chatId), any(), any(), any(), any(),
+                eq(List.of(attachmentId)));
     }
 
     /**
@@ -117,7 +139,7 @@ class GeneratedImageToolInterceptorTest {
         ArgumentCaptor<byte[]> imageDataCaptor = ArgumentCaptor.forClass(byte[].class);
 
         verify(generatedImageService).store(eq(userId), eq(chatId), eq("a small red lighthouse"),
-                imageDataCaptor.capture(), eq("image/png"), any(ImageGenerationMetadata.class));
+                imageDataCaptor.capture(), eq("image/png"), any(ImageGenerationMetadata.class), eq(List.of()));
 
         assertThat(imageDataCaptor.getValue()).isEqualTo(IMAGE_BYTES);
     }
@@ -137,7 +159,7 @@ class GeneratedImageToolInterceptorTest {
         generatedImageToolInterceptor.intercept(TOOL_CALL_INPUT, rawResult(base64()),
                 Map.of(USER_ID, userId));
 
-        verify(generatedImageService).store(eq(userId), isNull(), any(), any(), any(), any());
+        verify(generatedImageService).store(eq(userId), isNull(), any(), any(), any(), any(), any());
         verify(notificationService, never()).emitGeneratedImage(any(), any());
     }
 
@@ -186,7 +208,7 @@ class GeneratedImageToolInterceptorTest {
         String modelText = generatedImageToolInterceptor
                 .intercept(TOOL_CALL_INPUT, rawResult, toolContext());
 
-        verify(generatedImageService).store(eq(userId), eq(chatId), any(), any(), eq("image/png"), any());
+        verify(generatedImageService).store(eq(userId), eq(chatId), any(), any(), eq("image/png"), any(), any());
 
         assertThat(modelText).doesNotContain(base64());
         assertThat(modelText).contains(imageId.toString());
@@ -221,6 +243,6 @@ class GeneratedImageToolInterceptorTest {
     private GeneratedImageSummary summary(UUID imageId) {
         return new GeneratedImageSummary(imageId, userId, null, "/izzybot/images/" + imageId, null,
                 "a small red lighthouse", "FLUX.1-schnell", 8339331079448168597L,
-                1024, 1024, 4, 8.2d, IMAGE_BYTES.length, ZonedDateTime.now());
+                1024, 1024, 4, 8.2d, IMAGE_BYTES.length, ZonedDateTime.now(), List.of());
     }
 }

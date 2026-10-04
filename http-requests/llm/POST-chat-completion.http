@@ -4,7 +4,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "Intel/Qwen3.5-122B-A10B-int4-AutoRound",
+  "model": "qwen3-vl-30b-a3b-instruct",
   "messages": [
     {
       "role": "user",

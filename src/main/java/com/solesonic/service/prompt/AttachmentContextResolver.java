@@ -7,6 +7,8 @@ import com.solesonic.service.vision.ImageDescriptionService;
 import com.solesonic.util.AttachmentContextFormatter;
 import org.springframework.stereotype.Service;
 
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -45,9 +47,21 @@ public class AttachmentContextResolver {
      *                          re-render it inline
      * @param attachmentContext the block the model is shown, or null when the message carried no
      *                          attachment either pass could use
+     * @param imageIds          the send's image attachment ids in send order, for an image tool to
+     *                          use as reference images. Never shown to the model; may include an id
+     *                          that resolves to nothing, which the injector skips
      */
     public record AttachmentResolution(List<ChatAttachmentDescription> imageDescriptions,
-                                       String attachmentContext) {
+                                       String attachmentContext,
+                                       Set<UUID> imageIds) {
+
+        public AttachmentResolution {
+            imageIds = imageIds == null ? Set.of() : Collections.unmodifiableSet(new LinkedHashSet<>(imageIds));
+        }
+
+        public AttachmentResolution(List<ChatAttachmentDescription> imageDescriptions, String attachmentContext) {
+            this(imageDescriptions, attachmentContext, Set.of());
+        }
     }
 
     public AttachmentResolution resolve(UUID chatId, UUID userId, Set<UUID> attachmentIds) {
@@ -61,7 +75,7 @@ public class AttachmentContextResolver {
                 .ingest(chatId, userId, partition.documentIds());
 
         return new AttachmentResolution(imageDescriptions,
-                attachmentContext(imageDescriptions, indexedDocuments));
+                attachmentContext(imageDescriptions, indexedDocuments), partition.imageIds());
     }
 
     /**

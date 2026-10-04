@@ -1,6 +1,8 @@
 package com.solesonic.mcp.client;
 
+import com.solesonic.model.image.ReferenceImageInjection;
 import com.solesonic.service.image.GeneratedImageToolInterceptor;
+import com.solesonic.service.image.ReferenceImageInjector;
 import org.apache.commons.lang3.StringUtils;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
@@ -20,11 +22,15 @@ import reactor.util.context.Context;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
+
+import static com.solesonic.service.image.ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS;
 
 
 /**
@@ -60,16 +66,46 @@ public class IdentityToolCallback implements ToolCallback {
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
     private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
+    private final ReferenceImageInjector referenceImageInjector;
+
+    /**
+     * How many reference images the MCP tool advertises; zero for every tool that takes none,
+     * including an image tool on an MCP server that predates them.
+     */
+    private final int referenceImageSlots;
+
+    /**
+     * What the model is shown: the delegate's own definition, or — for a tool that takes reference
+     * images — that definition with {@code reference_images} removed, because only this class may
+     * fill it.
+     */
+    private final ToolDefinition toolDefinition;
+
+    /**
+     * Whether the MCP server tagged this tool as an image tool. Read off the {@code McpSchema.Tool}
+     * by whoever wraps it, because a {@link ToolDefinition} does not carry {@code _meta}.
+     */
+    private final boolean imageTool;
 
     public IdentityToolCallback(ToolCallback tool,
                                 JwtDecoder jwtDecoder,
                                 JwtAuthenticationConverter jwtAuthenticationConverter,
-                                GeneratedImageToolInterceptor generatedImageToolInterceptor) {
+                                GeneratedImageToolInterceptor generatedImageToolInterceptor,
+                                ReferenceImageInjector referenceImageInjector,
+                                boolean imageTool) {
 
         this.delegate = tool;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
         this.generatedImageToolInterceptor = generatedImageToolInterceptor;
+        this.referenceImageInjector = referenceImageInjector;
+        this.imageTool = imageTool;
+
+        ToolDefinition delegateDefinition = tool.getToolDefinition();
+        this.referenceImageSlots = referenceImageInjector.referenceSlots(delegateDefinition.inputSchema());
+        this.toolDefinition = referenceImageSlots > 0
+                ? referenceImageInjector.modelFacing(delegateDefinition)
+                : delegateDefinition;
 
         boolean returnDirect = tool.getToolMetadata().returnDirect();
         this.toolMetadata = ToolMetadata.builder()
@@ -82,7 +118,7 @@ public class IdentityToolCallback implements ToolCallback {
     @Override
     @NonNull
     public ToolDefinition getToolDefinition() {
-        return delegate.getToolDefinition();
+        return toolDefinition;
     }
 
     @Override
@@ -121,8 +157,11 @@ public class IdentityToolCallback implements ToolCallback {
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
         filteredContextMap.remove(USER_TOKEN);
         filteredContextMap.remove(USER_ID);
+        filteredContextMap.remove(REFERENCE_ATTACHMENT_IDS);
 
         ToolContext filteredToolContext = new ToolContext(filteredContextMap);
+
+        ReferenceImageInjection referenceImageInjection = referenceImages(toolCallInput, toolContextMap);
 
         Jwt jwt = jwtDecoder.decode(userToken);
         Authentication authentication = jwtAuthenticationConverter.convert(jwt);
@@ -135,10 +174,32 @@ public class IdentityToolCallback implements ToolCallback {
 
         try {
             return withUserToken(userToken, () -> postProcess(
-                    delegate.call(toolCallInput, filteredToolContext), toolCallInput, toolContextMap));
+                    delegate.call(referenceImageInjection.toolCallInput(), filteredToolContext),
+                    toolCallInput, toolContextMap, referenceImageInjection.attachmentIds()));
         } finally {
             SecurityContextHolder.clearContext();
         }
+    }
+
+    /**
+     * The arguments that actually leave for the MCP server. Only a tool advertising
+     * {@code reference_images} is rewritten; for every other tool the model's input passes through
+     * untouched, which is also what keeps an MCP server that predates the parameter from being sent
+     * one it never declared.
+     */
+    private ReferenceImageInjection referenceImages(String toolCallInput, Map<String, Object> toolContextMap) {
+        if (referenceImageSlots > 0) {
+            return referenceImageInjector.inject(toolCallInput, referenceImageSlots, toolContextMap);
+        }
+
+        if (toolContextMap.get(REFERENCE_ATTACHMENT_IDS) instanceof Collection<?> attachmentIds
+                && !attachmentIds.isEmpty()
+                && isImageTool()) {
+            log.info("Image tool {} does not accept reference images; {} attached image(s) not sent",
+                    delegate.getToolDefinition().name(), attachmentIds.size());
+        }
+
+        return ReferenceImageInjection.none(toolCallInput);
     }
 
     /**
@@ -147,15 +208,31 @@ public class IdentityToolCallback implements ToolCallback {
      * Order matters: image interception runs first and is the only thing standing between the
      * model's context window and a couple of megabytes of base64. It replaces the result outright,
      * so nothing downstream ever sees the image data.
+     * <p>
+     * {@code toolCallInput} is the model's own input, never the injected one: the interceptor reads
+     * the prompt out of it, and the injected copy carries the reference images' base64.
      */
-    private String postProcess(String rawResult, String toolCallInput, Map<String, Object> toolContextMap) {
-        String toolName = delegate.getToolDefinition().name();
-
-        if (generatedImageToolInterceptor.handles(toolName)) {
-            return generatedImageToolInterceptor.intercept(toolCallInput, rawResult, toolContextMap);
+    private String postProcess(String rawResult,
+                               String toolCallInput,
+                               Map<String, Object> toolContextMap,
+                               List<UUID> referenceAttachmentIds) {
+        if (isImageTool()) {
+            return generatedImageToolInterceptor.intercept(toolCallInput, rawResult, toolContextMap,
+                    referenceAttachmentIds);
         }
 
         return extractText(rawResult);
+    }
+
+    /**
+     * The server's tag decides. The name match covers an MCP server that predates the tag, and a
+     * tool taking reference images is an image tool whatever its row was named — every one of them
+     * returns base64.
+     */
+    private boolean isImageTool() {
+        return imageTool
+                || referenceImageSlots > 0
+                || generatedImageToolInterceptor.handles(delegate.getToolDefinition().name());
     }
 
     /**

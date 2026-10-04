@@ -2,6 +2,7 @@ package com.solesonic.service.image;
 
 import com.solesonic.exception.image.ImageGenerationException;
 import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationErrorCode;
 import com.solesonic.model.image.ImageGenerationEvent;
@@ -23,6 +24,8 @@ import java.net.ConnectException;
 import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -36,7 +39,9 @@ import static com.solesonic.model.image.ImageGenerationErrorCode.FORBIDDEN;
 import static com.solesonic.model.image.ImageGenerationErrorCode.GENERATION_TIMEOUT;
 import static com.solesonic.model.image.ImageGenerationErrorCode.INTERNAL;
 import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_PROMPT;
+import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_REFERENCE_IMAGE;
 import static com.solesonic.model.image.ImageGenerationErrorCode.RATE_LIMITED;
+import static com.solesonic.model.image.ImageGenerationErrorCode.REFERENCE_IMAGES_UNSUPPORTED;
 
 /**
  * Generates an image from a prompt by calling the {@code generate_image} MCP tool directly.
@@ -90,17 +95,23 @@ public class ImageGenerationService {
     private final McpSyncClient mcpSyncClient;
     private final GeneratedImageService generatedImageService;
     private final ImageGenerationProgressBroker imageGenerationProgressBroker;
+    private final ImageToolCatalog imageToolCatalog;
+    private final ReferenceImageInjector referenceImageInjector;
     private final Semaphore inFlightGenerations;
     private final Duration admissionTimeout;
 
     public ImageGenerationService(McpSyncClient mcpSyncClient,
                                   GeneratedImageService generatedImageService,
                                   ImageGenerationProgressBroker imageGenerationProgressBroker,
+                                  ImageToolCatalog imageToolCatalog,
+                                  ReferenceImageInjector referenceImageInjector,
                                   @Value("${solesonic.llm.image.max-concurrent}") int maxConcurrent,
                                   @Value("${solesonic.llm.image.admission-timeout}") Duration admissionTimeout) {
         this.mcpSyncClient = mcpSyncClient;
         this.generatedImageService = generatedImageService;
         this.imageGenerationProgressBroker = imageGenerationProgressBroker;
+        this.imageToolCatalog = imageToolCatalog;
+        this.referenceImageInjector = referenceImageInjector;
         this.inFlightGenerations = new Semaphore(maxConcurrent, true);
         this.admissionTimeout = admissionTimeout;
 
@@ -118,7 +129,11 @@ public class ImageGenerationService {
      * halfway through stops receiving frames, but the image it paid for is still generated and
      * stored, and can be fetched by id afterwards.
      */
-    public Flux<ImageGenerationEvent> stream(String prompt, UUID userId, String userToken) {
+    public Flux<ImageGenerationEvent> stream(String prompt,
+                                             String tool,
+                                             List<UUID> referenceAttachmentIds,
+                                             UUID userId,
+                                             String userToken) {
         return Flux.defer(() -> {
             UUID generationId = UUID.randomUUID();
 
@@ -133,7 +148,7 @@ public class ImageGenerationService {
                                 message(GENERATION_TIMEOUT)));
                     }))
                     .doOnSubscribe(_ -> Schedulers.boundedElastic().schedule(() ->
-                            generateInto(generationId, prompt, userId, userToken)));
+                            generateInto(generationId, prompt, tool, referenceAttachmentIds, userId, userToken)));
         });
     }
 
@@ -146,11 +161,13 @@ public class ImageGenerationService {
      */
     private void generateInto(UUID generationId,
                               String prompt,
+                              String tool,
+                              List<UUID> referenceAttachmentIds,
                               UUID userId,
                               String userToken) {
         try {
             GeneratedImageSummary generatedImageSummary =
-                    generate(generationId, prompt, userId, userToken);
+                    generate(generationId, prompt, tool, referenceAttachmentIds, userId, userToken);
 
             imageGenerationProgressBroker.emit(generationId, generatedImageSummary);
         } catch (RuntimeException runtimeException) {
@@ -169,20 +186,29 @@ public class ImageGenerationService {
      * progress token is indistinguishable from a chat id to the shared progress callback, and would
      * have this call's progress written into chat history.
      */
-    public GeneratedImageSummary generate(String prompt, UUID userId, String userToken) {
+    public GeneratedImageSummary generate(String prompt,
+                                          String tool,
+                                          List<UUID> referenceAttachmentIds,
+                                          UUID userId,
+                                          String userToken) {
         UUID generationId = UUID.randomUUID();
 
         imageGenerationProgressBroker.open(generationId);
 
         try {
-            return generate(generationId, prompt, userId, userToken);
+            return generate(generationId, prompt, tool, referenceAttachmentIds, userId, userToken);
         } finally {
             imageGenerationProgressBroker.close(generationId);
         }
     }
 
+    /**
+     * @param tool the image tool the caller chose, or blank when there is only one
+     */
     private GeneratedImageSummary generate(UUID generationId,
                                            String prompt,
+                                           String tool,
+                                           List<UUID> referenceAttachmentIds,
                                            UUID userId,
                                            String userToken) {
 
@@ -194,15 +220,65 @@ public class ImageGenerationService {
             throw new ImageGenerationException(INVALID_PROMPT, message(INVALID_PROMPT));
         }
 
+        //Both ahead of admission, so a request that can never succeed does not hold a GPU slot.
+        McpSchema.Tool imageTool = imageToolCatalog.resolve(tool);
+        List<ChatAttachment> referenceAttachments = referenceAttachments(imageTool, referenceAttachmentIds, userId);
+
         admit(generationId);
 
         try {
-            McpSchema.CallToolResult callToolResult = callTool(generationId, trimmedPrompt, userToken);
+            McpSchema.CallToolResult callToolResult = callTool(generationId, imageTool.name(), trimmedPrompt,
+                    referenceImageInjector.payload(referenceAttachments), userToken);
 
-            return store(callToolResult, trimmedPrompt, userId);
+            return store(callToolResult, trimmedPrompt, userId,
+                    referenceAttachments.stream().map(ChatAttachment::getId).toList());
         } finally {
             inFlightGenerations.release();
         }
+    }
+
+    /**
+     * Resolves an explicit request for reference images, strictly.
+     * <p>
+     * Unlike the chat path, which skips an attachment it cannot use and carries on, this is a request
+     * the caller made on purpose: quietly generating without the references would hand back an image
+     * they did not ask for. So every id must be the caller's own PNG, JPEG or WebP attachment, the
+     * tool must advertise {@code reference_images} at all — an MCP server that predates them would
+     * ignore the argument — and the count must be exactly what the tool takes.
+     *
+     * @return the attachments in the order the caller listed them; empty when none were requested
+     */
+    private List<ChatAttachment> referenceAttachments(McpSchema.Tool imageTool,
+                                                      List<UUID> referenceAttachmentIds,
+                                                      UUID userId) {
+        if (referenceAttachmentIds == null || referenceAttachmentIds.isEmpty()) {
+            return List.of();
+        }
+
+        int slots = referenceImageInjector.referenceSlots(imageTool.inputSchema());
+
+        if (slots == 0) {
+            throw new ImageGenerationException(REFERENCE_IMAGES_UNSUPPORTED, message(REFERENCE_IMAGES_UNSUPPORTED));
+        }
+
+        List<UUID> requested = List.copyOf(new LinkedHashSet<>(referenceAttachmentIds));
+
+        //Before the lookup, which also bounds the ids that reach its IN clause by the slot count.
+        if (requested.size() != slots) {
+            throw new ImageGenerationException(INVALID_REFERENCE_IMAGE,
+                    "This image style takes exactly %d reference image%s.".formatted(slots, slots == 1 ? "" : "s"));
+        }
+
+        List<ChatAttachment> attachments = referenceImageInjector.usableAttachments(userId, requested);
+
+        if (attachments.size() != requested.size()) {
+            log.warn("Refusing image generation: {} of {} reference attachment(s) are not usable images of user {}",
+                    requested.size() - attachments.size(), requested.size(), userId);
+
+            throw new ImageGenerationException(INVALID_REFERENCE_IMAGE, message(INVALID_REFERENCE_IMAGE));
+        }
+
+        return attachments;
     }
 
     /**
@@ -234,13 +310,25 @@ public class ImageGenerationService {
      * notification for a request that arrived without one, which turns a five-to-fifteen second
      * generation into a silent wait.
      */
-    private McpSchema.CallToolResult callTool(UUID generationId, String prompt, String userToken) {
-        McpSchema.CallToolRequest callToolRequest = McpSchema.CallToolRequest.builder(GENERATE_IMAGE_TOOL)
-                .arguments(Map.of(PROMPT_ARGUMENT, prompt))
+    private McpSchema.CallToolResult callTool(UUID generationId,
+                                              String toolName,
+                                              String prompt,
+                                              List<Map<String, Object>> referenceImages,
+                                              String userToken) {
+        Map<String, Object> arguments = new LinkedHashMap<>();
+        arguments.put(PROMPT_ARGUMENT, prompt);
+
+        if (!referenceImages.isEmpty()) {
+            arguments.put(ReferenceImageInjector.REFERENCE_IMAGES, referenceImages);
+        }
+
+        McpSchema.CallToolRequest callToolRequest = McpSchema.CallToolRequest.builder(toolName)
+                .arguments(arguments)
                 .progressToken(generationId.toString())
                 .build();
 
-        log.info("Calling {} for generation {}", GENERATE_IMAGE_TOOL, generationId);
+        log.info("Calling {} for generation {} with {} reference image(s)",
+                toolName, generationId, referenceImages.size());
 
         try {
             return IdentityToolCallback.withUserToken(userToken, () -> mcpSyncClient.callTool(callToolRequest));
@@ -251,7 +339,8 @@ public class ImageGenerationService {
 
     private GeneratedImageSummary store(McpSchema.CallToolResult callToolResult,
                                         String prompt,
-                                        UUID userId) {
+                                        UUID userId,
+                                        List<UUID> referenceAttachmentIds) {
 
         List<McpSchema.Content> content = callToolResult.content() == null ? List.of() : callToolResult.content();
 
@@ -285,7 +374,7 @@ public class ImageGenerationService {
 
         //No chat: this is explicit generation, which is not part of a conversation.
         return generatedImageService.store(userId, null, prompt, imageData, contentType,
-                imageGenerationMetadata);
+                imageGenerationMetadata, referenceAttachmentIds);
     }
 
     private static byte[] decode(McpSchema.ImageContent imageContent) {
@@ -370,6 +459,16 @@ public class ImageGenerationService {
      * an unrecognised message returns null so the caller can decide, rather than guessing.
      */
     private static ImageGenerationErrorCode fromMessage(String failureText) {
+        if (Strings.CI.contains(failureText, "does not accept reference images")) {
+            return REFERENCE_IMAGES_UNSUPPORTED;
+        }
+
+        //The tool's own reference-image rejections, and schema validation naming the parameter.
+        //A failed ComfyUI upload is worded without either, so it stays a backend failure below.
+        if (Strings.CI.containsAny(failureText, "reference image", "reference_images")) {
+            return INVALID_REFERENCE_IMAGE;
+        }
+
         if (Strings.CI.containsAny(failureText, "access is denied", "access denied", "accessdenied", "forbidden")) {
             return FORBIDDEN;
         }
@@ -392,6 +491,12 @@ public class ImageGenerationService {
             case BACKEND_UNAVAILABLE -> "Image generation is unavailable right now. Please try again shortly.";
             case FORBIDDEN -> "You do not have access to image generation.";
             case RATE_LIMITED -> "Too many images are being generated right now. Please try again in a moment.";
+            case INVALID_REFERENCE_IMAGE ->
+                    "A reference image could not be used. Attach your own PNG, JPEG or WebP images, as many as this image style takes.";
+            case REFERENCE_IMAGES_UNSUPPORTED -> "This image style does not accept reference images.";
+            case INVALID_IMAGE_TOOL -> "That image style is not available.";
+            case IMAGE_TOOL_REQUIRED -> "Choose which image style to use.";
+            case NO_IMAGE_TOOLS -> "Image generation is not configured.";
             case INTERNAL -> "Image generation failed unexpectedly. Please try again.";
         };
     }

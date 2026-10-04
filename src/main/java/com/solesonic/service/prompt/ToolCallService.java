@@ -4,6 +4,7 @@ import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.apache.commons.lang3.StringUtils;
@@ -56,7 +57,8 @@ public class ToolCallService {
 
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, toolCommand.name(), toolCallback,
+                GeneratedImageToolInterceptor.isTaggedImageTool(toolCommand.tool()), contextMap);
     }
 
     public Flux<String> streamLocal(UUID chatId,
@@ -66,13 +68,14 @@ public class ToolCallService {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, localToolCommand.name(), toolCallback, false, contextMap);
     }
 
     private Flux<String> invoke(UUID chatId,
                                 String message,
                                 String toolName,
                                 ToolCallback toolCallback,
+                                boolean imageTool,
                                 Map<String, Object> contextMap) {
 
         log.info("Tool invoke: {}", toolName);
@@ -81,7 +84,7 @@ public class ToolCallService {
         //chat memory advisor is about to write rather than the previous turn's.
         ZonedDateTime since = ZonedDateTime.now();
 
-        ChatClient taskClient = slashCommandService.taskClient(toolCallback);
+        ChatClient taskClient = slashCommandService.taskClient(toolCallback, imageTool);
 
         SystemPromptTemplate taskSystemPromptTemplate = new SystemPromptTemplate(taskPrompt);
         Prompt prompt = taskSystemPromptTemplate.create(Map.of(TASK_TOOL, toolName));

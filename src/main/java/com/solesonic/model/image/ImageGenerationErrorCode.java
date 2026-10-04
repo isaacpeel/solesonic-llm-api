@@ -36,6 +36,33 @@ public enum ImageGenerationErrorCode {
     RATE_LIMITED,
 
     /**
+     * A requested reference image could not be used: it is not one of the caller's PNG, JPEG or
+     * WebP attachments, there were not exactly as many as the image style takes, or the image
+     * server rejected it.
+     */
+    INVALID_REFERENCE_IMAGE,
+
+    /**
+     * Reference images were requested, but the image tool does not accept any.
+     */
+    REFERENCE_IMAGES_UNSUPPORTED,
+
+    /**
+     * The request named a tool that is not one of the MCP server's image tools.
+     */
+    INVALID_IMAGE_TOOL,
+
+    /**
+     * The request named no tool, and there is more than one to choose from.
+     */
+    IMAGE_TOOL_REQUIRED,
+
+    /**
+     * The MCP server offers no image tools: no workflow is configured.
+     */
+    NO_IMAGE_TOOLS,
+
+    /**
      * Anything else. Always accompanied by a server-side log of the real cause.
      */
     INTERNAL

@@ -10,6 +10,7 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -88,6 +89,23 @@ public class GeneratedImage {
     private long fileSizeBytes;
 
     private ZonedDateTime created;
+
+    /**
+     * The chat attachments this image was guided by, in slot order; null for a prompt-only
+     * generation. Deliberately not foreign keys: an attachment goes when its chat is deleted, while
+     * the image it guided is kept.
+     */
+    @JdbcTypeCode(SqlTypes.ARRAY)
+    @Column(columnDefinition = "uuid[]")
+    private List<UUID> referenceAttachmentIds;
+
+    public List<UUID> getReferenceAttachmentIds() {
+        return referenceAttachmentIds;
+    }
+
+    public void setReferenceAttachmentIds(List<UUID> referenceAttachmentIds) {
+        this.referenceAttachmentIds = referenceAttachmentIds;
+    }
 
     public UUID getId() {
         return id;

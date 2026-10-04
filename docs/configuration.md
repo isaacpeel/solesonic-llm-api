@@ -311,10 +311,11 @@ yields an empty description rather than a truncated one.
 
 ### Image Generation Configuration
 
-Text-to-image generation calls the `generate_image` MCP tool, which is backed by a single GPU and has
-no admission control of its own — concurrent calls serialize there while each one holds a request
-thread on the MCP server for up to its full deadline. The ceiling is therefore enforced here. Callers
-past the ceiling wait up to `IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
+Image generation calls the MCP server's image tools — one per configured ComfyUI workflow, discovered
+from the MCP catalog; nothing here names one. They are backed by a single GPU and have no admission
+control of their own — concurrent calls serialize there while each one holds a request thread on the
+MCP server for up to its full deadline. The ceiling is therefore enforced here. Callers past the
+ceiling wait up to `IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
 
 Both variables are **required**: the application will not start without them.
 
@@ -322,7 +323,6 @@ Both variables are **required**: the application will not start without them.
 |----------|-------------|---------|----------|--------|
 | `IMAGE_MAX_CONCURRENT` | Generations this instance will have in flight at once | `2` | Yes | Counted per instance, not per cluster. Above the number of GPUs behind the MCP server it only lengthens queues |
 | `IMAGE_ADMISSION_TIMEOUT` | How long a caller waits for a free slot before being refused | `30s` | Yes | Spring duration. Long enough to absorb a burst, short enough that a refusal beats a stalled request |
-
 Fixed in `application.properties` rather than exposed as variables:
 
 - `solesonic.mcp.client.max-in-memory-size=16MB` — ceiling on a buffered MCP response. **Load-bearing

@@ -7,6 +7,7 @@ import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.image.GeneratedImageToolInterceptor;
+import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -60,6 +61,7 @@ public class SlashCommandService {
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
     private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
+    private final ReferenceImageInjector referenceImageInjector;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -71,6 +73,7 @@ public class SlashCommandService {
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
                                GeneratedImageToolInterceptor generatedImageToolInterceptor,
+                               ReferenceImageInjector referenceImageInjector,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
         this.redisTemplate = redisTemplate;
@@ -83,16 +86,21 @@ public class SlashCommandService {
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
         this.generatedImageToolInterceptor = generatedImageToolInterceptor;
+        this.referenceImageInjector = referenceImageInjector;
         this.taskChatModel = taskChatModel;
 
         mcpSyncClient = mcpSyncClients.getFirst();
     }
 
-    public ChatClient taskClient(ToolCallback toolCallback) {
+    /**
+     * @param imageTool whether the MCP server tagged the tool as an image tool, which its
+     *                  {@link ToolCallback} cannot say for itself
+     */
+    public ChatClient taskClient(ToolCallback toolCallback, boolean imageTool) {
         log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
         IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder,
-                jwtAuthenticationConverter, generatedImageToolInterceptor);
+                jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector, imageTool);
 
         return ChatClient.builder(taskChatModel)
                 .defaultTools(identityToolCallback)

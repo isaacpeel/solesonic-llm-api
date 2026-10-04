@@ -69,9 +69,12 @@ public class GeneratedImageService {
      * runs on a {@code boundedElastic} thread, where the request scope is not bound — the same
      * reason {@code ChatAttachmentService.bind} takes one.
      *
-     * @param chatId the conversation the image was generated in, or null for explicit generation.
-     *               An image with a chat is left unbound to a message: the assistant turn it
-     *               belongs to does not exist yet, and {@link #bind} claims it once it does
+     * @param chatId                 the conversation the image was generated in, or null for
+     *                               explicit generation. An image with a chat is left unbound to a
+     *                               message: the assistant turn it belongs to does not exist yet, and
+     *                               {@link #bind} claims it once it does
+     * @param referenceAttachmentIds the chat attachments sent as reference images; empty for a
+     *                               prompt-only generation
      */
     @Transactional
     public GeneratedImageSummary store(UUID userId,
@@ -79,7 +82,8 @@ public class GeneratedImageService {
                                        String prompt,
                                        byte[] imageData,
                                        String contentType,
-                                       ImageGenerationMetadata imageGenerationMetadata) {
+                                       ImageGenerationMetadata imageGenerationMetadata,
+                                       List<UUID> referenceAttachmentIds) {
 
         GeneratedImage generatedImage = new GeneratedImage();
         generatedImage.setUserId(userId);
@@ -96,6 +100,8 @@ public class GeneratedImageService {
         generatedImage.setImageData(imageData);
         generatedImage.setFileSizeBytes(imageData.length);
         generatedImage.setCreated(ZonedDateTime.now());
+        generatedImage.setReferenceAttachmentIds(
+                referenceAttachmentIds == null || referenceAttachmentIds.isEmpty() ? null : List.copyOf(referenceAttachmentIds));
 
         GeneratedImage stored = generatedImageRepository.save(generatedImage);
 
@@ -198,7 +204,8 @@ public class GeneratedImageService {
                 generatedImage.getSteps(),
                 generatedImage.getElapsedSeconds(),
                 generatedImage.getFileSizeBytes(),
-                generatedImage.getCreated());
+                generatedImage.getCreated(),
+                generatedImage.getReferenceAttachmentIds());
     }
 
     /**

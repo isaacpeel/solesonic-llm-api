@@ -3,6 +3,7 @@ package com.solesonic.service.image;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationMetadata;
 import com.solesonic.service.chat.events.NotificationService;
+import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
@@ -72,23 +74,51 @@ public class GeneratedImageToolInterceptor {
     }
 
     /**
-     * Matched on the unprefixed tool name and on a suffix, because Spring AI prefixes MCP tool
-     * names with the client name when it builds the tool definition.
+     * {@code generate_image} as a whole underscore-delimited word: Spring AI may prefix MCP tool
+     * names with the client name, and the MCP server registers one tool per workflow row as
+     * {@code generate_image_<workflow>}. Every one of them returns base64, so every one is guarded.
      */
+    private static final Pattern IMAGE_TOOL_NAME = Pattern.compile("(^|_)" + GENERATE_IMAGE_TOOL + "(_|$)");
+
+    /**
+     * The MCP server tags every image tool with {@code _meta: {"solesonic/kind": "image-generation"}}.
+     * The tag is authoritative; the name match in {@link #handles} remains only for an MCP server
+     * that predates it.
+     */
+    public static final String META_KIND = "solesonic/kind";
+    public static final String META_KIND_IMAGE_GENERATION = "image-generation";
+
+    public static boolean isTaggedImageTool(McpSchema.Tool tool) {
+        return tool != null
+                && tool.meta() != null
+                && META_KIND_IMAGE_GENERATION.equals(tool.meta().get(META_KIND));
+    }
+
     public boolean handles(String toolName) {
-        return Strings.CS.equals(toolName, GENERATE_IMAGE_TOOL)
-                || Strings.CS.endsWith(toolName, "_" + GENERATE_IMAGE_TOOL);
+        return toolName != null && IMAGE_TOOL_NAME.matcher(toolName).find();
+    }
+
+    public String intercept(String toolCallInput, String rawResult, Map<String, Object> toolContext) {
+        return intercept(toolCallInput, rawResult, toolContext, List.of());
     }
 
     /**
-     * @param toolCallInput the arguments the tool was called with; the prompt is read out of them
-     *                      and stored as the image's provenance and {@code alt} text
-     * @param rawResult     the tool's content list as JSON — the thing that must not reach the model
-     * @param toolContext   carries {@code chatId} and {@code userId}; without a user the image
-     *                      cannot be attributed, and is discarded rather than stored unowned
+     * @param toolCallInput          the arguments the model called the tool with; the prompt is read
+     *                               out of them and stored as the image's provenance and {@code alt}
+     *                               text
+     * @param rawResult              the tool's content list as JSON — the thing that must not reach
+     *                               the model
+     * @param toolContext            carries {@code chatId} and {@code userId}; without a user the
+     *                               image cannot be attributed, and is discarded rather than stored
+     *                               unowned
+     * @param referenceAttachmentIds the chat attachments injected as reference images, recorded
+     *                               on the stored image
      * @return the text the model sees in place of the image
      */
-    public String intercept(String toolCallInput, String rawResult, Map<String, Object> toolContext) {
+    public String intercept(String toolCallInput,
+                            String rawResult,
+                            Map<String, Object> toolContext,
+                            List<UUID> referenceAttachmentIds) {
         List<Map<String, Object>> content;
 
         try {
@@ -129,7 +159,7 @@ public class GeneratedImageToolInterceptor {
         }
 
         GeneratedImageSummary generatedImageSummary =
-                store(userId, chatId, prompt(toolCallInput), imageContent, metadataText);
+                store(userId, chatId, prompt(toolCallInput), imageContent, metadataText, referenceAttachmentIds);
 
         if (generatedImageSummary == null) {
             return "The image was generated but could not be stored, so it cannot be shown.";
@@ -148,7 +178,8 @@ public class GeneratedImageToolInterceptor {
                                         UUID chatId,
                                         String userPrompt,
                                         Map<String, Object> imageContent,
-                                        String metadataText) {
+                                        String metadataText,
+                                        List<UUID> referenceAttachmentIds) {
         try {
             byte[] imageData = Base64.getDecoder().decode(String.valueOf(imageContent.get(DATA)));
 
@@ -156,7 +187,7 @@ public class GeneratedImageToolInterceptor {
                     (String) imageContent.get(MIME_TYPE), DEFAULT_CONTENT_TYPE);
 
             return generatedImageService.store(userId, chatId, StringUtils.trimToNull(userPrompt),
-                    imageData, contentType, ImageGenerationMetadata.parse(metadataText));
+                    imageData, contentType, ImageGenerationMetadata.parse(metadataText), referenceAttachmentIds);
         } catch (RuntimeException runtimeException) {
             //A failure here must not fail the turn: the model still has something sensible to say,
             //and the alternative is an exception carrying base64 through the tool-calling loop.

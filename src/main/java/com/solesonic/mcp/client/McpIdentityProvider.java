@@ -1,6 +1,7 @@
 package com.solesonic.mcp.client;
 
 import com.solesonic.service.image.GeneratedImageToolInterceptor;
+import com.solesonic.service.image.ReferenceImageInjector;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -14,8 +15,11 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -31,48 +35,75 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
     private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
+    private final ReferenceImageInjector referenceImageInjector;
+    private final Map<String, Tool> toolsByName;
 
     public McpIdentityProvider(McpSyncClient mcpClient,
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
-                               GeneratedImageToolInterceptor generatedImageToolInterceptor) {
+                               GeneratedImageToolInterceptor generatedImageToolInterceptor,
+                               ReferenceImageInjector referenceImageInjector) {
         this.mcpClient = mcpClient;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
         this.generatedImageToolInterceptor = generatedImageToolInterceptor;
+        this.referenceImageInjector = referenceImageInjector;
         this.toolCallbacks = new ArrayList<>();
+        this.toolsByName = new LinkedHashMap<>();
         initializeToolCallbacks();
     }
 
     private void initializeToolCallbacks() {
         try {
-            List<ToolCallback> rawCallbacks = allMcpToolCallbacks();
+            Map<Tool, ToolCallback> rawCallbacks = allMcpToolCallbacks();
 
             log.debug("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
-            for (ToolCallback rawCallback : rawCallbacks) {
-                toolCallbacks.add(new IdentityToolCallback(rawCallback, jwtDecoder,
-                        jwtAuthenticationConverter, generatedImageToolInterceptor));
-                log.debug("Wrapped MCP tool: {}", rawCallback.getToolDefinition().name());
+            for (Map.Entry<Tool, ToolCallback> rawCallback : rawCallbacks.entrySet()) {
+                toolCallbacks.add(new IdentityToolCallback(rawCallback.getValue(), jwtDecoder,
+                        jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector,
+                        GeneratedImageToolInterceptor.isTaggedImageTool(rawCallback.getKey())));
+                log.debug("Wrapped MCP tool: {}", rawCallback.getKey().name());
             }
         } catch (Exception exception) {
             log.error("Failed to initialize MCP tools", exception);
         }
     }
 
-    private List<ToolCallback> allMcpToolCallbacks() {
+    private Map<Tool, ToolCallback> allMcpToolCallbacks() {
         McpSchema.ListToolsResult listToolsResult = mcpClient.listTools();
         List<Tool> tools = Objects.requireNonNull(listToolsResult).tools();
 
         log.info("Found {} MCP tools from client", tools.size());
-        tools.forEach(tool -> log.info("Available MCP tool: {}", tool.name()));
 
-        return tools.stream()
-                .<ToolCallback>map(tool -> SyncMcpToolCallback.builder()
-                        .mcpClient(mcpClient)
-                        .tool(tool)
-                        .build())
-                .toList();
+        Map<Tool, ToolCallback> callbacks = new LinkedHashMap<>();
+
+        for (Tool tool : tools) {
+            log.info("Available MCP tool: {}", tool.name());
+            toolsByName.put(tool.name(), tool);
+            callbacks.put(tool, SyncMcpToolCallback.builder()
+                    .mcpClient(mcpClient)
+                    .tool(tool)
+                    .build());
+        }
+
+        return callbacks;
+    }
+
+    /**
+     * The MCP server's own description of a tool, as listed at startup — the original input schema
+     * and {@code _meta}, before {@link IdentityToolCallback} trims anything from what the model is
+     * shown.
+     */
+    public Optional<Tool> tool(String toolName) {
+        return Optional.ofNullable(toolsByName.get(toolName));
+    }
+
+    /**
+     * Every tool the MCP server listed at startup, in its order.
+     */
+    public List<Tool> tools() {
+        return List.copyOf(toolsByName.values());
     }
 
     @Override

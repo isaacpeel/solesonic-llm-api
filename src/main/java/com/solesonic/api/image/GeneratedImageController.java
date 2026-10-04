@@ -5,9 +5,11 @@ import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.GeneratedImageUpdateRequest;
 import com.solesonic.model.image.ImageGenerationEvent;
+import com.solesonic.model.image.ImageToolSummary;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.image.ImageGenerationService;
+import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.util.AuthenticationTokens;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +37,7 @@ import reactor.core.publisher.Flux;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -55,13 +58,16 @@ public class GeneratedImageController {
 
     private final ImageGenerationService imageGenerationService;
     private final GeneratedImageService generatedImageService;
+    private final ImageToolCatalog imageToolCatalog;
     private final UserRequestContext userRequestContext;
 
     public GeneratedImageController(ImageGenerationService imageGenerationService,
                                     GeneratedImageService generatedImageService,
+                                    ImageToolCatalog imageToolCatalog,
                                     UserRequestContext userRequestContext) {
         this.imageGenerationService = imageGenerationService;
         this.generatedImageService = generatedImageService;
+        this.imageToolCatalog = imageToolCatalog;
         this.userRequestContext = userRequestContext;
     }
 
@@ -71,7 +77,8 @@ public class GeneratedImageController {
         log.info("Streaming image generation for user {}", userRequestContext.getUserId());
 
         return imageGenerationService
-                .stream(generateImageRequest.prompt(), userRequestContext.getUserId(),
+                .stream(generateImageRequest.prompt(), generateImageRequest.tool(),
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
                         AuthenticationTokens.token(authentication))
                 .map(GeneratedImageController::serverSentEvent);
     }
@@ -87,10 +94,21 @@ public class GeneratedImageController {
         log.info("Generating image for user {}", userRequestContext.getUserId());
 
         GeneratedImageSummary generatedImageSummary = imageGenerationService
-                .generate(generateImageRequest.prompt(), userRequestContext.getUserId(),
+                .generate(generateImageRequest.prompt(), generateImageRequest.tool(),
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
                         AuthenticationTokens.token(authentication));
 
         return ResponseEntity.created(URI.create(generatedImageSummary.imageUrl())).body(generatedImageSummary);
+    }
+
+    /**
+     * The image tools a generation may name, each a workflow on the MCP server, with how many
+     * reference images it takes and which one is used when a request names none. A literal path, so
+     * it wins over {@code /{imageId}}.
+     */
+    @GetMapping("/tools")
+    public ResponseEntity<List<ImageToolSummary>> tools() {
+        return ResponseEntity.ok(imageToolCatalog.summaries());
     }
 
     /**

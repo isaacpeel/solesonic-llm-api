@@ -34,7 +34,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.chatId = :chatId
                and image.chatMessageId is not null
@@ -51,7 +51,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.chatId = :chatId
                and image.created >= :since
@@ -66,7 +66,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.userId = :userId
              order by image.created desc
@@ -85,7 +85,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              order by image.created desc
            """,
