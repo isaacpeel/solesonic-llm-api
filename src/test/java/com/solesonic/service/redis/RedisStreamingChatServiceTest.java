@@ -290,7 +290,7 @@ class RedisStreamingChatServiceTest {
     @Test
     void normalTurnAttachesWhatTheServerReportedAboutTheTurn() {
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
 

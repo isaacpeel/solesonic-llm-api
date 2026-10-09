@@ -249,6 +249,7 @@ De-duplicate by `imageId`.
       "promptTokens": 1042,
       "completionTokens": 259,
       "totalTokens": 1301,
+      "tokensPerSecond": 222.23,
       "promptMillis": 130.079,
       "predictedMillis": 4232.71,
       "totalMillis": 4362.789,
@@ -268,6 +269,7 @@ De-duplicate by `imageId`.
         "promptTokens": 1042,
         "completionTokens": 259,
         "totalTokens": 1301,
+        "tokensPerSecond": 222.23,
         "promptMillis": 130.079,
         "predictedMillis": 4232.71,
         "predictedPerSecond": 61.2,
@@ -344,10 +346,13 @@ numbers, not an approximation of them.
   `x-litellm-model-name` response header, so it is absent against a server that is not behind such a
   proxy. When several round trips were routed differently it is the *last* call's, which is the one
   that produced the answer being read.
-- There is no top-level tokens-per-second on `responseMetadata`: a single rate summed across several
-  round trips would be meaningless, and this API does not compute what the server did not report. If
-  you want a turn-level rate anyway, divide `completionTokens` by `predictedMillis / 1000` yourself.
-  The per-call rate the server actually measured is on `responseMetadataCalls`, described next.
+- `tokensPerSecond` is the generation rate a LiteLLM-style proxy reports in the final streamed usage
+  chunk (`usage.tokens_per_second`), copied verbatim. **It is not a sum and it is not computed here**:
+  it is the value from the last model call that reported one, which is the call that produced the
+  answer being read. It is absent when no call in the turn carried the field — any server not behind
+  such a proxy, and tool-calling rounds whose usage Spring AI summed itself. Display this value
+  directly; do not derive a rate from `completionTokens` and `predictedMillis`, which are not
+  comparable behind a proxy.
 
 `responseMetadataCalls` is the per-round-trip breakdown behind `responseMetadata`'s summed totals —
 one entry per model call, so a tool-calling turn has several and an ordinary turn has exactly one.
@@ -358,6 +363,9 @@ make sense per call and are never summed onto the totals:
   call — generation and prompt-evaluation tokens per second, respectively. `promptPerTokenMillis` and
   `predictedPerTokenMillis` are the same measurements inverted (milliseconds per token). All four are
   llama.cpp-only and absent against any other server.
+- `tokensPerSecond` here is that one call's proxy-reported rate, so a tool-calling turn shows each
+  round trip's. It is a different measurement from llama.cpp's `predictedPerSecond`; both can be
+  present on the same call and neither stands in for the other.
 - `liteLlm` is present only when the call went through a LiteLLM-style proxy, taken from its
   `x-litellm-*` response headers rather than the response body: `callId` is the proxy's own call id
   (the join key to LiteLLM's spend logs), `modelName`/`modelApiBase` are what actually served the

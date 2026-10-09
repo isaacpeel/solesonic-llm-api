@@ -23,6 +23,9 @@ import java.time.Instant;
  * does not send one. {@link #cachedPromptTokens()} is the one field here that is not llama.cpp-only:
  * it prefers the portable {@code usage.prompt_tokens_details.cached_tokens}, falling back to
  * llama.cpp's own {@code timings.cache_n} only when the response carries no usage-level count.
+ * {@link #tokensPerSecond()} is the proxy's own figure, read from {@code usage.tokens_per_second}
+ * where the LiteLLM plugin puts it, and is null when the usage carries none. It is a different
+ * quantity from llama.cpp's {@link #predictedPerSecond()}, and neither stands in for the other.
  */
 public record ModelCallMetadata(
         @Nullable String model,
@@ -35,6 +38,7 @@ public record ModelCallMetadata(
         @Nullable Integer promptTokens,
         @Nullable Integer completionTokens,
         @Nullable Integer totalTokens,
+        @Nullable Double tokensPerSecond,
         @Nullable Double promptMillis,
         @Nullable Double predictedMillis,
         @Nullable Double predictedPerSecond,
@@ -59,6 +63,7 @@ public record ModelCallMetadata(
                 promptTokens,
                 completionTokens,
                 totalTokens,
+                tokensPerSecond,
                 promptMillis,
                 predictedMillis,
                 predictedPerSecond,

@@ -285,9 +285,9 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.of(assistantMessage));
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null, null,
                         null, null, null, null, null, null, null, null, null),
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", null, "stop", calls);
 
@@ -312,7 +312,7 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted,
@@ -331,7 +331,7 @@ class ChatMessageServiceTest {
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
 
@@ -372,7 +372,7 @@ class ChatMessageServiceTest {
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
 
         assistantMessage.setResponseMetadataCalls(calls);

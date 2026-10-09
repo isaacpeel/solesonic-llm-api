@@ -4,7 +4,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "qwen3-vl-30b-a3b-instruct",
+  "model": "gemma-4-26b",
   "messages": [
     {
       "role": "user",
@@ -19,7 +19,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "qwen3.8",
+  "model": "gemma-4-26b",
   "stream": true,
   "stream_options": {
     "include_usage": true

@@ -27,8 +27,11 @@ import java.util.function.Function;
  * {@link #predictedTokensGenerated()}, {@link #draftTokens()} and {@link #draftAcceptedTokens()} are
  * summed the same way the other counts are. The four llama.cpp rate fields that sit alongside them on
  * {@link ModelCallMetadata} (per-token millis, per-second throughput) are deliberately not summed or
- * repeated here, for the same reason there is no top-level tokens-per-second: a rate from one round
- * trip does not mean anything added to another's.
+ * repeated here: a rate from one round trip does not mean anything added to another's.
+ * <p>
+ * {@link #tokensPerSecond()} is therefore not a sum either. It is the proxy's own
+ * {@code usage.tokens_per_second} from the last call that reported one, copied verbatim — the call
+ * that produced the answer the user is reading. Null when no call in the turn carried it.
  * <p>
  * The whole record is {@code null} on a message for any turn no chat model answered: an A2A agent
  * delegation, which never reaches a chat model at all, and a turn cancelled before any usage was
@@ -44,6 +47,7 @@ public record ResponseMetadata(
         @Nullable Integer promptTokens,
         @Nullable Integer completionTokens,
         @Nullable Integer totalTokens,
+        @Nullable Double tokensPerSecond,
         @Nullable Double promptMillis,
         @Nullable Double predictedMillis,
         @Nullable Double totalMillis,
@@ -56,11 +60,6 @@ public record ResponseMetadata(
 
     /**
      * Folds one turn's calls into its totals, or returns {@code null} when the turn reported none.
-     * <p>
-     * There is deliberately no top-level tokens-per-second: a single rate means nothing across
-     * several round trips, and this record does not compute what the server did not report. It stays
-     * on {@link ModelCallMetadata}, and a client wanting one for the turn divides
-     * {@code completionTokens} by {@code predictedMillis / 1000}.
      */
     public static @Nullable ResponseMetadata of(@Nullable String model,
                                                 @Nullable String id,
@@ -80,6 +79,7 @@ public record ResponseMetadata(
                 sumIntegers(calls, ModelCallMetadata::promptTokens),
                 sumIntegers(calls, ModelCallMetadata::completionTokens),
                 sumIntegers(calls, ModelCallMetadata::totalTokens),
+                lastTokensPerSecond(calls),
                 sumDoubles(calls, ModelCallMetadata::promptMillis),
                 sumDoubles(calls, ModelCallMetadata::predictedMillis),
                 sumDoubles(calls, ResponseMetadata::callTotalMillis),
@@ -131,6 +131,22 @@ public record ResponseMetadata(
         }
 
         return routedModel;
+    }
+
+    /**
+     * The last reported rate rather than the last call's, because Spring AI drops the native usage
+     * the rate rides on whenever it sums a round trip into another itself.
+     */
+    private static @Nullable Double lastTokensPerSecond(List<ModelCallMetadata> calls) {
+        Double tokensPerSecond = null;
+
+        for (ModelCallMetadata call : calls) {
+            if (call.tokensPerSecond() != null) {
+                tokensPerSecond = call.tokensPerSecond();
+            }
+        }
+
+        return tokensPerSecond;
     }
 
     /**

@@ -1,5 +1,7 @@
 package com.solesonic.model.chat;
 
+import com.openai.core.JsonNumber;
+import com.openai.models.completions.CompletionUsage;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -57,6 +59,12 @@ public final class ResponseMetadataCapture {
     static final String PREDICTED_PER_SECOND = "predicted_per_second";
     static final String DRAFT_N = "draft_n";
     static final String DRAFT_N_ACCEPTED = "draft_n_accepted";
+
+    /**
+     * The LiteLLM plugin's throughput figure, on the final usage chunk. The SDK does not know it, so
+     * it arrives through {@code CompletionUsage._additionalProperties()} on the native usage.
+     */
+    static final String TOKENS_PER_SECOND = "tokens_per_second";
 
     /**
      * What Spring AI's OpenAI model reports for a streamed chunk that carries no finish reason of
@@ -119,6 +127,8 @@ public final class ResponseMetadataCapture {
                 pending.cachedPromptTokens = Math.toIntExact(cacheReadInputTokens);
             }
 
+            pending.tokensPerSecond = tokensPerSecond(usage);
+
             //Usage is the last thing a call reports, so this closes it. Flushing here rather than on
             //the next call's first chunk is what keeps the following round trip's finish reason from
             //being attributed to this one.
@@ -173,6 +183,7 @@ public final class ResponseMetadataCapture {
                         lastCall.promptTokens(),
                         lastCall.completionTokens(),
                         lastCall.totalTokens(),
+                        lastCall.tokensPerSecond(),
                         pending.promptMillis,
                         pending.predictedMillis,
                         pending.predictedPerSecond,
@@ -204,6 +215,7 @@ public final class ResponseMetadataCapture {
                 pending.promptTokens,
                 pending.completionTokens,
                 pending.totalTokens,
+                pending.tokensPerSecond,
                 pending.promptMillis,
                 pending.predictedMillis,
                 pending.predictedPerSecond,
@@ -328,6 +340,22 @@ public final class ResponseMetadataCapture {
     }
 
     /**
+     * Null whenever Spring AI summed two usages itself, because it drops the native usage when it
+     * does, and against any server that does not send the field.
+     */
+    private static @Nullable Double tokensPerSecond(Usage usage) {
+        if (!(usage.getNativeUsage() instanceof CompletionUsage completionUsage)) {
+            return null;
+        }
+
+        if (completionUsage._additionalProperties().get(TOKENS_PER_SECOND) instanceof JsonNumber tokensPerSecond) {
+            return tokensPerSecond.value().doubleValue();
+        }
+
+        return null;
+    }
+
+    /**
      * {@code created} is epoch seconds. Spring AI substitutes 0 for a server that omits the field, so
      * that is "not reported" rather than 1970.
      */
@@ -384,6 +412,7 @@ public final class ResponseMetadataCapture {
         private @Nullable Integer promptTokens;
         private @Nullable Integer completionTokens;
         private @Nullable Integer totalTokens;
+        private @Nullable Double tokensPerSecond;
         private @Nullable Double promptMillis;
         private @Nullable Double predictedMillis;
         private @Nullable Double predictedPerSecond;
@@ -412,6 +441,7 @@ public final class ResponseMetadataCapture {
             promptTokens = null;
             completionTokens = null;
             totalTokens = null;
+            tokensPerSecond = null;
             promptMillis = null;
             predictedMillis = null;
             predictedPerSecond = null;

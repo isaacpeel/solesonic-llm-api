@@ -1,5 +1,8 @@
 package com.solesonic.model.chat;
 
+import com.openai.core.JsonValue;
+import com.openai.models.completions.CompletionUsage;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
@@ -63,6 +66,27 @@ class ResponseMetadataCaptureTest {
         }
 
         return new ChatResponse(List.of(), metadata.build());
+    }
+
+    /**
+     * The usage chunk as it arrives through LiteLLM: {@code OpenAiChatModel.getDefaultUsage} hands the
+     * SDK's whole {@link CompletionUsage} to {@link DefaultUsage} as its native usage, and the proxy's
+     * {@code tokens_per_second} rides on it as an unrecognised property.
+     */
+    private static ChatResponse proxiedUsageChunk(int promptTokens, int completionTokens, @Nullable JsonValue tokensPerSecond) {
+        CompletionUsage.Builder completionUsage = CompletionUsage.builder()
+                .promptTokens(promptTokens)
+                .completionTokens(completionTokens)
+                .totalTokens(promptTokens + completionTokens);
+
+        if (tokensPerSecond != null) {
+            completionUsage.putAdditionalProperty(ResponseMetadataCapture.TOKENS_PER_SECOND, tokensPerSecond);
+        }
+
+        return new ChatResponse(List.of(), baseMetadata()
+                .usage(new DefaultUsage(promptTokens, completionTokens, promptTokens + completionTokens,
+                        completionUsage.build(), null, null))
+                .build());
     }
 
     @Test
@@ -281,5 +305,80 @@ class ResponseMetadataCaptureTest {
 
         assertThat(responseMetadataCapture.metadata()).isNotNull()
                 .satisfies(metadata -> assertThat(metadata.cachedPromptTokens()).isEqualTo(9));
+    }
+
+    @Test
+    void capturesTheProxysTokensPerSecondFromTheUsageChunk() {
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        responseMetadataCapture.accept(finishReasonChunk("STOP"));
+        responseMetadataCapture.accept(proxiedUsageChunk(14, 10, JsonValue.from(222.23)));
+
+        assertThat(responseMetadataCapture.calls()).singleElement()
+                .satisfies(call -> assertThat(call.tokensPerSecond()).isEqualTo(222.23));
+        assertThat(responseMetadataCapture.metadata()).isNotNull()
+                .satisfies(metadata -> assertThat(metadata.tokensPerSecond()).isEqualTo(222.23));
+    }
+
+    @Test
+    void leavesTokensPerSecondNullWhenTheUsageCarriesNone() {
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        responseMetadataCapture.accept(finishReasonChunk("STOP"));
+        responseMetadataCapture.accept(proxiedUsageChunk(14, 10, null));
+
+        assertThat(responseMetadataCapture.calls()).singleElement()
+                .satisfies(call -> assertThat(call.tokensPerSecond()).isNull());
+    }
+
+    @Test
+    void ignoresANonNumericTokensPerSecond() {
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        responseMetadataCapture.accept(finishReasonChunk("STOP"));
+        responseMetadataCapture.accept(proxiedUsageChunk(14, 10, JsonValue.from("fast")));
+
+        assertThat(responseMetadataCapture.calls()).singleElement()
+                .satisfies(call -> {
+                    assertThat(call.tokensPerSecond()).isNull();
+                    assertThat(call.totalTokens()).isEqualTo(24);
+                });
+    }
+
+    @Test
+    void keepsEachRoundTripsTokensPerSecondInOrder() {
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        responseMetadataCapture.accept(finishReasonChunk("TOOL_CALLS"));
+        responseMetadataCapture.accept(proxiedUsageChunk(1042, 88, JsonValue.from(180.5)));
+
+        responseMetadataCapture.accept(finishReasonChunk("STOP"));
+        responseMetadataCapture.accept(proxiedUsageChunk(1380, 165, JsonValue.from(222.23)));
+
+        assertThat(responseMetadataCapture.calls())
+                .extracting(ModelCallMetadata::tokensPerSecond)
+                .containsExactly(180.5, 222.23);
+    }
+
+    /**
+     * Timings arriving on their own after the usage chunk closed the call are merged into it, and
+     * the merge must not drop the rate the usage chunk already recorded.
+     */
+    @Test
+    void keepsTokensPerSecondWhenLateTimingsAreMergedIntoTheCall() {
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        responseMetadataCapture.accept(finishReasonChunk("STOP"));
+        responseMetadataCapture.accept(proxiedUsageChunk(14, 10, JsonValue.from(222.23)));
+        responseMetadataCapture.accept(new ChatResponse(List.of(), baseMetadata()
+                .usage(new DefaultUsage(0, 0, 0))
+                .keyValue(ResponseMetadataCapture.TIMINGS, Map.of(ResponseMetadataCapture.PREDICTED_MS, 45.0))
+                .build()));
+
+        assertThat(responseMetadataCapture.calls()).singleElement()
+                .satisfies(call -> {
+                    assertThat(call.predictedMillis()).isEqualTo(45.0);
+                    assertThat(call.tokensPerSecond()).isEqualTo(222.23);
+                });
     }
 }
