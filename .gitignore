@@ -8,3 +8,4 @@
 /docker/.env.prod
 /docker/.env.redis
 /http-requests/litellm/http-client.env.json
+CLAUDE.md
