@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
@@ -46,6 +47,8 @@ public class SlashCommandService {
 
     private static final TypeReference<List<SlashCommand>> CATALOG_TYPE_REFERENCE = new TypeReference<>() {
     };
+
+    private static final List<SlashCommand> BUILT_IN_COMMANDS = List.of(new ModelSlashCommand());
 
     private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
@@ -111,9 +114,14 @@ public class SlashCommandService {
                 .build();
     }
 
+    /**
+     * Resolves commands for routing, which is why setting commands never match — including an MCP
+     * prompt or tool that shares a setting command's name.
+     */
     public List<SlashCommand> commands(Set<String> commands) {
 
         var matched = slashCommands().stream()
+                .filter(slashCommand -> !SlashCommand.SETTING_COMMANDS.contains(slashCommand.command()))
                 .filter(slashCommand -> commands.contains(slashCommand.command()))
                 .toList();
 
@@ -150,7 +158,18 @@ public class SlashCommandService {
         return matches;
     }
 
+    /**
+     * The built-in commands, then the MCP-sourced catalog.
+     * <p>
+     * Built-ins come first so that an MCP prompt or tool of the same name cannot shadow one —
+     * {@code PromptService} takes the first match — and they are added on every read rather than
+     * cached, so a catalog written to Redis before a built-in existed cannot hide it.
+     */
     public List<SlashCommand> slashCommands() {
+        return ListUtils.union(BUILT_IN_COMMANDS, catalogCommands());
+    }
+
+    private List<SlashCommand> catalogCommands() {
         String cachedPayload = redisTemplate.opsForValue()
                 .get(CACHE_KEY)
                 .block();

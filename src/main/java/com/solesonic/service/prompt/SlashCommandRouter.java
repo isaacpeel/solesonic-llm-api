@@ -3,12 +3,14 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
+import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.util.AttachmentContextFormatter;
@@ -31,8 +33,6 @@ import java.util.Map;
 import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
-import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
-
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.service.prompt.PromptService.AGENT_NAME;
@@ -42,9 +42,10 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 /**
  * Dispatches a resolved slash command to the one of four routes that handles it.
  * <p>
- * The sticky-agent bookkeeping is the reason this is a single decision rather than four unrelated
- * ones: every command either activates a sticky A2A agent or clears one, so that a conversation
+ * The sticky-agent bookkeeping is the reason this is a single decision rather than unrelated ones:
+ * every routed command either activates a sticky A2A agent or clears one, so that a conversation
  * previously pinned to a remote agent is released the moment the user asks for anything else.
+ * {@code /model} is a setting command applied through REST, so it never arrives here.
  */
 @Service
 public class SlashCommandRouter {
@@ -60,7 +61,6 @@ public class SlashCommandRouter {
     private final ChatMessageService chatMessageService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
     private final String agentName;
-    private final String defaultChatModel;
     private final Duration chatTimeout;
 
     public SlashCommandRouter(@Qualifier(DEFAULT_CHAT_CLIENT) ChatClient chatClient,
@@ -73,7 +73,6 @@ public class SlashCommandRouter {
                               ChatMessageService chatMessageService,
                               LiteLlmHeaderRegistry liteLlmHeaderRegistry,
                               @Value("${solesonic.llm.bot.name}") String agentName,
-                              @Value("${spring.ai.openai.model}") String defaultChatModel,
                               @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
         this.mcpClient = mcpClient;
@@ -85,7 +84,6 @@ public class SlashCommandRouter {
         this.chatMessageService = chatMessageService;
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.agentName = agentName;
-        this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
     }
 
@@ -97,6 +95,8 @@ public class SlashCommandRouter {
      *                    which takes a single string
      * @param contextMap  tool context forwarded to any MCP tool called mid-turn
      * @param authToken   the user's own bearer token, so a remote agent acts as the user
+     * @param model       the chat model this turn uses — the chat's selection or the default,
+     *                    resolved once by {@code PromptService}
      */
     public Flux<String> route(SlashCommand slashCommand,
                               UUID chatId,
@@ -104,11 +104,12 @@ public class SlashCommandRouter {
                               String message,
                               AttachmentResolution attachments,
                               Map<String, Object> contextMap,
-                              String authToken) {
+                              String authToken,
+                              String model) {
 
         return switch (slashCommand) {
             case PromptSlashCommand promptCommand -> releasingStickyAgent(chatId,
-                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap));
+                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model));
 
             case ToolSlashCommand toolCommand -> releasingStickyAgent(chatId,
                     toolCallService.stream(chatId, message, toolCommand, contextMap));
@@ -122,6 +123,9 @@ public class SlashCommandRouter {
                 yield a2aStickyAgentService.activate(chatId, agentCommand.command())
                         .thenMany(delegate(chatId, agentCommand.command(), message, attachments, authToken));
             }
+
+            case ModelSlashCommand _ -> throw new IllegalStateException(
+                    "/model is a setting command and is never routed as a chat turn");
         };
     }
 
@@ -137,7 +141,8 @@ public class SlashCommandRouter {
                                          UUID userId,
                                          String message,
                                          AttachmentResolution attachments,
-                                         Map<String, Object> contextMap) {
+                                         Map<String, Object> contextMap,
+                                         String model) {
 
         log.info("Prompt invoke: {}", promptCommand.name());
 
@@ -163,7 +168,7 @@ public class SlashCommandRouter {
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
                 .toolContext(contextMap)
-                .options(chatOptions(defaultChatModel, chatTimeout, correlationId))
+                .options(chatOptions(model, chatTimeout, correlationId))
                 .stream()
                 .chatResponse();
 

@@ -1,8 +1,10 @@
 package com.solesonic.service.chat;
 
+import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
@@ -24,6 +26,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,11 +52,9 @@ class ChatMessageServiceTest {
     private ChatMessageRepository chatMessageRepository;
 
     @Mock
-    @SuppressWarnings("unused")
     private ChatRepository chatRepository;
 
     @Mock
-    @SuppressWarnings("unused")
     private UserPreferencesService userPreferencesService;
 
     @Mock
@@ -212,6 +213,52 @@ class ChatMessageServiceTest {
         assertThat(messages).hasSize(4);
         assertThat(messages).extracting(Message::getMessageType)
                 .containsExactly(MessageType.USER, MessageType.ASSISTANT, MessageType.USER, MessageType.ASSISTANT);
+    }
+
+    @Test
+    void findByChatIdKeepsTurnsFromOtherCommands() {
+        ChatMessage toolRequest = chatMessage(MessageType.USER, "search for cats");
+        toolRequest.setCommands(Set.of("search"));
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                toolRequest,
+                chatMessage(MessageType.ASSISTANT, "cats found")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).extracting(Message::getText)
+                .containsExactly("search for cats", "cats found");
+    }
+
+    @Test
+    void saveUserMessageRecordsTheSendsCommands() {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setUserId(UUID.randomUUID());
+
+        when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatMessage saved = chatMessageService.saveUserMessage(chatId, chat.getUserId(),
+                new ChatRequest("search for cats", Set.of("search"), Set.of(), null));
+
+        assertThat(saved.getCommands()).containsExactly("search");
+        verify(userPreferencesService).get(chat.getUserId());
+    }
+
+    @Test
+    void saveUserMessageLeavesCommandsNullForAPlainSend() {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setUserId(UUID.randomUUID());
+
+        when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatMessage saved = chatMessageService.saveUserMessage(chatId, chat.getUserId(),
+                new ChatRequest("hello", Set.of(), Set.of(), null));
+
+        assertThat(saved.getCommands()).isNull();
     }
 
     @Test

@@ -27,11 +27,13 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.TurnErrorCode;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.ImageGenerationErrorCode;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.image.GeneratedImageService;
@@ -125,6 +127,9 @@ class RedisStreamingChatServiceTest {
     private GeneratedImageService generatedImageService;
 
     @Mock
+    private ChatModelSelection chatModelSelection;
+
+    @Mock
     private Authentication authentication;
 
     private RedisStreamingChatService redisStreamingChatService;
@@ -144,7 +149,8 @@ class RedisStreamingChatServiceTest {
                 activeStreamTracker,
                 notificationService,
                 generatedImageService,
-                new SideChannelEventTranslator(new JacksonConfig().jsonMapper()));
+                new SideChannelEventTranslator(new JacksonConfig().jsonMapper()),
+                chatModelSelection);
 
         published.clear();
 
@@ -180,7 +186,7 @@ class RedisStreamingChatServiceTest {
 
     private void runTurn() {
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
     }
 
@@ -573,7 +579,7 @@ class RedisStreamingChatServiceTest {
         modelStreams("Hello");
 
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
 
         verify(activeStreamTracker, never()).put(any(), any());
@@ -629,7 +635,7 @@ class RedisStreamingChatServiceTest {
         when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
 
         StepVerifier.create(redisStreamingChatService
-                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
 
         assertThat(published.getFirst().type()).isEqualTo(RUN_STARTED);
@@ -644,6 +650,67 @@ class RedisStreamingChatServiceTest {
             assertThat(message.role()).isEqualTo(Role.USER);
             assertThat(message.content()).isEqualTo("hello");
         });
+    }
+
+    /**
+     * A model picked before the chat existed must already be stored when the turn resolves which model
+     * it uses, or the first turn would silently run on the default.
+     */
+    @Test
+    void createStoresTheModelBeforeTheTurnStarts() {
+        stubNewChat();
+        when(chatModelSelection.set(CHAT_ID, "openai/gpt-4o")).thenReturn(Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), "openai/gpt-4o"), "openai/gpt-4o", authentication))
+                .verifyComplete();
+
+        InOrder turnOrder = inOrder(chatModelSelection, chatMessageService);
+        turnOrder.verify(chatModelSelection).set(CHAT_ID, "openai/gpt-4o");
+        turnOrder.verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    @Test
+    void createStoresNothingForTheDefault() {
+        stubNewChat();
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), null), null, authentication))
+                .verifyComplete();
+
+        verify(chatModelSelection, never()).set(any(), anyString());
+        verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    /**
+     * Storing the selection costs the chat its choice of model, never its first turn.
+     */
+    @Test
+    void createStillStartsTheTurnWhenTheModelCannotBeStored() {
+        stubNewChat();
+        when(chatModelSelection.set(CHAT_ID, "openai/gpt-4o")).thenReturn(Mono.error(new IllegalStateException("redis down")));
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), "openai/gpt-4o"), "openai/gpt-4o", authentication))
+                .verifyComplete();
+
+        verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    private void stubNewChat() {
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(UUID.randomUUID());
+
+        when(chatRepository.save(any(Chat.class))).thenAnswer(invocation -> {
+            Chat chat = invocation.getArgument(0);
+            chat.setId(CHAT_ID);
+
+            return chat;
+        });
+        when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
     }
 
     /**

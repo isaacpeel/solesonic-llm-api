@@ -14,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.web.server.ResponseStatusException;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Optional;
@@ -21,6 +22,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
@@ -47,6 +49,9 @@ class ChatServiceTest {
     @Mock
     private RedisStreamService redisStreamService;
 
+    @Mock
+    private ChatModelSelection chatModelSelection;
+
     private final UserRequestContext userRequestContext = new UserRequestContext();
 
     private ChatService chatService;
@@ -62,7 +67,29 @@ class ChatServiceTest {
                 generatedImageService,
                 a2aStickyAgentService,
                 redisStreamService,
+                chatModelSelection,
                 userRequestContext);
+    }
+
+    /**
+     * The model selection is the one key a chat leaves in Redis with no expiry, so deleting the chat
+     * is the only thing that ever removes it.
+     */
+    @Test
+    void deletingAChatClearsItsModelSelection() {
+        Chat chat = new Chat();
+        chat.setId(CHAT_ID);
+        chat.setUserId(USER_ID);
+
+        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+        when(a2aStickyAgentService.deactivate(CHAT_ID)).thenReturn(Mono.empty());
+        when(a2aStickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+        when(redisStreamService.deleteStream(CHAT_ID, USER_ID)).thenReturn(Mono.just(true));
+        when(chatModelSelection.clear(CHAT_ID)).thenReturn(Mono.empty());
+
+        chatService.delete(CHAT_ID);
+
+        verify(chatModelSelection).clear(CHAT_ID);
     }
 
     @Test

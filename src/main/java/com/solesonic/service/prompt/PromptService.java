@@ -8,6 +8,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -28,6 +29,7 @@ import org.springframework.core.io.Resource;
 import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.ZoneId;
@@ -51,7 +53,7 @@ import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
  * Only two decisions are made here — whether the send named a slash command, and, when it did not,
  * whether the conversation is pinned to a remote agent. Everything each branch then does belongs to
  * a collaborator: {@link AttachmentContextResolver} for what the attachments amount to,
- * {@link SlashCommandRouter} for the four command routes. What is left in this class is the
+ * {@link SlashCommandRouter} for the five command routes. What is left in this class is the
  * no-command default LLM path, which is its actual reason for existing.
  */
 @Service
@@ -83,6 +85,7 @@ public class PromptService {
     private final AttachmentContextResolver attachmentContextResolver;
     private final A2AAgentService a2aAgentService;
     private final A2AStickyAgentService a2aStickyAgentService;
+    private final ChatModelSelection chatModelSelection;
     private final VectorStoreService vectorStoreService;
     private final UserPreferencesService userPreferencesService;
     private final McpIdentityProvider mcpIdentityProvider;
@@ -106,6 +109,7 @@ public class PromptService {
             AttachmentContextResolver attachmentContextResolver,
             A2AAgentService a2aAgentService,
             A2AStickyAgentService a2aStickyAgentService,
+            ChatModelSelection chatModelSelection,
             VectorStoreService vectorStoreService,
             UserPreferencesService userPreferencesService,
             McpIdentityProvider mcpIdentityProvider,
@@ -120,6 +124,7 @@ public class PromptService {
         this.attachmentContextResolver = attachmentContextResolver;
         this.a2aAgentService = a2aAgentService;
         this.a2aStickyAgentService = a2aStickyAgentService;
+        this.chatModelSelection = chatModelSelection;
         this.vectorStoreService = vectorStoreService;
         this.userPreferencesService = userPreferencesService;
         this.mcpIdentityProvider = mcpIdentityProvider;
@@ -138,6 +143,8 @@ public class PromptService {
 
         String authToken = AuthenticationTokens.token(authentication);
 
+        String model = chatModel(chatId);
+
         AttachmentResolution attachments = attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds());
 
         Map<String, Object> contextMap = Map.of(
@@ -150,14 +157,32 @@ public class PromptService {
         Set<String> commands = chatMessage.commands();
 
         if (CollectionUtils.isEmpty(commands)) {
-            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken);
+            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken, model);
         }
 
         SlashCommand slashCommand = slashCommandService.commands(commands).stream()
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
 
-        return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken);
+        return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
+                contextMap, authToken, model);
+    }
+
+    /**
+     * The model this turn streams with: the one the chat was switched to with {@code /model}, or the
+     * configured default. Read once, here, so every route of the turn agrees on it. A selection that
+     * cannot be read costs the turn its choice of model, never its answer.
+     */
+    private String chatModel(UUID chatId) {
+        return chatModelSelection.get(chatId)
+                .onErrorResume(error -> {
+                    log.warn("Could not read the model selected for chat {}, using the default: {}",
+                            chatId, error.getMessage());
+
+                    return Mono.empty();
+                })
+                .blockOptional()
+                .orElse(defaultChatModel);
     }
 
     /**
@@ -172,7 +197,8 @@ public class PromptService {
                                               String message,
                                               AttachmentResolution attachments,
                                               Map<String, Object> contextMap,
-                                              String authToken) {
+                                              String authToken,
+                                              String model) {
         return a2aStickyAgentService
                 .getActiveAgent(chatId)
                 .flatMapMany(stickyAgent -> {
@@ -188,7 +214,7 @@ public class PromptService {
 
                     log.info("No command or sticky agent, using default system prompt.");
 
-                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, defaultChatModel);
+                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, model);
                 });
     }
 

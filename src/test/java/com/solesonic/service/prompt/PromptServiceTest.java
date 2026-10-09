@@ -8,6 +8,7 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.service.image.ReferenceImageInjector;
@@ -33,6 +34,7 @@ import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -102,6 +104,9 @@ class PromptServiceTest {
     @Mock
     private ImageToolCatalog imageToolCatalog;
 
+    @Mock
+    private ChatModelSelection chatModelSelection;
+
     private UUID chatId;
     private UUID userId;
 
@@ -119,6 +124,7 @@ class PromptServiceTest {
                 attachmentContextResolver,
                 a2aAgentService,
                 a2aStickyAgentService,
+                chatModelSelection,
                 vectorStoreService,
                 userPreferencesService,
                 mcpIdentityProvider,
@@ -143,6 +149,80 @@ class PromptServiceTest {
                 .thenReturn(mock(Advisor.class));
 
         lenient().when(userPreferencesService.getZone(any())).thenReturn(ZoneOffset.UTC);
+
+        //No chat has picked a model in most tests.
+        lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
+    }
+
+    private String requestedModel() {
+        ArgumentCaptor<OpenAiChatOptions.Builder> optionsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).options(optionsCaptor.capture());
+
+        return optionsCaptor.getValue().build().getModel();
+    }
+
+    @Test
+    void stream_withAModelSelectedForTheChat_streamsWithIt() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        assertThat(requestedModel()).isEqualTo("openai/gpt-4o");
+    }
+
+    @Test
+    void stream_withNoModelSelectedForTheChat_streamsWithTheDefault() {
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        assertThat(requestedModel()).isEqualTo("qwen3-8b");
+        verify(chatModelSelection).get(chatId);
+    }
+
+    /**
+     * A selection is a convenience, not a requirement: a turn whose selection cannot be read still
+     * gets an answer, from the default model.
+     */
+    @Test
+    void stream_whenTheSelectionCannotBeRead_streamsWithTheDefault() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.error(new IllegalStateException("redis down")));
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        assertThat(requestedModel()).isEqualTo("qwen3-8b");
+    }
+
+    @Test
+    void stream_withASlashCommand_handsTheRouterTheChatsModel() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        when(mcpTool.name()).thenReturn("search");
+        when(mcpTool.description()).thenReturn("Search tool");
+        ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
+
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
+        when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
+                any(), any(), anyString(), anyString())).thenReturn(Flux.just("tool-result"));
+
+        StepVerifier.create(promptService.stream(chatId, userId,
+                        new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+                .expectNext("tool-result")
+                .verifyComplete();
+
+        verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("openai/gpt-4o"));
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {
@@ -204,7 +284,7 @@ class PromptServiceTest {
     @Test
     void stream_withNonJwtPrincipal_throwsBeforeResolvingAttachments() {
         when(authentication.getPrincipal()).thenReturn("not-a-jwt");
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
 
         assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
@@ -214,7 +294,7 @@ class PromptServiceTest {
 
     @Test
     void stream_withNoCommandsAndStickyAgentPresent_delegatesToA2AAgent() {
-        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.of("weather-agent")));
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
@@ -238,7 +318,7 @@ class PromptServiceTest {
      */
     @Test
     void stream_withNoCommandsAndNoStickyAgent_persistsWhatTheServerReportedForTheTurn() {
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptResponses(reportedTurn("hi there"));
 
@@ -261,7 +341,7 @@ class PromptServiceTest {
 
     @Test
     void stream_withNoCommandsAndNoStickyAgent_routesToBasicPrompt() {
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
@@ -287,18 +367,18 @@ class PromptServiceTest {
         when(mcpTool.description()).thenReturn("Search tool");
         ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
 
-        ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"), Set.of());
+        ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"), Set.of(), null);
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
-                any(), any(), anyString())).thenReturn(Flux.just("tool-result"));
+                any(), any(), anyString(), anyString())).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
         verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"));
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"));
 
         //A slash command never reaches the sticky-agent lookup: the router owns that bookkeeping.
         verify(a2aStickyAgentService, never()).getActiveAgent(any());
@@ -311,7 +391,7 @@ class PromptServiceTest {
      */
     @Test
     void stream_buildsTheToolContextFromTheRequestsOwnTokenAndIds() {
-        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
@@ -340,7 +420,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -359,7 +439,7 @@ class PromptServiceTest {
     @Test
     void stream_putsTheSendsImageIdsInTheToolContext() {
         UUID imageId = UUID.randomUUID();
-        ChatRequest chatRequest = new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId));
+        ChatRequest chatRequest = new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null);
         when(attachmentContextResolver.resolve(any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null, Set.of(imageId)));
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
@@ -385,7 +465,7 @@ class PromptServiceTest {
     @Test
     void stream_withAttachments_sendsTheImageContextAsItsOwnMessage() {
         UUID attachmentId = UUID.randomUUID();
-        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(attachmentId));
+        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(attachmentId), null);
 
         resolvesToImage("screenshot.png", "a login screen");
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
@@ -418,7 +498,7 @@ class PromptServiceTest {
 
     @Test
     void stream_withoutAttachments_addsNoImageContextMessage() {
-        ChatRequest chatRequest = new ChatRequest("plain question", Set.of(), Set.of());
+        ChatRequest chatRequest = new ChatRequest("plain question", Set.of(), Set.of(), null);
 
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("an answer"));
@@ -438,7 +518,7 @@ class PromptServiceTest {
     @Test
     void stream_withStickyAgentAndAttachments_inlinesTheImageBlock() {
         UUID attachmentId = UUID.randomUUID();
-        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(attachmentId));
+        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(attachmentId), null);
 
         resolvesToImage("sky.png", "an overcast sky");
         when(a2aStickyAgentService.getActiveAgent(chatId))
@@ -464,7 +544,7 @@ class PromptServiceTest {
      */
     @Test
     void stream_withAnUnresolvableCommand_throwsIllegalState() {
-        ChatRequest chatRequest = new ChatRequest("do the thing", Set.of("/unknown"), Set.of());
+        ChatRequest chatRequest = new ChatRequest("do the thing", Set.of("/unknown"), Set.of(), null);
         when(slashCommandService.commands(Set.of("/unknown"))).thenReturn(List.of());
 
         assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())

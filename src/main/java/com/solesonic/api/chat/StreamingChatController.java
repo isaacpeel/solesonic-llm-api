@@ -2,6 +2,7 @@ package com.solesonic.api.chat;
 
 import com.agui.community.core.message.ToolMessage;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.service.chat.ChatModelService;
 import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.chat.ChatStreamAccessService;
 import com.solesonic.service.chat.ChatStreamAccessService.ChatAccess;
@@ -18,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -34,17 +36,20 @@ public class StreamingChatController {
     private final StreamResumeService streamResumeService;
     private final ChatStreamAccessService chatStreamAccessService;
     private final ChatService chatService;
+    private final ChatModelService chatModelService;
 
     public StreamingChatController(RedisStreamingChatService streamingChatService,
                                    ElicitationService elicitationService,
                                    StreamResumeService streamResumeService,
                                    ChatStreamAccessService chatStreamAccessService,
-                                   ChatService chatService) {
+                                   ChatService chatService,
+                                   ChatModelService chatModelService) {
         this.streamingChatService = streamingChatService;
         this.elicitationService = elicitationService;
         this.streamResumeService = streamResumeService;
         this.chatStreamAccessService = chatStreamAccessService;
         this.chatService = chatService;
+        this.chatModelService = chatModelService;
     }
 
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -58,7 +63,12 @@ public class StreamingChatController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        return SseResponse.ok(streamingChatService.create(userId, chatRequest, authentication));
+        rejectSettingCommands(chatRequest);
+
+        //Resolved before the response starts, so an unknown model is a status code and no chat is created.
+        String model = chatRequest.model() == null ? null : chatModelService.resolve(chatRequest.model());
+
+        return SseResponse.ok(streamingChatService.create(userId, chatRequest, model, authentication));
     }
 
     @PutMapping(value = "/{chatId}/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -85,7 +95,27 @@ public class StreamingChatController {
             return ResponseEntity.notFound().build();
         }
 
+        rejectSettingCommands(chatRequest);
+
+        //An existing chat has exactly one way to change model, so which model it uses never depends
+        //on which request you look at.
+        if (chatRequest.model() != null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "An existing chat changes model through PUT /chats/{chatId}/model");
+        }
+
         return SseResponse.ok(streamingChatService.update(chatId, userId, chatRequest, authentication));
+    }
+
+    /**
+     * Checked before anything is persisted: by the time the turn could reject one, the user message
+     * is written and {@code RUN_STARTED} is out.
+     */
+    private static void rejectSettingCommands(ChatRequest chatRequest) {
+        if (chatRequest.namesSettingCommand()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Setting commands are applied through REST and never sent as a chat message");
+        }
     }
 
     /**

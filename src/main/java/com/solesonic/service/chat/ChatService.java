@@ -41,6 +41,7 @@ public class ChatService {
     private final GeneratedImageService generatedImageService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final RedisStreamService redisStreamService;
+    private final ChatModelSelection chatModelSelection;
     private final UserRequestContext userRequestContext;
 
     public ChatService(
@@ -50,6 +51,7 @@ public class ChatService {
             GeneratedImageService generatedImageService,
             A2AStickyAgentService a2aStickyAgentService,
             RedisStreamService redisStreamService,
+            ChatModelSelection chatModelSelection,
             UserRequestContext userRequestContext) {
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
@@ -57,6 +59,7 @@ public class ChatService {
         this.generatedImageService = generatedImageService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.redisStreamService = redisStreamService;
+        this.chatModelSelection = chatModelSelection;
         this.userRequestContext = userRequestContext;
     }
 
@@ -301,16 +304,18 @@ public class ChatService {
 
     /**
      * Drops the Redis state a deleted conversation leaves behind: any sticky A2A agent and task
-     * bound to it, and its stream buffer.
+     * bound to it, its stream buffer, and the model it was switched to.
      * <p>
-     * Best effort, and deliberately not allowed to fail the delete. Every one of these keys carries
-     * a TTL and none of them means anything without the chat row, so the worst a failure here costs
-     * is a few kilobytes that expire on their own.
+     * Best effort, and deliberately not allowed to fail the delete. None of these keys means anything
+     * without the chat row. All but the model selection expire on their own; that one has no TTL, so
+     * this is the only thing that removes it, and a failure here leaves a few bytes keyed by a chat id
+     * that can never be used again.
      */
     private void discardTransientState(UUID chatId, UUID userId) {
         a2aStickyAgentService.deactivate(chatId)
                 .then(a2aStickyAgentService.deactivateTask(chatId))
                 .then(redisStreamService.deleteStream(chatId, userId).then())
+                .then(chatModelSelection.clear(chatId))
                 .doOnError(error -> log.warn("Could not discard Redis state for deleted chat {}: {}",
                         chatId, error.getMessage()))
                 .onErrorComplete()

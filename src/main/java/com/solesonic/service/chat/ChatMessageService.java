@@ -90,6 +90,10 @@ public class ChatMessageService {
         chatMessage.setMessageType(MessageType.USER);
         chatMessage.setMessage(chatRequest.chatMessage());
 
+        if (CollectionUtils.isNotEmpty(chatRequest.commands())) {
+            chatMessage.setCommands(chatRequest.commands());
+        }
+
         ChatMessage saved = save(chatMessage);
 
         //Inside the transaction on purpose: a turn that cannot claim its attachments must not

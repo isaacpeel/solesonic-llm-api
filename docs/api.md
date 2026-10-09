@@ -465,11 +465,20 @@ is `false`. The durable form of this signal is `indexed` on the attachment summa
 {
   "chatMessage": "Your message here",
   "commands": ["/ask"],
-  "attachmentIds": ["3f9a...", "b721..."]
+  "attachmentIds": ["3f9a...", "b721..."],
+  "model": "openai/gpt-4o"
 }
 ```
 
-- `commands` (optional): slash commands to invoke for this turn.
+- `commands` (optional): slash commands to invoke for this turn. Recorded on the persisted user
+  message as `commands`. A setting command such as [`/model`](#model-built-in-setting-command) is
+  `400 Bad Request` here — it is applied through REST, never sent.
+- `model` (optional, **create only**): the model a new chat starts on, for a pick made before the
+  chat existed. Validated against the live list before the SSE response starts — `400
+  UNKNOWN_MODEL` or `503 MODEL_LIST_UNAVAILABLE`, the same bodies as
+  [Select a Model](#select-a-model), and no chat is created. On
+  [Continue Streaming Chat](#continue-streaming-chat) it is `400`: an existing chat changes model
+  only through `PUT /chats/{chatId}/model`. Omitted, the chat uses the default.
 - `attachmentIds` (optional): ids returned by `POST /attachments`. Every id must be one the caller
   uploaded and has not already sent, otherwise the turn is rejected with `409 Conflict` and no
   message is persisted.
@@ -709,6 +718,76 @@ belong to `chatId` is also `404`, the same as one that does not exist at all.
 Deleting the in-flight `USER` message of a turn that is still streaming is not guarded against, the
 same as [Delete a Chat](#delete-a-chat): wait for `RUN_FINISHED` first, or send
 [Cancel a Streaming Turn](#cancel-a-streaming-turn).
+
+---
+
+## Chat Model Selection
+
+Which chat model a conversation uses — the endpoints behind [`/model`](#model-built-in-setting-command).
+The model list is the OpenAI-compatible endpoint's `GET /models`, asked live on every call with the
+same credentials chat uses; it is never cached.
+
+A selection applies to every later turn of the chat that reaches the main chat model — plain
+messages and MCP-prompt commands. Tool commands, A2A agents and the vision, ETL and RAG-task models
+are unaffected.
+
+Failures carry a real status and a coded body:
+
+```json
+{ "code": "UNKNOWN_MODEL", "message": "The model gpt-5 is not offered." }
+```
+
+| Code | Status | Meaning |
+|---|---|---|
+| `UNKNOWN_MODEL` | `400` | The name is blank or not offered by the endpoint. Nothing is stored |
+| `MODEL_LIST_UNAVAILABLE` | `503` | The model list could not be fetched. Nothing is stored |
+
+A chat that does not exist, or is not the caller's, is `404` on all three operations.
+
+### List Models
+
+- **Endpoint**: `GET /chats/models`
+- **Query Parameters**:
+  - `chatId` (UUID, optional): include this chat's state. Omit for a chat that does not exist yet
+- **Response**: `200 OK`
+
+```json
+{
+  "models": [
+    { "id": "openai/gpt-4o", "ownedBy": "openai" },
+    { "id": "qwen3:8b", "ownedBy": "library" }
+  ],
+  "defaultModel": "qwen3-8b",
+  "selectedModel": "openai/gpt-4o",
+  "activeAgent": null
+}
+```
+
+- `models`: the endpoint's list, in its own order and spelling.
+- `defaultModel`: what a chat with no selection uses.
+- `selectedModel`: the chat's selection, or `null` when it follows the default, when no `chatId` was
+  given, or when the selection cannot be read. Mark `selectedModel ?? defaultModel` as current.
+- `activeAgent`: the sticky A2A agent holding the chat, or `null`. While one does, turns bypass the
+  chat model, so a selection takes effect only once the agent is released.
+
+### Select a Model
+
+- **Endpoint**: `PUT /chats/{chatId}/model`
+- **Request Body**: `{"model": "OpenAI/GPT-4o"}`
+- **Response**: `200 OK` — the list response without `models`:
+
+```json
+{ "defaultModel": "qwen3-8b", "selectedModel": "openai/gpt-4o", "activeAgent": null }
+```
+
+The name is matched exactly but case-insensitively against the live list, and the endpoint's own
+spelling is stored. `/` and `:` are ordinary characters in a model id. Idempotent. Selecting the
+default by name pins it; to follow the default as it changes, reset instead.
+
+### Reset to the Default
+
+- **Endpoint**: `DELETE /chats/{chatId}/model`
+- **Response**: `204 No Content`, also when nothing was selected
 
 ---
 
@@ -1259,6 +1338,34 @@ Slash commands are loaded from the connected MCP tool catalog and cached in Redi
 - **Query Parameters**:
   - `command` (string, optional): Prefix to filter commands. Omit to return all commands.
 - **Response**: `SlashCommandCatalogResponse` containing a list of matching `SlashCommand` objects
+
+### `/model` (built-in setting command)
+
+`/model` is the one command not sourced from the MCP server. It is always in the catalog, first, so
+it shows up in typeahead — but it is a **setting command**: the client applies it itself through
+[Chat Model Selection](#chat-model-selection), and **never sends it as a chat message**. It produces
+no turn, no message row, no SSE frames and no assistant response.
+
+```json
+{
+  "commandType": "model",
+  "command": "model",
+  "name": "model",
+  "description": "Choose the model this chat uses for its next messages",
+  "argument": {
+    "name": "model",
+    "description": "The chat model to use",
+    "required": true,
+    "optionsPath": "/chats/models"
+  }
+}
+```
+
+- `argument` says what value the command takes and where its valid values come from. `optionsPath`
+  is context-relative; append `?chatId=` when there is a chat. Only `/model` carries one today.
+- A client recognises a setting command by `commandType: "model"`.
+- Sending `commands: ["model"]` on either streaming endpoint is `400 Bad Request`, before anything
+  is persisted.
 
 ---
 

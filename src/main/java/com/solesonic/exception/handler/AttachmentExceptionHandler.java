@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -19,6 +20,9 @@ import org.springframework.web.server.ResponseStatusException;
  * bean that has any matching method, and {@link GeneralExceptionHandler} declares a catch-all
  * {@code @ExceptionHandler(Exception.class)} that would otherwise swallow these into a chat-shaped
  * {@code 200}.
+ * <p>
+ * The content type is set rather than negotiated, so a streaming endpoint's {@code 4xx} still
+ * carries its message to a client that asked for {@code text/event-stream} only.
  */
 @Order(Ordered.HIGHEST_PRECEDENCE)
 @ControllerAdvice
@@ -30,6 +34,7 @@ public class AttachmentExceptionHandler {
         log.debug("Responding {} for {}", responseStatusException.getStatusCode(), responseStatusException.getReason());
 
         return ResponseEntity.status(responseStatusException.getStatusCode())
+                .contentType(MediaType.APPLICATION_JSON)
                 .body(new StatusFailure(responseStatusException.getReason()));
     }
 

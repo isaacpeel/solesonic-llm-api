@@ -5,6 +5,7 @@ import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
+import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
@@ -32,6 +33,7 @@ import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -46,6 +48,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -108,11 +111,46 @@ class SlashCommandRouterTest {
                 chatMessageService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "Izzy",
-                "qwen3-8b",
                 Duration.ofMinutes(30));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
                 .thenReturn(mock(Advisor.class));
+    }
+
+    /**
+     * {@code /model} is a setting command: the streaming endpoints refuse it and routing never resolves
+     * it, so reaching this arm is a bug, and it must not release a sticky agent on its way out.
+     */
+    @Test
+    void route_model_isNeverRouted() {
+        assertThatThrownBy(() -> route(new ModelSlashCommand(), "openai/gpt-4o", NO_ATTACHMENTS).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aStickyAgentService, chatClient, mcpClient, toolCallService, a2aAgentService);
+    }
+
+    @Test
+    void route_promptSlashCommand_streamsWithTheModelItIsGiven() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+
+        McpSchema.TextContent userContent = new McpSchema.TextContent(null, "tell me something", null);
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER, userContent);
+        McpSchema.GetPromptResult getPromptResult =
+                new McpSchema.GetPromptResult(null, List.of(userMessage), null);
+
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptChain(Flux.just("answer"));
+
+        StepVerifier.create(slashCommandRouter.route(promptCommand, chatId, userId, "tell me something",
+                        NO_ATTACHMENTS, CONTEXT_MAP, "token-abc", "openai/gpt-4o"))
+                .expectNext("answer")
+                .verifyComplete();
+
+        ArgumentCaptor<OpenAiChatOptions.Builder> optionsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).options(optionsCaptor.capture());
+
+        assertThat(optionsCaptor.getValue().build().getModel()).isEqualTo("openai/gpt-4o");
     }
 
     private void stubPromptChain(Flux<String> emissions) {
@@ -367,6 +405,6 @@ class SlashCommandRouterTest {
                                AttachmentResolution attachments) {
 
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
-                attachments, CONTEXT_MAP, "token-abc");
+                attachments, CONTEXT_MAP, "token-abc", "qwen3-8b");
     }
 }

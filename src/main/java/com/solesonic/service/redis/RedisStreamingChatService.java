@@ -33,6 +33,7 @@ import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.util.ResponseSanitizer;
 import org.apache.commons.lang3.StringUtils;
@@ -102,6 +103,7 @@ public class RedisStreamingChatService {
     private final NotificationService notificationService;
     private final GeneratedImageService generatedImageService;
     private final SideChannelEventTranslator sideChannelEventTranslator;
+    private final ChatModelSelection chatModelSelection;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -111,7 +113,8 @@ public class RedisStreamingChatService {
                                      ActiveStreamTracker activeStreamTracker,
                                      NotificationService notificationService,
                                      GeneratedImageService generatedImageService,
-                                     SideChannelEventTranslator sideChannelEventTranslator) {
+                                     SideChannelEventTranslator sideChannelEventTranslator,
+                                     ChatModelSelection chatModelSelection) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -121,6 +124,7 @@ public class RedisStreamingChatService {
         this.notificationService = notificationService;
         this.generatedImageService = generatedImageService;
         this.sideChannelEventTranslator = sideChannelEventTranslator;
+        this.chatModelSelection = chatModelSelection;
     }
 
     private Chat save(Chat chat) {
@@ -128,8 +132,14 @@ public class RedisStreamingChatService {
         return chatRepository.save(chat);
     }
 
+    /**
+     * @param model the endpoint's spelling of the model the chat starts on, already validated, or
+     *              null for the default. It is stored before the turn begins, so the first turn
+     *              already uses it.
+     */
     public Flux<ServerSentEvent<?>> create(UUID userId,
                                            ChatRequest chatRequest,
+                                           String model,
                                            Authentication authentication) {
 
         Chat chat = new Chat();
@@ -140,7 +150,26 @@ public class RedisStreamingChatService {
 
         log.debug("Starting Redis streaming chat with new chat id {}", chatId);
 
-        return update(chatId, userId, chatRequest, authentication);
+        return selectModel(chatId, model)
+                .thenMany(update(chatId, userId, chatRequest, authentication));
+    }
+
+    /**
+     * A selection that cannot be stored costs the chat its choice of model, never its first turn —
+     * the same fallback {@code PromptService} takes when it cannot read one.
+     */
+    private Mono<Void> selectModel(UUID chatId, String model) {
+        if (model == null) {
+            return Mono.empty();
+        }
+
+        return chatModelSelection.set(chatId, model)
+                .onErrorResume(exception -> {
+                    log.warn("Could not store model {} for new chat {}, using the default: {}",
+                            model, chatId, exception.getMessage());
+
+                    return Mono.empty();
+                });
     }
 
     /**
