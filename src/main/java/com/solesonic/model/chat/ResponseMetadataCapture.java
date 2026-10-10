@@ -32,10 +32,11 @@ import java.util.Optional;
  * A tool-calling turn repeats that pair once per round trip, which is why the counts are summed and
  * each round trip is also kept individually as a {@link ModelCallMetadata}.
  * <p>
- * Deliberately not thread-safe and deliberately not atomic. A single subscription's {@code onNext}
- * signals are serialized by the Reactive Streams contract, so the only writer is one response at a
- * time, and the reads in {@link #metadata()} and {@link #calls()} happen after that flux has
- * completed.
+ * Deliberately not thread-safe and deliberately not atomic. It is fed once per round trip by
+ * {@code ResponseMetadataCaptureAdvisor}; a single subscription's {@code onNext} signals are
+ * serialized by the Reactive Streams contract and the round trips run one after another, so the only
+ * writer is one response at a time, and the reads in {@link #metadata()} and {@link #calls()} happen
+ * after the turn's flux has completed.
  */
 public final class ResponseMetadataCapture {
 
@@ -340,8 +341,8 @@ public final class ResponseMetadataCapture {
     }
 
     /**
-     * Null whenever Spring AI summed two usages itself, because it drops the native usage when it
-     * does, and against any server that does not send the field.
+     * Null against any server that does not send the field, and on a non-streamed response, which
+     * the proxy never adds it to.
      */
     private static @Nullable Double tokensPerSecond(Usage usage) {
         if (!(usage.getNativeUsage() instanceof CompletionUsage completionUsage)) {

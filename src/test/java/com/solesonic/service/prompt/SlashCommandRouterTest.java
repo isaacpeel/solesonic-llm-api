@@ -240,7 +240,9 @@ class SlashCommandRouterTest {
 
         when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        stubPromptResponses(reportedTurn("answer"));
+        AdvisorCaptureFeed advisorCaptureFeed = new AdvisorCaptureFeed();
+        stubPromptResponses(advisorCaptureFeed.feeding(reportedTurn("answer")));
+        advisorCaptureFeed.readAdvisorParamsOf(requestSpec);
 
         StepVerifier.create(route(promptCommand, "tell me something", NO_ATTACHMENTS))
                 .expectNext("answer")

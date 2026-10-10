@@ -42,7 +42,7 @@ public class ChatConfig {
                 .build();
 
         return chatClientBuilder
-                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor)
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor, new ResponseMetadataCaptureAdvisor())
                 .build();
     }
 

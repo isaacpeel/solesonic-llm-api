@@ -320,7 +320,10 @@ class PromptServiceTest {
     void stream_withNoCommandsAndNoStickyAgent_persistsWhatTheServerReportedForTheTurn() {
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
-        stubBasicPromptResponses(reportedTurn("hi there"));
+
+        AdvisorCaptureFeed advisorCaptureFeed = new AdvisorCaptureFeed();
+        stubBasicPromptResponses(advisorCaptureFeed.feeding(reportedTurn("hi there")));
+        advisorCaptureFeed.readAdvisorParamsOf(requestSpec);
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("hi there")

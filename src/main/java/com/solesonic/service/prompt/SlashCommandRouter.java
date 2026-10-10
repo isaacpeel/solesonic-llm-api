@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ModelSlashCommand;
@@ -33,6 +34,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
+import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.service.prompt.PromptService.AGENT_NAME;
@@ -154,6 +156,8 @@ public class SlashCommandRouter {
         //reach the application on different threads and share nothing else.
         UUID correlationId = UUID.randomUUID();
 
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
         McpSchema.GetPromptRequest getPromptRequest = McpSchema.GetPromptRequest.builder(promptCommand.name())
                 .arguments(Map.of(USER_MESSAGE, message, AGENT_NAME, agentName))
                 .build();
@@ -166,14 +170,16 @@ public class SlashCommandRouter {
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
                 .tools((Object[]) toolCallbacks)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
-                .advisors(advisorSpec -> advisorSpec.param(CONVERSATION_ID, chatId))
+                .advisors(advisorSpec -> advisorSpec
+                        .param(CONVERSATION_ID, chatId)
+                        .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture))
                 .toolContext(contextMap)
                 .options(chatOptions(model, chatTimeout, correlationId))
                 .stream()
                 .chatResponse();
 
-        return capturingContentFlux(promptChatResponse, chatMessageService, liteLlmHeaderRegistry,
-                chatId, since, correlationId);
+        return capturingContentFlux(promptChatResponse, responseMetadataCapture, chatMessageService,
+                liteLlmHeaderRegistry, chatId, since, correlationId);
     }
 
     /**

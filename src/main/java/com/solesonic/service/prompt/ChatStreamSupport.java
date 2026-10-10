@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.chat.ResponseMetadataCaptureAdvisor;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.service.chat.ChatMessageService;
@@ -97,6 +98,12 @@ public final class ChatStreamSupport {
      * {@link #contentFlux} plus recording what the server reported about the turn, once the stream
      * completes.
      * <p>
+     * {@code responseMetadataCapture} is not fed from this flux. It has to be the one the call was
+     * given as its {@link ResponseMetadataCaptureAdvisor#RESPONSE_METADATA_CAPTURE} advisor param,
+     * which that advisor fills from beneath {@code ToolCallingAdvisor}: by the time a response
+     * reaches this flux, every tool-call round has been filtered out and the last round's usage has
+     * lost its native usage, and {@code tokens_per_second} with it.
+     * <p>
      * {@code since} has to be taken before the call is made: the assistant row this attaches to is
      * written by the chat memory advisor partway through, and the timestamp is the only handle the
      * caller has on it — the advisor never hands its id back. The ordering that makes the lookup
@@ -109,15 +116,14 @@ public final class ChatStreamSupport {
      * so both skip the write for free rather than recording half a turn.
      */
     public static Flux<String> capturingContentFlux(Flux<ChatResponse> chatResponseFlux,
+                                                    ResponseMetadataCapture responseMetadataCapture,
                                                     ChatMessageService chatMessageService,
                                                     LiteLlmHeaderRegistry liteLlmHeaderRegistry,
                                                     UUID chatId,
                                                     ZonedDateTime since,
                                                     UUID correlationId) {
 
-        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
-
-        return contentFlux(chatResponseFlux.doOnNext(responseMetadataCapture::accept))
+        return contentFlux(chatResponseFlux)
                 .doOnComplete(() -> persist(responseMetadataCapture, chatMessageService, liteLlmHeaderRegistry,
                         chatId, since, correlationId));
     }

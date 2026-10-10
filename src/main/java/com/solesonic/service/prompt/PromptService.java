@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.address.Address;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
@@ -38,6 +39,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
+import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static com.solesonic.service.image.ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS;
@@ -250,6 +252,8 @@ public class PromptService {
         //reach the application on different threads and share nothing else.
         UUID correlationId = UUID.randomUUID();
 
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
         Address address = userPreferencesService.getAddress(userId);
 
         String templateAddress = Optional.ofNullable(address)
@@ -279,6 +283,7 @@ public class PromptService {
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
+                        .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture)
                 )
                 .toolContext(contextMap)
                 .options(chatOptions(model, chatTimeout, correlationId));
@@ -287,8 +292,8 @@ public class PromptService {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
         }
  
-        return capturingContentFlux(promptSpec.stream().chatResponse(), chatMessageService, liteLlmHeaderRegistry,
-                chatId, since, correlationId);
+        return capturingContentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture, chatMessageService,
+                liteLlmHeaderRegistry, chatId, since, correlationId);
     }
 
     private Set<String> defaultPromptTools() {

@@ -350,7 +350,7 @@ numbers, not an approximation of them.
   chunk (`usage.tokens_per_second`), copied verbatim. **It is not a sum and it is not computed here**:
   it is the value from the last model call that reported one, which is the call that produced the
   answer being read. It is absent when no call in the turn carried the field — any server not behind
-  such a proxy, and tool-calling rounds whose usage Spring AI summed itself. Display this value
+  such a proxy, and non-streamed calls, which the proxy never adds it to. Display this value
   directly; do not derive a rate from `completionTokens` and `predictedMillis`, which are not
   comparable behind a proxy.
 

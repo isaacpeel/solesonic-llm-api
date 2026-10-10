@@ -134,8 +134,8 @@ public record ResponseMetadata(
     }
 
     /**
-     * The last reported rate rather than the last call's, because Spring AI drops the native usage
-     * the rate rides on whenever it sums a round trip into another itself.
+     * The last reported rate rather than the last call's, so a round trip that did not report one
+     * does not blank the rate of the one before it.
      */
     private static @Nullable Double lastTokensPerSecond(List<ModelCallMetadata> calls) {
         Double tokensPerSecond = null;

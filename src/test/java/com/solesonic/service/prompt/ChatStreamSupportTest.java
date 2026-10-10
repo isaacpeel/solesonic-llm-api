@@ -2,6 +2,7 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,9 +90,16 @@ class ChatStreamSupportTest {
                         .build());
     }
 
+    /**
+     * Feeds the capture from the same flux, standing in for {@code ResponseMetadataCaptureAdvisor},
+     * which in a real call feeds it from beneath the tool-calling loop.
+     */
     private Flux<String> capturing(Flux<ChatResponse> chatResponseFlux) {
-        return ChatStreamSupport.capturingContentFlux(chatResponseFlux, chatMessageService,
-                new LiteLlmHeaderRegistry(Clock.systemUTC()), chatId, since, UUID.randomUUID());
+        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
+
+        return ChatStreamSupport.capturingContentFlux(chatResponseFlux.doOnNext(responseMetadataCapture::accept),
+                responseMetadataCapture, chatMessageService, new LiteLlmHeaderRegistry(Clock.systemUTC()),
+                chatId, since, UUID.randomUUID());
     }
 
     /**
