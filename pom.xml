@@ -15,21 +15,27 @@
     <description>solesonic-llm</description>
 
     <repositories>
+        <repository>
+            <id>repository.spring.release</id>
+            <name>Spring GA Repository</name>
+            <url>https://repo.spring.io/release</url>
+        </repository>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
     </repositories>
 
     <properties>
         <java.version>25</java.version>
         <spring-ai.version>2.0.1</spring-ai.version>
-        <jackson-bom.version>3.2.3</jackson-bom.version>
+        <java.version>25</java.version>
         <a2a-java-sdk.version>1.0.0.Final</a2a-java-sdk.version>
         <ag-ui.version>0.1.1</ag-ui.version>
-
-        <tomcat.version>11.0.27</tomcat.version>
-        <netty.version>4.2.19.Final</netty.version>
-        <logback.version>1.5.38</logback.version>
-        <junrar.version>7.6.1</junrar.version>
-        <jsoup.version>1.23.2</jsoup.version>
-        <bouncycastle.version>1.86</bouncycastle.version>
     </properties>
     <dependencies>
         <dependency>
@@ -125,7 +131,7 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
-            <version>13.7.0</version>
+            <version>13.4.0</version>
             <scope>runtime</scope>
         </dependency>
 
@@ -138,17 +144,20 @@
         <dependency>
             <groupId>tools.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>${jackson-bom.version}</version>
+            <version>3.2.2</version>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
+            <version>2.21</version>
+            <scope>compile</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>2.22.3</version>
         </dependency>
 
         <dependency>
@@ -245,15 +254,6 @@
     </dependencies>
     <dependencyManagement>
         <dependencies>
-            <!-- Jackson 2 (com.fasterxml.jackson): import before Spring AI so its 2.x management wins. -->
-            <dependency>
-                <groupId>com.fasterxml.jackson</groupId>
-                <artifactId>jackson-bom</artifactId>
-                <version>2.22.3</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <!-- Jackson 3 (tools.jackson.*) BOM -->
             <dependency>
                 <groupId>tools.jackson</groupId>
                 <artifactId>jackson-bom</artifactId>
@@ -262,45 +262,16 @@
                 <scope>import</scope>
             </dependency>
             <dependency>
+                <groupId>com.github.junrar</groupId>
+                <artifactId>junrar</artifactId>
+                <version>7.5.8</version>
+            </dependency>
+            <dependency>
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
                 <version>${spring-ai.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
-            </dependency>
-            <!-- RAR extraction pulled in by Apache Tika. Path traversal CVE-2026-41245 /
-                 CVE-2026-86071 are fixed in 7.6.1; Tika 3.3.1 still resolves 7.6.0. -->
-            <dependency>
-                <groupId>com.github.junrar</groupId>
-                <artifactId>junrar</artifactId>
-                <version>${junrar.version}</version>
-            </dependency>
-            <!-- jsoup via Apache Tika; CVE-2026-75140 is fixed in 1.23.2. -->
-            <dependency>
-                <groupId>org.jsoup</groupId>
-                <artifactId>jsoup</artifactId>
-                <version>${jsoup.version}</version>
-            </dependency>
-            <!-- Bouncy Castle via Apache Tika; keep all jdk18on artifacts aligned. -->
-            <dependency>
-                <groupId>org.bouncycastle</groupId>
-                <artifactId>bcprov-jdk18on</artifactId>
-                <version>${bouncycastle.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.bouncycastle</groupId>
-                <artifactId>bcpkix-jdk18on</artifactId>
-                <version>${bouncycastle.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.bouncycastle</groupId>
-                <artifactId>bcutil-jdk18on</artifactId>
-                <version>${bouncycastle.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.bouncycastle</groupId>
-                <artifactId>bcjmail-jdk18on</artifactId>
-                <version>${bouncycastle.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

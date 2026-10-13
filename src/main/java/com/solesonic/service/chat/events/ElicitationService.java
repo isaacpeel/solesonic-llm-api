@@ -1,7 +1,6 @@
 package com.solesonic.service.chat.events;
 
 import com.agui.community.core.message.ToolMessage;
-import com.solesonic.exception.elicitation.ElicitationException;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
@@ -133,7 +132,8 @@ public class ElicitationService {
         log.debug("Emitting elicitation for chat id {}", chatId);
 
         try {
-            Map<String, Object> requestJson = toWireMap(request);
+            Map<String, Object> requestJson = jsonMapper.convertValue(request, new TypeReference<>() {
+            });
             requestJson.put(ELICITATION_ID, elicitationId.toString());
             requestJson.put(CHAT_ID, chatId.toString());
 
@@ -159,38 +159,6 @@ public class ElicitationService {
         }
 
         log.info("Finished emitting elicitation event for chat {}", chatId);
-    }
-
-    /**
-     * Converts an {@link McpSchema.ElicitRequest} to its wire-format map without triggering
-     * Jackson's polymorphic type-id serialization. Jackson 3.2+ rejects the MCP SDK's
-     * {@code @JsonTypeInfo(property = "mode", include = As.PROPERTY)} annotation because the
-     * concrete subtypes expose a bean property named {@code mode} that conflicts with the
-     * type-id property. Building the map directly mirrors the MCP wire format.
-     */
-    private static Map<String, Object> toWireMap(McpSchema.ElicitRequest request) {
-        Map<String, Object> map = new LinkedHashMap<>();
-
-        if (request instanceof McpSchema.ElicitFormRequest(String message, Map<String, Object> requestedSchema, Map<String, Object> meta)) {
-            map.put("mode", McpSchema.ElicitFormRequest.MODE);
-            map.put("message", message);
-            map.put("requestedSchema", requestedSchema);
-            if (meta != null) {
-                map.put("_meta", meta);
-            }
-        } else if (request instanceof McpSchema.ElicitUrlRequest(String message, String url, String elicitationId, Map<String, Object> meta)) {
-            map.put("mode", McpSchema.ElicitUrlRequest.MODE);
-            map.put("message", message);
-            map.put("url", url);
-            map.put("elicitationId", elicitationId);
-            if (meta != null) {
-                map.put("_meta", meta);
-            }
-        } else {
-            throw new ElicitationException("Unsupported elicitation request type: " + request.getClass().getSimpleName());
-        }
-
-        return map;
     }
 
     public Mono<Boolean> completeFromFrontend(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
