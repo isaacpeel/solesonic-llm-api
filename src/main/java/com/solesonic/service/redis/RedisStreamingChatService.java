@@ -17,7 +17,6 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
 import com.solesonic.exception.rag.DocumentReadException;
-import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
@@ -438,19 +437,6 @@ public class RedisStreamingChatService {
         return current;
     }
 
-    /**
-     * Sorts an unwrapped turn failure onto the closed set of codes the client renders copy for.
-     * <p>
-     * Most branches mirror how the same exception type is already classified where it is thrown
-     * from a synchronous REST endpoint ({@code GoogleExceptionHandler}, the Jira/Xero handlers) —
-     * the streaming path just has nowhere to route to but this one method, since
-     * {@code @ControllerAdvice} never sees an exception a fire-and-forget {@code .subscribe()}'d
-     * turn throws. {@link XeroApiException} is the one deliberate exception: its REST handler
-     * always answers {@code UPSTREAM_UNAVAILABLE}, but here a non-429 defaults to
-     * {@link TurnErrorCode#TOOL_FAILURE} instead — {@code docs/api.md} gives a client identical
-     * guidance ("retry") for both, and {@code TOOL_FAILURE}'s own contract already names Xero as
-     * an example.
-     */
     private static TurnErrorCode classify(Throwable unwrapped) {
         if (unwrapped instanceof TimeoutException) {
             return TurnErrorCode.TIMEOUT;
@@ -462,16 +448,6 @@ public class RedisStreamingChatService {
 
         if (unwrapped instanceof GoogleApiException) {
             return TurnErrorCode.UPSTREAM_UNAVAILABLE;
-        }
-
-        if (unwrapped instanceof XeroApiException xeroApiException) {
-            ClientResponse response = xeroApiException.getResponse();
-
-            if (response != null && classifyStatus(response.statusCode()) == TurnErrorCode.RATE_LIMITED) {
-                return TurnErrorCode.RATE_LIMITED;
-            }
-
-            return TurnErrorCode.TOOL_FAILURE;
         }
 
         if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException
@@ -539,12 +515,6 @@ public class RedisStreamingChatService {
                         || Strings.CI.contains(message, "maximum context length"));
     }
 
-    /**
-     * The text a client sees. Only {@link ImageGenerationException} and {@link DocumentReadException}
-     * carry a message already vetted as user-safe at every current throw site — everything else gets
-     * a generic per-code sentence, because {@link ChatException}, {@link GoogleApiException} and
-     * {@link XeroApiException} can and do wrap an upstream's own wording.
-     */
     private static String userMessage(Throwable unwrapped, TurnErrorCode code) {
         if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException) {
             return unwrapped.getMessage();

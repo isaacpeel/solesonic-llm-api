@@ -21,7 +21,6 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
 import com.solesonic.exception.rag.DocumentReadException;
-import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
@@ -431,24 +430,6 @@ class RedisStreamingChatServiceTest {
 
         assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
         assertThat(publishedRunError().message()).doesNotContain("Google's internal error body");
-    }
-
-    @Test
-    void xeroRateLimitIsClassifiedRateLimited() {
-        ClientResponse response = mock(ClientResponse.class);
-        when(response.statusCode()).thenReturn(HttpStatus.TOO_MANY_REQUESTS);
-
-        errorTurn(new XeroApiException("Xero's internal error body", response));
-
-        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.RATE_LIMITED.wireValue());
-        assertThat(publishedRunError().message()).doesNotContain("Xero's internal error body");
-    }
-
-    @Test
-    void xeroFailureWithNoResponseIsClassifiedToolFailure() {
-        errorTurn(new XeroApiException("Xero returned a bulk envelope with no invoice"));
-
-        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
     }
 
     @Test

@@ -28,7 +28,7 @@ public enum TurnErrorCode {
     RATE_LIMITED("RATE_LIMITED"),
 
     /**
-     * An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG
+     * An MCP or local tool call failed mid-turn — Jira, Google, image generation, or the RAG
      * pipeline.
      */
     TOOL_FAILURE("TOOL_FAILURE"),

@@ -174,7 +174,7 @@ keepalives and mid-turn image frames working across an elicitation. It is not an
 | `timeout` | Generation did not finish inside the turn's deadline | Retry |
 | `UPSTREAM_UNAVAILABLE` | The model server, an MCP server, or an integration it called failed in a way that may succeed on a retry | Retry |
 | `RATE_LIMITED` | An upstream is throttling | Back off, then retry |
-| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
+| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
 | `RECONNECT_REQUIRED` | An integration's grant is gone or was never given | Nothing a retry fixes — the user must reconnect that integration |
 | `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
 | `CONTEXT_LENGTH_EXCEEDED` | The conversation — history, retrieved documents, and attachments combined — exceeds the model's context window | Nothing to retry as-is — start a new conversation, or remove an attachment or some earlier messages |
