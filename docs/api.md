@@ -1728,52 +1728,45 @@ model never handles them in either direction:
 
 - **In a conversation**, nothing extra is sent. Image attachments on the send are passed to the image
   tool automatically when it is called that turn, by the slash command or by the model. The model is
-  shown the tool *without* its `reference_images` parameter, plus one sentence saying attached images
-  are supplied for it; the API injects the bytes server-side and discards anything the model wrote
-  there itself. An attachment that is not the caller's, is not an image, or is not a supported type
-  is skipped, and the turn never fails over one. If the tool takes `N` images, at most the first `N`
-  are sent; sending fewer than `N` comes back from the tool as an error the model relays.
+  shown the tool's `referenceImages` parameter with only a `description` per image, plus a note
+  telling it to keep `prompt` in the user's own words and describe the images there instead. The API
+  injects each image's bytes server-side, keeps the model's description by position (falling back to
+  the attachment's vision description), and discards anything else the model wrote there. An
+  attachment that is not the caller's, is not an image, or is not a supported type is skipped, and the
+  turn never fails over one. At most three are sent; if no workflow takes that many, the tool's error
+  is relayed to the model so it can explain.
 - **Explicitly**, by listing them on `POST /images` (below). That path is strict: every id must
-  resolve and the count must be exactly what the tool takes, or the request is refused before any
-  generation starts.
+  resolve and there may be at most three, or the request is refused before any generation starts.
 
-Whether references are accepted at all, and how many, is the MCP tool's own declaration: its
-`reference_images` schema property, `minItems = maxItems = N`. A tool — or an MCP server — that does
-not declare it is never sent references. The image's `referenceAttachmentIds` records which
-attachments were used.
+Whether references are accepted at all is the MCP tool's own declaration: its `referenceImages`
+schema property, each item `{data, mimeType, description?}`. Which counts are valid is decided per
+workflow by the MCP server. A tool — or an MCP server — that does not declare the property is never
+sent references. The image's `referenceAttachmentIds` records which attachments were used.
 
 ### List Image Tools
 
 - **Endpoint**: `GET /images/tools`
-- **Response**: `200`, the image tools a generation may name
+- **Response**: `200`, the single image tool
 
 ```json
 [
-  {"name": "flux_schnell", "title": "FLUX.1-schnell", "description": "Creates an image ...",
-   "referenceImageSlots": 1},
-  {"name": "kontext_edit", "title": "FLUX.1 Kontext", "description": "Edits the attached photo ...",
-   "referenceImageSlots": 1}
+  {"name": "generate_image", "title": "generate_image", "description": "Creates an image ...",
+   "referenceImageSlots": 3}
 ]
 ```
 
-The set is entirely dynamic: each tool is a stored ComfyUI workflow on the MCP server, so choosing a
-tool is choosing a workflow, and with no workflow configured the list is empty and every generation
-fails with `NO_IMAGE_TOOLS`. Tools are found by the MCP server's `_meta` tag
-(`"solesonic/kind": "image-generation"`), never by name — a workflow row can be named anything, and the
-API names none. `referenceImageSlots` is exactly how many reference images the
-tool takes when given any, `0` when it takes none. The list is the MCP catalog as this API saw it at
-startup: a workflow added on the MCP server appears after this API restarts.
+There is one image tool, `generate_image`, found by name; the MCP server chooses the workflow from
+the request itself. When the MCP server does not offer it the list is empty and every generation fails
+with `NO_IMAGE_TOOLS`. `referenceImageSlots` is the most reference images the tool accepts, `0` when
+it takes none. The list is the MCP catalog as this API saw it at startup.
 
 ### Generate an Image (streaming)
 
 - **Endpoint**: `POST /images`
 - **Produces**: `text/event-stream`
 - **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
-  - `tool`: which image tool to use, by name from [`GET /images/tools`](#list-image-tools). It may be
-    left out only when exactly one image tool exists; with several it is required
-    (`IMAGE_TOOL_REQUIRED`). A name that is not an image tool is refused with `INVALID_IMAGE_TOOL`.
-    There is no configured default.
-  - `referenceAttachmentIds` (optional): staged attachment ids to guide the image, in slot order —
+  - `tool` (deprecated): accepted and ignored. `generate_image` is always called.
+  - `referenceAttachmentIds` (optional): at most three staged attachment ids to guide the image, in order —
     `{ "prompt": "the same scene as a watercolor", "referenceAttachmentIds": ["3f0c..."] }`. See
     [Reference Images](#reference-images).
 
@@ -1898,11 +1891,9 @@ Failures collapse onto a closed set of codes. The message is always user-safe; t
 | Code | Status on `/images/sync` | Meaning |
 |---|---|---|
 | `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
-| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, the count is not exactly what the tool takes, or the image server rejected an image |
-| `REFERENCE_IMAGES_UNSUPPORTED` | `400` | References were requested but the image tool does not declare `reference_images` |
-| `INVALID_IMAGE_TOOL` | `400` | `tool` named something that is not one of the image tools in `GET /images/tools` |
-| `IMAGE_TOOL_REQUIRED` | `400` | `tool` was left out and there is more than one image tool to choose from |
-| `NO_IMAGE_TOOLS` | `503` | The MCP server offers no image tools: no workflow is configured |
+| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, more than three were sent, no image workflow accepts that many, or the image server rejected an image |
+| `REFERENCE_IMAGES_UNSUPPORTED` | `400` | References were requested but the image tool does not declare `referenceImages` |
+| `NO_IMAGE_TOOLS` | `503` | The MCP server does not offer the `generate_image` tool |
 | `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
 | `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
 | `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |

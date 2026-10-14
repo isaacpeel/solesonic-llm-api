@@ -24,15 +24,14 @@ import java.util.Map;
 import java.util.UUID;
 
 import static com.solesonic.model.image.ImageGenerationErrorCode.BACKEND_UNAVAILABLE;
-import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_IMAGE_TOOL;
 import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_REFERENCE_IMAGE;
+import static com.solesonic.model.image.ImageGenerationErrorCode.NO_IMAGE_TOOLS;
 import static com.solesonic.model.image.ImageGenerationErrorCode.REFERENCE_IMAGES_UNSUPPORTED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -43,11 +42,11 @@ class ImageGenerationServiceTest {
 
     private static final byte[] PNG_BYTES = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
 
-    private static final Map<String, Object> ONE_SLOT_SCHEMA = Map.of(
+    private static final Map<String, Object> REFERENCE_SCHEMA = Map.of(
             "type", "object",
             "properties", Map.of(
                     "prompt", Map.of("type", "string"),
-                    "reference_images", Map.of("type", "array", "minItems", 1, "maxItems", 1)));
+                    "referenceImages", Map.of("type", "array")));
 
     private static final Map<String, Object> PROMPT_ONLY_SCHEMA = Map.of(
             "type", "object",
@@ -83,57 +82,62 @@ class ImageGenerationServiceTest {
         userId = UUID.randomUUID();
         attachmentId = UUID.randomUUID();
 
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", PROMPT_ONLY_SCHEMA));
+        when(imageToolCatalog.resolve()).thenReturn(tool(REFERENCE_SCHEMA));
         when(mcpSyncClient.callTool(any())).thenReturn(McpSchema.CallToolResult.builder()
                 .addContent(McpSchema.ImageContent.builder(Base64.getEncoder().encodeToString(PNG_BYTES), "image/png").build())
                 .addTextContent("Generated with FLUX.\nSize: 1024x1024\nSeed: 42\nElapsed: 1.0s")
+                .addTextContent("Workflow: flux_schnell. Why: a new image was requested.")
                 .build());
         when(generatedImageService.store(any(), any(), any(), any(), any(), any(), any())).thenReturn(summary());
     }
 
     @Test
-    void generate_withoutReferences_sendsOnlyThePromptToTheResolvedTool() {
-        imageGenerationService.generate("a lighthouse", null, List.of(), userId, "token");
+    void generate_withoutReferences_sendsOnlyThePromptToGenerateImage() {
+        imageGenerationService.generate("a lighthouse", List.of(), userId, "token");
 
         assertThat(callToolRequest().name()).isEqualTo("generate_image");
         assertThat(callToolRequest().arguments()).containsOnlyKeys("prompt");
-        verify(imageToolCatalog).resolve(isNull());
         verify(generatedImageService).store(eq(userId), any(), eq("a lighthouse"), any(), any(), any(), eq(List.of()));
     }
 
     @Test
-    void generate_callsTheToolTheCallerChose() {
-        when(imageToolCatalog.resolve("flux_edit")).thenReturn(tool("flux_edit", PROMPT_ONLY_SCHEMA));
+    void generate_withoutTheImageTool_isRefusedBeforeTheCall() {
+        when(imageToolCatalog.resolve()).thenThrow(new ImageGenerationException(NO_IMAGE_TOOLS, "not configured"));
 
-        imageGenerationService.generate("a lighthouse", "flux_edit", List.of(), userId, "token");
-
-        assertThat(callToolRequest().name()).isEqualTo("flux_edit");
-    }
-
-    @Test
-    void generate_withAToolThatIsNotAnImageTool_isRefusedBeforeTheCall() {
-        when(imageToolCatalog.resolve("delete_jira_issue"))
-                .thenThrow(new ImageGenerationException(INVALID_IMAGE_TOOL, "That image style is not available."));
-
-        assertThatThrownBy(() -> imageGenerationService.generate("p", "delete_jira_issue", List.of(), userId, "token"))
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
-                        assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_IMAGE_TOOL));
+                        assertThat(imageGenerationException.getErrorCode()).isEqualTo(NO_IMAGE_TOOLS));
 
         verify(mcpSyncClient, never()).callTool(any());
     }
 
     @Test
-    void generate_withReferences_sendsTheBytesAndRecordsWhichAttachmentsWereUsed() {
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", ONE_SLOT_SCHEMA));
-        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(attachment()));
+    void generate_withOneReferenceAgainstASchemaWithoutMaxItems_sendsTheBytesAndTheDescription() {
+        ChatAttachment chatAttachment = attachment();
+        chatAttachment.setVisionDescription("a man with glasses, head and shoulders");
+        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(chatAttachment));
 
-        imageGenerationService.generate("make it a watercolor", null, List.of(attachmentId), userId, "token");
+        imageGenerationService.generate("put me on a beach", List.of(attachmentId), userId, "token");
 
-        assertThat(callToolRequest().arguments().get("reference_images")).isEqualTo(List.of(Map.of(
+        assertThat(callToolRequest().arguments().get("referenceImages")).isEqualTo(List.of(Map.of(
                 "data", Base64.getEncoder().encodeToString(PNG_BYTES),
-                "mimeType", "image/png")));
-        verify(generatedImageService).store(eq(userId), any(), eq("make it a watercolor"), any(), any(), any(),
+                "mimeType", "image/png",
+                "description", "a man with glasses, head and shoulders")));
+        verify(generatedImageService).store(eq(userId), any(), eq("put me on a beach"), any(), any(), any(),
                 eq(List.of(attachmentId)));
+    }
+
+    @Test
+    void generate_withMoreThanThreeReferences_isRefusedBeforeTheCall() {
+        List<UUID> fourAttachments = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+
+        assertThatThrownBy(() -> imageGenerationService.generate("p", fourAttachments, userId, "token"))
+                .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException -> {
+                    assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE);
+                    assertThat(imageGenerationException.getMessage()).contains("At most 3");
+                });
+
+        verify(mcpSyncClient, never()).callTool(any());
     }
 
     /**
@@ -142,7 +146,9 @@ class ImageGenerationServiceTest {
      */
     @Test
     void generate_withReferencesAgainstAToolThatTakesNone_isRefusedBeforeTheCall() {
-        assertThatThrownBy(() -> imageGenerationService.generate("p", null, List.of(attachmentId), userId, "token"))
+        when(imageToolCatalog.resolve()).thenReturn(tool(PROMPT_ONLY_SCHEMA));
+
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(attachmentId), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(REFERENCE_IMAGES_UNSUPPORTED));
 
@@ -151,10 +157,9 @@ class ImageGenerationServiceTest {
 
     @Test
     void generate_withAReferenceTheCallerCannotUse_isRefusedBeforeTheCall() {
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", ONE_SLOT_SCHEMA));
         when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of());
 
-        assertThatThrownBy(() -> imageGenerationService.generate("p", null, List.of(attachmentId), userId, "token"))
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(attachmentId), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE));
 
@@ -162,29 +167,29 @@ class ImageGenerationServiceTest {
     }
 
     @Test
-    void generate_withTheWrongNumberOfReferences_isRefusedBeforeTheCall() {
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", ONE_SLOT_SCHEMA));
+    void generate_aCountNoWorkflowAccepts_isReportedClearly() {
+        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(attachment()));
+        when(mcpSyncClient.callTool(any())).thenReturn(McpSchema.CallToolResult.builder()
+                .addTextContent("No image workflow accepts 1 reference image(s).")
+                .isError(true)
+                .build());
 
-        assertThatThrownBy(() -> imageGenerationService.generate("p", null,
-                List.of(attachmentId, UUID.randomUUID()), userId, "token"))
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(attachmentId), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException -> {
                     assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE);
-                    assertThat(imageGenerationException.getMessage()).contains("exactly 1");
+                    assertThat(imageGenerationException.getMessage()).contains("No image style accepts");
                 });
-
-        verify(mcpSyncClient, never()).callTool(any());
     }
 
     @Test
     void generate_aReferenceTheToolRejects_isReportedAsAnInvalidReferenceImage() {
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", ONE_SLOT_SCHEMA));
         when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(attachment()));
         when(mcpSyncClient.callTool(any())).thenReturn(McpSchema.CallToolResult.builder()
                 .addTextContent("Reference image 1 is larger than the 10MB limit.")
                 .isError(true)
                 .build());
 
-        assertThatThrownBy(() -> imageGenerationService.generate("p", null, List.of(attachmentId), userId, "token"))
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(attachmentId), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE));
     }
@@ -194,14 +199,13 @@ class ImageGenerationServiceTest {
      */
     @Test
     void generate_aFailedComfyUiUpload_isReportedAsTheBackendNotTheImage() {
-        when(imageToolCatalog.resolve(any())).thenReturn(tool("generate_image", ONE_SLOT_SCHEMA));
         when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(attachment()));
         when(mcpSyncClient.callTool(any())).thenReturn(McpSchema.CallToolResult.builder()
                 .addTextContent("ComfyUI image upload failed with status 503 SERVICE_UNAVAILABLE")
                 .isError(true)
                 .build());
 
-        assertThatThrownBy(() -> imageGenerationService.generate("p", null, List.of(attachmentId), userId, "token"))
+        assertThatThrownBy(() -> imageGenerationService.generate("p", List.of(attachmentId), userId, "token"))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(BACKEND_UNAVAILABLE));
     }
@@ -213,8 +217,8 @@ class ImageGenerationServiceTest {
         return captor.getValue();
     }
 
-    private McpSchema.Tool tool(String name, Map<String, Object> inputSchema) {
-        return McpSchema.Tool.builder(name, inputSchema).build();
+    private McpSchema.Tool tool(Map<String, Object> inputSchema) {
+        return McpSchema.Tool.builder("generate_image", inputSchema).build();
     }
 
     private ChatAttachment attachment() {

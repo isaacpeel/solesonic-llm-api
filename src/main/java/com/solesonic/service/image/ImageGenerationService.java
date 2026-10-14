@@ -130,7 +130,6 @@ public class ImageGenerationService {
      * stored, and can be fetched by id afterwards.
      */
     public Flux<ImageGenerationEvent> stream(String prompt,
-                                             String tool,
                                              List<UUID> referenceAttachmentIds,
                                              UUID userId,
                                              String userToken) {
@@ -148,7 +147,7 @@ public class ImageGenerationService {
                                 message(GENERATION_TIMEOUT)));
                     }))
                     .doOnSubscribe(_ -> Schedulers.boundedElastic().schedule(() ->
-                            generateInto(generationId, prompt, tool, referenceAttachmentIds, userId, userToken)));
+                            generateInto(generationId, prompt, referenceAttachmentIds, userId, userToken)));
         });
     }
 
@@ -161,13 +160,12 @@ public class ImageGenerationService {
      */
     private void generateInto(UUID generationId,
                               String prompt,
-                              String tool,
                               List<UUID> referenceAttachmentIds,
                               UUID userId,
                               String userToken) {
         try {
             GeneratedImageSummary generatedImageSummary =
-                    generate(generationId, prompt, tool, referenceAttachmentIds, userId, userToken);
+                    generate(generationId, prompt, referenceAttachmentIds, userId, userToken);
 
             imageGenerationProgressBroker.emit(generationId, generatedImageSummary);
         } catch (RuntimeException runtimeException) {
@@ -187,7 +185,6 @@ public class ImageGenerationService {
      * have this call's progress written into chat history.
      */
     public GeneratedImageSummary generate(String prompt,
-                                          String tool,
                                           List<UUID> referenceAttachmentIds,
                                           UUID userId,
                                           String userToken) {
@@ -196,18 +193,14 @@ public class ImageGenerationService {
         imageGenerationProgressBroker.open(generationId);
 
         try {
-            return generate(generationId, prompt, tool, referenceAttachmentIds, userId, userToken);
+            return generate(generationId, prompt, referenceAttachmentIds, userId, userToken);
         } finally {
             imageGenerationProgressBroker.close(generationId);
         }
     }
 
-    /**
-     * @param tool the image tool the caller chose, or blank when there is only one
-     */
     private GeneratedImageSummary generate(UUID generationId,
                                            String prompt,
-                                           String tool,
                                            List<UUID> referenceAttachmentIds,
                                            UUID userId,
                                            String userToken) {
@@ -221,14 +214,14 @@ public class ImageGenerationService {
         }
 
         //Both ahead of admission, so a request that can never succeed does not hold a GPU slot.
-        McpSchema.Tool imageTool = imageToolCatalog.resolve(tool);
+        McpSchema.Tool imageTool = imageToolCatalog.resolve();
         List<ChatAttachment> referenceAttachments = referenceAttachments(imageTool, referenceAttachmentIds, userId);
 
         admit(generationId);
 
         try {
             McpSchema.CallToolResult callToolResult = callTool(generationId, imageTool.name(), trimmedPrompt,
-                    referenceImageInjector.payload(referenceAttachments), userToken);
+                    referenceImageInjector.payload(referenceAttachments, List.of()), userToken);
 
             return store(callToolResult, trimmedPrompt, userId,
                     referenceAttachments.stream().map(ChatAttachment::getId).toList());
@@ -243,8 +236,9 @@ public class ImageGenerationService {
      * Unlike the chat path, which skips an attachment it cannot use and carries on, this is a request
      * the caller made on purpose: quietly generating without the references would hand back an image
      * they did not ask for. So every id must be the caller's own PNG, JPEG or WebP attachment, the
-     * tool must advertise {@code reference_images} at all — an MCP server that predates them would
-     * ignore the argument — and the count must be exactly what the tool takes.
+     * tool must advertise {@code referenceImages} at all — an MCP server that predates them would
+     * ignore the argument — and there may be no more than the tool accepts. Which counts a workflow
+     * actually takes is the MCP server's decision.
      *
      * @return the attachments in the order the caller listed them; empty when none were requested
      */
@@ -264,9 +258,9 @@ public class ImageGenerationService {
         List<UUID> requested = List.copyOf(new LinkedHashSet<>(referenceAttachmentIds));
 
         //Before the lookup, which also bounds the ids that reach its IN clause by the slot count.
-        if (requested.size() != slots) {
+        if (requested.size() > slots) {
             throw new ImageGenerationException(INVALID_REFERENCE_IMAGE,
-                    "This image style takes exactly %d reference image%s.".formatted(slots, slots == 1 ? "" : "s"));
+                    "At most %d reference images are accepted.".formatted(slots));
         }
 
         List<ChatAttachment> attachments = referenceImageInjector.usableAttachments(userId, requested);
@@ -400,6 +394,11 @@ public class ImageGenerationService {
             return new ImageGenerationException(INVALID_PROMPT, message(INVALID_PROMPT));
         }
 
+        if (Strings.CI.contains(errorText, "no image workflow accepts")) {
+            return new ImageGenerationException(INVALID_REFERENCE_IMAGE,
+                    "No image style accepts that many reference images. Try again with a different number.");
+        }
+
         ImageGenerationErrorCode errorCode = fromMessage(errorText);
 
         //A rejection this API cannot place is still a rejection from the image backend, so it says
@@ -465,7 +464,7 @@ public class ImageGenerationService {
 
         //The tool's own reference-image rejections, and schema validation naming the parameter.
         //A failed ComfyUI upload is worded without either, so it stays a backend failure below.
-        if (Strings.CI.containsAny(failureText, "reference image", "reference_images")) {
+        if (Strings.CI.containsAny(failureText, "reference image", "referenceImages")) {
             return INVALID_REFERENCE_IMAGE;
         }
 
@@ -492,10 +491,8 @@ public class ImageGenerationService {
             case FORBIDDEN -> "You do not have access to image generation.";
             case RATE_LIMITED -> "Too many images are being generated right now. Please try again in a moment.";
             case INVALID_REFERENCE_IMAGE ->
-                    "A reference image could not be used. Attach your own PNG, JPEG or WebP images, as many as this image style takes.";
-            case REFERENCE_IMAGES_UNSUPPORTED -> "This image style does not accept reference images.";
-            case INVALID_IMAGE_TOOL -> "That image style is not available.";
-            case IMAGE_TOOL_REQUIRED -> "Choose which image style to use.";
+                    "A reference image could not be used. Attach your own PNG, JPEG or WebP images.";
+            case REFERENCE_IMAGES_UNSUPPORTED -> "Image generation does not accept reference images.";
             case NO_IMAGE_TOOLS -> "Image generation is not configured.";
             case INTERNAL -> "Image generation failed unexpectedly. Please try again.";
         };

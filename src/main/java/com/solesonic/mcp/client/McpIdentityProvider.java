@@ -62,7 +62,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             for (Map.Entry<Tool, ToolCallback> rawCallback : rawCallbacks.entrySet()) {
                 toolCallbacks.add(new IdentityToolCallback(rawCallback.getValue(), jwtDecoder,
                         jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector,
-                        GeneratedImageToolInterceptor.isTaggedImageTool(rawCallback.getKey())));
+                        GeneratedImageToolInterceptor.isImageTool(rawCallback.getKey())));
                 log.debug("Wrapped MCP tool: {}", rawCallback.getKey().name());
             }
         } catch (Exception exception) {

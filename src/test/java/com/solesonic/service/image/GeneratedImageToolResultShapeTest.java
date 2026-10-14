@@ -40,4 +40,16 @@ class GeneratedImageToolResultShapeTest {
         //list as a bare Object loses it — an interceptor keying on "type" finds nothing.
         assertThat(rawResult).doesNotContain("\"type\"");
     }
+
+    @Test
+    void theWorkflowRationaleArrivesAsAnotherTextBlock() {
+        List<McpSchema.Content> content = List.of(
+                new McpSchema.ImageContent(null, BASE64, "image/png", null),
+                new McpSchema.TextContent(null, "Generated with FLUX.1-schnell.", null),
+                new McpSchema.TextContent(null, "Workflow: flux_schnell. Why: a new image.", null));
+
+        String rawResult = JSON_HELPER.toJson(content);
+
+        assertThat(rawResult).contains("\"text\":\"Workflow: flux_schnell. Why: a new image.\"");
+    }
 }

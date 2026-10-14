@@ -11,6 +11,8 @@ import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.image.ImageGenerationService;
 import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.util.AuthenticationTokens;
+import com.solesonic.util.logging.Redactor;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -75,9 +77,10 @@ public class GeneratedImageController {
     public Flux<ServerSentEvent<?>> generateStreaming(@RequestBody GenerateImageRequest generateImageRequest,
                                                       Authentication authentication) {
         log.info("Streaming image generation for user {}", userRequestContext.getUserId());
+        logIgnoredTool(generateImageRequest);
 
         return imageGenerationService
-                .stream(generateImageRequest.prompt(), generateImageRequest.tool(),
+                .stream(generateImageRequest.prompt(),
                         generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
                         AuthenticationTokens.token(authentication))
                 .map(GeneratedImageController::serverSentEvent);
@@ -92,9 +95,10 @@ public class GeneratedImageController {
     public ResponseEntity<GeneratedImageSummary> generate(@RequestBody GenerateImageRequest generateImageRequest,
                                                           Authentication authentication) {
         log.info("Generating image for user {}", userRequestContext.getUserId());
+        logIgnoredTool(generateImageRequest);
 
         GeneratedImageSummary generatedImageSummary = imageGenerationService
-                .generate(generateImageRequest.prompt(), generateImageRequest.tool(),
+                .generate(generateImageRequest.prompt(),
                         generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
                         AuthenticationTokens.token(authentication));
 
@@ -102,13 +106,19 @@ public class GeneratedImageController {
     }
 
     /**
-     * The image tools a generation may name, each a workflow on the MCP server, with how many
-     * reference images it takes and which one is used when a request names none. A literal path, so
-     * it wins over {@code /{imageId}}.
+     * The single image tool, with the most reference images it accepts. A literal path, so it wins
+     * over {@code /{imageId}}.
      */
     @GetMapping("/tools")
     public ResponseEntity<List<ImageToolSummary>> tools() {
         return ResponseEntity.ok(imageToolCatalog.summaries());
+    }
+
+    private static void logIgnoredTool(GenerateImageRequest generateImageRequest) {
+        if (StringUtils.isNotBlank(generateImageRequest.tool())) {
+            log.debug("Ignoring deprecated image tool '{}'; generate_image is always called",
+                    Redactor.sanitizePath(generateImageRequest.tool()));
+        }
     }
 
     /**

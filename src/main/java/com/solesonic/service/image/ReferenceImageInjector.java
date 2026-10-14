@@ -28,20 +28,21 @@ import java.util.UUID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 
 /**
- * Hands the user's attached images to an image tool as reference images, without the model ever
- * touching them.
+ * Hands the user's attached images to the image tool as reference images, without the model ever
+ * touching their bytes.
  * <p>
  * The model cannot produce image bytes, and two megabytes of base64 must never pass through its
- * context in either direction. So the tool's {@code reference_images} parameter is hidden from the
- * model ({@link #modelFacing}) and filled in server-side on the way out ({@link #inject}) from the
- * attachment ids {@code PromptService} put in the tool context. Whatever the model wrote there
- * itself is discarded.
+ * context in either direction. So the model is shown a {@code referenceImages} parameter that holds
+ * only a description per image ({@link #modelFacing}), and the bytes are filled in on the way out
+ * ({@link #inject}) from the attachment ids {@code PromptService} put in the tool context. The MCP
+ * server uses the descriptions to choose a workflow, which is why they belong there rather than in
+ * the prompt.
  * <p>
  * Everything keys off the MCP tool's own schema: a tool that does not advertise
- * {@code reference_images} is never sent it, so an MCP server that predates the parameter keeps
- * working, and the slot count comes from the schema's {@code maxItems} rather than being guessed.
+ * {@code referenceImages} is never sent it, and the most images sent comes from the schema's
+ * {@code maxItems} when it has one.
  * <p>
- * Image data and the injected arguments are never logged.
+ * Image data, descriptions and the injected arguments are never logged.
  */
 @Component
 public class ReferenceImageInjector {
@@ -53,7 +54,7 @@ public class ReferenceImageInjector {
      */
     public static final String REFERENCE_ATTACHMENT_IDS = "referenceAttachmentIds";
 
-    public static final String REFERENCE_IMAGES = "reference_images";
+    public static final String REFERENCE_IMAGES = "referenceImages";
 
     /**
      * What ComfyUI's image loader is given by the MCP server. GIF is a chat attachment type but not
@@ -63,14 +64,38 @@ public class ReferenceImageInjector {
 
     private static final int MAX_REFERENCE_IMAGES = 3;
 
+    /**
+     * The MCP server's own cap on a description.
+     */
+    private static final int MAX_DESCRIPTION_LENGTH = 500;
+
     private static final String PROPERTIES = "properties";
     private static final String REQUIRED = "required";
     private static final String MAX_ITEMS = "maxItems";
+    private static final String ITEMS = "items";
+    private static final String REFERENCE = "$ref";
+    private static final String DEFINITIONS = "$defs";
+    private static final String DEFINITIONS_PREFIX = "#/$defs/";
     private static final String DATA = "data";
     private static final String MIME_TYPE = "mimeType";
+    private static final String DESCRIPTION = "description";
 
-    private static final String MODEL_NOTE = " Images the user attached to this message are passed to this "
-            + "tool automatically as reference images; never put image data in the arguments.";
+    private static final String MODEL_NOTE = " Images the user attached to this message are sent to this tool "
+            + "automatically; never put image data in the arguments. Put the user's request in `prompt` in their "
+            + "own words, without describing the attached images; describe each image in "
+            + "`referenceImages[].description` instead.";
+
+    private static final Map<String, Object> MODEL_FACING_REFERENCE_IMAGES = Map.of(
+            "type", "array",
+            DESCRIPTION, "One entry per image the user attached to this message, in the order attached. The images "
+                    + "themselves are sent automatically; only describe them here. Omit when no image is attached.",
+            ITEMS, Map.of(
+                    "type", "object",
+                    PROPERTIES, Map.of(DESCRIPTION, Map.of(
+                            "type", "string",
+                            DESCRIPTION, "A short description of what this image shows: its subjects, and whether a "
+                                    + "person is the focus (for example \"a man with glasses and a beard, head and "
+                                    + "shoulders\")."))));
 
     private static final String EMPTY_ARGUMENTS = "{}";
 
@@ -86,7 +111,7 @@ public class ReferenceImageInjector {
     }
 
     /**
-     * @return how many reference images the tool takes, or zero when it advertises none
+     * @return the most reference images the tool takes, or zero when it advertises none
      */
     public int referenceSlots(String inputSchema) {
         if (StringUtils.isBlank(inputSchema)) {
@@ -117,22 +142,22 @@ public class ReferenceImageInjector {
     }
 
     /**
-     * The definition the model reads: {@code reference_images} removed, and one sentence saying the
-     * images arrive on their own, so the model neither invents base64 nor refuses an edit because it
-     * thinks it cannot see the attachment.
+     * The definition the model reads: {@code referenceImages} rebuilt from scratch to hold only a
+     * description per image, and a note saying the images arrive on their own. Built rather than
+     * edited so that {@code data} and {@code mimeType} cannot reach the model, which would invite it
+     * to invent base64.
      */
     public ToolDefinition modelFacing(ToolDefinition toolDefinition) {
         Map<String, Object> schema = jsonMapper.readValue(toolDefinition.inputSchema(), MAP_TYPE);
 
         if (schema.get(PROPERTIES) instanceof Map<?, ?> properties) {
-            Map<String, Object> remaining = new LinkedHashMap<>();
-            properties.forEach((name, property) -> {
-                if (!REFERENCE_IMAGES.equals(name)) {
-                    remaining.put(String.valueOf(name), property);
-                }
-            });
+            removeReferencedDefinition(schema, properties.get(REFERENCE_IMAGES));
 
-            schema.put(PROPERTIES, remaining);
+            Map<String, Object> modelFacingProperties = new LinkedHashMap<>();
+            properties.forEach((name, property) -> modelFacingProperties.put(String.valueOf(name),
+                    REFERENCE_IMAGES.equals(name) ? MODEL_FACING_REFERENCE_IMAGES : property));
+
+            schema.put(PROPERTIES, modelFacingProperties);
         }
 
         if (schema.get(REQUIRED) instanceof List<?> required) {
@@ -146,10 +171,34 @@ public class ReferenceImageInjector {
                 .build();
     }
 
+    private static void removeReferencedDefinition(Map<String, Object> schema, Object referenceImages) {
+        if (!(referenceImages instanceof Map<?, ?> referenceImagesSchema)
+                || !(referenceImagesSchema.get(ITEMS) instanceof Map<?, ?> items)
+                || !(items.get(REFERENCE) instanceof String reference)
+                || !reference.startsWith(DEFINITIONS_PREFIX)
+                || !(schema.get(DEFINITIONS) instanceof Map<?, ?> definitions)) {
+            return;
+        }
+
+        Map<String, Object> remaining = new LinkedHashMap<>();
+        definitions.forEach((name, definition) -> {
+            if (!reference.substring(DEFINITIONS_PREFIX.length()).equals(name)) {
+                remaining.put(String.valueOf(name), definition);
+            }
+        });
+
+        if (remaining.isEmpty()) {
+            schema.remove(DEFINITIONS);
+        } else {
+            schema.put(DEFINITIONS, remaining);
+        }
+    }
+
     /**
-     * Rewrites the model's arguments for a tool that takes reference images: anything the model put
-     * under {@code reference_images} is dropped, and the send's own image attachments — the user's,
-     * PNG/JPEG/WebP only, at most {@code slots} of them — take its place.
+     * Rewrites the model's arguments for a tool that takes reference images. The model's
+     * {@code referenceImages} is read only for each entry's {@code description}, by position;
+     * anything else in it is dropped. The send's own image attachments — the user's, PNG/JPEG/WebP
+     * only, at most {@code slots} of them — supply the bytes.
      * <p>
      * An attachment that does not resolve is skipped rather than failing the turn; if none resolve,
      * the tool is called without references.
@@ -161,15 +210,15 @@ public class ReferenceImageInjector {
             arguments = StringUtils.isBlank(toolCallInput) ? new LinkedHashMap<>() : jsonMapper.readValue(toolCallInput, MAP_TYPE);
         } catch (JacksonException jacksonException) {
             //Fails closed: passing the raw input on would also pass on whatever the model wrote
-            //under reference_images. An empty call comes back from the tool as a missing prompt.
+            //under referenceImages. An empty call comes back from the tool as a missing prompt.
             log.warn("Could not read tool arguments to inject reference images: {}", jacksonException.getOriginalMessage());
 
             return ReferenceImageInjection.none(EMPTY_ARGUMENTS);
         }
 
-        if (arguments.remove(REFERENCE_IMAGES) != null) {
-            log.warn("Discarded reference_images the model supplied itself");
-        }
+        List<String> modelDescriptions = modelDescriptions(arguments.remove(REFERENCE_IMAGES));
+
+        log.debug("The model described {} reference image(s)", modelDescriptions.size());
 
         List<ChatAttachment> attachments = usableAttachments(uuid(toolContext.get(USER_ID)),
                 attachmentIds(toolContext.get(REFERENCE_ATTACHMENT_IDS)));
@@ -185,7 +234,7 @@ public class ReferenceImageInjector {
             return new ReferenceImageInjection(jsonMapper.writeValueAsString(arguments), List.of());
         }
 
-        arguments.put(REFERENCE_IMAGES, payload(attachments));
+        arguments.put(REFERENCE_IMAGES, payload(attachments, modelDescriptions));
 
         List<UUID> attachmentIds = attachments.stream().map(ChatAttachment::getId).toList();
 
@@ -215,20 +264,58 @@ public class ReferenceImageInjector {
     }
 
     /**
-     * The {@code reference_images} argument value, in the shape the MCP tool's schema declares.
+     * The {@code referenceImages} argument value, in the shape the MCP tool's schema declares. Each
+     * image's description is the model's, by position, falling back to the attachment's vision
+     * description and then its own; it is left out when there is none.
      */
-    public List<Map<String, Object>> payload(List<ChatAttachment> attachments) {
+    public List<Map<String, Object>> payload(List<ChatAttachment> attachments, List<String> modelDescriptions) {
         List<Map<String, Object>> referenceImages = new ArrayList<>(attachments.size());
 
-        for (ChatAttachment attachment : attachments) {
+        for (int index = 0; index < attachments.size(); index++) {
+            ChatAttachment attachment = attachments.get(index);
+            String modelDescription = index < modelDescriptions.size() ? modelDescriptions.get(index) : null;
+
             Map<String, Object> referenceImage = new LinkedHashMap<>();
             referenceImage.put(DATA, Base64.getEncoder().encodeToString(attachment.getFileData()));
             referenceImage.put(MIME_TYPE, attachment.getContentType().toLowerCase(Locale.ROOT));
+
+            String description = description(modelDescription, attachment);
+
+            if (description != null) {
+                referenceImage.put(DESCRIPTION, description);
+            }
 
             referenceImages.add(referenceImage);
         }
 
         return referenceImages;
+    }
+
+    private static String description(String modelDescription, ChatAttachment attachment) {
+        String description = StringUtils.firstNonBlank(modelDescription, attachment.getVisionDescription(),
+                attachment.getDescription());
+
+        return StringUtils.truncate(StringUtils.trimToNull(description), MAX_DESCRIPTION_LENGTH);
+    }
+
+    /**
+     * Each entry's {@code description}, by position, and nothing else — any other key is where
+     * invented image data would be.
+     */
+    private static List<String> modelDescriptions(Object referenceImages) {
+        if (!(referenceImages instanceof List<?> entries)) {
+            return List.of();
+        }
+
+        List<String> descriptions = new ArrayList<>(entries.size());
+
+        for (Object entry : entries) {
+            descriptions.add(entry instanceof Map<?, ?> fields && fields.get(DESCRIPTION) instanceof String description
+                    ? description
+                    : null);
+        }
+
+        return descriptions;
     }
 
     private static boolean isUsable(ChatAttachment attachment) {

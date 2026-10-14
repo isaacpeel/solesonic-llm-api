@@ -8,14 +8,17 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.stereotype.Component;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -74,28 +77,64 @@ public class GeneratedImageToolInterceptor {
     }
 
     /**
-     * {@code generate_image} as a whole underscore-delimited word: Spring AI may prefix MCP tool
-     * names with the client name, and the MCP server registers one tool per workflow row as
-     * {@code generate_image_<workflow>}. Every one of them returns base64, so every one is guarded.
+     * {@code generate_image} as a whole underscore-delimited word, because Spring AI may prefix or
+     * suffix a callback's name. Anything named that way returns base64, so it is guarded.
      */
     private static final Pattern IMAGE_TOOL_NAME = Pattern.compile("(^|_)" + GENERATE_IMAGE_TOOL + "(_|$)");
 
     /**
-     * The MCP server tags every image tool with {@code _meta: {"solesonic/kind": "image-generation"}}.
-     * The tag is authoritative; the name match in {@link #handles} remains only for an MCP server
-     * that predates it.
+     * Spring AI reports an {@code isError} result only as the content list's {@code toString()}.
+     * Matching the record's rendering is the one way back to the server's own words.
      */
-    public static final String META_KIND = "solesonic/kind";
-    public static final String META_KIND_IMAGE_GENERATION = "image-generation";
+    private static final Pattern TOOL_ERROR_TEXT =
+            Pattern.compile("TextContent\\[annotations=.*?, text=(.*?), meta=", Pattern.DOTALL);
 
-    public static boolean isTaggedImageTool(McpSchema.Tool tool) {
-        return tool != null
-                && tool.meta() != null
-                && META_KIND_IMAGE_GENERATION.equals(tool.meta().get(META_KIND));
+    private static final int MAX_TOOL_ERROR_LENGTH = 500;
+    private static final int MAX_TOOL_ERROR_SCAN_LENGTH = 20_000;
+
+    public static boolean isImageTool(McpSchema.Tool tool) {
+        return tool != null && GENERATE_IMAGE_TOOL.equals(tool.name());
     }
 
     public boolean handles(String toolName) {
         return toolName != null && IMAGE_TOOL_NAME.matcher(toolName).find();
+    }
+
+    /**
+     * What the model is told when the image tool refuses a call, for example because no workflow
+     * takes the number of images attached. The server's message is kept so the model can explain
+     * it; anything that cannot be read as one is not passed on.
+     */
+    public String toolError(ToolExecutionException toolExecutionException) {
+        Throwable cause = toolExecutionException.getCause();
+        String serverText = serverText(cause == null ? toolExecutionException.getMessage() : cause.getMessage());
+
+        log.warn("The image tool returned an error; {}", serverText == null
+                ? "its message could not be read" : "passing its message to the model");
+
+        if (serverText == null) {
+            return "The image could not be generated. Tell the user it failed and offer to try again.";
+        }
+
+        return """
+                The image could not be generated. The image tool said: %s
+                Explain this to the user in plain words."""
+                .formatted(serverText);
+    }
+
+    private static String serverText(String failureText) {
+        if (failureText == null) {
+            return null;
+        }
+
+        Matcher matcher = TOOL_ERROR_TEXT.matcher(StringUtils.truncate(failureText, MAX_TOOL_ERROR_SCAN_LENGTH));
+        List<String> texts = new ArrayList<>();
+
+        while (matcher.find()) {
+            texts.add(matcher.group(1).trim());
+        }
+
+        return StringUtils.truncate(StringUtils.trimToNull(String.join(" ", texts)), MAX_TOOL_ERROR_LENGTH);
     }
 
     public String intercept(String toolCallInput, String rawResult, Map<String, Object> toolContext) {

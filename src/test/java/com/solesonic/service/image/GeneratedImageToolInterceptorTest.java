@@ -12,6 +12,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.util.JsonHelper;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -80,16 +82,73 @@ class GeneratedImageToolInterceptorTest {
         assertThat(generatedImageToolInterceptor.handles("create_jira")).isFalse();
     }
 
-    /**
-     * The MCP server registers one tool per workflow row, so {@code generate_image_<workflow>} is as
-     * much an image tool as the plain name, and must be guarded the same way.
-     */
     @Test
-    void handlesPerWorkflowImageToolsButNotLookalikes() {
+    void handlesSuffixedImageToolNamesButNotLookalikes() {
         assertThat(generatedImageToolInterceptor.handles("generate_image_flux_schnell")).isTrue();
         assertThat(generatedImageToolInterceptor.handles("solesonic_generate_image_flux_schnell")).isTrue();
         assertThat(generatedImageToolInterceptor.handles("regenerate_image")).isFalse();
         assertThat(generatedImageToolInterceptor.handles("generate_images")).isFalse();
+    }
+
+    @Test
+    void isImageTool_identifiesTheMcpToolByNameAlone() {
+        Map<String, Object> schema = Map.of("type", "object");
+
+        assertThat(GeneratedImageToolInterceptor.isImageTool(McpSchema.Tool.builder("generate_image", schema).build()))
+                .isTrue();
+        assertThat(GeneratedImageToolInterceptor.isImageTool(McpSchema.Tool.builder("web_search", schema).build()))
+                .isFalse();
+        assertThat(GeneratedImageToolInterceptor.isImageTool(null)).isFalse();
+    }
+
+    /**
+     * Spring AI turns an {@code isError} result into an exception whose message is the content
+     * list's {@code toString()}; the model is handed only the server's own words.
+     */
+    @Test
+    void toolError_givesTheModelTheServersMessage() {
+        McpSchema.CallToolResult callToolResult = McpSchema.CallToolResult.builder()
+                .addTextContent("No image workflow accepts 2 reference image(s).")
+                .isError(true)
+                .build();
+        ToolExecutionException toolExecutionException = new ToolExecutionException(
+                ToolDefinition.builder().name("generate_image").inputSchema("{}").build(),
+                new IllegalStateException("Error calling tool: " + callToolResult.content()));
+
+        String modelText = generatedImageToolInterceptor.toolError(toolExecutionException);
+
+        assertThat(modelText)
+                .contains("No image workflow accepts 2 reference image(s).")
+                .doesNotContain("TextContent")
+                .doesNotContain("annotations");
+    }
+
+    @Test
+    void toolError_withAnUnreadableMessageStillSaysTheImageFailed() {
+        ToolExecutionException toolExecutionException = new ToolExecutionException(
+                ToolDefinition.builder().name("generate_image").inputSchema("{}").build(),
+                new IllegalStateException("connection reset"));
+
+        assertThat(generatedImageToolInterceptor.toolError(toolExecutionException))
+                .contains("could not be generated")
+                .doesNotContain("connection reset");
+    }
+
+    @Test
+    void interceptToleratesTheServersWorkflowRationaleBlock() {
+        String rawResult = new JsonHelper().toJson(List.of(
+                new McpSchema.ImageContent(null, base64(), "image/png", null),
+                new McpSchema.TextContent(null, METADATA_TEXT, null),
+                new McpSchema.TextContent(null, "Workflow: kontext_person_edit. Why: the user asked to edit the person.", null)));
+
+        String modelText = generatedImageToolInterceptor.intercept(TOOL_CALL_INPUT, rawResult, toolContext());
+
+        ArgumentCaptor<ImageGenerationMetadata> metadataCaptor = ArgumentCaptor.forClass(ImageGenerationMetadata.class);
+        verify(generatedImageService).store(eq(userId), eq(chatId), any(), any(), any(), metadataCaptor.capture(), any());
+
+        assertThat(metadataCaptor.getValue().seed()).isEqualTo(8339331079448168597L);
+        assertThat(metadataCaptor.getValue().model()).isEqualTo("FLUX.1-schnell");
+        assertThat(modelText).contains(imageId.toString()).doesNotContain(base64());
     }
 
     @Test

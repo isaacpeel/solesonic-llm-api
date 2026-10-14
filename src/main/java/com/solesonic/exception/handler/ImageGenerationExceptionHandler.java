@@ -40,8 +40,7 @@ public class ImageGenerationExceptionHandler {
 
     private static HttpStatus status(ImageGenerationException imageGenerationException) {
         return switch (imageGenerationException.getErrorCode()) {
-            case INVALID_PROMPT, INVALID_REFERENCE_IMAGE, REFERENCE_IMAGES_UNSUPPORTED, INVALID_IMAGE_TOOL,
-                 IMAGE_TOOL_REQUIRED -> HttpStatus.BAD_REQUEST;
+            case INVALID_PROMPT, INVALID_REFERENCE_IMAGE, REFERENCE_IMAGES_UNSUPPORTED -> HttpStatus.BAD_REQUEST;
             case FORBIDDEN -> HttpStatus.FORBIDDEN;
             case RATE_LIMITED -> HttpStatus.TOO_MANY_REQUESTS;
             case GENERATION_TIMEOUT -> HttpStatus.GATEWAY_TIMEOUT;

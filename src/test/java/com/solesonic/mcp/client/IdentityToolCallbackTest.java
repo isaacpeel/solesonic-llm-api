@@ -15,6 +15,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.tool.metadata.ToolMetadata;
 import org.springframework.security.authentication.TestingAuthenticationToken;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -32,6 +33,7 @@ import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static com.solesonic.service.image.ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS;
 import static com.solesonic.service.prompt.PromptService.CHAT_ID;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -51,7 +53,7 @@ class IdentityToolCallbackTest {
 
     private static final String SCHEMA_WITH_REFERENCES = """
             {"type":"object","properties":{"prompt":{"type":"string"},
-             "reference_images":{"type":"array","minItems":1,"maxItems":1}},"required":["prompt"]}""";
+             "referenceImages":{"type":"array","minItems":1,"maxItems":1}},"required":["prompt"]}""";
 
     private static final String SCHEMA_WITHOUT_REFERENCES = """
             {"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}""";
@@ -101,10 +103,14 @@ class IdentityToolCallbackTest {
     }
 
     @Test
-    void getToolDefinition_hidesReferenceImagesFromTheModel() {
+    void getToolDefinition_showsTheModelOnlyADescriptionPerReferenceImage() {
         IdentityToolCallback identityToolCallback = callback(SCHEMA_WITH_REFERENCES);
 
-        assertThat(identityToolCallback.getToolDefinition().inputSchema()).doesNotContain("reference_images");
+        assertThat(identityToolCallback.getToolDefinition().inputSchema())
+                .contains("referenceImages")
+                .contains("description")
+                .doesNotContain("mimeType")
+                .doesNotContain("maxItems");
         assertThat(identityToolCallback.getToolDefinition().name()).isEqualTo(TOOL_NAME);
     }
 
@@ -127,7 +133,7 @@ class IdentityToolCallbackTest {
         ArgumentCaptor<ToolContext> contextCaptor = ArgumentCaptor.forClass(ToolContext.class);
         verify(delegate).call(inputCaptor.capture(), contextCaptor.capture());
 
-        assertThat(inputCaptor.getValue()).contains("reference_images").contains("image/png");
+        assertThat(inputCaptor.getValue()).contains("referenceImages").contains("image/png");
         assertThat(contextCaptor.getValue().getContext())
                 .doesNotContainKeys(USER_TOKEN, USER_ID, REFERENCE_ATTACHMENT_IDS)
                 .containsEntry(CHAT_ID, chatId);
@@ -157,8 +163,8 @@ class IdentityToolCallbackTest {
     }
 
     /**
-     * Workflow rows can be named anything; one that takes reference images still returns base64,
-     * so it is intercepted even when its name does not say {@code generate_image}.
+     * A tool that takes reference images returns base64, so it is intercepted even when its name
+     * does not say {@code generate_image}.
      */
     @Test
     void call_interceptsAToolThatTakesReferenceImagesWhateverItIsNamed() {
@@ -168,16 +174,39 @@ class IdentityToolCallbackTest {
         verify(generatedImageToolInterceptor).intercept(eq(MODEL_INPUT), eq("[]"), any(), eq(List.of(attachmentId)));
     }
 
-    /**
-     * The MCP server's tag is authoritative: a tagged tool is intercepted even with no telling name
-     * and no reference images.
-     */
     @Test
     void call_interceptsATaggedImageToolWhateverItIsNamed() {
         String result = callback("flux_plain", SCHEMA_WITHOUT_REFERENCES, true)
                 .call(MODEL_INPUT, new ToolContext(toolContext()));
 
         assertThat(result).isEqualTo("stored");
+    }
+
+    @Test
+    void call_turnsAnImageToolErrorIntoTextTheModelCanExplain() {
+        ToolExecutionException toolExecutionException = new ToolExecutionException(
+                ToolDefinition.builder().name(TOOL_NAME).inputSchema("{}").build(),
+                new IllegalStateException("Error calling tool: rejected"));
+        when(delegate.call(anyString(), any(ToolContext.class))).thenThrow(toolExecutionException);
+        when(generatedImageToolInterceptor.toolError(toolExecutionException)).thenReturn("explained");
+
+        String result = callback(SCHEMA_WITH_REFERENCES).call(MODEL_INPUT, new ToolContext(toolContext()));
+
+        assertThat(result).isEqualTo("explained");
+    }
+
+    @Test
+    void call_leavesAnotherToolsErrorToSpringAi() {
+        ToolExecutionException toolExecutionException = new ToolExecutionException(
+                ToolDefinition.builder().name("web_search").inputSchema("{}").build(),
+                new IllegalStateException("Error calling tool: rejected"));
+        when(delegate.call(anyString(), any(ToolContext.class))).thenThrow(toolExecutionException);
+
+        IdentityToolCallback identityToolCallback = callback("web_search", SCHEMA_WITHOUT_REFERENCES, false);
+        ToolContext toolContext = new ToolContext(toolContext());
+
+        assertThatThrownBy(() -> identityToolCallback.call(MODEL_INPUT, toolContext)).isSameAs(toolExecutionException);
+        verify(generatedImageToolInterceptor, never()).toolError(any());
     }
 
     @Test

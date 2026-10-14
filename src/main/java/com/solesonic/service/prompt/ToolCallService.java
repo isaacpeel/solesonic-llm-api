@@ -58,7 +58,7 @@ public class ToolCallService {
         ToolCallback toolCallback = toolCommand.callback(mcpClient);
 
         return invoke(chatId, message, toolCommand.name(), toolCallback,
-                GeneratedImageToolInterceptor.isTaggedImageTool(toolCommand.tool()), contextMap);
+                GeneratedImageToolInterceptor.isImageTool(toolCommand.tool()), contextMap);
     }
 
     public Flux<String> streamLocal(UUID chatId,

@@ -1,11 +1,11 @@
 package com.solesonic.model.image;
 
 /**
- * One image generation tool a client can choose on {@code POST /images}. Each is a stored ComfyUI
- * workflow on the MCP server, so choosing a tool is choosing a workflow.
+ * The image generation tool, {@code generate_image}. The MCP server chooses the workflow itself, so
+ * there is only ever one.
  *
- * @param referenceImageSlots exactly how many reference images the tool takes when given any;
- *                            zero when it accepts none
+ * @param referenceImageSlots the most reference images the tool accepts; zero when it accepts none.
+ *                            Which counts are valid is decided per workflow by the MCP server
  */
 public record ImageToolSummary(String name,
                                String title,

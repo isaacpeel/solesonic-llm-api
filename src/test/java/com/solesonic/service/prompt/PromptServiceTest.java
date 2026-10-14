@@ -10,7 +10,6 @@ import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
-import com.solesonic.service.image.ImageToolCatalog;
 import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -102,9 +101,6 @@ class PromptServiceTest {
     private ChatClient.StreamResponseSpec streamResponseSpec;
 
     @Mock
-    private ImageToolCatalog imageToolCatalog;
-
-    @Mock
     private ChatModelSelection chatModelSelection;
 
     private UUID chatId;
@@ -128,7 +124,6 @@ class PromptServiceTest {
                 vectorStoreService,
                 userPreferencesService,
                 mcpIdentityProvider,
-                imageToolCatalog,
                 chatMessageService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "qwen3-8b",
@@ -413,13 +408,8 @@ class PromptServiceTest {
                 .containsEntry(ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS, Set.of());
     }
 
-    /**
-     * Image tools are whatever workflows the MCP server offers — none named here — so the model is
-     * offered exactly those alongside the fixed tools.
-     */
     @Test
-    void stream_offersTheModelEveryConfiguredImageTool() {
-        when(imageToolCatalog.toolNames()).thenReturn(Set.of("generate_image_flux", "kontext_edit"));
+    void stream_offersTheModelTheGenerateImageTool() {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
@@ -431,8 +421,7 @@ class PromptServiceTest {
         verify(mcpIdentityProvider).getToolCallbacks(toolNamesCaptor.capture());
 
         assertThat(toolNamesCaptor.getValue())
-                .contains("web_search", "generate_image_flux", "kontext_edit")
-                .doesNotContain("generate_image");
+                .contains("web_search", "generate_image");
     }
 
     /**

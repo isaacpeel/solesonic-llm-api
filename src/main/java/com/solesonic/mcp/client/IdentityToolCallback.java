@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.model.ToolContext;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.ai.tool.definition.ToolDefinition;
+import org.springframework.ai.tool.execution.ToolExecutionException;
 import org.springframework.ai.tool.metadata.ToolMetadata;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContext;
@@ -76,14 +77,14 @@ public class IdentityToolCallback implements ToolCallback {
 
     /**
      * What the model is shown: the delegate's own definition, or — for a tool that takes reference
-     * images — that definition with {@code reference_images} removed, because only this class may
-     * fill it.
+     * images — that definition with {@code referenceImages} reduced to a description per image,
+     * because only this class may supply the image data.
      */
     private final ToolDefinition toolDefinition;
 
     /**
-     * Whether the MCP server tagged this tool as an image tool. Read off the {@code McpSchema.Tool}
-     * by whoever wraps it, because a {@link ToolDefinition} does not carry {@code _meta}.
+     * Whether this is the MCP server's {@code generate_image} tool, decided by whoever wraps it from
+     * the {@code McpSchema.Tool}'s own name.
      */
     private final boolean imageTool;
 
@@ -176,6 +177,12 @@ public class IdentityToolCallback implements ToolCallback {
             return withUserToken(userToken, () -> postProcess(
                     delegate.call(referenceImageInjection.toolCallInput(), filteredToolContext),
                     toolCallInput, toolContextMap, referenceImageInjection.attachmentIds()));
+        } catch (ToolExecutionException toolExecutionException) {
+            if (isImageTool()) {
+                return generatedImageToolInterceptor.toolError(toolExecutionException);
+            }
+
+            throw toolExecutionException;
         } finally {
             SecurityContextHolder.clearContext();
         }
@@ -183,7 +190,7 @@ public class IdentityToolCallback implements ToolCallback {
 
     /**
      * The arguments that actually leave for the MCP server. Only a tool advertising
-     * {@code reference_images} is rewritten; for every other tool the model's input passes through
+     * {@code referenceImages} is rewritten; for every other tool the model's input passes through
      * untouched, which is also what keeps an MCP server that predates the parameter from being sent
      * one it never declared.
      */
@@ -225,9 +232,8 @@ public class IdentityToolCallback implements ToolCallback {
     }
 
     /**
-     * The server's tag decides. The name match covers an MCP server that predates the tag, and a
-     * tool taking reference images is an image tool whatever its row was named — every one of them
-     * returns base64.
+     * The MCP tool's name decides. The callback-name match covers a prefixed name, and a tool taking
+     * reference images is treated as an image tool whatever it is called, since it returns base64.
      */
     private boolean isImageTool() {
         return imageTool

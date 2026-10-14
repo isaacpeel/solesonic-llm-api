@@ -38,10 +38,18 @@ class ReferenceImageInjectorTest {
             {"type":"object",
              "properties":{
                "prompt":{"type":"string"},
-               "reference_images":{"type":"array","minItems":1,"maxItems":1,
-                 "items":{"type":"object","properties":{"data":{"type":"string"},"mimeType":{"type":"string"}}}}},
+               "referenceImages":{"type":"array","minItems":1,"maxItems":1,
+                 "items":{"type":"object","properties":{"data":{"type":"string"},"mimeType":{"type":"string"},"description":{"type":"string"}}}}},
              "required":["prompt"],
              "additionalProperties":false}""";
+
+    private static final String SCHEMA_WITHOUT_MAX_ITEMS = """
+            {"type":"object",
+             "properties":{
+               "prompt":{"type":"string"},
+               "referenceImages":{"type":"array","items":{"$ref":"#/$defs/ReferenceImage"}}},
+             "required":["prompt","referenceImages"],
+             "$defs":{"ReferenceImage":{"type":"object","properties":{"data":{"type":"string"},"mimeType":{"type":"string"}}}}}""";
 
     private static final String SCHEMA_WITHOUT_REFERENCES = """
             {"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}""";
@@ -64,32 +72,41 @@ class ReferenceImageInjectorTest {
     }
 
     @Test
-    void referenceSlots_readsTheAdvertisedItemCount() {
+    void referenceSlots_readsTheAdvertisedItemCountAndOtherwiseTheMaximum() {
         assertThat(referenceImageInjector.referenceSlots(SCHEMA_WITH_REFERENCES)).isEqualTo(1);
+        assertThat(referenceImageInjector.referenceSlots(SCHEMA_WITHOUT_MAX_ITEMS)).isEqualTo(3);
         assertThat(referenceImageInjector.referenceSlots(SCHEMA_WITHOUT_REFERENCES)).isZero();
         assertThat(referenceImageInjector.referenceSlots(jsonMapper.readValue(SCHEMA_WITH_REFERENCES, MAP_TYPE)))
                 .isEqualTo(1);
     }
 
-    /**
-     * The model can not produce image bytes and must not try: seeing the parameter is an invitation
-     * to invent base64, so it is removed from the definition the model reads.
-     */
     @Test
-    void modelFacing_removesReferenceImagesAndSaysTheyAreSuppliedAutomatically() {
-        ToolDefinition original = ToolDefinition.builder()
-                .name("generate_image")
-                .description("Creates an image.")
-                .inputSchema(SCHEMA_WITH_REFERENCES)
-                .build();
-
-        ToolDefinition modelFacing = referenceImageInjector.modelFacing(original);
+    void modelFacing_exposesOnlyADescriptionPerImage() {
+        ToolDefinition modelFacing = referenceImageInjector.modelFacing(definition(SCHEMA_WITH_REFERENCES));
 
         Map<String, Object> schema = jsonMapper.readValue(modelFacing.inputSchema(), MAP_TYPE);
-        assertThat(map(schema.get("properties"))).containsOnlyKeys("prompt");
+        Map<String, Object> referenceImages = map(map(schema.get("properties")).get("referenceImages"));
+        Map<String, Object> items = map(referenceImages.get("items"));
+
+        assertThat(map(schema.get("properties"))).containsOnlyKeys("prompt", "referenceImages");
+        assertThat(referenceImages.get("type")).isEqualTo("array");
+        assertThat(map(items.get("properties"))).containsOnlyKeys("description");
+        assertThat(modelFacing.inputSchema()).doesNotContain("\"data\"").doesNotContain("mimeType");
         assertThat(schema.get("required")).isEqualTo(List.of("prompt"));
         assertThat(modelFacing.name()).isEqualTo("generate_image");
-        assertThat(modelFacing.description()).startsWith("Creates an image.").contains("automatically");
+        assertThat(modelFacing.description()).startsWith("Creates an image.").contains("automatically")
+                .contains("own words");
+    }
+
+    @Test
+    void modelFacing_dropsTheDefinitionTheOriginalItemsReferred() {
+        ToolDefinition modelFacing = referenceImageInjector.modelFacing(definition(SCHEMA_WITHOUT_MAX_ITEMS));
+
+        Map<String, Object> schema = jsonMapper.readValue(modelFacing.inputSchema(), MAP_TYPE);
+
+        assertThat(schema).doesNotContainKey("$defs");
+        assertThat(schema.get("required")).isEqualTo(List.of("prompt"));
+        assertThat(modelFacing.inputSchema()).doesNotContain("mimeType").doesNotContain("$ref");
     }
 
     @Test
@@ -103,32 +120,92 @@ class ReferenceImageInjectorTest {
 
         Map<String, Object> arguments = jsonMapper.readValue(injection.toolCallInput(), MAP_TYPE);
         assertThat(arguments).containsEntry("prompt", "a watercolor");
-        assertThat(arguments.get("reference_images")).isEqualTo(List.of(Map.of(
+        assertThat(arguments.get("referenceImages")).isEqualTo(List.of(Map.of(
                 "data", Base64.getEncoder().encodeToString(PNG_BYTES),
                 "mimeType", "image/png")));
         assertThat(injection.attachmentIds()).containsExactly(attachmentId);
     }
 
-    /**
-     * Whatever the model put there is discarded: only the server supplies image data.
-     */
     @Test
-    void inject_replacesAnythingTheModelSuppliedItself() {
+    void inject_mergesTheModelsDescriptionsByPositionWithTheInjectedBytes() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(
+                attachment(first, "image/png", PNG_BYTES),
+                attachment(second, "image/jpeg", JPEG_BYTES)));
+
+        ReferenceImageInjection injection = referenceImageInjector.inject("""
+                {"prompt":"put me on a beach","referenceImages":[
+                  {"description":"  a man with glasses, head and shoulders  "},
+                  {"description":"a sandy beach"}]}""", 3, toolContext(first, second));
+
+        assertThat(referenceImages(injection)).containsExactly(
+                Map.of("data", Base64.getEncoder().encodeToString(PNG_BYTES), "mimeType", "image/png",
+                        "description", "a man with glasses, head and shoulders"),
+                Map.of("data", Base64.getEncoder().encodeToString(JPEG_BYTES), "mimeType", "image/jpeg",
+                        "description", "a sandy beach"));
+    }
+
+    @Test
+    void inject_fallsBackToTheVisionDescriptionThenTheDescriptionThenOmitsIt() {
+        UUID visionDescribed = UUID.randomUUID();
+        UUID described = UUID.randomUUID();
+        UUID undescribed = UUID.randomUUID();
+
+        ChatAttachment visionAttachment = attachment(visionDescribed, "image/png", PNG_BYTES);
+        visionAttachment.setVisionDescription("a dog on a sofa");
+        visionAttachment.setDescription("ignored");
+
+        ChatAttachment describedAttachment = attachment(described, "image/png", PNG_BYTES);
+        describedAttachment.setDescription("a red car");
+
+        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(
+                visionAttachment, describedAttachment, attachment(undescribed, "image/png", PNG_BYTES)));
+
+        ReferenceImageInjection injection = referenceImageInjector.inject(
+                "{\"prompt\":\"p\",\"referenceImages\":[{\"description\":\" \"}]}", 3,
+                toolContext(visionDescribed, described, undescribed));
+
+        List<Map<String, Object>> referenceImages = referenceImages(injection);
+        assertThat(referenceImages.get(0)).containsEntry("description", "a dog on a sofa");
+        assertThat(referenceImages.get(1)).containsEntry("description", "a red car");
+        assertThat(referenceImages.get(2)).doesNotContainKey("description");
+    }
+
+    @Test
+    void inject_dropsAnyImageDataTheModelSuppliedItself() {
         UUID attachmentId = UUID.randomUUID();
         when(chatAttachmentService.attachments(eq(userId), anySet()))
                 .thenReturn(List.of(attachment(attachmentId, "image/jpeg", JPEG_BYTES)));
 
         ReferenceImageInjection injection = referenceImageInjector.inject(
-                "{\"prompt\":\"p\",\"reference_images\":[{\"data\":\"invented\",\"mimeType\":\"image/png\"}]}",
+                "{\"prompt\":\"p\",\"referenceImages\":[{\"data\":\"invented\",\"mimeType\":\"image/png\",\"description\":\"a cat\"}]}",
                 1, toolContext(attachmentId));
 
-        assertThat(injection.toolCallInput()).doesNotContain("invented").contains("image/jpeg");
+        assertThat(injection.toolCallInput()).doesNotContain("invented");
+        assertThat(referenceImages(injection)).containsExactly(Map.of(
+                "data", Base64.getEncoder().encodeToString(JPEG_BYTES),
+                "mimeType", "image/jpeg",
+                "description", "a cat"));
     }
 
     @Test
-    void inject_withoutAttachedImagesStripsAModelSuppliedValueAndInjectsNothing() {
+    void inject_capsEachDescriptionAtFiveHundredCharacters() {
+        UUID attachmentId = UUID.randomUUID();
+        ChatAttachment chatAttachment = attachment(attachmentId, "image/png", PNG_BYTES);
+        chatAttachment.setVisionDescription("x".repeat(800));
+        when(chatAttachmentService.attachments(eq(userId), anySet())).thenReturn(List.of(chatAttachment));
+
         ReferenceImageInjection injection = referenceImageInjector.inject(
-                "{\"prompt\":\"p\",\"reference_images\":[{\"data\":\"invented\",\"mimeType\":\"image/png\"}]}",
+                "{\"prompt\":\"p\"}", 1, toolContext(attachmentId));
+
+        assertThat(String.valueOf(referenceImages(injection).getFirst().get("description"))).hasSize(500);
+    }
+
+    @Test
+    void inject_withoutAttachedImagesSendsNoReferenceImagesEvenWithModelDescriptions() {
+        ReferenceImageInjection injection = referenceImageInjector.inject(
+                "{\"prompt\":\"p\",\"referenceImages\":[{\"description\":\"a man\"}]}",
                 1, Map.of(USER_ID, userId));
 
         assertThat(jsonMapper.readValue(injection.toolCallInput(), MAP_TYPE)).containsOnlyKeys("prompt");
@@ -170,9 +247,7 @@ class ReferenceImageInjectorTest {
                 "{\"prompt\":\"p\"}", 1, toolContext(first, second));
 
         assertThat(injection.attachmentIds()).containsExactly(first);
-        Object referenceImages = jsonMapper.readValue(injection.toolCallInput(), MAP_TYPE).get("reference_images");
-        assertThat(referenceImages).isInstanceOf(List.class);
-        assertThat((List<?>) referenceImages).hasSize(1);
+        assertThat(referenceImages(injection)).hasSize(1);
     }
 
     @Test
@@ -182,6 +257,18 @@ class ReferenceImageInjectorTest {
 
         assertThat(injection.attachmentIds()).isEmpty();
         verifyNoInteractions(chatAttachmentService);
+    }
+
+    @Test
+    void payload_withoutModelDescriptionsUsesTheAttachmentsOwn() {
+        ChatAttachment chatAttachment = attachment(UUID.randomUUID(), "image/png", PNG_BYTES);
+        chatAttachment.setVisionDescription("a lighthouse");
+
+        assertThat(referenceImageInjector.payload(List.of(chatAttachment), List.of()))
+                .containsExactly(Map.of(
+                        "data", Base64.getEncoder().encodeToString(PNG_BYTES),
+                        "mimeType", "image/png",
+                        "description", "a lighthouse"));
     }
 
     @Test
@@ -216,10 +303,25 @@ class ReferenceImageInjectorTest {
     @Test
     void inject_withUnreadableArgumentsFailsClosed() {
         ReferenceImageInjection injection = referenceImageInjector.inject(
-                "not json {\"reference_images\":[{\"data\":\"invented\"}]}", 1, toolContext(UUID.randomUUID()));
+                "not json {\"referenceImages\":[{\"data\":\"invented\"}]}", 1, toolContext(UUID.randomUUID()));
 
         assertThat(injection.toolCallInput()).isEqualTo("{}");
         assertThat(injection.attachmentIds()).isEmpty();
+    }
+
+    private ToolDefinition definition(String inputSchema) {
+        return ToolDefinition.builder()
+                .name("generate_image")
+                .description("Creates an image.")
+                .inputSchema(inputSchema)
+                .build();
+    }
+
+    private List<Map<String, Object>> referenceImages(ReferenceImageInjection injection) {
+        Object referenceImages = jsonMapper.readValue(injection.toolCallInput(), MAP_TYPE).get("referenceImages");
+
+        return jsonMapper.convertValue(referenceImages, new TypeReference<>() {
+        });
     }
 
     private Map<String, Object> toolContext(UUID... attachmentIds) {
