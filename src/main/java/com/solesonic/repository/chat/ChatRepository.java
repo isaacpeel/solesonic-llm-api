@@ -1,9 +1,11 @@
 package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.history.Chat;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
@@ -112,4 +114,24 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
      * an id alone.
      */
     Optional<Chat> findByIdAndUserId(UUID chatId, UUID userId);
+
+    /**
+     * {@link #findByIdAndUserId} holding the row for the rest of the transaction. Deleting a chat
+     * takes it before forgetting what was learned from it, and {@code /remember} takes it before
+     * writing a memory, so the two can never interleave: a memory is either written first and
+     * forgotten with the chat, or finds the chat already gone.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId and chat.userId = :userId
+            """)
+    Optional<Chat> lockByIdAndUserId(UUID chatId, UUID userId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId
+            """)
+    Optional<Chat> lockById(UUID chatId);
 }

@@ -98,7 +98,7 @@ re-consent.
 Every LLM interaction in this application talks to an **OpenAI-compatible** server (llama.cpp
 `llama-server` or anything else that speaks the same protocol).
 
-Six interactions are configured **independently by model name**, but all six talk to the **same**
+Seven interactions are configured **independently by model name**, but all seven talk to the **same**
 OpenAI-compatible server — there is exactly one host variable in the whole application:
 
 | Interaction | Host variable | Model variable | What it does |
@@ -109,11 +109,12 @@ OpenAI-compatible server — there is exactly one host variable in the whole app
 | Vision | `CHAT_OPENAI_HOST` | `VISION_MODEL` | Describing image attachments |
 | RAG task | `CHAT_OPENAI_HOST` | `solesonic.llm.rag-task.model` (`DEFAULT_CHAT_MODEL`) | Query rewrite, multi-query expansion, reranking |
 | Tool-call task | `CHAT_OPENAI_HOST` | `solesonic.llm.tool-call.model` (`DEFAULT_CHAT_MODEL`) | Slash-command tool-call routing |
+| Memory | `CHAT_OPENAI_HOST` | `MEMORY_MODEL` | Reflecting on quiet conversations to learn about their owner |
 
 `CHAT_OPENAI_HOST` is a **full base URL including the `/v1` path** (`http://host:port/v1`) and is
 **required** — it carries no masking default, so a missing value fails startup with a clear
-placeholder error rather than silently falling back. The five hand-built models in `config/openai`
-(ETL ×2, vision, RAG task, tool-call) each inject `spring.ai.openai.base-url` directly via `@Value`
+placeholder error rather than silently falling back. The six hand-built models in `config/openai`
+(ETL ×2, vision, RAG task, tool-call, memory) each inject `spring.ai.openai.base-url` directly via `@Value`
 rather than pointing at hosts of their own — there is no per-purpose host property, only a
 per-purpose model name. Running ETL or vision on genuinely separate hardware would require
 reintroducing a purpose-specific host property and threading it through the relevant `@Bean`
@@ -303,6 +304,33 @@ just as though no image were attached; the `attachment` SSE event
 ([docs/api.md](api.md#attachment-event-payload)) is what makes that visible. A skipped image is
 logged at WARN with the attachment id, the elapsed time, and the reason.
 
+### User Memory Configuration
+
+What the application learns about each user from their conversations. A background task reads
+conversations once they have gone quiet, asks the memory model what is durable, validates that in
+code, and stores it; plain chat turns then carry the user's active memories in the system prompt. On
+first deploy every existing conversation is eligible, which is the whole retroactive backfill — it
+drains at `MEMORY_REFLECTION_BATCH_SIZE` chats per `MEMORY_REFLECTION_CRON` tick. See
+[docs/api.md](api.md#user-memory) and [docs/security.md](security.md#user-memory).
+
+Every variable is **required**: none carries a default, so a missing one fails startup.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `MEMORY_MODEL` | Model reflection runs against | `qwen2.5:32b` | Yes | Temperature 0. Never follows a chat's `/model` selection |
+| `MEMORY_READ_TIMEOUT` | Read timeout for the memory model client | `5m` | Yes | Spring duration |
+| `MEMORY_REFLECTION_ENABLED` | Run the reflection task | `true` | Yes | Operational switch for the whole deployment |
+| `MEMORY_REFLECTION_CRON` | Reflection schedule | `0 */5 * * * *` | Yes | Spring cron |
+| `MEMORY_REFLECTION_IDLE_MINUTES` | How long a conversation must be quiet before it is read | `30` | Yes | Also how old an `IN_PROGRESS` claim must be before another instance may take it over |
+| `MEMORY_REFLECTION_BATCH_SIZE` | Conversations claimed per tick | `5` | Yes | Processed one model call at a time |
+| `MEMORY_REFLECTION_MAX_ATTEMPTS` | Failures before a conversation is given up on | `3` | Yes | A failure never changes existing memories |
+| `MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS` | Size of one window of a conversation | `12000` | Yes | Longer conversations are read in windows; nothing is skipped |
+| `MEMORY_INJECTION_ENABLED` | Put active memories in the plain-chat system prompt | `false` | Yes | Deploy with this off first, review the backfill through the memory panel, then turn it on |
+| `MEMORY_PROMPT_MAX_CHARACTERS` | Ceiling on the memory block in the system prompt | `2000` | Yes | The context window is shared with history and retrieval |
+| `MEMORY_MAX_ACTIVE` | Active memories kept per user | `200` | Yes | Past it, the weakest inferred memory is evicted; one the user set never is |
+| `MEMORY_MAX_CHARACTERS` | Longest single memory | `500` | Yes | Applies to the panel and to reflection |
+| `MEMORY_MIN_CONFIDENCE` | Proposals below this confidence are dropped | `0.6` | Yes | Between 0 and 1 |
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -419,6 +447,21 @@ VISION_MODEL=qwen2.5vl
 # Image Generation Configuration
 IMAGE_MAX_CONCURRENT=2
 IMAGE_ADMISSION_TIMEOUT=30s
+
+# User Memory Configuration
+MEMORY_MODEL=qwen2.5:32b
+MEMORY_READ_TIMEOUT=5m
+MEMORY_REFLECTION_ENABLED=true
+MEMORY_REFLECTION_CRON=0 */5 * * * *
+MEMORY_REFLECTION_IDLE_MINUTES=30
+MEMORY_REFLECTION_BATCH_SIZE=5
+MEMORY_REFLECTION_MAX_ATTEMPTS=3
+MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS=12000
+MEMORY_INJECTION_ENABLED=false
+MEMORY_PROMPT_MAX_CHARACTERS=2000
+MEMORY_MAX_ACTIVE=200
+MEMORY_MAX_CHARACTERS=500
+MEMORY_MIN_CONFIDENCE=0.6
 
 # A2A Configuration
 A2A_BASE_URI=https://agents.yourdomain.com

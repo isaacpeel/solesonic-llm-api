@@ -10,6 +10,7 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import org.apache.commons.collections4.CollectionUtils;
@@ -40,19 +41,22 @@ public class ChatMessageService {
     private final ChatAttachmentService chatAttachmentService;
     private final ChatService chatService;
     private final GeneratedImageService generatedImageService;
+    private final UserMemoryService userMemoryService;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
                               ChatRepository chatRepository,
                               UserPreferencesService userPreferencesService,
                               ChatAttachmentService chatAttachmentService,
                               ChatService chatService,
-                              GeneratedImageService generatedImageService) {
+                              GeneratedImageService generatedImageService,
+                              UserMemoryService userMemoryService) {
         this.chatMessageRepository = chatMessageRepository;
         this.chatRepository = chatRepository;
         this.userPreferencesService = userPreferencesService;
         this.chatAttachmentService = chatAttachmentService;
         this.chatService = chatService;
         this.generatedImageService = generatedImageService;
+        this.userMemoryService = userMemoryService;
     }
 
     public ChatMessage save(ChatMessage message) {
@@ -104,8 +108,8 @@ public class ChatMessageService {
     }
 
     /**
-     * Deletes one message and everything stored under it: its attachments and the images generated
-     * on its turn.
+     * Deletes one message and everything stored under it: its attachments, the images generated on
+     * its turn, and whatever was learned from it alone.
      * <p>
      * Scoped exactly as {@link ChatService#requireOwned(UUID)} is: a chat owned by someone else must
      * be indistinguishable from one that does not exist, and a message id from another chat must be
@@ -114,7 +118,7 @@ public class ChatMessageService {
      */
     @Transactional
     public void delete(UUID chatId, UUID messageId) {
-        chatService.requireOwned(chatId);
+        UUID userId = chatService.requireOwned(chatId);
 
         ChatMessage chatMessage = chatMessageRepository.findById(messageId)
                 .filter(message -> chatId.equals(message.getChatId()))
@@ -125,6 +129,7 @@ public class ChatMessageService {
 
         chatAttachmentService.deleteForChatMessage(messageId);
         generatedImageService.deleteForChatMessage(messageId);
+        userMemoryService.forgetChatMessage(chatId, messageId, userId);
 
         chatMessageRepository.delete(chatMessage);
     }

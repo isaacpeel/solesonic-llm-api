@@ -8,6 +8,7 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -22,6 +23,8 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
@@ -52,6 +55,9 @@ class ChatServiceTest {
     @Mock
     private ChatModelSelection chatModelSelection;
 
+    @Mock
+    private UserMemoryService userMemoryService;
+
     private final UserRequestContext userRequestContext = new UserRequestContext();
 
     private ChatService chatService;
@@ -68,7 +74,38 @@ class ChatServiceTest {
                 a2aStickyAgentService,
                 redisStreamService,
                 chatModelSelection,
+                userMemoryService,
                 userRequestContext);
+    }
+
+    /**
+     * Deleting a conversation is a request to forget it, so the cascade includes everything learned
+     * from it, for the caller and nobody else.
+     */
+    @Test
+    void deletingAChatForgetsWhatWasLearnedFromIt() {
+        Chat chat = new Chat();
+        chat.setId(CHAT_ID);
+        chat.setUserId(USER_ID);
+
+        when(chatRepository.lockByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+        when(a2aStickyAgentService.deactivate(CHAT_ID)).thenReturn(Mono.empty());
+        when(a2aStickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+        when(redisStreamService.deleteStream(CHAT_ID, USER_ID)).thenReturn(Mono.just(true));
+        when(chatModelSelection.clear(CHAT_ID)).thenReturn(Mono.empty());
+
+        chatService.delete(CHAT_ID);
+
+        verify(userMemoryService).forgetChat(CHAT_ID, USER_ID);
+    }
+
+    @Test
+    void deletingAChatTheCallerDoesNotOwnForgetsNothing() {
+        when(chatRepository.lockByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatService.delete(CHAT_ID)).isInstanceOf(ResponseStatusException.class);
+
+        verify(userMemoryService, never()).forgetChat(any(), any());
     }
 
     /**
@@ -81,7 +118,7 @@ class ChatServiceTest {
         chat.setId(CHAT_ID);
         chat.setUserId(USER_ID);
 
-        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+        when(chatRepository.lockByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
         when(a2aStickyAgentService.deactivate(CHAT_ID)).thenReturn(Mono.empty());
         when(a2aStickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
         when(redisStreamService.deleteStream(CHAT_ID, USER_ID)).thenReturn(Mono.just(true));

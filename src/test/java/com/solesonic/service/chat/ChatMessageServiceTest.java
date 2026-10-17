@@ -10,6 +10,7 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -65,6 +66,9 @@ class ChatMessageServiceTest {
 
     @Mock
     private GeneratedImageService generatedImageService;
+
+    @Mock
+    private UserMemoryService userMemoryService;
 
     @InjectMocks
     private ChatMessageService chatMessageService;
@@ -413,6 +417,36 @@ class ChatMessageServiceTest {
         verify(chatAttachmentService).deleteForChatMessage(message.getId());
         verify(generatedImageService).deleteForChatMessage(message.getId());
         verify(chatMessageRepository).delete(message);
+    }
+
+    /**
+     * The owner comes from the ownership check, never from anything the caller sent, so the forget
+     * cannot be pointed at another user's memories.
+     */
+    @Test
+    void deleteForgetsWhatTheMessageAloneEvidencedForTheOwner() {
+        UUID ownerId = UUID.randomUUID();
+        ChatMessage message = chatMessage(MessageType.USER, "I moved to Leeds");
+
+        when(chatService.requireOwned(chatId)).thenReturn(ownerId);
+        when(chatMessageRepository.findById(message.getId())).thenReturn(Optional.of(message));
+
+        chatMessageService.delete(chatId, message.getId());
+
+        verify(userMemoryService).forgetChatMessage(chatId, message.getId(), ownerId);
+    }
+
+    @Test
+    void deleteForgetsNothingForAMessageFromAnotherChat() {
+        ChatMessage messageFromAnotherChat = chatMessage(MessageType.USER, "not this chat's question");
+        messageFromAnotherChat.setChatId(UUID.randomUUID());
+
+        when(chatMessageRepository.findById(messageFromAnotherChat.getId())).thenReturn(Optional.of(messageFromAnotherChat));
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageFromAnotherChat.getId()))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(userMemoryService, never()).forgetChatMessage(any(), any(), any());
     }
 
     /**

@@ -11,6 +11,7 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,6 +43,7 @@ public class ChatService {
     private final A2AStickyAgentService a2aStickyAgentService;
     private final RedisStreamService redisStreamService;
     private final ChatModelSelection chatModelSelection;
+    private final UserMemoryService userMemoryService;
     private final UserRequestContext userRequestContext;
 
     public ChatService(
@@ -52,6 +54,7 @@ public class ChatService {
             A2AStickyAgentService a2aStickyAgentService,
             RedisStreamService redisStreamService,
             ChatModelSelection chatModelSelection,
+            UserMemoryService userMemoryService,
             UserRequestContext userRequestContext) {
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
@@ -60,6 +63,7 @@ public class ChatService {
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.redisStreamService = redisStreamService;
         this.chatModelSelection = chatModelSelection;
+        this.userMemoryService = userMemoryService;
         this.userRequestContext = userRequestContext;
     }
 
@@ -196,7 +200,7 @@ public class ChatService {
 
     /**
      * Deletes a conversation and everything stored under it: its messages, the images attached to
-     * them, and the images generated inside it.
+     * them, the images generated inside it, and everything learned from it.
      * <p>
      * The cascade is written out here because the database will not do it — none of those tables
      * carries a foreign key to {@code chat}, so deleting the row alone would leave a transcript and
@@ -210,12 +214,14 @@ public class ChatService {
     @Transactional
     public void delete(UUID chatId) {
         UUID userId = userRequestContext.getUserId();
-        Chat chat = ownedChat(chatId, userId);
+        Chat chat = chatRepository.lockByIdAndUserId(chatId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId));
 
         log.info("Deleting chat {} for user {}", chatId, userId);
 
         chatAttachmentService.deleteForChat(chatId);
         generatedImageService.deleteForChat(chatId);
+        userMemoryService.forgetChat(chatId, userId);
 
         int messages = chatMessageRepository.deleteByChatId(chatId);
 
@@ -292,9 +298,14 @@ public class ChatService {
      * same reason: a chat owned by someone else must be indistinguishable from one that does not
      * exist. Messages are deliberately not loaded — this asks a question about the chat rather than
      * reading it.
+     *
+     * @return the owner, which is the caller
      */
-    public void requireOwned(UUID chatId) {
-        ownedChat(chatId, userRequestContext.getUserId());
+    public UUID requireOwned(UUID chatId) {
+        UUID userId = userRequestContext.getUserId();
+        ownedChat(chatId, userId);
+
+        return userId;
     }
 
     private Chat ownedChat(UUID chatId, UUID userId) {

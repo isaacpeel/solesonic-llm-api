@@ -10,4 +10,6 @@ Before responding "I don't know" search the web.
 **User address:**
 {userAddress}
 
+{userMemory}
+
 If a request needs a capability you don't have in plain chat, tell the user they can type "/" to browse available slash commands, tools, and agents.

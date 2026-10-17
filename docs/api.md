@@ -698,6 +698,10 @@ those messages, and the images generated inside it — as one transaction. Nothi
 afterwards, and there is no soft-delete or trash. Attachments the caller uploaded but never sent are
 untouched; they belong to no conversation and are swept on their own schedule.
 
+Deleting a conversation also **forgets everything learned from it**: every [memory](#user-memory)
+evidenced only by its messages is deleted, and a memory it superseded is restored. A memory another
+surviving conversation also supports is kept.
+
 A chat that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
 rather than `204`. Groups are unaffected: deleting the last conversation in a group leaves an empty
 group, not a deleted one.
@@ -718,7 +722,8 @@ on a conversation that no longer exists — unreachable from every read path, bu
 Deletes one message and everything stored under it — its own attachments and the images generated
 on its turn — as one transaction. Nothing is recoverable afterwards, and there is no soft-delete.
 Deleting a `USER` or `ASSISTANT` message does not delete the other side of the turn; delete both ids
-if the whole exchange should go.
+if the whole exchange should go. Whatever [memory](#user-memory) that message alone evidenced is
+forgotten with it, the same way deleting a whole chat forgets it.
 
 A chat that does not exist, or is not owned by the caller, is `404`. A `messageId` that does not
 belong to `chatId` is also `404`, the same as one that does not exist at all.
@@ -1292,6 +1297,88 @@ the stored tokens are preserved. Disconnecting is an explicit action
   - `addressId` (UUID): Must already exist — created via `POST /addresses`
 - **Response**: Updated `UserPreferences`, with `addressId` set
 - **Errors**: `404` if `addressId` does not name an existing address
+
+---
+
+## User Memory
+
+Durable facts, preferences and standing instructions learned about the caller from their own
+conversations, and used to answer them better in later ones. Memory belongs to exactly one user: no
+endpoint, prompt or background job ever reads, writes or shows another user's.
+
+`{userId}` must be the authenticated subject on every endpoint below — otherwise `403`. A
+`memoryId` that is not one of the caller's own is `404`, the same as one that does not exist.
+
+Memories come from three places:
+
+| `origin` | Created by |
+|---|---|
+| `INFERRED` | Background reflection over quiet conversations. Evidenced by the `USER` messages it was learned from |
+| `REMEMBERED` | The `/remember` slash command. Evidenced by the message that issued it |
+| `AUTHORED` | The caller, through this API. Has no evidence and is only ever changed by the caller |
+
+`kind` is `FACT`, `PREFERENCE` or `INSTRUCTION`; `status` is `ACTIVE` or `PENDING` (an inferred
+instruction stays pending until it has been seen in two conversations). Only `ACTIVE` memories are
+put in front of the model, and only on plain chat turns — never on slash-command tool turns, MCP
+prompt commands or turns delegated to an A2A agent.
+
+Deleting a conversation or a message forgets what was learned from it — see
+[Delete a Chat](#delete-a-chat).
+
+### UserMemorySummary
+
+```json
+{
+  "id": "memory-uuid",
+  "kind": "PREFERENCE",
+  "origin": "INFERRED",
+  "status": "ACTIVE",
+  "content": "Prefers metric units",
+  "confidence": 0.85,
+  "created": "2026-10-01T09:00:00Z",
+  "updated": "2026-10-01T09:00:00Z",
+  "lastConfirmed": "2026-10-12T17:30:00Z",
+  "chatIds": ["chat-uuid"]
+}
+```
+
+`chatIds` names the conversations a memory was learned from, so the panel can link back to them.
+
+### List Memories
+
+- **Endpoint**: `GET /users/{userId}/memories`
+- **Response**: `UserMemorySummary[]` — active and pending memories
+
+### Create a Memory
+
+- **Endpoint**: `POST /users/{userId}/memories`
+- **Request Body**: `{ "kind": "INSTRUCTION", "content": "Answer in British English" }`
+- **Response**: `201 Created` with the `AUTHORED`, `ACTIVE` memory
+- **Errors**: `400` when `kind` is missing or `content` is blank or longer than
+  `solesonic.llm.memory.max-memory-characters`
+
+### Edit a Memory
+
+- **Endpoint**: `PATCH /users/{userId}/memories/{memoryId}`
+- **Request Body**: `{ "content": "..." }`, `{ "kind": "FACT" }`, or both
+- **Response**: the edited `UserMemorySummary`
+
+An edited memory becomes `AUTHORED`, `ACTIVE`, confidence `1.0`, and loses its evidence: the caller
+owns the text directly now, so deleting the conversation it was learned from no longer removes it,
+and reflection never changes it.
+
+### Delete a Memory
+
+- **Endpoint**: `DELETE /users/{userId}/memories/{memoryId}`
+- **Response**: `204 No Content`
+
+Removes that memory only. It is not re-learned from conversations already read, but can be learned
+again if the caller says it again.
+
+### Delete All Memories
+
+- **Endpoint**: `DELETE /users/{userId}/memories`
+- **Response**: `204 No Content`
 
 ---
 

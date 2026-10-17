@@ -10,6 +10,7 @@ import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
@@ -67,6 +68,7 @@ public class PromptService {
     public static final String AGENT_NAME = "agentName";
     public static final String USER_ADDRESS = "userAddress";
     public static final String CURRENT_DATE_TIME = "currentDateTime";
+    public static final String USER_MEMORY = "userMemory";
     private static final DateTimeFormatter CURRENT_DATE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a (zzz)", Locale.US);
 
@@ -92,6 +94,7 @@ public class PromptService {
     private final UserPreferencesService userPreferencesService;
     private final McpIdentityProvider mcpIdentityProvider;
     private final ChatMessageService chatMessageService;
+    private final UserMemoryService userMemoryService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
 
     @Value("${solesonic.llm.bot.name}")
@@ -115,6 +118,7 @@ public class PromptService {
             UserPreferencesService userPreferencesService,
             McpIdentityProvider mcpIdentityProvider,
             ChatMessageService chatMessageService,
+            UserMemoryService userMemoryService,
             LiteLlmHeaderRegistry liteLlmHeaderRegistry,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
@@ -129,6 +133,7 @@ public class PromptService {
         this.userPreferencesService = userPreferencesService;
         this.mcpIdentityProvider = mcpIdentityProvider;
         this.chatMessageService = chatMessageService;
+        this.userMemoryService = userMemoryService;
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
@@ -260,10 +265,13 @@ public class PromptService {
         ZoneId zone = userPreferencesService.getZone(userId);
         String templateDateTime = ZonedDateTime.now(zone).format(CURRENT_DATE_TIME_FORMATTER);
 
+        //Only this route carries memory. Tool routes keep their no-prose rule so it cannot leak into
+        //tool arguments, and A2A agents are external.
         Map<String, Object> systemPromptContext = Map.of(
                 AGENT_NAME, agentName,
                 USER_ADDRESS, templateAddress,
-                CURRENT_DATE_TIME, templateDateTime
+                CURRENT_DATE_TIME, templateDateTime,
+                USER_MEMORY, userMemoryService.promptBlock(userId)
         );
 
         PromptTemplate systempPromptTemplate = PromptTemplate.builder()

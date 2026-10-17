@@ -22,6 +22,17 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
     Optional<ChatMessage> findByChatIdAndElicitationId(UUID chatId, UUID elicitationId);
 
     /**
+     * The messages of one conversation that memory reflection has not read yet, oldest first.
+     */
+    List<ChatMessage> findByChatIdAndTimestampAfterOrderByTimestampAsc(UUID chatId, ZonedDateTime after);
+
+    /**
+     * The newest message of one type in a conversation — for {@code USER}, the in-flight message,
+     * which is written before the turn reaches any tool.
+     */
+    Optional<ChatMessage> findFirstByChatIdAndMessageTypeOrderByTimestampDesc(UUID chatId, MessageType messageType);
+
+    /**
      * The row the chat memory advisor just wrote for this turn — found by timing, not id, because
      * {@link com.solesonic.config.chat.DatabaseChatMemory} never hands the id back to the caller
      * that knows the turn's {@code responseMetadata}. Mirrors how

@@ -10,6 +10,7 @@ import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -103,6 +104,9 @@ class PromptServiceTest {
     @Mock
     private ChatModelSelection chatModelSelection;
 
+    @Mock
+    private UserMemoryService userMemoryService;
+
     private UUID chatId;
     private UUID userId;
 
@@ -125,6 +129,7 @@ class PromptServiceTest {
                 userPreferencesService,
                 mcpIdentityProvider,
                 chatMessageService,
+                userMemoryService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "qwen3-8b",
                 Duration.ofMinutes(30));
@@ -147,6 +152,67 @@ class PromptServiceTest {
 
         //No chat has picked a model in most tests.
         lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
+
+        lenient().when(userMemoryService.promptBlock(any())).thenReturn("");
+    }
+
+    /**
+     * Memory goes in the system prompt, never the user message: the retrieval advisor rewrites the
+     * last user message, and the user's own words must reach it unchanged.
+     */
+    @Test
+    void stream_onTheDefaultRoute_putsTheCallersMemoryInTheSystemPrompt() {
+        when(userMemoryService.promptBlock(userId)).thenReturn("Standing instructions:\n- Don't use bullet lists\n");
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> user = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        verify(requestSpec).user(user.capture());
+
+        assertThat(system.getValue()).contains("- Don't use bullet lists");
+        assertThat(user.getValue()).isEqualTo("hello");
+    }
+
+    /**
+     * Tool routes keep their no-prose rule, so memory never reaches tool arguments.
+     */
+    @Test
+    void stream_withASlashCommand_neverReadsMemory() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        lenient().when(mcpTool.name()).thenReturn("search");
+        lenient().when(mcpTool.description()).thenReturn("Search tool");
+        ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
+
+        when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"))).thenReturn(Flux.just("done"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+                .expectNext("done")
+                .verifyComplete();
+
+        verifyNoInteractions(userMemoryService);
+    }
+
+    /**
+     * A2A agents are external, so a conversation pinned to one never sends them the user's memory.
+     */
+    @Test
+    void stream_toAStickyAgent_neverReadsMemory() {
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("research-agent")));
+        when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString(), eq("token-abc"))).thenReturn(Flux.just("agent reply"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("agent reply")
+                .verifyComplete();
+
+        verifyNoInteractions(userMemoryService);
     }
 
     private String requestedModel() {

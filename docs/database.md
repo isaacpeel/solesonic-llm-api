@@ -213,6 +213,30 @@ delete from public.chat where id = '<chat uuid>';
    - Dropping constraints
    - Adding new models
 
+### User memory — three tables (V3_34)
+
+| Table | Holds |
+|---|---|
+| `user_memory` | One memory: `user_id`, `kind`, `origin`, `status`, `memory_key`, `content`, `confidence`, `created`/`updated`/`last_confirmed`, and `supersedes` — the memory it replaced |
+| `user_memory_evidence` | One row per `USER` message a memory was learned from: `memory_id`, `user_id`, `chat_id`, `chat_message_id`, `chat_message_timestamp` |
+| `chat_memory_reflection` | Per conversation, how far reflection has read (`reflected_through`), its `status` and `attempts` |
+
+Load-bearing details:
+
+- **Every row carries `user_id NOT NULL`, and every reference between these tables carries it too.**
+  Evidence references its memory through `(memory_id, user_id) → user_memory (id, user_id)`, and
+  `supersedes` through `(supersedes, user_id)`, so a row can never point at another user's row even
+  by mistake. Both need the `unique (id, user_id)` constraint on `user_memory`.
+- **`user_memory_active_key_idx` is a partial unique index** on `(user_id, memory_key)` where
+  `status = 'ACTIVE'`: two active values for one key cannot coexist. Code superseding a memory must
+  flush the old row as `SUPERSEDED` before inserting its replacement, or the insert fails.
+- **`on delete set null (supersedes)`** — a column-list `SET NULL`, Postgres 15 or later.
+- **No foreign key to `chat` or `chat_message`**, as elsewhere in the schema. Forgetting a
+  conversation is written out in `UserMemoryService.forgetChat`; a memory whose last evidence row
+  goes is deleted with it.
+- **`chat_message_timestamp` on evidence** is what lets reflection refuse to let an older statement
+  replace a newer one during backfill.
+
 ## Vector Storage with pgvector
 
 The project uses the pgvector extension for PostgreSQL to store and query vector embeddings efficiently. This is crucial for the Retrieval Augmented Generation (RAG) functionality.

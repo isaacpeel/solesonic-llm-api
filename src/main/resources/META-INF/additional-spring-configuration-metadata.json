@@ -184,6 +184,71 @@
       "name": "google.api.auth.callback.uri",
       "type": "java.lang.String",
       "description": "Redirect URI Google returns the authorization code to. Must match a redirect URI registered on the OAuth client exactly."
+    },
+    {
+      "name": "solesonic.llm.memory.model",
+      "type": "java.lang.String",
+      "description": "Model user-memory reflection runs against. Never follows a chat's /model selection. Required; no default."
+    },
+    {
+      "name": "solesonic.llm.memory.openai.read-timeout",
+      "type": "java.time.Duration",
+      "description": "Read timeout for the memory model client. Required; no default."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether the memory reflection task runs. An operational switch for the whole deployment."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.cron",
+      "type": "java.lang.String",
+      "description": "Schedule of the memory reflection task."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.idle-minutes",
+      "type": "java.lang.Long",
+      "description": "How long a conversation must be quiet before reflection reads it, and how old an IN_PROGRESS claim must be before it can be taken over."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.batch-size",
+      "type": "java.lang.Integer",
+      "description": "Conversations claimed per reflection tick, processed one model call at a time."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.max-attempts",
+      "type": "java.lang.Integer",
+      "description": "Failures after which a conversation is no longer reflected on."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.max-transcript-characters",
+      "type": "java.lang.Integer",
+      "description": "Size of one reflection window. Longer conversations are read across several runs; nothing is skipped."
+    },
+    {
+      "name": "solesonic.llm.memory.injection.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether active memories are put in the plain-chat system prompt."
+    },
+    {
+      "name": "solesonic.llm.memory.prompt-max-characters",
+      "type": "java.lang.Integer",
+      "description": "Ceiling on the memory block in the system prompt."
+    },
+    {
+      "name": "solesonic.llm.memory.max-active-memories",
+      "type": "java.lang.Integer",
+      "description": "Active memories kept per user; past it the weakest inferred memory is evicted."
+    },
+    {
+      "name": "solesonic.llm.memory.max-memory-characters",
+      "type": "java.lang.Integer",
+      "description": "Longest single memory, for the panel and for reflection."
+    },
+    {
+      "name": "solesonic.llm.memory.min-confidence",
+      "type": "java.lang.Double",
+      "description": "Reflection proposals below this confidence are dropped."
     }
   ]
 }

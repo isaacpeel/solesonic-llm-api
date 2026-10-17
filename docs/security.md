@@ -209,6 +209,12 @@ the loopback bind ever regressed.
 - **Mitigation**: Parameterized queries, input validation, prompt sanitization
 - **Detection**: Monitor for unusual database queries and LLM responses
 
+#### T4a: Cross-User Memory Exposure and Memory Poisoning
+- **Threat**: One user's learned memories reaching another user, or text the user did not write (an
+  email, a web page, a tool result) being recorded as something true about them
+- **Mitigation**: See [User Memory](#user-memory)
+- **Detection**: Reflection logs drop counts per validation reason, never content
+
 #### T5: Secrets Exposure
 - **Threat**: Exposure of configuration secrets (passwords, keys)
 - **Mitigation**: Environment variables only, secrets management systems
@@ -346,6 +352,46 @@ and `GET /chats/users/{userId}` all answer `403` for a mismatched subject (see
 Chat message content, prompt content, retrieved document text, and vision descriptions are never
 logged above DEBUG, and never in the security log at all.
 `spring.ai.chat.client.observations.log-prompt` is `false` in every profile.
+
+## User Memory
+
+What is learned about a user is read, written, shown and injected for its owner and nobody else, on
+every path. This is enforced by structure rather than convention:
+
+- **Every row carries `user_id`**, and evidence and supersession reference their memory through
+  composite foreign keys that include it.
+- **Ownership is a `where` clause**, never a fetch-then-compare. Another user's memory is a `404`.
+- **Reflection works on one user at a time.** The owner comes from the chat row and nowhere else, and
+  the only memories the model is shown are that owner's.
+- **The model's output is validated in code** (`ReflectionValidator`). Any memory id that is not a
+  live memory of that owner is dropped. Any evidence id that is not a `USER` message of the window
+  being read is dropped, and an operation left without evidence is dropped. This is the
+  prompt-injection defence: mail, Jira, Confluence, web pages, retrieved chunks and A2A replies only
+  ever reach the transcript inside `ASSISTANT` rows, so text the user did not write cannot be cited
+  as evidence. The transcript renders every message as one quoted line, so nothing inside a message
+  can forge a `USER` line of its own.
+- **Citing a user message is not enough; the memory must be grounded in it.** An addition or
+  supersession whose content shares no content word with the `USER` messages it cites is dropped
+  (`UNGROUNDED`), so a line lifted from a summarised email cannot be pinned to an unrelated message.
+  This deliberately misses some memories the user only implied: a missed memory is cheaper than a
+  planted one. Assistant replies are shown to the reflection model only as a 300-character excerpt.
+- **Memory in tool calls.** Plain chat turns can call web-search tools, so the memory block tells the
+  model to put nothing from it in a tool call or search query unless the request needs it. This is
+  an instruction, not a control.
+- **`/remember` and chat deletion serialize** on a row lock on the chat, so a memory is either
+  written before the delete and forgotten with it, or finds the chat already gone.
+- **Reflection cannot delete**, and cannot change a memory the user set (`REMEMBERED`/`AUTHORED`).
+- **`/remember` exists only as a slash command**, which only the user can type. It is never offered
+  to the model as a tool: a model-callable "remember" is an injection target. Its owner comes from
+  the conversation in the server-side tool context, never from tool arguments.
+- **Memories never enter `vector_store`, Redis, or any shared cache**, and leave the process only in
+  the owner's own plain-chat turns — never to A2A agents, never into MCP tool arguments.
+- **Never logged above DEBUG, never in the security log.** Reflection logs counts only.
+- **Deleting a conversation forgets it**: nothing learned from it survives the delete.
+
+The rule against recording health, religion, sexuality, politics, union membership, immigration
+status, credentials or financial account details is in the reflection prompt only; no code can
+enforce it reliably. The memory panel (`/users/{userId}/memories`) is the backstop.
 
 ## Security Monitoring
 
