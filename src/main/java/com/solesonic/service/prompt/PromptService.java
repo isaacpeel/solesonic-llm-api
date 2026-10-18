@@ -271,7 +271,7 @@ public class PromptService {
                 AGENT_NAME, agentName,
                 USER_ADDRESS, templateAddress,
                 CURRENT_DATE_TIME, templateDateTime,
-                USER_MEMORY, userMemoryService.promptBlock(userId)
+                USER_MEMORY, userMemoryService.promptBlock(userId, chatId, message)
         );
 
         PromptTemplate systempPromptTemplate = PromptTemplate.builder()

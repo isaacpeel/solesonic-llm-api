@@ -16,14 +16,12 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
-import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
-import static com.solesonic.security.SecurityConfig.ROLE;
-import static com.solesonic.security.SecurityConfig.ROLES;
+import static com.solesonic.security.SecurityConfig.rolesAndGroupsConverter;
 import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
 
 @Configuration
@@ -71,14 +69,7 @@ public class LocalSecurityConfig {
 
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtGrantedAuthoritiesConverter grantedAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
-        grantedAuthoritiesConverter.setAuthorityPrefix(ROLE);
-        grantedAuthoritiesConverter.setAuthoritiesClaimName(ROLES);
-
-        JwtAuthenticationConverter jwtAuthenticationConverter = new JwtAuthenticationConverter();
-        jwtAuthenticationConverter.setJwtGrantedAuthoritiesConverter(grantedAuthoritiesConverter);
-
-        return jwtAuthenticationConverter;
+        return rolesAndGroupsConverter();
     }
 
     @SuppressWarnings("unused")

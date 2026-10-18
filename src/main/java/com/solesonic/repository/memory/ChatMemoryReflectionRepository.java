@@ -1,13 +1,17 @@
 package com.solesonic.repository.memory;
 
 import com.solesonic.model.memory.ChatMemoryReflection;
+import com.solesonic.model.memory.ReflectionStatus;
 import jakarta.persistence.LockModeType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -71,4 +75,11 @@ public interface ChatMemoryReflectionRepository extends JpaRepository<ChatMemory
                for update of reflection skip locked
             """)
     List<ChatMemoryReflection> findClaimable(ZonedDateTime idleBefore, int batchSize);
+
+    /**
+     * Every user's reflection rows, for the admin status page only.
+     */
+    Page<ChatMemoryReflection> findByStatusIn(Collection<ReflectionStatus> statuses, Pageable pageable);
+
+    Page<ChatMemoryReflection> findByUserIdAndStatusIn(UUID userId, Collection<ReflectionStatus> statuses, Pageable pageable);
 }

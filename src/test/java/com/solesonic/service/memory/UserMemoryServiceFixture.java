@@ -1,10 +1,12 @@
 package com.solesonic.service.memory;
 
+import com.solesonic.model.memory.MemoryRetrievalMode;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import org.springframework.context.ApplicationEventPublisher;
 
 import static org.mockito.Mockito.mock;
 
@@ -40,14 +42,37 @@ final class UserMemoryServiceFixture {
                                      ChatRepository chatRepository,
                                      ChatMessageRepository chatMessageRepository,
                                      boolean injectionEnabled) {
+        return service(userMemoryRepository,
+                userMemoryEvidenceRepository,
+                chatMemoryReflectionRepository,
+                chatRepository,
+                chatMessageRepository,
+                mock(MemoryEmbeddingService.class),
+                mock(ApplicationEventPublisher.class),
+                injectionEnabled,
+                MemoryRetrievalMode.ALL);
+    }
+
+    static UserMemoryService service(UserMemoryRepository userMemoryRepository,
+                                     UserMemoryEvidenceRepository userMemoryEvidenceRepository,
+                                     ChatMemoryReflectionRepository chatMemoryReflectionRepository,
+                                     ChatRepository chatRepository,
+                                     ChatMessageRepository chatMessageRepository,
+                                     MemoryEmbeddingService memoryEmbeddingService,
+                                     ApplicationEventPublisher applicationEventPublisher,
+                                     boolean injectionEnabled,
+                                     MemoryRetrievalMode retrievalMode) {
         return new UserMemoryService(userMemoryRepository,
                 userMemoryEvidenceRepository,
                 chatMemoryReflectionRepository,
                 chatRepository,
                 chatMessageRepository,
+                memoryEmbeddingService,
+                applicationEventPublisher,
                 MAX_MEMORY_CHARACTERS,
                 MAX_ACTIVE_MEMORIES,
                 injectionEnabled,
-                PROMPT_MAX_CHARACTERS);
+                PROMPT_MAX_CHARACTERS,
+                retrievalMode);
     }
 }

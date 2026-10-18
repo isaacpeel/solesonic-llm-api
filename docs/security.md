@@ -361,6 +361,19 @@ every path. This is enforced by structure rather than convention:
 - **Every row carries `user_id`**, and evidence and supersession reference their memory through
   composite foreign keys that include it.
 - **Ownership is a `where` clause**, never a fetch-then-compare. Another user's memory is a `404`.
+- **Relevance search is scoped the same way.** The vector search filters on `user_id`, and what it
+  returns is only carried if it is also among the owner's active memories read for the turn.
+  Embeddings live on the memory row, not in `vector_store`, so document retrieval can never return a
+  memory.
+- **The one cross-user access is administration, by the `izzy-bot-admin` Keycloak group** — the
+  `groups` claim, mapped to `GROUP_*` authorities so no role can impersonate a group. On
+  `/users/{userId}/memories` the group passes the ownership check, but every query is still scoped
+  to the path's `{userId}`, so an administrator acts on one named user at a time under exactly that
+  user's rules, and each such call is logged with the administrator's id. The cross-user listings,
+  `/memories` and `/memory-reflections`, are read-only and gated by `@PreAuthorize` on the whole
+  controller; their unscoped reads live in their own `UserMemoryAdminRepository`, so
+  `UserMemoryRepository` keeps every method `user_id`-scoped, and memory content is never a sort
+  key. Nothing on these paths reaches the model.
 - **Reflection works on one user at a time.** The owner comes from the chat row and nowhere else, and
   the only memories the model is shown are that owner's.
 - **The model's output is validated in code** (`ReflectionValidator`). Any memory id that is not a

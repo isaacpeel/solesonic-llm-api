@@ -45,6 +45,8 @@ public class SecurityEventLogger {
             "/chatgroups",
             "/attachments",
             "/images",
+            "/memories",
+            "/memory-reflections",
             "/documents",
             "/models",
             "/users",

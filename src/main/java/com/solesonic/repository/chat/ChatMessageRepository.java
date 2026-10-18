@@ -2,6 +2,7 @@ package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.history.ChatMessage;
 import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -31,6 +32,12 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
      * which is written before the turn reaches any tool.
      */
     Optional<ChatMessage> findFirstByChatIdAndMessageTypeOrderByTimestampDesc(UUID chatId, MessageType messageType);
+
+    /**
+     * The newest messages of one type in a conversation, newest first — for {@code USER}, what memory
+     * retrieval reads as the conversation so far.
+     */
+    List<ChatMessage> findByChatIdAndMessageTypeOrderByTimestampDesc(UUID chatId, MessageType messageType, Limit limit);
 
     /**
      * The row the chat memory advisor just wrote for this turn — found by timing, not id, because

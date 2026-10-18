@@ -1302,12 +1302,19 @@ the stored tokens are preserved. Disconnecting is an explicit action
 
 ## User Memory
 
-Durable facts, preferences and standing instructions learned about the caller from their own
-conversations, and used to answer them better in later ones. Memory belongs to exactly one user: no
-endpoint, prompt or background job ever reads, writes or shows another user's.
+Durable facts, preferences and standing instructions learned about a user from their own
+conversations, and used to answer them better in later ones. A memory belongs to exactly one user:
+no prompt or background job ever reads, writes or shows another user's, and through the API only that
+user and members of the **`izzy-bot-admin`** Keycloak group can reach it.
 
-`{userId}` must be the authenticated subject on every endpoint below — otherwise `403`. A
-`memoryId` that is not one of the caller's own is `404`, the same as one that does not exist.
+`{userId}` must be the authenticated subject on every `/users/{userId}/memories` endpoint, unless the
+caller is in `izzy-bot-admin` — otherwise `403`. An administrator uses these same endpoints, under
+the same rules, to manage any user's memories, and every such call is logged with the
+administrator's id. A `memoryId` that does not belong to `{userId}` is `404` whoever asks, the same
+as one that does not exist.
+
+Group membership is read from the access token's `groups` claim and checked as the
+`GROUP_izzy-bot-admin` authority, so a role that merely shares the name does not pass.
 
 Memories come from three places:
 
@@ -1315,15 +1322,30 @@ Memories come from three places:
 |---|---|
 | `INFERRED` | Background reflection over quiet conversations. Evidenced by the `USER` messages it was learned from |
 | `REMEMBERED` | The `/remember` slash command. Evidenced by the message that issued it |
-| `AUTHORED` | The caller, through this API. Has no evidence and is only ever changed by the caller |
+| `AUTHORED` | Written or edited through this API. Has no evidence, and reflection never changes it |
 
 `kind` is `FACT`, `PREFERENCE` or `INSTRUCTION`; `status` is `ACTIVE` or `PENDING` (an inferred
-instruction stays pending until it has been seen in two conversations). Only `ACTIVE` memories are
-put in front of the model, and only on plain chat turns — never on slash-command tool turns, MCP
-prompt commands or turns delegated to an A2A agent.
+instruction stays pending until it has been seen in two conversations), or `SUPERSEDED` once a newer
+memory replaced it. Only `ACTIVE` memories are put in front of the model, and only on plain chat
+turns — never on slash-command tool turns, MCP prompt commands or turns delegated to an A2A agent.
+Standing instructions are carried on every such turn; facts and preferences only when relevant to the
+message and the conversation so far (see `MEMORY_RETRIEVAL_MODE` in
+[configuration](configuration.md)).
 
 Deleting a conversation or a message forgets what was learned from it — see
 [Delete a Chat](#delete-a-chat).
+
+| Method | Path | Who | Response |
+|---|---|---|---|
+| `GET` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `UserMemorySummary[]` |
+| `POST` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `201` + `Location`, `UserMemorySummary` |
+| `GET` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
+| `PATCH` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
+| `DELETE` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `204` |
+| `DELETE` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `204` |
+| `GET` | `/memories` | `izzy-bot-admin` | paged `MemorySummary` — every user's |
+| `GET` | `/memories/status` | `izzy-bot-admin` | `MemoryProcessingStatus` |
+| `GET` | `/memory-reflections` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
 
 ### UserMemorySummary
 
@@ -1344,16 +1366,21 @@ Deleting a conversation or a message forgets what was learned from it — see
 
 `chatIds` names the conversations a memory was learned from, so the panel can link back to them.
 
-### List Memories
+### List a User's Memories
 
 - **Endpoint**: `GET /users/{userId}/memories`
 - **Response**: `UserMemorySummary[]` — active and pending memories
+
+### Get a Memory
+
+- **Endpoint**: `GET /users/{userId}/memories/{memoryId}`
+- **Response**: `UserMemorySummary`, or `404` for a superseded memory or one that is not `{userId}`'s
 
 ### Create a Memory
 
 - **Endpoint**: `POST /users/{userId}/memories`
 - **Request Body**: `{ "kind": "INSTRUCTION", "content": "Answer in British English" }`
-- **Response**: `201 Created` with the `AUTHORED`, `ACTIVE` memory
+- **Response**: `201 Created` with the `AUTHORED`, `ACTIVE` memory and its `Location`
 - **Errors**: `400` when `kind` is missing or `content` is blank or longer than
   `solesonic.llm.memory.max-memory-characters`
 
@@ -1363,9 +1390,9 @@ Deleting a conversation or a message forgets what was learned from it — see
 - **Request Body**: `{ "content": "..." }`, `{ "kind": "FACT" }`, or both
 - **Response**: the edited `UserMemorySummary`
 
-An edited memory becomes `AUTHORED`, `ACTIVE`, confidence `1.0`, and loses its evidence: the caller
-owns the text directly now, so deleting the conversation it was learned from no longer removes it,
-and reflection never changes it.
+An edited memory becomes `AUTHORED`, `ACTIVE`, confidence `1.0`, and loses its evidence: its text is
+owned directly now, so deleting the conversation it was learned from no longer removes it, and
+reflection never changes it. A superseded memory cannot be edited (`404`).
 
 ### Delete a Memory
 
@@ -1373,12 +1400,92 @@ and reflection never changes it.
 - **Response**: `204 No Content`
 
 Removes that memory only. It is not re-learned from conversations already read, but can be learned
-again if the caller says it again.
+again if the user says it again.
 
-### Delete All Memories
+### Delete All of a User's Memories
 
 - **Endpoint**: `DELETE /users/{userId}/memories`
 - **Response**: `204 No Content`
+
+### List Every User's Memories
+
+- **Endpoint**: `GET /memories` — `izzy-bot-admin` only
+- **Query**: `userId` (optional), `status` and `kind` (optional, repeatable:
+  `?status=ACTIVE&status=PENDING`), `page` (from `0`), `size` (default `50`), and `sort`
+  (repeatable, `property[,asc|desc]`)
+- **Response**: paged `MemorySummary`, newest change first unless `sort` says otherwise
+- **Errors**: `400` for a `sort` property outside `created`, `updated`, `lastConfirmed`,
+  `confidence`, `kind`, `status`, `origin`, `userId`
+
+Left out, `status` and `kind` mean all values, so `SUPERSEDED` memories are listed too. Memories are
+read-only here: one is changed through its owner's `/users/{userId}/memories/{memoryId}`.
+`MemorySummary` is `UserMemorySummary` plus `userId`, `memoryKey` and `supersedes`. Paged responses
+have the same `content` / `page` shape as the document listings.
+
+```
+GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
+```
+
+### Memory Processing Status
+
+- **Endpoint**: `GET /memories/status` — `izzy-bot-admin` only
+- **Response**: `MemoryProcessingStatus`
+
+```json
+{
+  "asOf": "2026-10-18T14:40:00Z",
+  "reflection": {
+    "enabled": true,
+    "model": "qwen3.5-9b",
+    "cron": "0 */5 * * * *",
+    "batchSize": 5,
+    "maxAttempts": 3,
+    "idleMinutes": 30,
+    "chatsByStatus": { "PENDING": 751, "IN_PROGRESS": 3, "COMPLETED": 553, "FAILED": 6 },
+    "awaitingReflection": 760,
+    "unseededChats": 0,
+    "completedLastHour": 60,
+    "lastCompleted": "2026-10-18T14:35:08Z"
+  },
+  "embedding": { "model": "qwen3-embedding", "cron": "0 * * * * *", "batchSize": 50, "embedded": 44, "stale": 0 },
+  "injection": { "enabled": true, "retrievalMode": "RELEVANT" },
+  "memoriesByStatus": { "PENDING": 1, "ACTIVE": 43, "SUPERSEDED": 1 },
+  "users": [
+    {
+      "userId": "user-uuid",
+      "activeMemories": 25,
+      "pendingMemories": 0,
+      "supersededMemories": 0,
+      "pendingChats": 639,
+      "inProgressChats": 3,
+      "completedChats": 293,
+      "failedChats": 5,
+      "lastReflected": "2026-10-18T14:35:08Z"
+    }
+  ]
+}
+```
+
+- `awaitingReflection` — conversations with messages reflection has not read yet, whatever their
+  status: a `COMPLETED` conversation that carried on is waiting again. This is the real backlog.
+- `unseededChats` — conversations with messages but no reflection row yet; the next run adds them.
+- `completedLastHour` — throughput. Reflection can finish at most `batchSize` conversations per
+  `cron` firing, so at the defaults the ceiling is 60 an hour.
+- `embedding.stale` — live memories with no current vector, which relevance retrieval cannot find
+  until the embedding task catches up.
+- `users` — one entry per user with a memory or a conversation queued for reflection.
+
+### List Reflection Progress
+
+- **Endpoint**: `GET /memory-reflections` — `izzy-bot-admin` only
+- **Query**: `userId` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
+  `sort` (`updated`, `reflectedThrough`, `attempts`, `status`, `userId`)
+- **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `status`, `attempts`,
+  `reflectedThrough`, `updated` — newest change first unless `sort` says otherwise
+
+```
+GET /memory-reflections?status=FAILED&sort=updated,desc
+```
 
 ---
 

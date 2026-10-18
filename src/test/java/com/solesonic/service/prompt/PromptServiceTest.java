@@ -153,7 +153,7 @@ class PromptServiceTest {
         //No chat has picked a model in most tests.
         lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
 
-        lenient().when(userMemoryService.promptBlock(any())).thenReturn("");
+        lenient().when(userMemoryService.promptBlock(any(), any(), any())).thenReturn("");
     }
 
     /**
@@ -162,7 +162,7 @@ class PromptServiceTest {
      */
     @Test
     void stream_onTheDefaultRoute_putsTheCallersMemoryInTheSystemPrompt() {
-        when(userMemoryService.promptBlock(userId)).thenReturn("Standing instructions:\n- Don't use bullet lists\n");
+        when(userMemoryService.promptBlock(userId, chatId, "hello")).thenReturn("Standing instructions:\n- Don't use bullet lists\n");
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 

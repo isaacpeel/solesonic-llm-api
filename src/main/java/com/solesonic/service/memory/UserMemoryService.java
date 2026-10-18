@@ -5,6 +5,7 @@ import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.memory.ChatMemoryReflection;
 import com.solesonic.model.memory.MemoryKind;
 import com.solesonic.model.memory.MemoryOrigin;
+import com.solesonic.model.memory.MemoryRetrievalMode;
 import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.ReflectionStatus;
 import com.solesonic.model.memory.UserMemory;
@@ -24,12 +25,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashSet;
@@ -66,29 +69,38 @@ public class UserMemoryService {
     private final ChatMemoryReflectionRepository chatMemoryReflectionRepository;
     private final ChatRepository chatRepository;
     private final ChatMessageRepository chatMessageRepository;
+    private final MemoryEmbeddingService memoryEmbeddingService;
+    private final ApplicationEventPublisher applicationEventPublisher;
     private final int maxMemoryCharacters;
     private final int maxActiveMemories;
     private final boolean injectionEnabled;
     private final int promptMaxCharacters;
+    private final MemoryRetrievalMode retrievalMode;
 
     public UserMemoryService(UserMemoryRepository userMemoryRepository,
                              UserMemoryEvidenceRepository userMemoryEvidenceRepository,
                              ChatMemoryReflectionRepository chatMemoryReflectionRepository,
                              ChatRepository chatRepository,
                              ChatMessageRepository chatMessageRepository,
+                             MemoryEmbeddingService memoryEmbeddingService,
+                             ApplicationEventPublisher applicationEventPublisher,
                              @Value("${solesonic.llm.memory.max-memory-characters}") int maxMemoryCharacters,
                              @Value("${solesonic.llm.memory.max-active-memories}") int maxActiveMemories,
                              @Value("${solesonic.llm.memory.injection.enabled}") boolean injectionEnabled,
-                             @Value("${solesonic.llm.memory.prompt-max-characters}") int promptMaxCharacters) {
+                             @Value("${solesonic.llm.memory.prompt-max-characters}") int promptMaxCharacters,
+                             @Value("${solesonic.llm.memory.retrieval.mode}") MemoryRetrievalMode retrievalMode) {
         this.userMemoryRepository = userMemoryRepository;
         this.userMemoryEvidenceRepository = userMemoryEvidenceRepository;
         this.chatMemoryReflectionRepository = chatMemoryReflectionRepository;
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
+        this.memoryEmbeddingService = memoryEmbeddingService;
+        this.applicationEventPublisher = applicationEventPublisher;
         this.maxMemoryCharacters = maxMemoryCharacters;
         this.maxActiveMemories = maxActiveMemories;
         this.injectionEnabled = injectionEnabled;
         this.promptMaxCharacters = promptMaxCharacters;
+        this.retrievalMode = retrievalMode;
     }
 
     /**
@@ -114,17 +126,36 @@ public class UserMemoryService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public UserMemorySummary get(UUID userId, UUID memoryId) {
+        UserMemory memory = userMemoryRepository.findByIdAndUserIdAndStatusIn(memoryId, userId, LIVE_STATUSES)
+                .orElseThrow(() -> notFound(memoryId));
+
+        return UserMemorySummary.of(memory, chatIdsByMemoryId(userId, List.of(memory)).getOrDefault(memoryId, List.of()));
+    }
+
     /**
-     * What the default chat route tells the model about the user, as a block for the system prompt —
-     * never the user message, which the retrieval advisor rewrites. Only {@code ACTIVE} memories, the
-     * standing instructions first and the rest by confidence and recency, until
-     * {@code prompt-max-characters}, since the context window is shared with history and retrieval.
+     * What the default chat route tells the model about the user for this turn, as a block for the
+     * system prompt — never the user message, which the retrieval advisor rewrites. Only
+     * {@code ACTIVE} memories, until {@code prompt-max-characters}, since the context window is shared
+     * with history and retrieval.
      * <p>
-     * Empty when injection is off, when the user has no active memories, and when they cannot be read:
-     * a memory failure never fails a turn. Deliberately not transactional, so a failed read cannot
-     * leave a transaction marked for rollback behind it.
+     * Standing instructions come first and are carried on every turn, by confidence and recency: one
+     * such as "answer in metric" applies whatever the message is about, and would rarely look similar
+     * to it. The facts and preferences after them depend on {@code retrieval.mode} — under
+     * {@link MemoryRetrievalMode#RELEVANT} only those relevant to {@code message} and the conversation
+     * so far, most relevant and most trusted first; under {@link MemoryRetrievalMode#ALL} every one, by
+     * confidence and recency.
+     * <p>
+     * Empty when injection is off, when the user has no active memories, and when they cannot be read,
+     * and without facts and preferences when relevance cannot be worked out: a memory failure never
+     * fails a turn. Deliberately not transactional, so a failed read cannot leave a transaction marked
+     * for rollback behind it.
+     *
+     * @param chatId  the conversation whose earlier messages help decide relevance; may be null
+     * @param message the user's own words this turn
      */
-    public String promptBlock(UUID userId) {
+    public String promptBlock(UUID userId, UUID chatId, String message) {
         if (!injectionEnabled) {
             return "";
         }
@@ -144,18 +175,59 @@ public class UserMemoryService {
                 .toList();
 
         ZonedDateTime now = ZonedDateTime.now();
-        StringBuilder block = new StringBuilder(PROMPT_HEADER);
 
-        boolean rendered = appendSection(block, "Standing instructions:\n", promptLines(owned, true, now));
-        rendered |= appendSection(block, "Context:\n", promptLines(owned, false, now));
+        List<UserMemory> instructions = owned.stream()
+                .filter(memory -> memory.getKind() == MemoryKind.INSTRUCTION)
+                .sorted(MemoryRanking.highestFirst(now))
+                .toList();
+
+        List<UserMemory> context = context(userId, chatId, message, owned, now);
+
+        StringBuilder block = new StringBuilder(PROMPT_HEADER);
+        List<UUID> carried = new ArrayList<>();
+
+        boolean rendered = appendSection(block, "Standing instructions:\n", instructions, carried);
+        rendered |= appendSection(block, "Context:\n", context, carried);
+
+        log.info("Memory for user {} in chat {} ({}): {}", userId, chatId, retrievalMode, carried);
 
         return rendered ? block.toString() : "";
     }
 
-    private boolean appendSection(StringBuilder block, String heading, List<String> lines) {
+    private List<UserMemory> context(UUID userId, UUID chatId, String message, List<UserMemory> owned, ZonedDateTime now) {
+        List<UserMemory> candidates = owned.stream()
+                .filter(memory -> memory.getKind() != MemoryKind.INSTRUCTION)
+                .toList();
+
+        if (retrievalMode == MemoryRetrievalMode.ALL) {
+            return candidates.stream().sorted(MemoryRanking.highestFirst(now)).toList();
+        }
+
+        if (candidates.isEmpty()) {
+            return List.of();
+        }
+
+        Map<UUID, Double> similarityById;
+
+        try {
+            similarityById = memoryEmbeddingService.relevant(userId, chatId, message);
+        } catch (RuntimeException exception) {
+            log.warn("Could not find relevant memories for user {}, answering with standing instructions only ({})",
+                    userId, exception.getClass().getSimpleName());
+            return List.of();
+        }
+
+        return candidates.stream()
+                .filter(memory -> similarityById.containsKey(memory.getId()))
+                .sorted(MemoryRanking.mostRelevantFirst(similarityById, now))
+                .toList();
+    }
+
+    private boolean appendSection(StringBuilder block, String heading, List<UserMemory> memories, List<UUID> carried) {
         boolean headed = false;
 
-        for (String line : lines) {
+        for (UserMemory memory : memories) {
+            String line = "- " + memory.getContent().replaceAll("\\s+", " ").trim() + "\n";
             int needed = line.length() + (headed ? 0 : heading.length());
 
             if (block.length() + needed > promptMaxCharacters) {
@@ -168,17 +240,10 @@ public class UserMemoryService {
             }
 
             block.append(line);
+            carried.add(memory.getId());
         }
 
         return headed;
-    }
-
-    private static List<String> promptLines(List<UserMemory> memories, boolean instructions, ZonedDateTime now) {
-        return memories.stream()
-                .filter(memory -> (memory.getKind() == MemoryKind.INSTRUCTION) == instructions)
-                .sorted(MemoryRanking.highestFirst(now))
-                .map(memory -> "- " + memory.getContent().replaceAll("\\s+", " ").trim() + "\n")
-                .toList();
     }
 
     @Transactional
@@ -202,6 +267,7 @@ public class UserMemoryService {
         memory.setLastConfirmed(now);
 
         UserMemory saved = userMemoryRepository.save(memory);
+        applicationEventPublisher.publishEvent(new MemoriesChangedEvent(userId));
 
         log.info("Created memory {} for user {}", saved.getId(), userId);
 
@@ -254,6 +320,7 @@ public class UserMemoryService {
 
         userMemoryEvidenceRepository.save(new UserMemoryEvidence(saved.getId(), userId, chatId,
                 issuingMessage.getId(), issuingMessage.getTimestamp()));
+        applicationEventPublisher.publishEvent(new MemoriesChangedEvent(userId));
 
         return UserMemorySummary.of(saved, List.of(chatId));
     }
@@ -309,6 +376,7 @@ public class UserMemoryService {
         memory.setLastConfirmed(now);
 
         UserMemory saved = userMemoryRepository.save(memory);
+        applicationEventPublisher.publishEvent(new MemoriesChangedEvent(userId));
 
         log.info("Edited memory {} for user {}", memoryId, userId);
 
@@ -445,6 +513,7 @@ public class UserMemoryService {
         chatMemoryReflection.setAttempts(0);
         chatMemoryReflection.setUpdated(ZonedDateTime.now());
         chatMemoryReflectionRepository.save(chatMemoryReflection);
+        applicationEventPublisher.publishEvent(new MemoriesChangedEvent(userId));
 
         return true;
     }

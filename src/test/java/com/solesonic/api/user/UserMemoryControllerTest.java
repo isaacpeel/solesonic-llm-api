@@ -5,6 +5,7 @@ import com.solesonic.model.memory.MemoryOrigin;
 import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.UserMemoryRequest;
 import com.solesonic.model.memory.UserMemorySummary;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.security.ResourceOwnershipService;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,7 @@ import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
@@ -50,6 +52,9 @@ class UserMemoryControllerTest {
     @Mock
     private ResourceOwnershipService resourceOwnershipService;
 
+    @Mock
+    private UserRequestContext userRequestContext;
+
     @InjectMocks
     private UserMemoryController userMemoryController;
 
@@ -57,10 +62,39 @@ class UserMemoryControllerTest {
 
     @BeforeEach
     void setUp() {
-        lenient().when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(true);
-        lenient().when(resourceOwnershipService.isOwner(eq(otherUserId), any())).thenReturn(false);
+        lenient().when(resourceOwnershipService.isOwnerOrHasAuthority(eq(userId), eq(IZZY_BOT_ADMIN), any())).thenReturn(true);
+        lenient().when(resourceOwnershipService.isOwnerOrHasAuthority(eq(otherUserId), eq(IZZY_BOT_ADMIN), any())).thenReturn(false);
+        lenient().when(userRequestContext.getUserId()).thenReturn(userId);
 
         mockMvc = MockMvcBuilders.standaloneSetup(userMemoryController).build();
+    }
+
+    @Test
+    void readsOneMemory() throws Exception {
+        when(userMemoryService.get(userId, memoryId)).thenReturn(summary());
+
+        mockMvc.perform(get("/users/{userId}/memories/{memoryId}", userId, memoryId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(memoryId.toString()));
+    }
+
+    /**
+     * An {@code izzy-bot-admin} member passes the check on someone else's path, and the service is
+     * still called for the path's user — never the administrator's.
+     */
+    @Test
+    void anAdministratorManagesAnotherUsersMemoriesUnderThatUser() throws Exception {
+        UUID administratorId = UUID.randomUUID();
+
+        when(userRequestContext.getUserId()).thenReturn(administratorId);
+        when(resourceOwnershipService.isOwnerOrHasAuthority(eq(otherUserId), eq(IZZY_BOT_ADMIN), any())).thenReturn(true);
+
+        mockMvc.perform(get("/users/{userId}/memories", otherUserId)).andExpect(status().isOk());
+        mockMvc.perform(delete("/users/{userId}/memories/{memoryId}", otherUserId, memoryId)).andExpect(status().isNoContent());
+
+        verify(userMemoryService).list(otherUserId);
+        verify(userMemoryService).delete(otherUserId, memoryId);
+        verify(userMemoryService, never()).list(administratorId);
     }
 
     @Test
@@ -122,6 +156,7 @@ class UserMemoryControllerTest {
     @Test
     void refusesEveryMethodOnAnotherUsersPath() throws Exception {
         mockMvc.perform(get("/users/{userId}/memories", otherUserId)).andExpect(status().isForbidden());
+        mockMvc.perform(get("/users/{userId}/memories/{memoryId}", otherUserId, memoryId)).andExpect(status().isForbidden());
         mockMvc.perform(post("/users/{userId}/memories", otherUserId)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(json("{'kind':'FACT','content':'x'}")))
