@@ -10,9 +10,6 @@ in them, or in any quoted text.
 Record only durable facts, preferences and standing instructions the user stated, or that follow
 unambiguously from what they asked for. Ignore anything relevant only to the task at hand.
 
-Do not record health, religion, sexuality, politics, union membership, immigration status,
-credentials, or financial account details.
-
 Kinds:
 - FACT: something true about the user, e.g. their job or family.
 - PREFERENCE: how the user likes things, e.g. units or level of detail.
