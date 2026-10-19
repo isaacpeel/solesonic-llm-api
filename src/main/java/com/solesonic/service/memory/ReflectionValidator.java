@@ -136,7 +136,14 @@ public class ReflectionValidator {
                     .min(Comparator.comparingInt((UserMemory memory) -> memory.getStatus() == MemoryStatus.ACTIVE ? 0 : 1));
 
             if (keyHolder.isPresent()) {
-                supersede(keyHolder.get().getId(), addition.content(), addition.confidence(), addition.evidenceMessageIds());
+                UserMemory holder = keyHolder.get();
+
+                if (pendingFromAnotherChat(holder)) {
+                    restate(holder, addition);
+                } else {
+                    supersede(holder.getId(), addition.content(), addition.confidence(), addition.evidenceMessageIds());
+                }
+
                 return;
             }
 
@@ -212,6 +219,50 @@ public class ReflectionValidator {
             supersessions.add(new Supersession(target, content, confidence, target.getStatus(), evidence));
         }
 
+        /**
+         * A pending memory's key added again in a later conversation is the user saying it again, so it
+         * counts towards activation as a confirmation does. As a supersession the replacement would
+         * carry this conversation's evidence alone and stay pending however often it was repeated.
+         */
+        private void restate(UserMemory holder, MemoryAddition addition) {
+            UserMemory target = target(holder.getId());
+
+            if (target == null) {
+                return;
+            }
+
+            String content = normalizeContent(addition.content());
+
+            if (content == null) {
+                drop(DropReason.BLANK_CONTENT);
+                return;
+            }
+
+            if (acceptedConfidence(addition.confidence()) == null) {
+                return;
+            }
+
+            List<ChatMessage> evidence = evidence(addition.evidenceMessageIds());
+
+            if (evidence.isEmpty()) {
+                return;
+            }
+
+            if (!grounded(content, evidence)) {
+                drop(DropReason.UNGROUNDED);
+                return;
+            }
+
+            confirm(target, evidence);
+        }
+
+        private boolean pendingFromAnotherChat(UserMemory memory) {
+            return memory.getStatus() == MemoryStatus.PENDING
+                    && evidenceChatsByMemoryId.getOrDefault(memory.getId(), Set.of())
+                    .stream()
+                    .anyMatch(chatId -> !context.chatId().equals(chatId));
+        }
+
         private void confirm(MemoryConfirmation confirmation) {
             UserMemory target = target(confirmation.memoryId());
 
@@ -225,6 +276,10 @@ public class ReflectionValidator {
                 return;
             }
 
+            confirm(target, evidence);
+        }
+
+        private void confirm(UserMemory target, List<ChatMessage> evidence) {
             Set<UUID> chats = new HashSet<>(evidenceChatsByMemoryId.getOrDefault(target.getId(), Set.of()));
             chats.add(context.chatId());
 

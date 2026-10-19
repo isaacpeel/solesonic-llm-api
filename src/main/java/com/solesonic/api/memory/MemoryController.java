@@ -21,8 +21,6 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.UUID;
 
-import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
-
 /**
  * Memories across every user, for members of the {@code izzy-bot-admin} Keycloak group. Read-only:
  * a memory belongs to a user, so it is changed through {@code /users/{userId}/memories/{memoryId}},
@@ -32,7 +30,7 @@ import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
  */
 @RestController
 @RequestMapping("/memories")
-@PreAuthorize("hasAuthority('" + IZZY_BOT_ADMIN + "')")
+@PreAuthorize("hasAuthority('GROUP_izzy-bot-admin')")
 public class MemoryController {
     private static final Logger log = LoggerFactory.getLogger(MemoryController.class);
 

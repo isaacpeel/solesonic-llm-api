@@ -61,12 +61,14 @@ class MemoryEmbeddingServiceTest {
 
     /**
      * The message alone, and the message with the user's earlier messages newest first — so a change
-     * of subject and a follow-up are both found.
+     * of subject and a follow-up are both found. The turn's own message is already the newest
+     * {@code USER} row, and is not counted a second time as an earlier one.
      */
     @Test
     void searchesWithTheMessageAloneAndWithTheConversationSoFar() {
-        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(2)))
-                .thenReturn(List.of(userMessage("What's the weather in Austin?"), userMessage("I'm planning a trip")));
+        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(3)))
+                .thenReturn(List.of(userMessage("What about tomorrow?"), userMessage("What's the weather in Austin?"),
+                        userMessage("I'm planning a trip")));
         when(embeddingModel.embed(anyList())).thenReturn(List.of(MESSAGE_VECTOR, CONVERSATION_VECTOR));
 
         memoryEmbeddingService.relevant(USER_ID, CHAT_ID, "What about tomorrow?");
@@ -81,9 +83,24 @@ class MemoryEmbeddingServiceTest {
     }
 
     @Test
+    void keepsTheWindowWhenTheNewestRowIsNotThisTurnsMessage() {
+        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(3)))
+                .thenReturn(List.of(userMessage("first"), userMessage("second"), userMessage("third")));
+        when(embeddingModel.embed(anyList())).thenReturn(List.of(MESSAGE_VECTOR, CONVERSATION_VECTOR));
+
+        memoryEmbeddingService.relevant(USER_ID, CHAT_ID, "now");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<String>> queries = ArgumentCaptor.forClass(List.class);
+        verify(embeddingModel).embed(queries.capture());
+
+        assertThat(queries.getValue()).containsExactly("now", "now\nfirst\nsecond");
+    }
+
+    @Test
     void searchesWithTheMessageAloneOnTheFirstTurn() {
-        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(2)))
-                .thenReturn(List.of());
+        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(3)))
+                .thenReturn(List.of(userMessage("Hello")));
         when(embeddingModel.embed(List.of("Hello"))).thenReturn(List.of(MESSAGE_VECTOR));
 
         memoryEmbeddingService.relevant(USER_ID, CHAT_ID, "Hello");
@@ -100,8 +117,8 @@ class MemoryEmbeddingServiceTest {
         UUID both = UUID.randomUUID();
         UUID weak = UUID.randomUUID();
 
-        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(2)))
-                .thenReturn(List.of(userMessage("earlier")));
+        when(chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(CHAT_ID, MessageType.USER, Limit.of(3)))
+                .thenReturn(List.of(userMessage("now"), userMessage("earlier")));
         when(embeddingModel.embed(anyList())).thenReturn(List.of(MESSAGE_VECTOR, CONVERSATION_VECTOR));
         when(memoryEmbeddingRepository.findNearest(USER_ID, MESSAGE_VECTOR, MODEL, TOP_K))
                 .thenReturn(List.of(new MemorySimilarity(both, 0.6), new MemorySimilarity(weak, 0.4)));

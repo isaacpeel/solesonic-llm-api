@@ -189,6 +189,57 @@ class ReflectionValidatorTest {
                 .isSameAs(holder);
     }
 
+    /**
+     * The user repeating a pending instruction in a later conversation is what activates it, whether
+     * the model calls that a confirmation or adds the key again.
+     */
+    @Test
+    void anAdditionRepeatingAPendingInstructionFromAnotherChatConfirmsAndActivatesIt() {
+        UserMemory pending = memory(MemoryOrigin.INFERRED, MemoryStatus.PENDING, MemoryKind.INSTRUCTION, "style.lists");
+        UserMemoryEvidence earlierChat = new UserMemoryEvidence(pending.getId(), USER_ID, OTHER_CHAT_ID,
+                UUID.randomUUID(), NOW.minusDays(1));
+
+        ValidatedReflection validated = validate(context(List.of(pending), List.of(earlierChat)), new ReflectionResult(
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "No bullet lists", 0.9, userMessage.getId())), null, null));
+
+        assertThat(validated.additions()).isEmpty();
+        assertThat(validated.supersessions()).isEmpty();
+        assertThat(validated.confirmations()).singleElement()
+                .satisfies(confirmation -> {
+                    assertThat(confirmation.target()).isSameAs(pending);
+                    assertThat(confirmation.evidence()).containsExactly(userMessage);
+                    assertThat(confirmation.activate()).isTrue();
+                });
+    }
+
+    @Test
+    void anAdditionRepeatingAPendingInstructionFromTheSameChatStaysASupersession() {
+        UserMemory pending = memory(MemoryOrigin.INFERRED, MemoryStatus.PENDING, MemoryKind.INSTRUCTION, "style.lists");
+        UserMemoryEvidence sameChat = new UserMemoryEvidence(pending.getId(), USER_ID, CHAT_ID,
+                UUID.randomUUID(), NOW.minusDays(1));
+
+        ValidatedReflection validated = validate(context(List.of(pending), List.of(sameChat)), new ReflectionResult(
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "No bullet lists", 0.9, userMessage.getId())), null, null));
+
+        assertThat(validated.confirmations()).isEmpty();
+        assertThat(validated.supersessions()).singleElement()
+                .extracting(ValidatedReflection.Supersession::status)
+                .isEqualTo(MemoryStatus.PENDING);
+    }
+
+    @Test
+    void anUngroundedRepeatOfAPendingInstructionIsDropped() {
+        UserMemory pending = memory(MemoryOrigin.INFERRED, MemoryStatus.PENDING, MemoryKind.INSTRUCTION, "style.lists");
+        UserMemoryEvidence earlierChat = new UserMemoryEvidence(pending.getId(), USER_ID, OTHER_CHAT_ID,
+                UUID.randomUUID(), NOW.minusDays(1));
+
+        ValidatedReflection validated = validate(context(List.of(pending), List.of(earlierChat)), new ReflectionResult(
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "Bank is Acme", 0.9, userMessage.getId())), null, null));
+
+        assertThat(validated.confirmations()).isEmpty();
+        assertThat(validated.drops()).containsEntry(DropReason.UNGROUNDED, 1);
+    }
+
     @Test
     void anAdditionForAUserSetMemorysKeyIsDropped() {
         UserMemory holder = memory(MemoryOrigin.AUTHORED, MemoryStatus.ACTIVE, MemoryKind.PREFERENCE, "units");
@@ -253,10 +304,12 @@ class ReflectionValidatorTest {
         return new ReflectionContext(USER_ID, CHAT_ID, List.of(userMessage, assistantMessage, laterUserMessage), memories, evidence);
     }
 
+    @SuppressWarnings("all")
     private static MemoryAddition addition(MemoryKind kind, String content, double confidence, UUID... evidenceMessageIds) {
         return new MemoryAddition(kind, null, content, confidence, List.of(evidenceMessageIds));
     }
 
+    @SuppressWarnings("all")
     private static MemoryAddition addition(MemoryKind kind, String key, String content, double confidence, UUID evidenceMessageId) {
         return new MemoryAddition(kind, key, content, confidence, List.of(evidenceMessageId));
     }

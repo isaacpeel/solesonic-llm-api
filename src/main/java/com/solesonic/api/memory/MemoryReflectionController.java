@@ -19,15 +19,13 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.List;
 import java.util.UUID;
 
-import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
-
 /**
  * How far reflection has read into each conversation, across every user, for members of the
  * {@code izzy-bot-admin} Keycloak group.
  */
 @RestController
-@RequestMapping("/memory-reflections")
-@PreAuthorize("hasAuthority('" + IZZY_BOT_ADMIN + "')")
+@RequestMapping("/memories/reflections")
+@PreAuthorize("hasAuthority('GROUP_izzy-bot-admin')")
 public class MemoryReflectionController {
     private static final Logger log = LoggerFactory.getLogger(MemoryReflectionController.class);
 

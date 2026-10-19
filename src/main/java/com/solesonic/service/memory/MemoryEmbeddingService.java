@@ -150,8 +150,8 @@ public class MemoryEmbeddingService {
     }
 
     /**
-     * The chat memory advisor writes this turn's message only once the call is made, so every
-     * {@code USER} row read here is from an earlier turn.
+     * This turn's message is saved as a {@code USER} row before the turn starts, so the newest row is
+     * normally the message itself and is skipped; only the rows after it are earlier turns.
      */
     private List<String> queries(UUID chatId, String message) {
         List<String> queries = new ArrayList<>(2);
@@ -165,12 +165,19 @@ public class MemoryEmbeddingService {
             return queries;
         }
 
-        List<String> earlier = chatMessageRepository
-                .findByChatIdAndMessageTypeOrderByTimestampDesc(chatId, MessageType.USER, Limit.of(queryWindowMessages - 1))
+        List<String> recent = chatMessageRepository
+                .findByChatIdAndMessageTypeOrderByTimestampDesc(chatId, MessageType.USER, Limit.of(queryWindowMessages))
                 .stream()
                 .map(ChatMessage::getMessage)
                 .filter(StringUtils::isNotBlank)
                 .map(String::trim)
+                .toList();
+
+        int inFlight = !recent.isEmpty() && recent.getFirst().equals(current) ? 1 : 0;
+
+        List<String> earlier = recent.stream()
+                .skip(inFlight)
+                .limit(queryWindowMessages - 1L)
                 .toList();
 
         if (earlier.isEmpty()) {
