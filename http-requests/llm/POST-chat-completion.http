@@ -4,7 +4,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "qwen3.8-27b",
+  "model": "vision-model",
   "messages": [
     {
       "role": "user",
@@ -19,7 +19,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "qwen3.8-27b",
+  "model": "qwen3.5-9b",
   "stream": true,
   "stream_options": {
     "include_usage": true

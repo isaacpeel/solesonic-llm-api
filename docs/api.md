@@ -2104,6 +2104,156 @@ data: {"code":"GENERATION_TIMEOUT","message":"Image generation is taking longer 
 
 ---
 
+## Push Notifications
+
+Browser push (Chrome Web Push) for a user who is not looking: a turn finished or failed while no
+client was reading its chat, or an elicitation is waiting for an answer. A waiting elicitation is
+pushed once more, as a reminder, if it is still unanswered after `PUSH_ELICITATION_REMINDER_SECONDS`,
+whether or not a client is reading. A cancelled turn is never pushed.
+
+Chrome only (Android first; desktop Chrome works the same way). A subscription from any other push
+service is refused. **No push ever carries conversation content**: no chat title, no message text, no
+tool data.
+
+Every endpoint requires a bearer token. A `{userId}` that is not the caller is a `404` on every method.
+Failures carry a real status code and a body of `{"code": "…", "message": "…"}`.
+
+### Get the VAPID Public Key
+
+`GET /push/vapid-public-key`
+
+```json
+{ "publicKey": "BNdob4CMvKr3gKuFBgEvuKNLcvLj6Vh9NLyUdB-FXUCFR4rqn7cNZ9uc3_BD__G7pifMRrEq45qQxySV4cUeOKY" }
+```
+
+The base64url, 65-byte uncompressed P-256 point the browser passes as `applicationServerKey` to
+`pushManager.subscribe`. `503 PUSH_DISABLED` when `PUSH_ENABLED=false`: the UI hides the feature. A key
+different from the one a browser subscribed with means the deployment's keys were rotated, and that
+browser has to subscribe again.
+
+### List Subscriptions
+
+`GET /users/{userId}/push-subscriptions` — `200`, newest first:
+
+```json
+[
+  {
+    "id": "6f1c…",
+    "label": "Chrome on Android",
+    "userAgent": "Mozilla/5.0 (Linux; Android 14) …",
+    "created": "2026-10-20T12:00:00Z",
+    "updated": "2026-10-20T12:00:00Z",
+    "lastDelivered": null
+  }
+]
+```
+
+The endpoint and keys are **never** returned.
+
+### Subscribe a Browser
+
+`PUT /users/{userId}/push-subscriptions` — an idempotent upsert keyed on `subscription.endpoint`.
+
+```json
+{
+  "subscription": {
+    "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+    "expirationTime": null,
+    "keys": { "p256dh": "…", "auth": "…" }
+  },
+  "label": "Chrome on Android"
+}
+```
+
+- `subscription` is exactly `PushSubscription.toJSON()`. `label` is 1–128 characters.
+- `user_agent` is taken from the request's `User-Agent` header, truncated to 256 characters, for display only.
+- An endpoint already stored under another user moves to the caller: only the browser holding a
+  subscription knows its endpoint and keys, so the user signed in on it last owns it.
+- A user keeps at most 20 subscriptions; past that, the oldest are deleted. A browser still in use
+  simply subscribes again.
+
+| Status | Meaning |
+|---|---|
+| `201` | Created → `PushSubscriptionSummary` |
+| `200` | Updated, including a move from another user → `PushSubscriptionSummary` |
+| `400 UNSUPPORTED_BROWSER` | The endpoint's host is not an allowed push service (a Firefox endpoint, say) |
+| `400 INVALID_SUBSCRIPTION` | A malformed URL or keys, or a missing or oversized label |
+| `503 PUSH_DISABLED` | Push is switched off |
+
+### Delete a Subscription
+
+`DELETE /users/{userId}/push-subscriptions/{subscriptionId}` — `204`, or `404`. The UI deletes its row
+before signing out.
+
+### Send a Test Push
+
+`POST /users/{userId}/push-subscriptions/{subscriptionId}/test` — one synchronous send that bypasses
+preferences and presence.
+
+| Status | Meaning |
+|---|---|
+| `204` | The push service accepted it |
+| `410 SUBSCRIPTION_GONE` | The push service says the subscription is dead. The row has been deleted; subscribe again |
+| `502 DELIVERY_FAILED` | Any other failure |
+| `404` / `503 PUSH_DISABLED` | |
+
+### Notification Preferences
+
+`GET /users/{userId}/push-preferences` / `PUT /users/{userId}/push-preferences`
+
+```json
+{ "turnComplete": true, "elicitation": true }
+```
+
+- `GET` with nothing stored returns both `true`.
+- `PUT` requires **both** fields, non-null (`400 INVALID_PREFERENCES` otherwise), and answers `200` with
+  what was stored.
+- Deliberately not part of `UserPreferences`: that endpoint is a full replace, and a client that does
+  not send these fields would silently switch notifications off.
+
+### Push Payload
+
+What the service worker receives after decryption:
+
+```json
+{
+  "version": 1,
+  "type": "TURN_FINISHED",
+  "title": "<solesonic.llm.bot.name>",
+  "body": "Your reply is ready",
+  "url": "/chat/<chatId>",
+  "tag": "chat:<chatId>",
+  "timestamp": "2026-10-20T12:00:00Z"
+}
+```
+
+| `type` | `body` | `url` | `tag` |
+|---|---|---|---|
+| `TURN_FINISHED` | `Your reply is ready` | `/chat/<chatId>` | `chat:<chatId>` |
+| `TURN_FAILED` | `Your request couldn't be completed` | `/chat/<chatId>` | `chat:<chatId>` |
+| `ELICITATION_WAITING` | `A tool is waiting for your answer` | `/chat/<chatId>` | `elicitation:<elicitationId>` |
+| `TEST` | `Notifications are working` | `/settings/notifications` | `test` |
+
+- `url` is always a same-origin path.
+- An unknown `type` must be displayed using `title` and `body` as given. `version` changes only on a
+  breaking change.
+- Every push is sent with `Urgency: high`, so an idle phone in Doze is woken for it. A turn's push lives
+  24 hours at the push service; an elicitation's only for as long as it can still be answered.
+
+### Push Error Codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `PUSH_DISABLED` | `503` | `PUSH_ENABLED=false` |
+| `UNSUPPORTED_BROWSER` | `400` | The subscription is not from an allowed push service |
+| `INVALID_SUBSCRIPTION` | `400` | The subscription or its label is malformed |
+| `INVALID_PREFERENCES` | `400` | A preference field is missing |
+| `NOT_FOUND` | `404` | No such subscription, or the path names another user |
+| `SUBSCRIPTION_GONE` | `410` | The browser is no longer subscribed; its row is gone |
+| `DELIVERY_FAILED` | `502` | The push service did not accept a test push |
+
+---
+
 ## Error Handling
 
 ### Standard HTTP Status Codes

@@ -29,6 +29,7 @@ import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.ImageGenerationErrorCode;
+import com.solesonic.model.push.PushEvent;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
@@ -37,6 +38,7 @@ import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.prompt.PromptService;
+import com.solesonic.service.push.PushNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -70,6 +72,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -128,6 +131,9 @@ class RedisStreamingChatServiceTest {
     @Mock
     private Authentication authentication;
 
+    @Mock
+    private PushNotificationService pushNotificationService;
+
     private RedisStreamingChatService redisStreamingChatService;
 
     private final List<PublishedEvent> published = new CopyOnWriteArrayList<>();
@@ -146,7 +152,8 @@ class RedisStreamingChatServiceTest {
                 notificationService,
                 generatedImageService,
                 new SideChannelEventTranslator(new JacksonConfig().jsonMapper()),
-                chatModelSelection);
+                chatModelSelection,
+                pushNotificationService);
 
         published.clear();
 
@@ -540,6 +547,68 @@ class RedisStreamingChatServiceTest {
         order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_FINISHED), any());
         order.verify(elicitationService).closeChat(CHAT_ID);
         order.verify(activeStreamTracker).remove(USER_ID, CHAT_ID);
+    }
+
+    @Test
+    void aFinishedTurnIsPushedOnceItsRunFinishedFrameIsPublished() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        InOrder order = inOrder(redisStreamService, pushNotificationService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_FINISHED), any());
+        order.verify(pushNotificationService).push(USER_ID, new PushEvent.TurnFinished(CHAT_ID, RUN_ID));
+    }
+
+    @Test
+    void aFailedTurnIsPushedOnceItsRunErrorFrameIsPublished() {
+        errorTurn(new TimeoutException("too slow"));
+
+        InOrder order = inOrder(redisStreamService, pushNotificationService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_ERROR), any());
+        order.verify(pushNotificationService).push(USER_ID, new PushEvent.TurnFailed(CHAT_ID, RUN_ID));
+    }
+
+    @Test
+    void aCancelledTurnIsNotPushed() {
+        cancelAfterChunks("Partial");
+
+        runTurn();
+
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    @Test
+    void anInterruptedTurnIsNotPushed() {
+        when(promptService.stream(any(), any(), any(), any()))
+                .thenReturn(Flux.error(new InterruptedException("shutting down")));
+
+        runTurn();
+
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    /**
+     * A push is never allowed to become the turn's failure: a throwing push after {@code RUN_FINISHED}
+     * must not add a {@code RUN_ERROR} behind it.
+     */
+    @Test
+    void aPushThatThrowsLeavesAFinishedTurnsFramesUnchanged() {
+        doThrow(new IllegalStateException("push broke")).when(pushNotificationService).push(any(), any());
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+    }
+
+    @Test
+    void aPushThatThrowsLeavesAFailedTurnsFramesUnchanged() {
+        doThrow(new IllegalStateException("push broke")).when(pushNotificationService).push(any(), any());
+
+        errorTurn(new TimeoutException("too slow"));
+
+        assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
     }
 
     @Test

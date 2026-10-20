@@ -1,6 +1,7 @@
 package com.solesonic.service.chat.events;
 
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.push.ElicitationReminderScheduler;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,7 +66,8 @@ class NotificationServiceTest {
                 });
 
         notificationService = new NotificationService(jsonMapper, chatMessageService, redisTemplate);
-        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate);
+        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate,
+                mock(ElicitationReminderScheduler.class));
     }
 
     @Test

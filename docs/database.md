@@ -237,6 +237,26 @@ Load-bearing details:
 - **`chat_message_timestamp` on evidence** is what lets reflection refuse to let an older statement
   replace a newer one during backfill.
 
+### Push notifications — two tables (V3_36)
+
+| Table | Holds |
+|---|---|
+| `push_subscription` | One browser subscription: `user_id`, `endpoint` (unique), `p256dh`, `auth`, `expiration_time`, `label`, `user_agent`, `created`/`updated`, `last_delivered`, `failure_count` |
+| `push_preference` | Per user, whether turns and elicitations are pushed: `turn_complete`, `elicitation`, `updated`. No row means both are on |
+
+Load-bearing details:
+
+- **`endpoint` is unique, not unique per user.** One browser subscription belongs to whichever user
+  presented its endpoint and keys last; a `PUT` of a stored endpoint moves the row to the caller.
+- **`endpoint`, `p256dh` and `auth` are a capability**: whoever holds them can push to that browser.
+  They are never returned by the API and never logged.
+- **`failure_count`** resets on every delivery and counts every other refusal, retried or not. A row is
+  deleted once it reaches `PUSH_MAX_FAILURES`, and at once when the push service answers `403`, `404`
+  or `410`. A user keeps at most 20 rows; the oldest are deleted past that.
+- **`push_preference` is not part of `user_preferences`**: that endpoint is a full replace, and a client
+  unaware of these fields would switch notifications off.
+- **No foreign key to a user table**, as elsewhere in the schema.
+
 ## Vector Storage with pgvector
 
 The project uses the pgvector extension for PostgreSQL to store and query vector embeddings efficiently. This is crucial for the Retrieval Augmented Generation (RAG) functionality.

@@ -3,6 +3,7 @@ package com.solesonic.service.chat.events;
 import com.agui.community.core.message.ToolMessage;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.push.ElicitationReminderScheduler;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +51,9 @@ class ElicitationServiceTest {
     @Mock
     private ReactiveSetOperations<String, String> setOperations;
 
+    @Mock
+    private ElicitationReminderScheduler elicitationReminderScheduler;
+
     private final JsonMapper jsonMapper = JsonMapper.builder().build();
 
     private ElicitationService elicitationService;
@@ -74,7 +78,7 @@ class ElicitationServiceTest {
                     return Mono.just(1L);
                 });
 
-        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate);
+        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate, elicitationReminderScheduler);
         ReflectionTestUtils.setField(elicitationService, "timeoutSeconds", 60L);
     }
 
@@ -355,6 +359,60 @@ class ElicitationServiceTest {
                     assertThat(elicitResult.content()).isNull();
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    void emittingAnElicitationPushesItAndSchedulesTheReminder() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        elicitationService.emitElicitation(chatId, elicitationId, formRequest(chatId, Map.of("type", "object")));
+
+        verify(elicitationReminderScheduler).waiting(chatId, elicitationId);
+    }
+
+    @Test
+    void anAnsweredElicitationCancelsItsReminder() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        when(valueOperations.getAndDelete(fieldsKey(chatId, elicitationId))).thenReturn(Mono.empty());
+
+        StepVerifier.create(elicitationService.awaitResultAsync(chatId, elicitationId))
+                .then(() -> messageRelay.tryEmitNext("ACCEPT"))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(elicitationReminderScheduler, timeout(1000)).cancel(elicitationId);
+    }
+
+    @Test
+    void aTimedOutElicitationCancelsItsReminder() {
+        ReflectionTestUtils.setField(elicitationService, "timeoutSeconds", 1L);
+        UUID elicitationId = UUID.randomUUID();
+
+        StepVerifier.create(elicitationService.awaitResultAsync(UUID.randomUUID(), elicitationId))
+                .expectNextCount(1)
+                .verifyComplete();
+
+        verify(elicitationReminderScheduler, timeout(1000)).cancel(elicitationId);
+    }
+
+    @Test
+    void closingTheChatCancelsTheReminderOfAnOpenElicitation() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        when(setOperations.members("elicitation:pending:" + chatId)).thenReturn(Flux.just(elicitationId.toString()));
+        when(redisTemplate.delete(anyString())).thenReturn(Mono.just(1L));
+        lenient().when(valueOperations.getAndDelete(anyString())).thenReturn(Mono.empty());
+
+        StepVerifier.create(elicitationService.awaitResultAsync(chatId, elicitationId))
+                .then(() -> elicitationService.closeChat(chatId))
+                .assertNext(elicitResult -> assertThat(elicitResult.action()).isEqualTo(McpSchema.ElicitResult.Action.DECLINE))
+                .verifyComplete();
+
+        verify(elicitationReminderScheduler, timeout(1000)).cancel(elicitationId);
     }
 
     private Map<String, Object> storedAnswerContent(UUID chatId, UUID elicitationId) {

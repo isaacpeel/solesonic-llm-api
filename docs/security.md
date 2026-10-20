@@ -406,6 +406,39 @@ The rule against recording health, religion, sexuality, politics, union membersh
 status, credentials or financial account details is in the reflection prompt only; no code can
 enforce it reliably. The memory panel (`/users/{userId}/memories`) is the backstop.
 
+## Push Notifications
+
+Browser push sends to a URL a client supplied, through Google's relay, to a phone's lock screen. Each
+of those is a boundary:
+
+- **The endpoint is an SSRF surface.** `PushEndpointValidator` runs on every `PUT` and again before
+  every send, so a row stored under an older allowlist is never posted to. It requires `https`; a host
+  that is **exactly** one of `PUSH_ALLOWED_ENDPOINT_HOSTS`, with no suffix matching
+  (`fcm.googleapis.com.evil.example` and `evil.fcm.googleapis.com` are both refused); no user-info, no
+  explicit port, no IP literal, no fragment; at most 2048 characters. The push `RestClient` never
+  follows a redirect, which would take the request off the allowlisted host.
+- **Browser keys are checked before use.** `p256dh` must be an uncompressed P-256 point that lies on
+  the curve, so ECDH is never run against an off-curve point (the invalid-curve attack); `auth` must be
+  16 bytes.
+- **The endpoint and keys are a capability**: whoever holds them can push to that browser. They are
+  never returned (`PushSubscriptionSummary` is the only response shape), never logged (logs name the
+  subscription id), and the records that carry them redact themselves in `toString`.
+- **No conversation content in any push.** `PushPayloadFactory` builds every payload from fixed strings
+  and ids alone; no chat title, message text or tool data is ever put in one.
+- **Ownership.** A `{userId}` that is not the caller is a `404` on every push endpoint. Every repository
+  method takes the owner, except the endpoint lookup the upsert needs.
+- **Fan-out is bounded.** A user keeps at most 20 subscriptions (the oldest are evicted), and a row the
+  push service keeps refusing counts toward `PUSH_MAX_FAILURES` and deletes itself.
+- **A leaked endpoint can be re-registered** under another account with other keys: the owner's browser
+  then receives pushes it cannot decrypt and silently stops being notified. The attacker learns nothing,
+  since payloads carry only ids and fixed text. The move is logged at INFO with the subscription id.
+- **The VAPID private key is a secret.** A startup failure names the variable, never its value.
+  Rotating the pair invalidates every subscription: the push service answers `403`, and each row is
+  deleted on its next send.
+- **Presence is server-side** because Chrome's `userVisibleOnly` contract makes the service worker show
+  every push it receives; a push cannot be dropped on arrival. A presence failure counts as "not
+  watching" — an extra push beats a missing one.
+
 ## Security Monitoring
 
 ### Metrics to Monitor

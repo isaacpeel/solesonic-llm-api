@@ -7,6 +7,7 @@ import com.solesonic.redis.model.RedisChatEvent;
 import com.solesonic.redis.model.StreamEventId;
 import com.solesonic.redis.publisher.ChatStreamPublisher;
 import com.solesonic.redis.subscriber.ChatStreamSubscriber;
+import com.solesonic.service.push.PushPresenceService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -35,15 +36,18 @@ public class RedisStreamService {
     private final AtomicLong sequenceCounter = new AtomicLong(0);
     private final JsonMapper jsonMapper;
     private final ReactiveStringRedisTemplate redisTemplate;
+    private final PushPresenceService pushPresenceService;
 
     public RedisStreamService(ChatStreamPublisher chatStreamPublisher,
                               ChatStreamSubscriber chatStreamSubscriber,
                               JsonMapper jsonMapper,
-                              ReactiveStringRedisTemplate redisTemplate) {
+                              ReactiveStringRedisTemplate redisTemplate,
+                              PushPresenceService pushPresenceService) {
         this.chatStreamPublisher = chatStreamPublisher;
         this.chatStreamSubscriber = chatStreamSubscriber;
         this.jsonMapper = jsonMapper;
         this.redisTemplate = redisTemplate;
+        this.pushPresenceService = pushPresenceService;
     }
 
     public Mono<RecordId> publish(UUID chatId, UUID userId, String type, Object payload) {
@@ -126,12 +130,16 @@ public class RedisStreamService {
         //The turn itself may still be running — only this read broke. Without this, a Redis read
         //failure propagates as an error straight through the SSE response, and the client's
         //connection just dies with nothing to act on.
-        return chatStreamSubscriber.subscribe(streamKey, lastEventId)
+        Flux<ServerSentEvent<?>> stream = chatStreamSubscriber.subscribe(streamKey, lastEventId)
                 .onErrorResume(error -> {
                     log.error("Redis stream read failed for chat {}", chatId, error);
 
                     return Flux.just(streamUnavailableEvent());
                 });
+
+        //Every reader passes through here, a turn's own stream and a resume alike, so this is what
+        //tells a push whether anyone is looking.
+        return pushPresenceService.track(userId, chatId, stream);
     }
 
     private ServerSentEvent<?> streamUnavailableEvent() {

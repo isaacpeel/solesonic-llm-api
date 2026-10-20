@@ -338,6 +338,48 @@ Every variable is **required**: none carries a default, so a missing one fails s
 | `MEMORY_MAX_CHARACTERS` | Longest single memory | `500` | Yes | Applies to the panel and to reflection |
 | `MEMORY_MIN_CONFIDENCE` | Proposals below this confidence are dropped | `0.6` | Yes | Between 0 and 1 |
 
+### Push Notification Configuration
+
+Chrome Web Push (RFC 8030 delivery, RFC 8291 encryption, RFC 8292 VAPID). Chrome's push service is
+`fcm.googleapis.com`: it needs no Firebase project, account or SDK, and relays only ciphertext. Every
+variable is required and has no default.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `PUSH_ENABLED` | Whether push is offered at all | `true` | Yes | `false` makes `GET /push/vapid-public-key` answer `503` and the UI hide the feature |
+| `PUSH_VAPID_PUBLIC_KEY` | VAPID public key | `BNdob4CM…` | Yes | base64url, 65-byte uncompressed P-256 point |
+| `PUSH_VAPID_PRIVATE_KEY` | VAPID private key | — | Yes | base64url, 32-byte scalar. **Secret** |
+| `PUSH_VAPID_SUBJECT` | Contact for the push service | `mailto:ops@example.com` | Yes | A `mailto:` or `https:` URI |
+| `PUSH_ALLOWED_ENDPOINT_HOSTS` | Push service hosts a subscription may name | `fcm.googleapis.com` | Yes | Comma-separated; matched exactly, never by suffix |
+| `PUSH_CONNECT_TIMEOUT` | Connect timeout to the push service | `5s` | Yes | |
+| `PUSH_READ_TIMEOUT` | Read timeout to the push service | `10s` | Yes | |
+| `PUSH_MAX_ATTEMPTS` | Sends per push on a `5xx` or an unreachable service | `3` | Yes | Backoff 1s, 2s, 4s |
+| `PUSH_MAX_FAILURES` | Failed pushes before a subscription is deleted | `5` | Yes | Reset by any delivery |
+| `PUSH_ELICITATION_REMINDER_SECONDS` | Delay before reminding of an unanswered elicitation | `120` | Yes | Must be greater than 0 and less than `solesonic.elicitation.timeout-seconds` |
+| `PUSH_PRESENCE_TTL_SECONDS` | How long a reader counts as watching without a heartbeat | `45` | Yes | |
+| `PUSH_PRESENCE_HEARTBEAT_SECONDS` | How often a reader refreshes itself | `15` | Yes | Must be greater than 0 and less than `PUSH_PRESENCE_TTL_SECONDS` |
+
+**Generating the VAPID keys.** One P-256 pair per deployment, generated once:
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+or, without Node:
+
+```bash
+openssl ecparam -name prime256v1 -genkey -noout -out vapid.pem
+openssl ec -in vapid.pem -pubout -outform DER | tail -c 65 | base64 | tr '+/' '-_' | tr -d '=\n'  # public
+openssl ec -in vapid.pem -outform DER | tail -c +8 | head -c 32 | base64 | tr '+/' '-_' | tr -d '=\n'  # private
+```
+
+Startup fails if either key does not decode, if the two are not a pair, or if the subject is not a
+`mailto:`/`https:` URI — rather than on the first send, after browsers had already subscribed.
+
+**Rotating the keys invalidates every browser subscription.** The push service answers `403` for each
+one, and the row is deleted on its next send; the UI notices the changed public key and subscribes
+again. Rotate only when the private key may have leaked.
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -396,6 +438,20 @@ IMAGE_ADMISSION_TIMEOUT=30s
 
 # A2A (required)
 A2A_BASE_URI=https://agents.yourdomain.com
+
+# Push notifications (required — generate the VAPID pair once)
+PUSH_ENABLED=true
+PUSH_VAPID_PUBLIC_KEY=your_base64url_vapid_public_key
+PUSH_VAPID_PRIVATE_KEY=your_base64url_vapid_private_key
+PUSH_VAPID_SUBJECT=mailto:ops@yourdomain.com
+PUSH_ALLOWED_ENDPOINT_HOSTS=fcm.googleapis.com
+PUSH_CONNECT_TIMEOUT=5s
+PUSH_READ_TIMEOUT=10s
+PUSH_MAX_ATTEMPTS=3
+PUSH_MAX_FAILURES=5
+PUSH_ELICITATION_REMINDER_SECONDS=120
+PUSH_PRESENCE_TTL_SECONDS=45
+PUSH_PRESENCE_HEARTBEAT_SECONDS=15
 
 
 ### Full Configuration (.env)
@@ -475,6 +531,20 @@ MEMORY_EMBEDDING_BATCH_SIZE=50
 MEMORY_MAX_ACTIVE=200
 MEMORY_MAX_CHARACTERS=500
 MEMORY_MIN_CONFIDENCE=0.6
+
+# Push Notification Configuration
+PUSH_ENABLED=true
+PUSH_VAPID_PUBLIC_KEY=your_base64url_vapid_public_key
+PUSH_VAPID_PRIVATE_KEY=your_base64url_vapid_private_key
+PUSH_VAPID_SUBJECT=mailto:ops@yourdomain.com
+PUSH_ALLOWED_ENDPOINT_HOSTS=fcm.googleapis.com
+PUSH_CONNECT_TIMEOUT=5s
+PUSH_READ_TIMEOUT=10s
+PUSH_MAX_ATTEMPTS=3
+PUSH_MAX_FAILURES=5
+PUSH_ELICITATION_REMINDER_SECONDS=120
+PUSH_PRESENCE_TTL_SECONDS=45
+PUSH_PRESENCE_HEARTBEAT_SECONDS=15
 
 # A2A Configuration
 A2A_BASE_URI=https://agents.yourdomain.com

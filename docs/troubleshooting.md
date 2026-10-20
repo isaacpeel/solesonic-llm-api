@@ -362,6 +362,31 @@ Environment variable 'SPRING_DATASOURCE_URI' is not set
    ./mvnw spring-boot:run -Dspring.profiles.active=local
    ```
 
+### Push Notifications Not Arriving
+
+1. **`GET /push/vapid-public-key` answers `503`**: `PUSH_ENABLED` is `false`.
+2. **Send a test push** (`POST /users/{userId}/push-subscriptions/{subscriptionId}/test`, or the UI's
+   test button):
+   - `204` — the push service accepted it, so the problem is on the device (below).
+   - `410` — the subscription is dead and has been deleted; subscribe again from the browser.
+   - `502` — look for `Test push to subscription <id>` in the application log for the status Google answered.
+3. **On the phone:**
+   - **Chrome was force-stopped.** Android delivers nothing to a force-stopped app until it is opened again.
+   - **Notification permission.** Check both Android's permission for Chrome (Settings › Apps › Chrome ›
+     Notifications) and the site's own permission in Chrome.
+   - **OEM battery restrictions.** Samsung's "Sleeping apps"/"Deep sleeping apps", Xiaomi's battery saver
+     and similar hold pushes back. Set Chrome's battery usage to **Unrestricted**.
+   - **No Google Play Services** (de-Googled ROMs, some Huawei devices): Chrome's push service is FCM,
+     and nothing arrives without it.
+   - **A VAPID key rotation** that the browser has not re-subscribed after yet.
+4. **Nothing arrives while the chat is open.** That is by design: a push is sent only when no client is
+   reading the chat. The server learns a client left only when a write to it fails — up to
+   `redis.stream.keepalive-seconds` (15s) — and the UI releases its stream about 5s after the page is
+   hidden, so a turn that ends within roughly 20s of leaving may not be pushed.
+5. **Read the log.** Each send logs `Push <event> to subscription <id> answered <status> on attempt <n>`.
+   `403`/`404`/`410` delete the row; `5xx` and unreachable are retried and then counted against
+   `PUSH_MAX_FAILURES`; any other `4xx` is logged at ERROR, not retried, and counted.
+
 ## Performance Issues
 
 ### Slow API Response Times

@@ -4,6 +4,7 @@ import com.agui.community.core.message.ToolMessage;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.push.ElicitationReminderScheduler;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -63,16 +64,19 @@ public class ElicitationService {
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
     private final ReactiveStringRedisTemplate redisTemplate;
+    private final ElicitationReminderScheduler elicitationReminderScheduler;
 
     @Value("${solesonic.elicitation.timeout-seconds:600}")
     private long timeoutSeconds;
 
     public ElicitationService(JsonMapper jsonMapper,
                               ChatMessageService chatMessageService,
-                              ReactiveStringRedisTemplate redisTemplate) {
+                              ReactiveStringRedisTemplate redisTemplate,
+                              ElicitationReminderScheduler elicitationReminderScheduler) {
         this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
         this.redisTemplate = redisTemplate;
+        this.elicitationReminderScheduler = elicitationReminderScheduler;
     }
 
     @SuppressWarnings("unchecked")
@@ -154,6 +158,9 @@ public class ElicitationService {
             storeRequestedProperties(chatId, elicitationId, request)
                     .then(Mono.defer(() -> redisTemplate.convertAndSend(eventsChannelKey(chatId), message)))
                     .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
+
+            //Registered before this returns, so the cancel from awaitResultAsync can never come first.
+            elicitationReminderScheduler.waiting(chatId, elicitationId);
         } catch (IllegalArgumentException illegalArgumentException) {
             log.error("Failed to serialize elicitation request for chat {}", chatId, illegalArgumentException);
         }
@@ -399,9 +406,10 @@ public class ElicitationService {
                             .defaultIfEmpty(new McpSchema.ElicitResult(resolvedAction, null));
                 })
                 .publishOn(Schedulers.boundedElastic())
-                .doFinally(_ ->
-                    redisTemplate.opsForSet().remove(pendingSetKey(chatId), elicitationId.toString()).subscribe()
-                )
+                .doFinally(_ -> {
+                    elicitationReminderScheduler.cancel(elicitationId);
+                    redisTemplate.opsForSet().remove(pendingSetKey(chatId), elicitationId.toString()).subscribe();
+                })
                 .onErrorResume(throwable -> {
                     log.error("Timeout or error awaiting elicitation for chat {} id {}: {}", chatId, elicitationId, throwable.getMessage());
                     return Mono.just(new McpSchema.ElicitResult(DECLINE, null));

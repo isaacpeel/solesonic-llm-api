@@ -25,6 +25,7 @@ import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.image.GeneratedImageSummary;
+import com.solesonic.model.push.PushEvent;
 import com.solesonic.redis.model.TerminalEvents;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
@@ -34,6 +35,7 @@ import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.prompt.PromptService;
+import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.util.ResponseSanitizer;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
@@ -102,6 +104,7 @@ public class RedisStreamingChatService {
     private final GeneratedImageService generatedImageService;
     private final SideChannelEventTranslator sideChannelEventTranslator;
     private final ChatModelSelection chatModelSelection;
+    private final PushNotificationService pushNotificationService;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -112,7 +115,8 @@ public class RedisStreamingChatService {
                                      NotificationService notificationService,
                                      GeneratedImageService generatedImageService,
                                      SideChannelEventTranslator sideChannelEventTranslator,
-                                     ChatModelSelection chatModelSelection) {
+                                     ChatModelSelection chatModelSelection,
+                                     PushNotificationService pushNotificationService) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -123,6 +127,7 @@ public class RedisStreamingChatService {
         this.generatedImageService = generatedImageService;
         this.sideChannelEventTranslator = sideChannelEventTranslator;
         this.chatModelSelection = chatModelSelection;
+        this.pushNotificationService = pushNotificationService;
     }
 
     private Chat save(Chat chat) {
@@ -262,7 +267,7 @@ public class RedisStreamingChatService {
         Turn turn = new Turn(chatId, userId, runId, UUID.randomUUID().toString(), turnStarted);
 
         return streamTurn(turn, chatRequest, authentication, cancelEvents)
-                .onErrorResume(error -> handleStreamError(chatId, userId, error))
+                .onErrorResume(error -> handleStreamError(turn, error))
                 .doFinally(_ -> cleanup(chatId, userId));
     }
 
@@ -351,9 +356,23 @@ public class RedisStreamingChatService {
 
                     log.debug("Publishing run finished event to Redis for chat id {}", chatId);
 
-                    return publish(turn, runFinished(turn, responseMessage));
+                    return publish(turn, runFinished(turn, responseMessage))
+                            .doOnSuccess(_ -> pushOutcome(turn, new PushEvent.TurnFinished(chatId, turn.runId())));
                 })
                 .then();
+    }
+
+    /**
+     * Only ever once the terminal frame is published, and never able to fail the turn: an exception
+     * escaping here would otherwise become the turn's own error and publish a second terminal frame.
+     * A cancelled turn is not pushed: the user asked for it, so they were looking.
+     */
+    private void pushOutcome(Turn turn, PushEvent pushEvent) {
+        try {
+            pushNotificationService.push(turn.userId(), pushEvent);
+        } catch (RuntimeException runtimeException) {
+            log.warn("Could not push the outcome of chat {}: {}", turn.chatId(), runtimeException.getClass().getSimpleName());
+        }
     }
 
     /**
@@ -391,7 +410,9 @@ public class RedisStreamingChatService {
                 new SolesonicChatResponse(turn.chatId(), responseMessage), null, null);
     }
 
-    private Mono<Void> handleStreamError(UUID chatId, UUID userId, Throwable error) {
+    private Mono<Void> handleStreamError(Turn turn, Throwable error) {
+        UUID chatId = turn.chatId();
+        UUID userId = turn.userId();
         Throwable unwrapped = unwrapAsync(error);
 
         if (Exceptions.isCancel(unwrapped) || unwrapped instanceof InterruptedException) {
@@ -412,6 +433,7 @@ public class RedisStreamingChatService {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(failure -> publish(chatId, userId, new CustomEvent(FAILURE, failure, null, null)))
                 .then(Mono.defer(() -> publish(chatId, userId, runError)))
+                .doOnSuccess(_ -> pushOutcome(turn, new PushEvent.TurnFailed(chatId, turn.runId())))
                 .then();
     }
 
