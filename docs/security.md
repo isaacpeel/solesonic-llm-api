@@ -439,6 +439,49 @@ of those is a boundary:
   every push it receives; a push cannot be dropped on arrival. A presence failure counts as "not
   watching" — an extra push beats a missing one.
 
+## Interest Agents
+
+Discovery reads a user's memories and offers a news agent; an accepted agent reads the web on the
+user's behalf and writes a chat. Each of those is a boundary:
+
+- **Opt-in only.** Discovery creates offers, never agents. An agent exists only after the owner calls
+  `accept` with their own token.
+- **One owner per row, enforced by structure.** Every table carries `user_id`, every reference includes
+  it, and every repository method takes it, so another user's offer, agent or update is a `404`. The
+  owner always comes from a row — the claimed scan or agent — never from model output or a tool
+  argument, and discovery only accepts memory ids the model was shown, which are the owner's own active
+  facts and preferences.
+- **Web content is untrusted data.** Search results and extracted articles reach the summary model only
+  as quoted, single-line fields (`PromptQuoting`) with no tools offered, and reach the user only as an
+  `ASSISTANT` row — which reflection never accepts as memory evidence.
+- **Every link comes from a search result.** The model can cite only by number, and `NewsUpdateRenderer`
+  builds each link itself from a result's normalized URL. Everything the model or a page wrote — summary,
+  headline, notes, titles, the label — is rendered as plain text: **every ASCII punctuation character is
+  backslash-escaped**, so no link, image, reference definition, HTML, heading, quote or table can form
+  however it is spelled (escaped or nested brackets, definitions inside quotes or lists). A regex alone
+  cannot recognise every CommonMark link form; escaping does not need to. Only `- ` bullets and paragraphs
+  are kept. Before escaping, `ModelTextSanitizer` removes what a renderer would autolink with no markup:
+  URLs, `www.` hosts, `//host`, scheme references and email addresses.
+- **Extraction cannot be pointed inward by a search result.** `NewsUrlNormalizer` keeps only `http`/`https`
+  URLs on a public domain name, with no user-info and no explicit port: IP literals, `localhost` and
+  internal suffixes (`.local`, `.internal`, …) are refused before the extraction tool is asked to fetch
+  them. The MCP server still needs its own resolve-time checks, since a public name can resolve inward.
+- **A news chat is a normal chat.** Its summary is web-derived text in an `ASSISTANT` row, and a follow-up
+  runs on the default route with the user's tools. That is the same exposure as any web search result
+  in a conversation, but it is worth knowing when judging a summary's instructions.
+- **No topic in any push.** `INTEREST_OFFER` and `INTEREST_UPDATE` payloads carry fixed text and ids
+  only; the topic, the headline and the news are shown only inside the app.
+- **Background searches use the application's identity.** A run has no user token, so the MCP call
+  travels on the API's client credentials. The user's own right to search (`mcp-web-search`) is checked
+  **once, at accept**. **Known limitation:** losing the role later does not stop an existing agent;
+  `INTEREST_NEWS_ENABLED=false` stops every agent at once.
+- **Deleting a conversation still forgets it.** A pending offer none of whose source memories is still
+  live is withdrawn in the same transaction as the forget, and by a sweep for memories that stop being
+  live by supersession or eviction. An accepted agent survives: the user turned it on, and it stores only
+  its own label and query.
+- **Topic labels, queries, search results and summaries are never logged above DEBUG** and never reach
+  the security log; run logs carry counts and ids only (`DiscoveryRun`, `NewsRun`).
+
 ## Security Monitoring
 
 ### Metrics to Monitor

@@ -6,6 +6,7 @@ import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.interest.InterestOfferWithdrawal;
 import org.springframework.context.ApplicationEventPublisher;
 
 import static org.mockito.Mockito.mock;
@@ -22,6 +23,25 @@ final class UserMemoryServiceFixture {
                                      UserMemoryEvidenceRepository userMemoryEvidenceRepository,
                                      ChatMemoryReflectionRepository chatMemoryReflectionRepository) {
         return service(userMemoryRepository, userMemoryEvidenceRepository, chatMemoryReflectionRepository, true);
+    }
+
+    static UserMemoryService service(UserMemoryRepository userMemoryRepository,
+                                     UserMemoryEvidenceRepository userMemoryEvidenceRepository,
+                                     ChatMemoryReflectionRepository chatMemoryReflectionRepository,
+                                     InterestOfferWithdrawal interestOfferWithdrawal) {
+        return new UserMemoryService(userMemoryRepository,
+                userMemoryEvidenceRepository,
+                chatMemoryReflectionRepository,
+                mock(ChatRepository.class),
+                mock(ChatMessageRepository.class),
+                mock(MemoryEmbeddingService.class),
+                mock(ApplicationEventPublisher.class),
+                interestOfferWithdrawal,
+                MAX_MEMORY_CHARACTERS,
+                MAX_ACTIVE_MEMORIES,
+                true,
+                PROMPT_MAX_CHARACTERS,
+                MemoryRetrievalMode.ALL);
     }
 
     static UserMemoryService service(UserMemoryRepository userMemoryRepository,
@@ -69,6 +89,7 @@ final class UserMemoryServiceFixture {
                 chatMessageRepository,
                 memoryEmbeddingService,
                 applicationEventPublisher,
+                mock(InterestOfferWithdrawal.class),
                 MAX_MEMORY_CHARACTERS,
                 MAX_ACTIVE_MEMORIES,
                 injectionEnabled,

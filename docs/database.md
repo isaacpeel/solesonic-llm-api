@@ -242,7 +242,7 @@ Load-bearing details:
 | Table | Holds |
 |---|---|
 | `push_subscription` | One browser subscription: `user_id`, `endpoint` (unique), `p256dh`, `auth`, `expiration_time`, `label`, `user_agent`, `created`/`updated`, `last_delivered`, `failure_count` |
-| `push_preference` | Per user, whether turns and elicitations are pushed: `turn_complete`, `elicitation`, `updated`. No row means both are on |
+| `push_preference` | Per user, which events are pushed: `turn_complete`, `elicitation`, `interest_offers`, `interest_updates` (the last two added by `V3_37`, default `true`), `updated`. No row means all are on |
 
 Load-bearing details:
 
@@ -256,6 +256,31 @@ Load-bearing details:
 - **`push_preference` is not part of `user_preferences`**: that endpoint is a full replace, and a client
   unaware of these fields would switch notifications off.
 - **No foreign key to a user table**, as elsewhere in the schema.
+
+### Interest agents — five tables (V3_37)
+
+| Table | Holds |
+|---|---|
+| `interest_scan` | Per user, how far discovery has read their memories: `scanned_through` (newest `user_memory.updated` considered), `last_offered`, `status`, `attempts` |
+| `interest_offer` | A topic offered to a user: `agent_type`, `topic_key`, `label`, `query`, `rationale`, `source_memory_ids` (`uuid[]`), `confidence`, `status`, `created`, `expires`, `decided` |
+| `interest_agent` | An accepted agent: `offer_id`, `agent_type`, `topic_key`, `label`, `query`, `chat_group_id`, `cadence`, `status`, `next_run_at`, `last_run_at`, `last_update_at`, `last_failure_at`, `failures` |
+| `interest_update` | One run that delivered news: `agent_id`, `label`, `chat_id` (unique), `item_count`. The id is the run id and the push dedupe key |
+| `interest_agent_item` | A URL an agent has seen, as `url_hash` (SHA-256 hex of the normalized URL) and `first_seen` |
+
+Load-bearing details:
+
+- **Every table carries `user_id`, and every reference between them includes it** through composite
+  `(id, user_id)` foreign keys, as `user_memory_evidence` does.
+- **`interest_offer_one_pending_idx`** (partial unique on `user_id` where `PENDING`) makes "one question
+  at a time" a database guarantee; **`unique (user_id, topic_key)`** on agents makes a duplicate agent
+  impossible.
+- **Deleting an agent** cascades its seen items and sets `interest_update.agent_id` and nothing else to
+  null: the chats are the user's history and stay recognisable as news, which is why the update row
+  copies the label.
+- **Only a URL's hash is stored**, never titles or content.
+- **No foreign key to `chat`, `chat_group` or `user_memory`**, consistent with the rest of the schema.
+  `ChatService.delete` removes a news chat's update row; the forget paths in `UserMemoryService` withdraw
+  pending offers whose memories are gone.
 
 ## Vector Storage with pgvector
 

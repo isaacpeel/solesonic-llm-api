@@ -12,6 +12,7 @@ import com.solesonic.model.push.PushPreferenceSummary;
 import com.solesonic.model.push.PushSubscription;
 import com.solesonic.model.push.PushTarget;
 import com.solesonic.model.push.PushUrgency;
+import com.solesonic.service.interest.InterestSettingsFixture;
 import com.solesonic.service.push.webpush.WebPushSender;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -70,6 +71,11 @@ class PushNotificationServiceTest {
     private static final PushEvent TURN_FINISHED = new PushEvent.TurnFinished(CHAT_ID, RUN_ID);
     private static final PushEvent ELICITATION_WAITING = new PushEvent.ElicitationWaiting(CHAT_ID, ELICITATION_ID, false);
     private static final PushEvent ELICITATION_REMINDER = new PushEvent.ElicitationWaiting(CHAT_ID, ELICITATION_ID, true);
+    private static final UUID OFFER_ID = UUID.fromString("2c1f3a6e-9d0b-4c7a-8e5f-1b2d3c4a5e6f");
+    private static final UUID AGENT_ID = UUID.fromString("9a8b7c6d-5e4f-4031-2a1b-2c3d4e5f6a7b");
+    private static final UUID UPDATE_ID = UUID.fromString("3d2c1b0a-9f8e-4d7c-6b5a-4f3e2d1c0b9a");
+    private static final PushEvent INTEREST_OFFERED = new PushEvent.InterestOffered(OFFER_ID);
+    private static final PushEvent INTEREST_UPDATED = new PushEvent.InterestUpdated(CHAT_ID, AGENT_ID, UPDATE_ID);
     private static final PushTarget TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/first"), "p256dh", "auth");
     private static final PushTarget OTHER_TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/second"), "p256dh", "auth");
 
@@ -114,8 +120,9 @@ class PushNotificationServiceTest {
         PushSettings pushSettings = new PushSettings(enabled, Set.of("fcm.googleapis.com"), 3, 5, Duration.ofSeconds(120),
                 Duration.ofSeconds(600), Duration.ofSeconds(45), Duration.ofSeconds(15));
 
-        return new PushNotificationService(pushSettings, pushPreferenceService, pushPresenceService, pushSubscriptionService,
-                webPushSender, new PushPayloadFactory(jsonMapper, Clock.fixed(NOW, ZoneOffset.UTC), "Izzy"), redisTemplate);
+        return new PushNotificationService(pushSettings, InterestSettingsFixture.settings(), pushPreferenceService, pushPresenceService,
+                pushSubscriptionService, webPushSender, new PushPayloadFactory(jsonMapper, Clock.fixed(NOW, ZoneOffset.UTC), "Izzy"),
+                redisTemplate);
     }
 
     private static PushSubscription subscription(UUID subscriptionId) {
@@ -217,7 +224,7 @@ class PushNotificationServiceTest {
 
     @Test
     void aTurnIsNotSentWhenTurnNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true, true, true));
 
         deliver(TURN_FINISHED);
         deliver(new PushEvent.TurnFailed(CHAT_ID, UUID.randomUUID()));
@@ -227,7 +234,7 @@ class PushNotificationServiceTest {
 
     @Test
     void anElicitationIsNotSentWhenElicitationNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false, true, true));
 
         deliver(ELICITATION_WAITING);
         deliver(ELICITATION_REMINDER);
@@ -257,6 +264,63 @@ class PushNotificationServiceTest {
 
         verify(webPushSender).send(any(), any(), any());
         verify(pushPresenceService, never()).isWatching(any(), any());
+    }
+
+    @Test
+    void anOfferIsSentForAsLongAsItCanBeAcceptedWithoutAskingAboutPresence() {
+        deliver(INTEREST_OFFERED);
+
+        ArgumentCaptor<PushDeliveryOptions> options = ArgumentCaptor.forClass(PushDeliveryOptions.class);
+        verify(webPushSender).send(eq(TARGET), any(), options.capture());
+        assertThat(options.getValue()).isEqualTo(new PushDeliveryOptions(Duration.ofDays(7), PushUrgency.NORMAL,
+                "2c1f3a6e9d0b4c7a8e5f1b2d3c4a5e6f"));
+        verify(pushPresenceService, never()).isWatching(any(), any());
+    }
+
+    /**
+     * The chat was created a moment ago, so nobody can be reading it; the topic is the agent, so a
+     * newer update replaces an older one still queued.
+     */
+    @Test
+    void anUpdateIsSentWithoutAskingAboutPresenceAndReplacesTheAgentsQueuedUpdate() {
+        when(pushPresenceService.isWatching(any(), any())).thenReturn(Mono.just(true));
+
+        deliver(INTEREST_UPDATED);
+
+        ArgumentCaptor<PushDeliveryOptions> options = ArgumentCaptor.forClass(PushDeliveryOptions.class);
+        verify(webPushSender).send(eq(TARGET), any(), options.capture());
+        assertThat(options.getValue()).isEqualTo(new PushDeliveryOptions(Duration.ofHours(24), PushUrgency.NORMAL,
+                "9a8b7c6d5e4f40312a1b2c3d4e5f6a7b"));
+        verify(pushPresenceService, never()).isWatching(any(), any());
+    }
+
+    @Test
+    void anOfferIsNotSentWhenOfferNotificationsAreOff() {
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, false, true));
+
+        deliver(INTEREST_OFFERED);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void anUpdateIsNotSentWhenUpdateNotificationsAreOffButAnOfferStillIs() {
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, false));
+
+        deliver(INTEREST_UPDATED);
+        verify(webPushSender, never()).send(any(), any(), any());
+
+        deliver(INTEREST_OFFERED);
+        verify(webPushSender).send(any(), any(), any());
+    }
+
+    @Test
+    void interestEventsAreDedupedByOfferAndByRun() {
+        deliver(INTEREST_OFFERED);
+        deliver(INTEREST_UPDATED);
+
+        verify(valueOperations).setIfAbsent("push:sent:interest-offer:" + OFFER_ID, "1", Duration.ofHours(1));
+        verify(valueOperations).setIfAbsent("push:sent:interest-update:" + UPDATE_ID, "1", Duration.ofHours(1));
     }
 
     @ParameterizedTest

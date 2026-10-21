@@ -8,6 +8,7 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.interest.InterestUpdateService;
 import com.solesonic.service.memory.UserMemoryService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -58,6 +59,9 @@ class ChatServiceTest {
     @Mock
     private UserMemoryService userMemoryService;
 
+    @Mock
+    private InterestUpdateService interestUpdateService;
+
     private final UserRequestContext userRequestContext = new UserRequestContext();
 
     private ChatService chatService;
@@ -75,6 +79,7 @@ class ChatServiceTest {
                 redisStreamService,
                 chatModelSelection,
                 userMemoryService,
+                interestUpdateService,
                 userRequestContext);
     }
 
@@ -97,6 +102,7 @@ class ChatServiceTest {
         chatService.delete(CHAT_ID);
 
         verify(userMemoryService).forgetChat(CHAT_ID, USER_ID);
+        verify(interestUpdateService).deleteForChat(CHAT_ID, USER_ID);
     }
 
     @Test
@@ -106,6 +112,7 @@ class ChatServiceTest {
         assertThatThrownBy(() -> chatService.delete(CHAT_ID)).isInstanceOf(ResponseStatusException.class);
 
         verify(userMemoryService, never()).forgetChat(any(), any());
+        verify(interestUpdateService, never()).deleteForChat(any(), any());
     }
 
     /**

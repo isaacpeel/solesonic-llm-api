@@ -47,28 +47,53 @@ class PushPreferenceServiceTest {
     }
 
     @Test
-    void aUserWithNoStoredPreferencesHasBothOn() {
+    void aUserWithNoStoredPreferencesHasEverythingOn() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
 
-        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(true, true));
+        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(true, true, true, true));
     }
 
     @Test
     void returnsTheStoredPreferences() {
-        PushPreference pushPreference = new PushPreference();
-        pushPreference.setUserId(USER_ID);
-        pushPreference.setTurnComplete(false);
-        pushPreference.setElicitation(true);
-        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(pushPreference));
+        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(false, true, true, false)));
 
-        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(false, true));
+        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(false, true, true, false));
+    }
+
+    /**
+     * A client that predates the interest fields sends only the first two; what it does not know
+     * about must stay exactly as it was.
+     */
+    @Test
+    void aPutWithoutTheInterestFieldsLeavesThemUnchanged() {
+        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(true, true, false, false)));
+
+        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, false, null, null));
+
+        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, false, false, false));
+    }
+
+    @Test
+    void aPutWithoutTheInterestFieldsForAUserWithNoRowLeavesThemOn() {
+        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
+
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, false, null, null)))
+                .isEqualTo(new PushPreferenceSummary(true, false, true, true));
+    }
+
+    @Test
+    void storesTheInterestFieldsWhenGiven() {
+        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
+
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, false, true)))
+                .isEqualTo(new PushPreferenceSummary(true, true, false, true));
     }
 
     @Test
     void storesBothPreferences() {
-        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, true));
+        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, true, null, null));
 
-        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, true));
+        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, true, true, true));
 
         ArgumentCaptor<PushPreference> saved = ArgumentCaptor.forClass(PushPreference.class);
         verify(pushPreferenceRepository).save(saved.capture());
@@ -84,12 +109,22 @@ class PushPreferenceServiceTest {
      */
     @Test
     void refusesAMissingTurnComplete() {
-        assertInvalid(new PushPreferenceRequest(null, true));
+        assertInvalid(new PushPreferenceRequest(null, true, true, true));
     }
 
     @Test
     void refusesAMissingElicitation() {
-        assertInvalid(new PushPreferenceRequest(true, null));
+        assertInvalid(new PushPreferenceRequest(true, null, true, true));
+    }
+
+    private static PushPreference stored(boolean turnComplete, boolean elicitation, boolean interestOffers, boolean interestUpdates) {
+        PushPreference pushPreference = new PushPreference();
+        pushPreference.setUserId(USER_ID);
+        pushPreference.setTurnComplete(turnComplete);
+        pushPreference.setElicitation(elicitation);
+        pushPreference.setInterestOffers(interestOffers);
+        pushPreference.setInterestUpdates(interestUpdates);
+        return pushPreference;
     }
 
     @Test

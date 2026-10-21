@@ -2202,12 +2202,15 @@ preferences and presence.
 `GET /users/{userId}/push-preferences` / `PUT /users/{userId}/push-preferences`
 
 ```json
-{ "turnComplete": true, "elicitation": true }
+{ "turnComplete": true, "elicitation": true, "interestOffers": true, "interestUpdates": true }
 ```
 
-- `GET` with nothing stored returns both `true`.
-- `PUT` requires **both** fields, non-null (`400 INVALID_PREFERENCES` otherwise), and answers `200` with
-  what was stored.
+- `GET` with nothing stored returns all four `true`.
+- `PUT` requires `turnComplete` and `elicitation`, non-null (`400 INVALID_PREFERENCES` otherwise), and
+  answers `200` with what was stored.
+- `interestOffers` and `interestUpdates` are **optional on `PUT`: absent means unchanged**. They came after
+  clients that send only the first two, and a client that does not know about them must not switch
+  them off by leaving them out.
 - Deliberately not part of `UserPreferences`: that endpoint is a full replace, and a client that does
   not send these fields would silently switch notifications off.
 
@@ -2232,13 +2235,23 @@ What the service worker receives after decryption:
 | `TURN_FINISHED` | `Your reply is ready` | `/chat/<chatId>` | `chat:<chatId>` |
 | `TURN_FAILED` | `Your request couldn't be completed` | `/chat/<chatId>` | `chat:<chatId>` |
 | `ELICITATION_WAITING` | `A tool is waiting for your answer` | `/chat/<chatId>` | `elicitation:<elicitationId>` |
+| `INTEREST_OFFER` | `I can keep you posted on something you're interested in` | `/interests/offers/<offerId>` | `interest-offer:<offerId>` |
+| `INTEREST_UPDATE` | `There's news on one of your interests` | `/chat/<chatId>` | `interest:<agentId>` |
 | `TEST` | `Notifications are working` | `/settings/notifications` | `test` |
 
 - `url` is always a same-origin path.
 - An unknown `type` must be displayed using `title` and `body` as given. `version` changes only on a
   breaking change.
-- Every push is sent with `Urgency: high`, so an idle phone in Doze is woken for it. A turn's push lives
-  24 hours at the push service; an elicitation's only for as long as it can still be answered.
+- `actions` is optional and present only when there are actions, so every other payload is unchanged.
+  Only `INTEREST_OFFER` carries any: `[{"action":"enable","title":"Enable"},{"action":"dismiss","title":"Not now"}]`.
+  **Enable** opens `/interests/offers/<offerId>?intent=accept`, where the app shows what would be watched
+  and asks for one tap; **Not now** just closes the notification. The service worker never calls an
+  endpoint: it holds no token, and the lock screen deliberately does not name the topic.
+- A turn or elicitation push is sent with `Urgency: high`, so an idle phone in Doze is woken for it. A
+  turn's push lives 24 hours at the push service; an elicitation's only for as long as it can still be
+  answered. Interest pushes are `Urgency: normal`: an offer lives `INTEREST_OFFER_TTL_DAYS`, an update 24
+  hours, and a newer update for the same agent replaces one still queued. Neither is held back by
+  presence.
 
 ### Push Error Codes
 
@@ -2251,6 +2264,87 @@ What the service worker receives after decryption:
 | `NOT_FOUND` | `404` | No such subscription, or the path names another user |
 | `SUBSCRIPTION_GONE` | `410` | The browser is no longer subscribed; its row is gone |
 | `DELIVERY_FAILED` | `502` | The push service did not accept a test push |
+
+---
+
+## Interest Agents
+
+The application watches what memory learns about a user, notices a durable interest that public news
+covers, and **offers** an agent that monitors it. Nothing is monitored until the user accepts. An
+accepted news agent searches on its cadence and, when something new and relevant turns up, creates a
+**new chat** holding a summary with numbered citations and a source list, and pushes
+`INTEREST_UPDATE` with that chat's id. The chat is ordinary: the user can ask follow-up questions in it.
+
+Every endpoint requires a bearer token. A `{userId}` that is not the caller is a `404` on every method,
+as on the push endpoints. Failures carry a real status code and a body of `{"code": "…", "message": "…"}`.
+
+### Wire shapes
+
+```text
+InterestOfferSummary       { id, agentType: "NEWS", label, rationale,
+                             status: PENDING|ACCEPTED|DECLINED|EXPIRED|WITHDRAWN, created, expires }
+InterestAgentSummary       { id, agentType, label, query, cadence: DAILY|WEEKLY, status: ACTIVE|PAUSED,
+                             chatGroupId|null, nextRunAt, lastRunAt|null, lastUpdateAt|null,
+                             lastFailureAt|null, failures, created }
+InterestUpdateSummary      { id, agentId|null, label, chatId, itemCount, created }
+InterestAcceptRequest      { cadence?: DAILY|WEEKLY }                  -- absent body or cadence = DAILY
+InterestAgentUpdateRequest { label?, query?, cadence?, status? }       -- absent = unchanged
+```
+
+An offer never exposes its search query, topic key or the memories it came from.
+
+### Endpoints
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/users/{userId}/interest-offers` | Pending, unexpired offers (0 or 1). Lets the UI show a banner when push is off |
+| `GET` | `/users/{userId}/interest-offers/{offerId}` | One offer, any status — the screen a push opens |
+| `POST` | `/users/{userId}/interest-offers/{offerId}/accept` | `201` + `InterestAgentSummary`. Creates the agent and a chat group `News: <label>`; no chat. The first update arrives on the next news tick |
+| `POST` | `/users/{userId}/interest-offers/{offerId}/decline` | `204`. The topic is not offered again for `INTEREST_DECLINE_COOLDOWN_DAYS` |
+| `GET` | `/users/{userId}/interest-agents` | The user's agents, oldest first |
+| `PATCH` | `/users/{userId}/interest-agents/{agentId}` | Changes `label`, `query`, `cadence`, `status`. Resuming a paused agent clears its failures and makes it due now |
+| `DELETE` | `/users/{userId}/interest-agents/{agentId}` | `204`. Deletes the agent and its seen items; **keeps its chats, chat group and update rows** (`agentId` becomes null) |
+| `POST` | `/users/{userId}/interest-agents/{agentId}/run` | `202` + `InterestAgentSummary`. Makes the agent due now; the next tick picks it up |
+| `GET` | `/users/{userId}/interest-agents/{agentId}/updates?page=&size=` | The agent's updates, newest first (`Page<InterestUpdateSummary>`) |
+| `GET` | `/users/{userId}/interest-updates/by-chat/{chatId}` | The update a chat came from, or `404` — how a chat screen knows to badge a news chat |
+
+Accepting requires the caller's token to carry the `mcp-web-search` client role, the one the MCP
+server's search tools check: background runs search on the application's own credentials, so this is
+where the user's right to search is checked. `label` is at most 120 characters and `query` 400, each a
+single line.
+
+### Interest Error Codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `OFFER_NOT_FOUND`, `AGENT_NOT_FOUND`, `UPDATE_NOT_FOUND` | `404` | No such row for this user, or the path names another user |
+| `OFFER_ALREADY_DECIDED` | `409` | The offer was already accepted, declined, expired or withdrawn |
+| `OFFER_EXPIRED` | `409` | The offer passed its expiry; it is now `EXPIRED` |
+| `AGENT_LIMIT_REACHED` | `409` | The user already has `INTEREST_MAX_AGENTS_PER_USER` agents |
+| `OFFER_WITHDRAWN` | `410` | None of the memories behind the offer is still live (or an agent already watches the topic); it is now `WITHDRAWN` |
+| `INVALID_AGENT_UPDATE` | `400` | An empty or invalid edit, or a run of a paused agent |
+| `NOT_PERMITTED` | `403` | The caller lacks the `mcp-web-search` role |
+| `RUN_TOO_SOON` | `429` | The agent ran within `INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES` |
+
+### A news chat
+
+One `ASSISTANT` message, rendered entirely by the server:
+
+```markdown
+## <headline>
+
+*<label> · Oct 21, 2026 · 3 sources*
+
+<summary, each citation a link: [[1]](https://…)>
+
+### Sources
+
+1. [<title>](https://…) — <host>
+   <what it adds>
+```
+
+Every link in it was built from a search result; the model can only cite by number. The chat is named
+`<label> · Oct 21` and filed in the agent's chat group while that group exists.
 
 ---
 

@@ -10,6 +10,7 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.util.PromptQuoting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -225,7 +226,7 @@ public class MemoryReflectionService {
                     .append(" kind=").append(memory.getKind())
                     .append(" key=").append(Objects.toString(memory.getMemoryKey(), "none"))
                     .append(" status=").append(memory.getStatus())
-                    .append(": ").append(quote(memory.getContent()))
+                    .append(": ").append(PromptQuoting.quote(memory.getContent()))
                     .append('\n');
         }
 
@@ -235,7 +236,7 @@ public class MemoryReflectionService {
             rendered.append(message.getMessageType())
                     .append(" id=").append(message.getId())
                     .append(" at=").append(message.getTimestamp())
-                    .append(": ").append(quote(shown(message)))
+                    .append(": ").append(PromptQuoting.quote(shown(message)))
                     .append('\n');
         }
 
@@ -255,21 +256,6 @@ public class MemoryReflectionService {
         }
 
         return text.substring(0, ASSISTANT_EXCERPT_CHARACTERS) + " [truncated]";
-    }
-
-    static String quote(String text) {
-        String escaped = Objects.toString(text, "")
-                .replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\r", "\\r")
-                .replace("\n", "\\n")
-                .replace("\u000B", "\\u000B")
-                .replace("\f", "\\f")
-                .replace("\u0085", "\\u0085")
-                .replace(" ", "\\u2028")
-                .replace(" ", "\\u2029");
-
-        return '"' + escaped + '"';
     }
 
     private static String read(Resource resource) {

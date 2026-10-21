@@ -1,5 +1,6 @@
 package com.solesonic.service.push;
 
+import com.solesonic.model.push.PushAction;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.model.push.PushPayload;
 import com.solesonic.model.push.PushPayloadType;
@@ -9,11 +10,13 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.UUID;
 
 /**
  * Builds every push payload from fixed strings and ids alone. A push passes through Google's relay
- * and lands on a lock screen, so no chat title, message text or tool data is ever put in one.
+ * and lands on a lock screen, so no chat title, message text, tool data or interest topic is ever put
+ * in one.
  */
 @Component
 public class PushPayloadFactory {
@@ -22,9 +25,15 @@ public class PushPayloadFactory {
     private static final String TURN_FINISHED_BODY = "Your reply is ready";
     private static final String TURN_FAILED_BODY = "Your request couldn't be completed";
     private static final String ELICITATION_WAITING_BODY = "A tool is waiting for your answer";
+    private static final String INTEREST_OFFER_BODY = "I can keep you posted on something you're interested in";
+    private static final String INTEREST_UPDATE_BODY = "There's news on one of your interests";
     private static final String TEST_BODY = "Notifications are working";
     private static final String TEST_URL = "/settings/notifications";
     private static final String TEST_TAG = "test";
+
+    private static final List<PushAction> INTEREST_OFFER_ACTIONS = List.of(
+            new PushAction("enable", "Enable"),
+            new PushAction("dismiss", "Not now"));
 
     private final JsonMapper jsonMapper;
     private final Clock clock;
@@ -45,6 +54,12 @@ public class PushPayloadFactory {
             case PushEvent.ElicitationWaiting elicitationWaiting ->
                     payload(PushPayloadType.ELICITATION_WAITING, ELICITATION_WAITING_BODY, chatUrl(elicitationWaiting.chatId()),
                             "elicitation:" + elicitationWaiting.elicitationId());
+            case PushEvent.InterestOffered interestOffered ->
+                    payload(PushPayloadType.INTEREST_OFFER, INTEREST_OFFER_BODY, "/interests/offers/" + interestOffered.offerId(),
+                            "interest-offer:" + interestOffered.offerId(), INTEREST_OFFER_ACTIONS);
+            case PushEvent.InterestUpdated interestUpdated ->
+                    payload(PushPayloadType.INTEREST_UPDATE, INTEREST_UPDATE_BODY, chatUrl(interestUpdated.chatId()),
+                            "interest:" + interestUpdated.agentId());
         };
 
         return jsonMapper.writeValueAsBytes(pushPayload);
@@ -55,7 +70,11 @@ public class PushPayloadFactory {
     }
 
     private PushPayload payload(PushPayloadType type, String body, String url, String tag) {
-        return new PushPayload(VERSION, type, botName, body, url, tag, DateTimeFormatter.ISO_INSTANT.format(clock.instant()));
+        return payload(type, body, url, tag, List.of());
+    }
+
+    private PushPayload payload(PushPayloadType type, String body, String url, String tag, List<PushAction> actions) {
+        return new PushPayload(VERSION, type, botName, body, url, tag, DateTimeFormatter.ISO_INSTANT.format(clock.instant()), actions);
     }
 
     private static String chatUrl(UUID chatId) {

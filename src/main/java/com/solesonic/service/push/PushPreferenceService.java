@@ -30,8 +30,10 @@ public class PushPreferenceService {
     }
 
     /**
-     * Both fields are required: a client that does not know about one must not switch it off by
-     * leaving it out.
+     * {@code turnComplete} and {@code elicitation} are required: a client that does not know about one
+     * must not switch it off by leaving it out. The interest fields arrived after clients already
+     * sent only those two, so for them the same guarantee is kept the other way round: absent means
+     * unchanged.
      */
     public PushPreferenceSummary update(UUID userId, PushPreferenceRequest pushPreferenceRequest) {
         if (pushPreferenceRequest == null
@@ -40,12 +42,20 @@ public class PushPreferenceService {
             throw new PushException(PushErrorCode.INVALID_PREFERENCES, "Both turnComplete and elicitation are required.");
         }
 
+        PushPreferenceSummary current = get(userId);
+
         PushPreference pushPreference = new PushPreference();
         pushPreference.setUserId(userId);
         pushPreference.setTurnComplete(pushPreferenceRequest.turnComplete());
         pushPreference.setElicitation(pushPreferenceRequest.elicitation());
+        pushPreference.setInterestOffers(orCurrent(pushPreferenceRequest.interestOffers(), current.interestOffers()));
+        pushPreference.setInterestUpdates(orCurrent(pushPreferenceRequest.interestUpdates(), current.interestUpdates()));
         pushPreference.setUpdated(ZonedDateTime.now(clock));
 
         return PushPreferenceSummary.of(pushPreferenceRepository.save(pushPreference));
+    }
+
+    private static boolean orCurrent(Boolean requested, boolean current) {
+        return requested == null ? current : requested;
     }
 }

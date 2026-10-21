@@ -11,6 +11,7 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.interest.InterestUpdateService;
 import com.solesonic.service.memory.UserMemoryService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -44,6 +45,7 @@ public class ChatService {
     private final RedisStreamService redisStreamService;
     private final ChatModelSelection chatModelSelection;
     private final UserMemoryService userMemoryService;
+    private final InterestUpdateService interestUpdateService;
     private final UserRequestContext userRequestContext;
 
     public ChatService(
@@ -55,6 +57,7 @@ public class ChatService {
             RedisStreamService redisStreamService,
             ChatModelSelection chatModelSelection,
             UserMemoryService userMemoryService,
+            InterestUpdateService interestUpdateService,
             UserRequestContext userRequestContext) {
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
@@ -64,6 +67,7 @@ public class ChatService {
         this.redisStreamService = redisStreamService;
         this.chatModelSelection = chatModelSelection;
         this.userMemoryService = userMemoryService;
+        this.interestUpdateService = interestUpdateService;
         this.userRequestContext = userRequestContext;
     }
 
@@ -222,6 +226,7 @@ public class ChatService {
         chatAttachmentService.deleteForChat(chatId);
         generatedImageService.deleteForChat(chatId);
         userMemoryService.forgetChat(chatId, userId);
+        interestUpdateService.deleteForChat(chatId, userId);
 
         int messages = chatMessageRepository.deleteByChatId(chatId);
 

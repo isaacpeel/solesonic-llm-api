@@ -380,6 +380,43 @@ Startup fails if either key does not decode, if the two are not a pair, or if th
 one, and the row is deleted on its next send; the UI notices the changed public key and subscribes
 again. Rotate only when the private key may have leaked.
 
+### Interest Agent Configuration
+
+Discovery reads what memory has learned and offers a news agent; accepted agents search, summarise and
+deliver news chats. Both use the memory model (`MEMORY_MODEL`). See [docs/api.md](api.md#interest-agents)
+and [docs/security.md](security.md#interest-agents). Every variable is **required** and has no default.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `INTEREST_DISCOVERY_ENABLED` | Run discovery | `true` | Yes | Also expires lapsed offers and withdraws orphaned ones |
+| `INTEREST_DISCOVERY_CRON` | Discovery schedule | `0 */30 * * * *` | Yes | Spring cron |
+| `INTEREST_DISCOVERY_BATCH_SIZE` | Users read per tick | `5` | Yes | One model call at a time |
+| `INTEREST_DISCOVERY_MAX_ATTEMPTS` | Failures before a user is skipped until their memories change | `3` | Yes | |
+| `INTEREST_DISCOVERY_MIN_CONFIDENCE` | Candidates below this are dropped | `0.7` | Yes | Between 0 and 1 |
+| `INTEREST_OFFER_COOLDOWN_DAYS` | Minimum gap between two offers to one user | `7` | Yes | |
+| `INTEREST_OFFER_TTL_DAYS` | How long an offer can be accepted | `7` | Yes | Also the offer push's TTL |
+| `INTEREST_DECLINE_COOLDOWN_DAYS` | How long a declined topic is not offered again | `90` | Yes | |
+| `INTEREST_MAX_AGENTS_PER_USER` | Agents a user may have | `5` | Yes | |
+| `INTEREST_NEWS_ENABLED` | Run news agents | `true` | Yes | The global kill switch for every agent. Deploy with this `false` first to review offers |
+| `INTEREST_NEWS_CRON` | News schedule | `0 */15 * * * *` | Yes | Spring cron |
+| `INTEREST_NEWS_BATCH_SIZE` | Agents run per tick | `10` | Yes | |
+| `INTEREST_NEWS_MAX_RESULTS` | Results per search | `10` | Yes | 1–10, the tool's limit |
+| `INTEREST_NEWS_EXTRACT_TOP` | New results read in full | `3` | Yes | 0–5, the extract tool's limit; `0` uses snippets only |
+| `INTEREST_NEWS_MAX_ARTICLE_CHARACTERS` | Cap on one article's text | `4000` | Yes | |
+| `INTEREST_NEWS_MAX_SOURCE_CHARACTERS` | Cap on the summary model's input | `20000` | Yes | ~5–6k tokens; check the memory server's `--ctx-size` before raising it |
+| `INTEREST_NEWS_MAX_SOURCES_PER_UPDATE` | Sources one update may cite | `6` | Yes | |
+| `INTEREST_NEWS_MAX_SUMMARY_CHARACTERS` | Cap on the summary text | `2500` | Yes | |
+| `INTEREST_NEWS_DELIVERY_HOUR` | Local hour updates settle onto | `8` | Yes | 0–23, in the user's own time zone |
+| `INTEREST_NEWS_JITTER_MINUTES` | Random spread added to each run | `30` | Yes | |
+| `INTEREST_NEWS_RUN_LEASE_MINUTES` | How long a claimed run is held before another instance may retry it | `30` | Yes | |
+| `INTEREST_NEWS_MAX_FAILURES` | Consecutive failures before an agent is paused | `5` | Yes | |
+| `INTEREST_NEWS_ITEM_RETENTION_DAYS` | How long an agent remembers a URL it has seen | `30` | Yes | At least 7, the widest search window |
+| `INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES` | Minimum gap between a run and a manual run | `10` | Yes | |
+
+**The API's service-account client must hold the `mcp-web-search` role.** A background run has no user
+token, so it searches on the application's client credentials; without the role every run fails as an
+`isError` result and the agent is paused after `INTEREST_NEWS_MAX_FAILURES`.
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -452,6 +489,32 @@ PUSH_MAX_FAILURES=5
 PUSH_ELICITATION_REMINDER_SECONDS=120
 PUSH_PRESENCE_TTL_SECONDS=45
 PUSH_PRESENCE_HEARTBEAT_SECONDS=15
+
+# Interest agents (required)
+INTEREST_DISCOVERY_ENABLED=true
+INTEREST_DISCOVERY_CRON=0 */30 * * * *
+INTEREST_DISCOVERY_BATCH_SIZE=5
+INTEREST_DISCOVERY_MAX_ATTEMPTS=3
+INTEREST_DISCOVERY_MIN_CONFIDENCE=0.7
+INTEREST_OFFER_COOLDOWN_DAYS=7
+INTEREST_OFFER_TTL_DAYS=7
+INTEREST_DECLINE_COOLDOWN_DAYS=90
+INTEREST_MAX_AGENTS_PER_USER=5
+INTEREST_NEWS_ENABLED=false
+INTEREST_NEWS_CRON=0 */15 * * * *
+INTEREST_NEWS_BATCH_SIZE=10
+INTEREST_NEWS_MAX_RESULTS=10
+INTEREST_NEWS_EXTRACT_TOP=3
+INTEREST_NEWS_MAX_ARTICLE_CHARACTERS=4000
+INTEREST_NEWS_MAX_SOURCE_CHARACTERS=20000
+INTEREST_NEWS_MAX_SOURCES_PER_UPDATE=6
+INTEREST_NEWS_MAX_SUMMARY_CHARACTERS=2500
+INTEREST_NEWS_DELIVERY_HOUR=8
+INTEREST_NEWS_JITTER_MINUTES=30
+INTEREST_NEWS_RUN_LEASE_MINUTES=30
+INTEREST_NEWS_MAX_FAILURES=5
+INTEREST_NEWS_ITEM_RETENTION_DAYS=30
+INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES=10
 
 
 ### Full Configuration (.env)
@@ -545,6 +608,32 @@ PUSH_MAX_FAILURES=5
 PUSH_ELICITATION_REMINDER_SECONDS=120
 PUSH_PRESENCE_TTL_SECONDS=45
 PUSH_PRESENCE_HEARTBEAT_SECONDS=15
+
+# Interest Agent Configuration
+INTEREST_DISCOVERY_ENABLED=true
+INTEREST_DISCOVERY_CRON=0 */30 * * * *
+INTEREST_DISCOVERY_BATCH_SIZE=5
+INTEREST_DISCOVERY_MAX_ATTEMPTS=3
+INTEREST_DISCOVERY_MIN_CONFIDENCE=0.7
+INTEREST_OFFER_COOLDOWN_DAYS=7
+INTEREST_OFFER_TTL_DAYS=7
+INTEREST_DECLINE_COOLDOWN_DAYS=90
+INTEREST_MAX_AGENTS_PER_USER=5
+INTEREST_NEWS_ENABLED=true
+INTEREST_NEWS_CRON=0 */15 * * * *
+INTEREST_NEWS_BATCH_SIZE=10
+INTEREST_NEWS_MAX_RESULTS=10
+INTEREST_NEWS_EXTRACT_TOP=3
+INTEREST_NEWS_MAX_ARTICLE_CHARACTERS=4000
+INTEREST_NEWS_MAX_SOURCE_CHARACTERS=20000
+INTEREST_NEWS_MAX_SOURCES_PER_UPDATE=6
+INTEREST_NEWS_MAX_SUMMARY_CHARACTERS=2500
+INTEREST_NEWS_DELIVERY_HOUR=8
+INTEREST_NEWS_JITTER_MINUTES=30
+INTEREST_NEWS_RUN_LEASE_MINUTES=30
+INTEREST_NEWS_MAX_FAILURES=5
+INTEREST_NEWS_ITEM_RETENTION_DAYS=30
+INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES=10
 
 # A2A Configuration
 A2A_BASE_URI=https://agents.yourdomain.com

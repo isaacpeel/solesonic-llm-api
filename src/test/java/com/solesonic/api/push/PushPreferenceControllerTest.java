@@ -73,7 +73,9 @@ class PushPreferenceControllerTest {
         mockMvc.perform(get("/users/{userId}/push-preferences", USER_ID))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.turnComplete").value(true))
-                .andExpect(jsonPath("$.elicitation").value(true));
+                .andExpect(jsonPath("$.elicitation").value(true))
+                .andExpect(jsonPath("$.interestOffers").value(true))
+                .andExpect(jsonPath("$.interestUpdates").value(true));
     }
 
     @Test

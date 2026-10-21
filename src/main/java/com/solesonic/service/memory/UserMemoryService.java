@@ -17,6 +17,7 @@ import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.interest.InterestOfferWithdrawal;
 import com.solesonic.service.memory.ValidatedReflection.Addition;
 import com.solesonic.service.memory.ValidatedReflection.Confirmation;
 import com.solesonic.service.memory.ValidatedReflection.Supersession;
@@ -71,6 +72,7 @@ public class UserMemoryService {
     private final ChatMessageRepository chatMessageRepository;
     private final MemoryEmbeddingService memoryEmbeddingService;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final InterestOfferWithdrawal interestOfferWithdrawal;
     private final int maxMemoryCharacters;
     private final int maxActiveMemories;
     private final boolean injectionEnabled;
@@ -84,6 +86,7 @@ public class UserMemoryService {
                              ChatMessageRepository chatMessageRepository,
                              MemoryEmbeddingService memoryEmbeddingService,
                              ApplicationEventPublisher applicationEventPublisher,
+                             InterestOfferWithdrawal interestOfferWithdrawal,
                              @Value("${solesonic.llm.memory.max-memory-characters}") int maxMemoryCharacters,
                              @Value("${solesonic.llm.memory.max-active-memories}") int maxActiveMemories,
                              @Value("${solesonic.llm.memory.injection.enabled}") boolean injectionEnabled,
@@ -96,6 +99,7 @@ public class UserMemoryService {
         this.chatMessageRepository = chatMessageRepository;
         this.memoryEmbeddingService = memoryEmbeddingService;
         this.applicationEventPublisher = applicationEventPublisher;
+        this.interestOfferWithdrawal = interestOfferWithdrawal;
         this.maxMemoryCharacters = maxMemoryCharacters;
         this.maxActiveMemories = maxActiveMemories;
         this.injectionEnabled = injectionEnabled;
@@ -393,6 +397,7 @@ public class UserMemoryService {
                 .orElseThrow(() -> notFound(memoryId));
 
         userMemoryRepository.delete(memory);
+        interestOfferWithdrawal.withdrawOrphaned(userId);
 
         log.info("Deleted memory {} for user {}", memoryId, userId);
     }
@@ -400,6 +405,7 @@ public class UserMemoryService {
     @Transactional
     public void deleteAll(UUID userId) {
         int deleted = userMemoryRepository.deleteAllByUserId(userId);
+        interestOfferWithdrawal.withdrawOrphaned(userId);
 
         log.info("Deleted {} memory(ies) for user {}", deleted, userId);
     }
@@ -423,6 +429,10 @@ public class UserMemoryService {
 
         int forgotten = forgetUnevidenced(userId, memoryIds);
 
+        if (forgotten > 0) {
+            interestOfferWithdrawal.withdrawOrphaned(userId);
+        }
+
         log.info("Forgot chat {} for user {}: {} memory(ies) removed", chatId, userId, forgotten);
     }
 
@@ -440,6 +450,10 @@ public class UserMemoryService {
         userMemoryEvidenceRepository.deleteByUserIdAndChatMessageId(userId, chatMessageId);
 
         int forgotten = forgetUnevidenced(userId, memoryIds);
+
+        if (forgotten > 0) {
+            interestOfferWithdrawal.withdrawOrphaned(userId);
+        }
 
         log.info("Forgot message {} of chat {} for user {}: {} memory(ies) removed", chatMessageId, chatId, userId, forgotten);
     }

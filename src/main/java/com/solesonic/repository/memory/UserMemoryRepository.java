@@ -26,6 +26,8 @@ public interface UserMemoryRepository extends JpaRepository<UserMemory, UUID> {
 
     List<UserMemory> findByUserIdAndSupersedesIn(UUID userId, Collection<UUID> supersedes);
 
+    long countByUserIdAndIdInAndStatusIn(UUID userId, Collection<UUID> ids, Collection<MemoryStatus> statuses);
+
     Optional<UserMemory> findByUserIdAndMemoryKeyAndStatus(UUID userId, String memoryKey, MemoryStatus status);
 
     /**

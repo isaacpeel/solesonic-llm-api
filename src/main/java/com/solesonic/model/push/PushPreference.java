@@ -7,7 +7,7 @@ import java.time.ZonedDateTime;
 import java.util.UUID;
 
 /**
- * Which events a user wants pushed. Absent means both are on.
+ * Which events a user wants pushed. Absent means all are on.
  */
 @Entity
 public class PushPreference {
@@ -17,6 +17,10 @@ public class PushPreference {
     private boolean turnComplete;
 
     private boolean elicitation;
+
+    private boolean interestOffers;
+
+    private boolean interestUpdates;
 
     private ZonedDateTime updated;
 
@@ -42,6 +46,22 @@ public class PushPreference {
 
     public void setElicitation(boolean elicitation) {
         this.elicitation = elicitation;
+    }
+
+    public boolean isInterestOffers() {
+        return interestOffers;
+    }
+
+    public void setInterestOffers(boolean interestOffers) {
+        this.interestOffers = interestOffers;
+    }
+
+    public boolean isInterestUpdates() {
+        return interestUpdates;
+    }
+
+    public void setInterestUpdates(boolean interestUpdates) {
+        this.interestUpdates = interestUpdates;
     }
 
     public ZonedDateTime getUpdated() {

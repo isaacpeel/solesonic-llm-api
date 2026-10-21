@@ -1,5 +1,6 @@
 package com.solesonic.service.push;
 
+import com.solesonic.config.interest.InterestSettings;
 import com.solesonic.config.push.PushSettings;
 import com.solesonic.exception.push.PushException;
 import com.solesonic.model.push.PushDeliveryOptions;
@@ -24,7 +25,8 @@ import java.util.concurrent.Callable;
 
 /**
  * Pushes an event to every browser a user has subscribed, in a fixed order: enabled, dedupe,
- * preference, presence, send. A reminder skips presence.
+ * preference, presence, send. A reminder skips presence, and so do the interest events, which have no
+ * chat anyone could already be reading.
  * <p>
  * It never fails or delays its caller. {@link #push} subscribes and walks away, and every failure
  * ends in a log line. Logs name the subscription id, the event type and the status, never the
@@ -37,6 +39,7 @@ public class PushNotificationService {
     private static final String SENT_KEY_PREFIX = "push:sent:";
     private static final Duration DEDUPE_WINDOW = Duration.ofHours(1);
     private static final Duration TURN_TIME_TO_LIVE = Duration.ofHours(24);
+    private static final Duration INTEREST_UPDATE_TIME_TO_LIVE = Duration.ofHours(24);
     private static final Duration FIRST_RETRY_DELAY = Duration.ofSeconds(1);
     private static final Duration MAX_RETRY_AFTER = Duration.ofSeconds(60);
     private static final int SEND_CONCURRENCY = 4;
@@ -48,6 +51,7 @@ public class PushNotificationService {
     private static final int UNREACHABLE = 0;
 
     private final PushSettings pushSettings;
+    private final InterestSettings interestSettings;
     private final PushPreferenceService pushPreferenceService;
     private final PushPresenceService pushPresenceService;
     private final PushSubscriptionService pushSubscriptionService;
@@ -56,6 +60,7 @@ public class PushNotificationService {
     private final ReactiveStringRedisTemplate redisTemplate;
 
     public PushNotificationService(PushSettings pushSettings,
+                                   InterestSettings interestSettings,
                                    PushPreferenceService pushPreferenceService,
                                    PushPresenceService pushPresenceService,
                                    PushSubscriptionService pushSubscriptionService,
@@ -63,6 +68,7 @@ public class PushNotificationService {
                                    PushPayloadFactory pushPayloadFactory,
                                    ReactiveStringRedisTemplate redisTemplate) {
         this.pushSettings = pushSettings;
+        this.interestSettings = interestSettings;
         this.pushPreferenceService = pushPreferenceService;
         this.pushPresenceService = pushPresenceService;
         this.pushSubscriptionService = pushSubscriptionService;
@@ -79,7 +85,7 @@ public class PushNotificationService {
         deliver(userId, pushEvent)
                 .subscribeOn(Schedulers.boundedElastic())
                 .onErrorResume(error -> {
-                    log.warn("Push {} for chat {} failed: {}", eventType(pushEvent), pushEvent.chatId(), error.getClass().getSimpleName());
+                    log.warn("Push {} for {} failed: {}", eventType(pushEvent), pushEvent.subjectId(), error.getClass().getSimpleName());
 
                     return Mono.empty();
                 })
@@ -116,8 +122,8 @@ public class PushNotificationService {
         return Mono.defer(() -> redisTemplate.opsForValue().setIfAbsent(SENT_KEY_PREFIX + pushEvent.dedupeKey(), "1", DEDUPE_WINDOW))
                 .defaultIfEmpty(true)
                 .onErrorResume(error -> {
-                    log.warn("Could not dedupe push {} for chat {}, sending anyway: {}",
-                            eventType(pushEvent), pushEvent.chatId(), error.getClass().getSimpleName());
+                    log.warn("Could not dedupe push {} for {}, sending anyway: {}",
+                            eventType(pushEvent), pushEvent.subjectId(), error.getClass().getSimpleName());
 
                     return Mono.just(true);
                 });
@@ -129,20 +135,30 @@ public class PushNotificationService {
         return switch (pushEvent) {
             case PushEvent.TurnFinished _, PushEvent.TurnFailed _ -> preferences.turnComplete();
             case PushEvent.ElicitationWaiting _ -> preferences.elicitation();
+            case PushEvent.InterestOffered _ -> preferences.interestOffers();
+            case PushEvent.InterestUpdated _ -> preferences.interestUpdates();
         };
     }
 
+    /**
+     * An offer has no chat, and an update's chat was created a moment ago, so nobody can be reading
+     * either.
+     */
     private Mono<Boolean> watched(UUID userId, PushEvent pushEvent) {
-        if (pushEvent instanceof PushEvent.ElicitationWaiting elicitationWaiting && elicitationWaiting.reminder()) {
-            return Mono.just(false);
-        }
-
-        return pushPresenceService.isWatching(userId, pushEvent.chatId());
+        return switch (pushEvent) {
+            case PushEvent.TurnFinished turnFinished -> pushPresenceService.isWatching(userId, turnFinished.chatId());
+            case PushEvent.TurnFailed turnFailed -> pushPresenceService.isWatching(userId, turnFailed.chatId());
+            case PushEvent.ElicitationWaiting elicitationWaiting -> elicitationWaiting.reminder()
+                    ? Mono.just(false)
+                    : pushPresenceService.isWatching(userId, elicitationWaiting.chatId());
+            case PushEvent.InterestOffered _, PushEvent.InterestUpdated _ -> Mono.just(false);
+        };
     }
 
     /**
      * A turn's push is worth delivering for a day; an elicitation's only for as long as it can still
-     * be answered. The topic lets a newer push replace one still queued for the same chat or question.
+     * be answered; an offer's for as long as it can be accepted. The topic lets a newer push replace
+     * one still queued for the same chat, question, offer or agent. Interest pushes are not urgent.
      */
     private PushDeliveryOptions options(PushEvent pushEvent) {
         return switch (pushEvent) {
@@ -150,6 +166,10 @@ public class PushNotificationService {
             case PushEvent.TurnFailed turnFailed -> new PushDeliveryOptions(TURN_TIME_TO_LIVE, PushUrgency.HIGH, topic(turnFailed.chatId()));
             case PushEvent.ElicitationWaiting elicitationWaiting ->
                     new PushDeliveryOptions(pushSettings.elicitationTimeout(), PushUrgency.HIGH, topic(elicitationWaiting.elicitationId()));
+            case PushEvent.InterestOffered interestOffered ->
+                    new PushDeliveryOptions(interestSettings.offerTimeToLive(), PushUrgency.NORMAL, topic(interestOffered.offerId()));
+            case PushEvent.InterestUpdated interestUpdated ->
+                    new PushDeliveryOptions(INTEREST_UPDATE_TIME_TO_LIVE, PushUrgency.NORMAL, topic(interestUpdated.agentId()));
         };
     }
 

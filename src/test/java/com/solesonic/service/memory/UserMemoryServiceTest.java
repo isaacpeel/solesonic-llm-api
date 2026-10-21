@@ -11,6 +11,7 @@ import com.solesonic.model.memory.UserMemorySummary;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.interest.InterestOfferWithdrawal;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -54,6 +55,9 @@ class UserMemoryServiceTest {
     @Mock
     private ChatMemoryReflectionRepository chatMemoryReflectionRepository;
 
+    @Mock
+    private InterestOfferWithdrawal interestOfferWithdrawal;
+
     @Captor
     private ArgumentCaptor<Collection<UUID>> deletedMemoryIdsCaptor;
 
@@ -63,7 +67,8 @@ class UserMemoryServiceTest {
     void setUp() {
         userMemoryService = UserMemoryServiceFixture.service(userMemoryRepository,
                 userMemoryEvidenceRepository,
-                chatMemoryReflectionRepository);
+                chatMemoryReflectionRepository,
+                interestOfferWithdrawal);
 
         lenient().when(userMemoryRepository.save(any(UserMemory.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
@@ -187,6 +192,7 @@ class UserMemoryServiceTest {
         userMemoryService.delete(USER_ID, memory.getId());
 
         verify(userMemoryRepository).delete(memory);
+        verify(interestOfferWithdrawal).withdrawOrphaned(USER_ID);
     }
 
     @Test
@@ -195,6 +201,8 @@ class UserMemoryServiceTest {
 
         verify(userMemoryRepository).deleteAllByUserId(USER_ID);
         verify(userMemoryRepository, never()).deleteAllByUserId(OTHER_USER_ID);
+        verify(interestOfferWithdrawal).withdrawOrphaned(USER_ID);
+        verify(interestOfferWithdrawal, never()).withdrawOrphaned(OTHER_USER_ID);
     }
 
     @Test
@@ -217,6 +225,7 @@ class UserMemoryServiceTest {
         verify(chatMemoryReflectionRepository).delete(reflection);
         verify(userMemoryEvidenceRepository).deleteByUserIdAndChatId(USER_ID, CHAT_ID);
         assertThat(deletedMemoryIds()).containsExactlyInAnyOrder(inferred.getId(), remembered.getId());
+        verify(interestOfferWithdrawal).withdrawOrphaned(USER_ID);
     }
 
     /**
@@ -327,6 +336,7 @@ class UserMemoryServiceTest {
         verify(userMemoryEvidenceRepository, never()).deleteByUserIdAndChatId(any(), any());
         verify(chatMemoryReflectionRepository, never()).delete(any(ChatMemoryReflection.class));
         assertThat(deletedMemoryIds()).containsExactly(memory.getId());
+        verify(interestOfferWithdrawal).withdrawOrphaned(USER_ID);
     }
 
     @Test
@@ -338,6 +348,7 @@ class UserMemoryServiceTest {
 
         verify(userMemoryRepository, never()).findUnevidenced(any(), anyCollection(), any());
         verify(userMemoryRepository, never()).deleteByUserIdAndIdIn(any(), anyCollection());
+        verify(interestOfferWithdrawal, never()).withdrawOrphaned(any());
     }
 
     /**
