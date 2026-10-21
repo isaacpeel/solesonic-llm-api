@@ -16,11 +16,6 @@
 
     <repositories>
         <repository>
-            <id>repository.spring.release</id>
-            <name>Spring GA Repository</name>
-            <url>https://repo.spring.io/release</url>
-        </repository>
-        <repository>
             <id>spring-milestones</id>
             <name>Spring Milestones</name>
             <url>https://repo.spring.io/milestone</url>
@@ -32,9 +27,9 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.0.1</spring-ai.version>
+        <spring-ai.version>2.1.0-M1</spring-ai.version>
         <java.version>25</java.version>
-        <a2a-java-sdk.version>1.0.0.Final</a2a-java-sdk.version>
+        <a2a-java-sdk.version>1.4.0.Final</a2a-java-sdk.version>
         <ag-ui.version>0.1.1</ag-ui.version>
     </properties>
     <dependencies>

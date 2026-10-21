@@ -25,15 +25,14 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.solesonic.security.JwtUserRequestFilter.SUB;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
- * That the {@code izzy-bot-admin} gate on {@code /memories} and {@code /memory-reflections} is
+ * That the {@code izzy-bot-admin} gate on {@code /memories} and {@code /memories} is
  * enforced, not merely annotated: the controllers are stood up as Spring proxies under
  * {@code @EnableMethodSecurity}, the way they run, and every endpoint is called.
  * <p>
@@ -63,9 +62,18 @@ class MemoryMethodSecurityTest {
     }
 
     private static final List<ThrowingConsumer<AnnotationConfigApplicationContext>> ENDPOINTS = List.of(
-            context -> context.getBean(MemoryController.class).list(null, null, null, FIRST_PAGE),
-            context -> context.getBean(MemoryController.class).status(),
-            context -> context.getBean(MemoryReflectionController.class).list(null, null, FIRST_PAGE));
+            context -> {
+                assert context != null;
+                context.getBean(MemoryController.class).list(null, null, null, FIRST_PAGE);
+            },
+            context -> {
+                assert context != null;
+                context.getBean(MemoryController.class).status();
+            },
+            context -> {
+                assert context != null;
+                context.getBean(MemoryReflectionController.class).list(null, null, FIRST_PAGE);
+            });
 
     @BeforeEach
     void beforeEach() {

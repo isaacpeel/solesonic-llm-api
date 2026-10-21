@@ -32,7 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * Routing, paging and response shapes of {@code /memories} and {@code /memory-reflections}. A
+ * Routing, paging and response shapes of {@code /memories} and {@code /memories/reflections}. A
  * standalone {@code MockMvc} applies no method security; the gate is
  * {@link MemoryMethodSecurityTest}'s.
  */
@@ -124,7 +124,7 @@ class MemoryControllerTest {
         when(memoryAdminService.reflections(USER_ID, List.of(ReflectionStatus.FAILED), expected))
                 .thenReturn(new PageImpl<>(List.of(), expected, 0));
 
-        mockMvc.perform(get("/memory-reflections")
+        mockMvc.perform(get("/memories/reflections")
                         .param("userId", USER_ID.toString())
                         .param("status", "FAILED")
                         .param("page", "1")

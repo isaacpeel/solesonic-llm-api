@@ -370,7 +370,7 @@ every path. This is enforced by structure rather than convention:
   `/users/{userId}/memories` the group passes the ownership check, but every query is still scoped
   to the path's `{userId}`, so an administrator acts on one named user at a time under exactly that
   user's rules, and each such call is logged with the administrator's id. The cross-user listings,
-  `/memories` and `/memory-reflections`, are read-only and gated by `@PreAuthorize` on the whole
+  `/memories` and `/memories`, are read-only and gated by `@PreAuthorize` on the whole
   controller; their unscoped reads live in their own `UserMemoryAdminRepository`, so
   `UserMemoryRepository` keeps every method `user_id`-scoped, and memory content is never a sort
   key. Nothing on these paths reaches the model.

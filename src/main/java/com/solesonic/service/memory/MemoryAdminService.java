@@ -35,7 +35,7 @@ import java.util.UUID;
 import java.util.stream.Collectors;
 
 /**
- * The cross-user reads behind {@code /memories} and {@code /memory-reflections}, for the
+ * The cross-user reads behind {@code /memories} and {@code /memories}, for the
  * {@code izzy-bot-admin} group. The controllers hold the gate; nothing else may call this.
  * <p>
  * Managing one user's memories needs nothing here: an administrator uses that user's own

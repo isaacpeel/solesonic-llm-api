@@ -1345,7 +1345,7 @@ Deleting a conversation or a message forgets what was learned from it — see
 | `DELETE` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `204` |
 | `GET` | `/memories` | `izzy-bot-admin` | paged `MemorySummary` — every user's |
 | `GET` | `/memories/status` | `izzy-bot-admin` | `MemoryProcessingStatus` |
-| `GET` | `/memory-reflections` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
+| `GET` | `/memories` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
 
 ### UserMemorySummary
 
@@ -1477,14 +1477,14 @@ GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
 
 ### List Reflection Progress
 
-- **Endpoint**: `GET /memory-reflections` — `izzy-bot-admin` only
+- **Endpoint**: `GET /memories` — `izzy-bot-admin` only
 - **Query**: `userId` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
   `sort` (`updated`, `reflectedThrough`, `attempts`, `status`, `userId`)
 - **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `status`, `attempts`,
   `reflectedThrough`, `updated` — newest change first unless `sort` says otherwise
 
 ```
-GET /memory-reflections?status=FAILED&sort=updated,desc
+GET /memories?status=FAILED&sort=updated,desc
 ```
 
 ---
