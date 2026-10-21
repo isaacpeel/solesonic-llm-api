@@ -19,6 +19,7 @@ final class UserMemoryServiceFixture {
     private UserMemoryServiceFixture() {
     }
 
+    @SuppressWarnings("unused")
     static UserMemoryService service(UserMemoryRepository userMemoryRepository,
                                      UserMemoryEvidenceRepository userMemoryEvidenceRepository,
                                      ChatMemoryReflectionRepository chatMemoryReflectionRepository) {

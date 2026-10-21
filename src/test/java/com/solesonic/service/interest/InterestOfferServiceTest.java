@@ -1,6 +1,5 @@
 package com.solesonic.service.interest;
 
-import com.solesonic.config.interest.InterestSettings;
 import com.solesonic.exception.interest.InterestException;
 import com.solesonic.model.chat.group.ChatGroup;
 import com.solesonic.model.interest.AgentCadence;

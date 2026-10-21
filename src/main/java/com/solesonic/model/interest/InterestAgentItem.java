@@ -11,6 +11,7 @@ import java.util.UUID;
  * A URL an agent has already considered, by hash only: dedupe needs nothing more, and it keeps
  * third-party text out of a table nobody reads.
  */
+@SuppressWarnings("unused")
 @Entity
 @IdClass(InterestAgentItemId.class)
 public class InterestAgentItem {

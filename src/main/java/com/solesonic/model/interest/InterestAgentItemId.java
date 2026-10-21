@@ -4,6 +4,7 @@ import java.io.Serializable;
 import java.util.Objects;
 import java.util.UUID;
 
+@SuppressWarnings("unused")
 public class InterestAgentItemId implements Serializable {
     private UUID agentId;
 

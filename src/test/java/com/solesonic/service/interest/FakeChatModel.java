@@ -1,5 +1,6 @@
 package com.solesonic.service.interest;
 
+import org.jspecify.annotations.NonNull;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.model.ChatResponse;
@@ -13,6 +14,7 @@ import java.util.List;
  * A model that answers with fixed JSON, written with single quotes for readability, and records every
  * prompt it was given. Nothing in the interest tests calls a real model.
  */
+@SuppressWarnings("unused")
 final class FakeChatModel implements ChatModel {
     final List<Prompt> prompts = new ArrayList<>();
     private String response;
@@ -35,7 +37,7 @@ final class FakeChatModel implements ChatModel {
     }
 
     @Override
-    public ChatResponse call(Prompt prompt) {
+    public @NonNull ChatResponse call(@NonNull Prompt prompt) {
         prompts.add(prompt);
 
         if (failure != null) {

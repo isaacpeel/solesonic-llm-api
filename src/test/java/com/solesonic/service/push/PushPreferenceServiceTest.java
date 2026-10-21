@@ -117,6 +117,7 @@ class PushPreferenceServiceTest {
         assertInvalid(new PushPreferenceRequest(true, null, true, true));
     }
 
+    @SuppressWarnings("all")
     private static PushPreference stored(boolean turnComplete, boolean elicitation, boolean interestOffers, boolean interestUpdates) {
         PushPreference pushPreference = new PushPreference();
         pushPreference.setUserId(USER_ID);
