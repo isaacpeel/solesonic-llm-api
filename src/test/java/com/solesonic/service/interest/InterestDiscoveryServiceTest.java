@@ -33,6 +33,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -171,6 +172,27 @@ class InterestDiscoveryServiceTest {
         verify(interestScanService, never()).complete(any(), any(), any());
         verify(pushNotificationService, never()).push(any(), any());
         assertThat(run.failedCount()).isEqualTo(1);
+    }
+
+    /**
+     * Recording the failure can fail too, with the database down; the rest of the batch must still run
+     * rather than sit claimed until the stale-claim window passes.
+     */
+    @Test
+    void aFailureToRecordAFailureDoesNotStopTheRestOfTheBatch() {
+        InterestScan first = new InterestScan();
+        first.setUserId(USER_ID);
+        InterestScan second = new InterestScan();
+        second.setUserId(OTHER_USER_ID);
+        when(interestScanService.claim()).thenReturn(List.of(first, second));
+        fakeChatModel.fail(new IllegalStateException("model server unavailable"));
+        doThrow(new IllegalStateException("database unavailable")).when(interestScanService).recordFailure(USER_ID);
+
+        DiscoveryRun run = interestDiscoveryService.discoverEligible();
+
+        verify(interestScanService).complete(OTHER_USER_ID, null, null);
+        assertThat(run.failedCount()).isEqualTo(1);
+        assertThat(run.nothingCount()).isEqualTo(1);
     }
 
     @Test

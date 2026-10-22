@@ -16,14 +16,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * A news run's bookkeeping, each step its own short transaction so that no lock is held across a
@@ -225,12 +223,10 @@ public class NewsRunRecorder {
     }
 
     private void succeeded(InterestAgent agent, ZonedDateTime now) {
-        Duration jitter = Duration.ofMinutes(ThreadLocalRandom.current().nextLong(interestSettings.jitter().toMinutes() + 1));
-
         agent.setLastRunAt(now);
         agent.setFailures(0);
         agent.setNextRunAt(NewsRunSchedule.next(now, agent.getCadence(), userPreferencesService.getZone(agent.getUserId()),
-                interestSettings.deliveryHour(), jitter));
+                interestSettings.deliveryHour(), NewsRunSchedule.jitter(interestSettings.jitter())));
         agent.setUpdated(now);
 
         interestAgentRepository.save(agent);

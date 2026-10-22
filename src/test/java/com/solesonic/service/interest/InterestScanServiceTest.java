@@ -79,13 +79,16 @@ class InterestScanServiceTest {
     void claimMarksEachClaimedRowInProgress() {
         InterestScan pending = new InterestScan();
         pending.setStatus(ScanStatus.PENDING);
-        when(interestScanRepository.findClaimable(any(), any(), anyInt(), anyInt())).thenReturn(List.of(pending));
+        when(interestScanRepository.findClaimable(any(), any(), any(), anyInt(), anyInt())).thenReturn(List.of(pending));
 
         List<InterestScan> claimed = interestScanService.claim();
 
         verify(interestScanRepository).seedMissing();
-        verify(interestScanRepository).findClaimable(NOW_ZONED.minus(InterestScanService.STALE_CLAIM), NOW_ZONED.minus(Duration.ofDays(7)),
-                InterestSettingsFixture.MAX_AGENTS_PER_USER, 5);
+        verify(interestScanRepository).findClaimable(NOW_ZONED.minus(InterestScanService.STALE_CLAIM),
+                NOW_ZONED.minus(InterestScanService.RETRY_DELAY),
+                NOW_ZONED.minus(Duration.ofDays(7)),
+                InterestSettingsFixture.MAX_AGENTS_PER_USER,
+                5);
         assertThat(claimed).singleElement().satisfies(scan -> assertThat(scan.getStatus()).isEqualTo(ScanStatus.IN_PROGRESS));
     }
 

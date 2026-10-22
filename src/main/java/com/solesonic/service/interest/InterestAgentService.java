@@ -7,6 +7,7 @@ import com.solesonic.model.interest.InterestAgent;
 import com.solesonic.model.interest.InterestAgentSummary;
 import com.solesonic.model.interest.InterestAgentUpdateRequest;
 import com.solesonic.repository.interest.InterestAgentRepository;
+import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -26,11 +27,16 @@ public class InterestAgentService {
     private static final Logger log = LoggerFactory.getLogger(InterestAgentService.class);
 
     private final InterestAgentRepository interestAgentRepository;
+    private final UserPreferencesService userPreferencesService;
     private final InterestSettings interestSettings;
     private final Clock clock;
 
-    public InterestAgentService(InterestAgentRepository interestAgentRepository, InterestSettings interestSettings, Clock clock) {
+    public InterestAgentService(InterestAgentRepository interestAgentRepository,
+                                UserPreferencesService userPreferencesService,
+                                InterestSettings interestSettings,
+                                Clock clock) {
         this.interestAgentRepository = interestAgentRepository;
+        this.userPreferencesService = userPreferencesService;
         this.interestSettings = interestSettings;
         this.clock = clock;
     }
@@ -46,7 +52,7 @@ public class InterestAgentService {
     /**
      * The body is validated before the agent is looked for, so a bad edit is a {@code 400} rather than
      * the {@code 404} of an agent that was never fetched. Resuming clears the failure count and makes
-     * the agent due at once.
+     * the agent due at once; a changed cadence moves the next run onto it.
      */
     @Transactional
     public InterestAgentSummary update(UUID userId, UUID agentId, InterestAgentUpdateRequest request) {
@@ -68,8 +74,9 @@ public class InterestAgentService {
             agent.setQuery(query);
         }
 
-        if (request.cadence() != null) {
+        if (request.cadence() != null && request.cadence() != agent.getCadence()) {
             agent.setCadence(request.cadence());
+            reschedule(agent, now);
         }
 
         if (request.status() == AgentStatus.ACTIVE && agent.getStatus() == AgentStatus.PAUSED) {
@@ -122,6 +129,21 @@ public class InterestAgentService {
         agent.setUpdated(now);
 
         return InterestAgentSummary.of(interestAgentRepository.save(agent));
+    }
+
+    /**
+     * Moves the next run onto the new cadence, counted from the last successful run, or to now when
+     * that is already past. An agent that has never run is already due and is left alone.
+     */
+    private void reschedule(InterestAgent agent, ZonedDateTime now) {
+        if (agent.getLastRunAt() == null) {
+            return;
+        }
+
+        ZonedDateTime next = NewsRunSchedule.next(agent.getLastRunAt(), agent.getCadence(), userPreferencesService.getZone(agent.getUserId()),
+                interestSettings.deliveryHour(), NewsRunSchedule.jitter(interestSettings.jitter()));
+
+        agent.setNextRunAt(next.isBefore(now) ? now : next);
     }
 
     /**

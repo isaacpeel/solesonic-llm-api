@@ -30,6 +30,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -120,7 +121,9 @@ class NewsRunRecorderTest {
         assertThat(update.getValue().getChatId()).isEqualTo(CHAT_ID);
         assertThat(update.getValue().getItemCount()).isEqualTo(2);
 
-        assertThat(savedItems()).extracting(InterestAgentItem::getUrlHash).containsExactly("a", "b");
+        assertThat(savedItems())
+                .extracting(InterestAgentItem::getAgentId, InterestAgentItem::getUserId, InterestAgentItem::getUrlHash, InterestAgentItem::getFirstSeen)
+                .containsExactly(tuple(agent.getId(), USER_ID, "a", NOW), tuple(agent.getId(), USER_ID, "b", NOW));
 
         assertThat(agent.getLastUpdateAt()).isEqualTo(NOW);
         assertThat(agent.getFailures()).isZero();

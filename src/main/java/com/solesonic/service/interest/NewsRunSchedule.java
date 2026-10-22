@@ -7,6 +7,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * When an agent runs next. A run settles onto the delivery hour in the owner's own zone, so a daily
@@ -28,6 +29,13 @@ public final class NewsRunSchedule {
         LocalDate day = today.plusDays(cadenceLength(cadence).toDays());
 
         return ZonedDateTime.of(day, LocalTime.of(deliveryHour, 0), zone).plus(jitter);
+    }
+
+    /**
+     * A whole number of minutes from zero to {@code maxJitter} inclusive.
+     */
+    public static Duration jitter(Duration maxJitter) {
+        return Duration.ofMinutes(ThreadLocalRandom.current().nextLong(maxJitter.toMinutes() + 1));
     }
 
     /**

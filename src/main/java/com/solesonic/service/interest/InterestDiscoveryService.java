@@ -169,8 +169,13 @@ public class InterestDiscoveryService {
             log.warn("Interest discovery failed for user {} ({})", userId, exception.getClass().getSimpleName());
             log.debug("Interest discovery failure for user {}", userId, exception);
 
-            interestScanService.recordFailure(userId);
             run.failed();
+
+            try {
+                interestScanService.recordFailure(userId);
+            } catch (RuntimeException recordException) {
+                log.warn("Could not record the discovery failure for user {} ({})", userId, recordException.getClass().getSimpleName());
+            }
         }
     }
 

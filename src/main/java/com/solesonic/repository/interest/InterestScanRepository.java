@@ -43,12 +43,14 @@ public interface InterestScanRepository extends JpaRepository<InterestScan, UUID
      * waiting, are past the offer cooldown and below the agent limit — the ones not yet read first.
      * {@code skip locked} keeps two instances from claiming the same user. A row left
      * {@code IN_PROGRESS} by an instance that died is claimable again once it is older than
-     * {@code staleBefore}; a {@code FAILED} one only once the user's memories change after the failure.
+     * {@code staleBefore}; a {@code PENDING} one that has failed before only once that failure is older
+     * than {@code retryBefore}; a {@code FAILED} one only once the user's memories change after the failure.
      */
     @Query(nativeQuery = true, value = """
             select scan.*
               from interest_scan scan
-             where (scan.status in ('PENDING', 'COMPLETED')
+             where (scan.status = 'COMPLETED'
+                    or (scan.status = 'PENDING' and (scan.attempts = 0 or scan.updated < :retryBefore))
                     or (scan.status = 'IN_PROGRESS' and scan.updated < :staleBefore)
                     or (scan.status = 'FAILED'
                         and exists (select 1
@@ -73,5 +75,9 @@ public interface InterestScanRepository extends JpaRepository<InterestScan, UUID
              limit :batchSize
                for update of scan skip locked
             """)
-    List<InterestScan> findClaimable(ZonedDateTime staleBefore, ZonedDateTime offerCooldownBefore, int maxAgents, int batchSize);
+    List<InterestScan> findClaimable(ZonedDateTime staleBefore,
+                                     ZonedDateTime retryBefore,
+                                     ZonedDateTime offerCooldownBefore,
+                                     int maxAgents,
+                                     int batchSize);
 }

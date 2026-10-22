@@ -8,6 +8,7 @@ import com.solesonic.model.interest.InterestAgentSummary;
 import com.solesonic.model.interest.InterestAgentUpdateRequest;
 import com.solesonic.model.interest.InterestErrorCode;
 import com.solesonic.repository.interest.InterestAgentRepository;
+import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,11 +41,17 @@ class InterestAgentServiceTest {
     @Mock
     private InterestAgentRepository interestAgentRepository;
 
+    @Mock
+    private UserPreferencesService userPreferencesService;
+
     private InterestAgentService interestAgentService;
 
     @BeforeEach
     void setUp() {
-        interestAgentService = new InterestAgentService(interestAgentRepository, InterestSettingsFixture.settings(), Clock.fixed(NOW, ZoneOffset.UTC));
+        interestAgentService = new InterestAgentService(interestAgentRepository, userPreferencesService, InterestSettingsFixture.settings(),
+                Clock.fixed(NOW, ZoneOffset.UTC));
+
+        when(userPreferencesService.getZone(USER_ID)).thenReturn(ZoneOffset.UTC);
 
         when(interestAgentRepository.save(any(InterestAgent.class))).thenAnswer(invocation -> invocation.getArgument(0));
     }
@@ -61,6 +68,32 @@ class InterestAgentServiceTest {
         assertThat(summary.query()).isEqualTo("Formula 1 race results");
         assertThat(summary.cadence()).isEqualTo(AgentCadence.WEEKLY);
         assertThat(summary.status()).isEqualTo(AgentStatus.ACTIVE);
+    }
+
+    @Test
+    void changingTheCadenceSchedulesTheNextRunFromTheLastOneAtTheNewCadence() {
+        InterestAgent agent = agent(AgentStatus.ACTIVE);
+        agent.setCadence(AgentCadence.WEEKLY);
+        agent.setLastRunAt(NOW_ZONED.withHour(InterestSettingsFixture.DELIVERY_HOUR));
+        agent.setNextRunAt(NOW_ZONED.withHour(InterestSettingsFixture.DELIVERY_HOUR).plusDays(7));
+        when(interestAgentRepository.lockByIdAndUserId(agent.getId(), USER_ID)).thenReturn(Optional.of(agent));
+
+        interestAgentService.update(USER_ID, agent.getId(), new InterestAgentUpdateRequest(null, null, AgentCadence.DAILY, null));
+
+        assertThat(agent.getNextRunAt()).isEqualTo(NOW_ZONED.withHour(InterestSettingsFixture.DELIVERY_HOUR).plusDays(1));
+    }
+
+    @Test
+    void changingTheCadenceMakesTheAgentDueNowWhenItsNewNextRunIsAlreadyPast() {
+        InterestAgent agent = agent(AgentStatus.ACTIVE);
+        agent.setCadence(AgentCadence.WEEKLY);
+        agent.setLastRunAt(NOW_ZONED.minusDays(3));
+        agent.setNextRunAt(NOW_ZONED.plusDays(4));
+        when(interestAgentRepository.lockByIdAndUserId(agent.getId(), USER_ID)).thenReturn(Optional.of(agent));
+
+        interestAgentService.update(USER_ID, agent.getId(), new InterestAgentUpdateRequest(null, null, AgentCadence.DAILY, null));
+
+        assertThat(agent.getNextRunAt()).isEqualTo(NOW_ZONED);
     }
 
     @Test

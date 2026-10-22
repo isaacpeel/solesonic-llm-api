@@ -35,6 +35,12 @@ public class InterestScanService {
      */
     static final Duration STALE_CLAIM = Duration.ofHours(1);
 
+    /**
+     * How long a user whose discovery failed waits before it is tried again, so a model that keeps
+     * failing is not called for them on every tick.
+     */
+    static final Duration RETRY_DELAY = Duration.ofHours(1);
+
     private final InterestScanRepository interestScanRepository;
     private final InterestOfferRepository interestOfferRepository;
     private final InterestAgentRepository interestAgentRepository;
@@ -60,6 +66,7 @@ public class InterestScanService {
         ZonedDateTime now = ZonedDateTime.now(clock);
 
         List<InterestScan> claimed = interestScanRepository.findClaimable(now.minus(STALE_CLAIM),
+                now.minus(RETRY_DELAY),
                 now.minus(interestSettings.offerCooldown()),
                 interestSettings.maxAgentsPerUser(),
                 interestSettings.discoveryBatchSize());

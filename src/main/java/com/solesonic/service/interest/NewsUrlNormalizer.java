@@ -23,7 +23,7 @@ public final class NewsUrlNormalizer {
     private static final Set<String> SCHEMES = Set.of("http", "https");
     private static final Set<String> TRACKING_PARAMETERS = Set.of("fbclid", "gclid");
     private static final String TRACKING_PREFIX = "utm_";
-    private static final Pattern IPV4_LITERAL = Pattern.compile("[0-9.]+");
+    private static final Pattern NUMERIC_LABEL = Pattern.compile("[0-9]+|0x[0-9a-f]*");
     private static final List<String> INTERNAL_SUFFIXES = List.of(".localhost", ".local", ".internal", ".lan", ".home.arpa");
 
     private NewsUrlNormalizer() {
@@ -49,6 +49,10 @@ public final class NewsUrlNormalizer {
         }
 
         String host = uri.getHost().toLowerCase(Locale.ROOT);
+
+        if (host.endsWith(".")) {
+            host = host.substring(0, host.length() - 1);
+        }
 
         if (!isPublicName(host)) {
             return Optional.empty();
@@ -98,13 +102,17 @@ public final class NewsUrlNormalizer {
     }
 
     /**
-     * A news article lives on a public domain name. An IP literal, {@code localhost} or an internal
-     * suffix is refused before the URL can be handed to the extraction tool, which fetches it: a
+     * A news article lives on a public domain name. An IP literal in any spelling a resolver accepts
+     * (a numeric or hex last label), {@code localhost} or an internal suffix is refused before the URL can be handed to the extraction tool, which fetches it: a
      * poisoned search result must not point the server at its own network. The MCP server keeps its own
      * resolve-time checks, since a public name can still resolve inward.
      */
     private static boolean isPublicName(String host) {
-        if (host.startsWith("[") || IPV4_LITERAL.matcher(host).matches() || !host.contains(".")) {
+        if (host.startsWith("[") || !host.contains(".")) {
+            return false;
+        }
+
+        if (NUMERIC_LABEL.matcher(host.substring(host.lastIndexOf('.') + 1)).matches()) {
             return false;
         }
 

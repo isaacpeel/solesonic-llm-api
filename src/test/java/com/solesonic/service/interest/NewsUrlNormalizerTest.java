@@ -40,6 +40,25 @@ class NewsUrlNormalizerTest {
         assertThat(NewsUrlNormalizer.normalize("https://news.example.com:8443/story")).isEmpty();
     }
 
+    /**
+     * A trailing dot resolves exactly like the name without it, and a resolver reads a hex or numeric
+     * last label as an address.
+     */
+    @Test
+    void refusesInternalHostsSpelledWithATrailingDotOrAsANonDecimalAddress() {
+        assertThat(NewsUrlNormalizer.normalize("http://localhost./")).isEmpty();
+        assertThat(NewsUrlNormalizer.normalize("http://vault.internal./")).isEmpty();
+        assertThat(NewsUrlNormalizer.normalize("http://127.0.0.1./")).isEmpty();
+        assertThat(NewsUrlNormalizer.normalize("http://0x7f.0.0.1/")).isEmpty();
+        assertThat(NewsUrlNormalizer.normalize("http://0x7f.0x1/")).isEmpty();
+        assertThat(NewsUrlNormalizer.normalize("http://127.1/")).isEmpty();
+    }
+
+    @Test
+    void dropsATrailingDotFromAPublicName() {
+        assertThat(NewsUrlNormalizer.normalize("https://news.example.com./story")).contains("https://news.example.com/story");
+    }
+
     @Test
     void hashesToSixtyFourHexCharactersAndOneHashPerSpelling() {
         String hash = NewsUrlNormalizer.hash("https://news.example.com/f1/race");
