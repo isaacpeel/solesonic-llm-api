@@ -482,6 +482,45 @@ user's behalf and writes a chat. Each of those is a boundary:
 - **Topic labels, queries, search results and summaries are never logged above DEBUG** and never reach
   the security log; run logs carry counts and ids only (`DiscoveryRun`, `NewsRun`).
 
+## A2A Agents through LiteLLM
+
+Agents such as `/network` are reached through LiteLLM's agent gateway instead of the A2A agent host.
+
+- **Every authenticated user can read household network data. This is a stated decision, not an
+  oversight.** `/network` has no role gate, and the agent does no per-user authorization, so per-person
+  device ownership and browsing categories (`adult` included) are available to every izzybot user. A
+  multi-tenant deployment must revisit this before it ships.
+- **The user's token never reaches LiteLLM.** A LiteLLM agent call carries only
+  `x-litellm-api-key: Bearer <A2A_LITELLM_API_KEY>`. `LiteLlmA2AAuthInterceptor` removes any
+  `Authorization` header, whatever its case, and never calls the token exchange. LiteLLM authenticates to
+  the agent with a static header of its own, so the agent never learns who asked.
+- **The virtual key is a shared service credential.** Scope it in LiteLLM to the izzybot agents and
+  treat it like `MCP_CLIENT_SECRET`. It is never logged, never put in an exception message, and never
+  written into a card.
+- **Cards are pinned to the gateway.** `LiteLlmAgentDiscovery` keeps only the path of each
+  `supportedInterfaces` URL. That path must sit under the gateway's agent routes, `{base path}/a2a/`,
+  with no encoded dots or slashes, and the endpoint is rebuilt on the scheme and host of
+  `A2A_LITELLM_BASE_URI`. The legacy `url` and `additionalInterfaces` are dropped, since the client
+  never routes through them. Whatever host or scheme a mis-curated card names, the key and users'
+  messages only ever go to the configured gateway over its configured scheme, and never to another
+  gateway route such as key management or chat completions. Rebuilding, rather than refusing a
+  mismatch, is what lets this work behind a TLS-terminating proxy, where LiteLLM writes `http://` into
+  the card.
+- **Agent names are command names.** The slash command is the `agent_name` LiteLLM lists, not the
+  card's `name` (LiteLLM serves the display name there). An `agent_name` that does not match
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` is skipped before its card is fetched. The name becomes a path
+  segment, a slash command, log text and the text of the "not available" error, so nothing else reaches
+  any of them. Refusals log only sanitized values (`Redactor.sanitizePath`).
+- **The card's security fields are ignored.** `securitySchemes`/`security` describe authenticating to
+  LiteLLM, which the virtual key header already does. They are removed before parsing because LiteLLM
+  writes them in a shape the 1.0 SDK rejects.
+- **Discovery cannot hold up startup.** LiteLLM discovery has its own 10-second timeout per call rather
+  than the 300-second turn timeout. Agent-host cards are not pinned, which predates this feature.
+- **`A2AClientProperties.Litellm.toString()` redacts the key.**
+- **Agent answers are untrusted text.** The network agent quotes device-chosen hostnames. Answers reach
+  the UI through the same Markdown rendering as every other agent's text, and reach the transcript only
+  as `ASSISTANT` rows, which memory reflection never accepts as evidence.
+
 ## Security Monitoring
 
 ### Metrics to Monitor

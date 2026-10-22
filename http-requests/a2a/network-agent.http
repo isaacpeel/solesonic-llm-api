@@ -1,0 +1,139 @@
+### 1. Agent card, straight from the agent
+GET {{agent-uri}}/.well-known/agent-card.json
+
+> {%
+    client.test("card is the network agent", () => {
+        client.assert(response.body.name === "network", "name: " + response.body.name);
+        client.assert(response.body.capabilities.streaming === true, "streaming is off");
+        client.assert(response.body.supportedInterfaces.some(i => i.protocolBinding === "JSONRPC"), "no JSONRPC interface");
+    });
+%}
+
+### 2. Question, straight to the agent (no LiteLLM): the agent's own A2A_API_KEY, as LiteLLM sends it
+POST {{agent-uri}}/
+Content-Type: application/json
+A2A-Version: 1.0
+Authorization: Bearer {{agent-api-key}}
+
+{
+  "jsonrpc": "2.0",
+  "id": "{{$random.uuid}}",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "{{$random.uuid}}",
+      "contextId": "{{context-id}}",
+      "parts": [{"text": "is the collector healthy?"}]
+    }
+  }
+}
+
+### 3. Agents the key can reach: the API needs a bare array with agent_name
+GET {{llm-uri}}/v1/agents
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+> {%
+    client.test("bare array listing the agent", () => {
+        client.assert(Array.isArray(response.body), "not a bare array: " + JSON.stringify(response.body).slice(0, 200));
+        client.assert(response.body.some(agent => agent.agent_name === request.environment.get("agent-name")), "agent_name missing");
+    });
+%}
+
+### 4. Agent card as LiteLLM serves it: every URL must be under {{llm-uri}}/a2a/ or the API refuses it
+GET {{llm-uri}}/a2a/{{agent-name}}/.well-known/agent-card.json
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+> {%
+    client.test("card is pinned to the gateway", () => {
+        const prefix = request.environment.get("llm-uri") + "/a2a/";
+        const card = response.body;
+        const urls = (card.supportedInterfaces || []).map(i => i.url)
+            .concat(card.url ? [card.url] : [])
+            .concat((card.additionalInterfaces || []).map(i => i.url));
+        client.assert((card.supportedInterfaces || []).length > 0, "no supportedInterfaces");
+        urls.forEach(url => client.assert(url.startsWith(prefix), "off-gateway URL: " + url));
+    });
+%}
+
+### 5. Question through LiteLLM (blocking)
+POST {{llm-uri}}/a2a/{{agent-name}}
+Content-Type: application/json
+A2A-Version: 1.0
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+{
+  "jsonrpc": "2.0",
+  "id": "{{$random.uuid}}",
+  "method": "SendMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "{{$random.uuid}}",
+      "contextId": "{{context-id}}",
+      "parts": [{"text": "is the collector healthy?"}]
+    }
+  }
+}
+
+### 6. Question through LiteLLM (streaming): what izzybot sends
+POST {{llm-uri}}/a2a/{{agent-name}}
+Content-Type: application/json
+Accept: text/event-stream
+A2A-Version: 1.0
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+{
+  "jsonrpc": "2.0",
+  "id": "{{$random.uuid}}",
+  "method": "SendStreamingMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "{{$random.uuid}}",
+      "contextId": "{{context-id}}",
+      "parts": [{"text": "is the collector healthy?"}]
+    }
+  }
+}
+
+### 7. Follow-up in the same conversation (same contextId as 5 and 6)
+POST {{llm-uri}}/a2a/{{agent-name}}
+Content-Type: application/json
+Accept: text/event-stream
+A2A-Version: 1.0
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+{
+  "jsonrpc": "2.0",
+  "id": "{{$random.uuid}}",
+  "method": "SendStreamingMessage",
+  "params": {
+    "message": {
+      "role": "ROLE_USER",
+      "messageId": "{{$random.uuid}}",
+      "contextId": "{{context-id}}",
+      "parts": [{"text": "and yesterday?"}]
+    }
+  }
+}
+
+### 8. Fallback: the same stream in A2A 0.3 shape, if LiteLLM rejects 6
+POST {{llm-uri}}/a2a/{{agent-name}}
+Content-Type: application/json
+Accept: text/event-stream
+x-litellm-api-key: Bearer {{litellm-agent-key}}
+
+{
+  "jsonrpc": "2.0",
+  "id": "{{$random.uuid}}",
+  "method": "message/stream",
+  "params": {
+    "message": {
+      "role": "user",
+      "messageId": "{{$random.uuid}}",
+      "contextId": "{{context-id}}",
+      "parts": [{"kind": "text", "text": "is the collector healthy?"}]
+    }
+  }
+}

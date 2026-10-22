@@ -3,12 +3,17 @@ package com.solesonic.service.a2a;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
+import com.solesonic.config.a2a.LiteLlmA2AAuthInterceptor;
+import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.mcp.client.TokenExchangeService;
+import com.solesonic.model.a2a.A2AAgentSource;
+import com.solesonic.model.a2a.RegisteredAgent;
 import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.events.NotificationService;
 import org.a2aproject.sdk.client.*;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransportConfigBuilder;
+import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallInterceptor;
 import org.a2aproject.sdk.spec.*;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -16,6 +21,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
+import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.util.List;
@@ -32,6 +38,7 @@ public class A2AAgentService {
     private final McpFilterService mcpFilterService;
     private final NotificationService notificationService;
     private final A2AStickyAgentService a2aStickyAgentService;
+    private final LiteLlmA2AAuthInterceptor liteLlmAuthInterceptor;
     private final long timeoutSeconds;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
@@ -45,22 +52,30 @@ public class A2AAgentService {
         this.mcpFilterService = mcpFilterService;
         this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
+        this.liteLlmAuthInterceptor = new LiteLlmA2AAuthInterceptor(properties.litellm().apiKey());
         this.timeoutSeconds = properties.timeoutSeconds();
     }
 
+    /**
+     * @param userToken used only for an agent-host agent; a LiteLLM agent is called with the virtual key
+     *                  alone, so the user's token never reaches the gateway.
+     */
     public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
-        return a2aStickyAgentService.getActiveTaskId(chatId)
-                .flatMapMany(activeTaskId -> Flux.<String>create(sink -> {
-                    AgentCard agentCard = agentRegistry.card(agentName);
+        return Flux.defer(() -> agentRegistry.agent(agentName)
+                        .map(registeredAgent -> delegate(chatId, registeredAgent, message, userToken))
+                        .orElseGet(() -> releaseUnavailableAgent(chatId, agentName)))
+                .timeout(Duration.ofSeconds(timeoutSeconds));
+    }
 
+    private Flux<String> delegate(UUID chatId, RegisteredAgent registeredAgent, String message, String userToken) {
+        return a2aStickyAgentService.getActiveTaskId(chatId)
+                .flatMapMany(activeTaskId -> Flux.create(sink -> {
                     BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(chatId, event, sink);
 
-                    A2AAuthInterceptor authInterceptor = new A2AAuthInterceptor(tokenExchangeService, mcpFilterService, userToken);
-
                     JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
-                            .addInterceptor(authInterceptor);
+                            .addInterceptor(interceptor(registeredAgent.source(), userToken));
 
-                    Client client = Client.builder(agentCard)
+                    Client client = Client.builder(registeredAgent.agentCard())
                             .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
                             .addConsumer(consumer)
                             .streamingErrorHandler(sink::error)
@@ -80,8 +95,37 @@ public class A2AAgentService {
                     }
 
                     client.sendMessage(messageBuilder.build(), null);
-                }))
-                .timeout(Duration.ofSeconds(timeoutSeconds));
+                }));
+    }
+
+    ClientCallInterceptor interceptor(A2AAgentSource source, String userToken) {
+        return switch (source) {
+            case AGENT_HOST -> new A2AAuthInterceptor(tokenExchangeService, mcpFilterService, userToken);
+            case LITELLM -> liteLlmAuthInterceptor;
+        };
+    }
+
+    /**
+     * The sticky key outlives the registry, so a chat can still be attached to an agent that was not
+     * discovered after a restart. It is released, so the next message reaches the default route, and the
+     * turn fails with a message saying so even when the release itself fails.
+     */
+    private Flux<String> releaseUnavailableAgent(UUID chatId, String agentName) {
+        log.warn("A2A agent '{}' is not registered; releasing it from chat {}", agentName, chatId);
+
+        Mono<Void> releaseAgent = a2aStickyAgentService.deactivate(chatId)
+                .onErrorResume(exception -> releaseFailed(chatId, exception));
+
+        Mono<Void> releaseTask = a2aStickyAgentService.deactivateTask(chatId)
+                .onErrorResume(exception -> releaseFailed(chatId, exception));
+
+        return Mono.when(releaseAgent, releaseTask)
+                .thenMany(Flux.error(new A2AAgentUnavailableException(agentName)));
+    }
+
+    private static Mono<Void> releaseFailed(UUID chatId, Throwable exception) {
+        log.warn("Could not release the A2A agent from chat {} ({})", chatId, exception.getClass().getSimpleName());
+        return Mono.empty();
     }
 
     void handleEvent(UUID chatId, ClientEvent clientEvent, FluxSink<String> sink) {

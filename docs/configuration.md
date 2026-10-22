@@ -432,6 +432,8 @@ token, so it searches on the application's client credentials; without the role 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
 | `A2A_BASE_URI` | Base URI of the remote A2A agent host | `https://agents.yourdomain.com` | Yes | Maps to `solesonic.a2a.base-uri`; no default, so a missing value fails startup. The request timeout is fixed at `solesonic.a2a.timeout-seconds=300` |
+| `A2A_LITELLM_BASE_URI` | Base URL of the LiteLLM proxy whose agent gateway serves agents such as `/network` | `https://litellm.yourdomain.com` | Yes | Maps to `solesonic.a2a.litellm.base-uri`; no default. The API calls only `{base}/v1/agents`, `{base}/a2a/{agent}/.well-known/agent-card.json` and the card's own interface URL, and refuses any card whose endpoints are not on this scheme, host and port under `{path}/a2a/`. Use `https` unless LiteLLM is on the same host or a private network, since the virtual key travels on every call. An unreachable LiteLLM at startup is tolerated: discovery gives up after 10 seconds per call, and the API starts without its agents and logs a WARN |
+| `A2A_LITELLM_API_KEY` | LiteLLM virtual key, sent as `x-litellm-api-key: Bearer <key>` | `sk-…` | Yes | Maps to `solesonic.a2a.litellm.api-key`; no default. Scope it in LiteLLM to the agents izzybot may call (start with `network`) and treat it like `MCP_CLIENT_SECRET`. The user's token is never sent to LiteLLM |
 
 ### CORS Configuration
 
@@ -475,6 +477,8 @@ IMAGE_ADMISSION_TIMEOUT=30s
 
 # A2A (required)
 A2A_BASE_URI=https://agents.yourdomain.com
+A2A_LITELLM_BASE_URI=https://litellm.yourdomain.com
+A2A_LITELLM_API_KEY=sk-your_litellm_virtual_key
 
 # Push notifications (required — generate the VAPID pair once)
 PUSH_ENABLED=true
@@ -637,6 +641,8 @@ INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES=10
 
 # A2A Configuration
 A2A_BASE_URI=https://agents.yourdomain.com
+A2A_LITELLM_BASE_URI=https://litellm.yourdomain.com
+A2A_LITELLM_API_KEY=sk-your_litellm_virtual_key
 
 # AWS Configuration (optional)
 AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789012:key/your-key-id

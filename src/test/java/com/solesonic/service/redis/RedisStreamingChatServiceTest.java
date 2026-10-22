@@ -18,6 +18,7 @@ import com.openai.errors.RateLimitException;
 import com.openai.models.ErrorObject;
 import com.solesonic.config.JacksonConfig;
 import com.solesonic.exception.ChatException;
+import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
 import com.solesonic.exception.rag.DocumentReadException;
@@ -459,6 +460,15 @@ class RedisStreamingChatServiceTest {
 
         assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
         assertThat(publishedRunError().message()).doesNotContain("/does-not-exist");
+    }
+
+    @Test
+    void unavailableAgentTellsTheUserTheChatWasReleased() {
+        errorTurn(new A2AAgentUnavailableException("network"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+        assertThat(publishedRunError().message())
+                .isEqualTo("The network agent is not available right now. Send your message again to continue without it.");
     }
 
     /**

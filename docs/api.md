@@ -1569,6 +1569,31 @@ no turn, no message row, no SSE frames and no assistant response.
 - Sending `commands: ["model"]` on either streaming endpoint is `400 Bad Request`, before anything
   is persisted.
 
+### A2A agent commands (`/network` and others)
+
+Every A2A agent the API discovered at startup is an `agent` command named after its card. Agents come
+from two places: the A2A agent host (`A2A_BASE_URI`) and LiteLLM's agent gateway
+(`A2A_LITELLM_BASE_URI`), which is where `/network` lives. A client cannot tell them apart and does not
+need to.
+
+- Sending an agent command makes that agent the chat's **sticky agent**: every later message in the chat
+  goes to it with no command, using the chat id as the A2A `contextId`, until the user sends any other
+  routed slash command. `/model` is a setting command that is never routed, so it does not release the
+  agent.
+- While the agent works, its status lines (`Running query_sql…`) arrive as `progress` `CUSTOM` events,
+  not as answer text. The answer arrives as ordinary `TEXT_MESSAGE_CONTENT`.
+- A failed agent task ends the turn with `RUN_ERROR`.
+- If the chat's sticky agent was not discovered (LiteLLM was unreachable when the API started, for
+  example), the turn ends with `RUN_ERROR` code `UPSTREAM_UNAVAILABLE` and the message
+  `The <agent> agent is not available right now. Send your message again to continue without it.`
+  The agent is released first, so the next message reaches the default route.
+- An agent registered in LiteLLM after the API started appears only after an API restart.
+- **Streaming through LiteLLM is unverified.** The SDK streams when the card says
+  `capabilities.streaming: true`. If the Java JSON-RPC transport cannot parse LiteLLM's `message/stream`
+  response, un-tick streaming on the curated card in LiteLLM: the answer still arrives, as one chunk,
+  without the progress events. Record the outcome here once it has been checked against the running
+  gateway.
+
 ---
 
 ## Atlassian Authentication

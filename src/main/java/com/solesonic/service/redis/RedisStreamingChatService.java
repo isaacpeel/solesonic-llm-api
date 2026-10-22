@@ -14,6 +14,7 @@ import com.agui.community.core.message.UserMessage;
 import com.openai.errors.OpenAIIoException;
 import com.openai.errors.OpenAIServiceException;
 import com.solesonic.exception.ChatException;
+import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
 import com.solesonic.exception.rag.DocumentReadException;
@@ -467,7 +468,7 @@ public class RedisStreamingChatService {
             return classifyStatus(webClientResponseException.getStatusCode());
         }
 
-        if (unwrapped instanceof GoogleApiException) {
+        if (unwrapped instanceof GoogleApiException || unwrapped instanceof A2AAgentUnavailableException) {
             return TurnErrorCode.UPSTREAM_UNAVAILABLE;
         }
 
@@ -537,7 +538,8 @@ public class RedisStreamingChatService {
     }
 
     private static String userMessage(Throwable unwrapped, TurnErrorCode code) {
-        if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException) {
+        if (unwrapped instanceof ImageGenerationException || unwrapped instanceof DocumentReadException
+                || unwrapped instanceof A2AAgentUnavailableException) {
             return unwrapped.getMessage();
         }
 
