@@ -347,23 +347,24 @@ Every variable is optional; the Default column is what applies when it is unset.
 ### Push Notification Configuration
 
 Chrome Web Push (RFC 8030 delivery, RFC 8291 encryption, RFC 8292 VAPID). Chrome's push service is
-`fcm.googleapis.com`: it needs no Firebase project, account or SDK, and relays only ciphertext. Every
-variable is required and has no default.
+`fcm.googleapis.com`: it needs no Firebase project, account or SDK, and relays only ciphertext.
+`PUSH_ENABLED` and the VAPID variables are required and have no default: the key pair and subject
+are validated at startup even when push is disabled, and identify one deployment.
 
-| Variable | Description | Example | Required | Notes |
+| Variable | Description | Default | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `PUSH_ENABLED` | Whether push is offered at all | `true` | Yes | `false` makes `GET /push/vapid-public-key` answer `503` and the UI hide the feature |
-| `PUSH_VAPID_PUBLIC_KEY` | VAPID public key | `BNdob4CM…` | Yes | base64url, 65-byte uncompressed P-256 point |
+| `PUSH_ENABLED` | Whether push is offered at all | — | Yes | `false` makes `GET /push/vapid-public-key` answer `503` and the UI hide the feature |
+| `PUSH_VAPID_PUBLIC_KEY` | VAPID public key | — | Yes | base64url, 65-byte uncompressed P-256 point |
 | `PUSH_VAPID_PRIVATE_KEY` | VAPID private key | — | Yes | base64url, 32-byte scalar. **Secret** |
-| `PUSH_VAPID_SUBJECT` | Contact for the push service | `mailto:ops@example.com` | Yes | A `mailto:` or `https:` URI |
-| `PUSH_ALLOWED_ENDPOINT_HOSTS` | Push service hosts a subscription may name | `fcm.googleapis.com` | Yes | Comma-separated; matched exactly, never by suffix |
-| `PUSH_CONNECT_TIMEOUT` | Connect timeout to the push service | `5s` | Yes | |
-| `PUSH_READ_TIMEOUT` | Read timeout to the push service | `10s` | Yes | |
-| `PUSH_MAX_ATTEMPTS` | Sends per push on a `5xx` or an unreachable service | `3` | Yes | Backoff 1s, 2s, 4s |
-| `PUSH_MAX_FAILURES` | Failed pushes before a subscription is deleted | `5` | Yes | Reset by any delivery |
-| `PUSH_ELICITATION_REMINDER_SECONDS` | Delay before reminding of an unanswered elicitation | `120` | Yes | Must be greater than 0 and less than `solesonic.elicitation.timeout-seconds` |
-| `PUSH_PRESENCE_TTL_SECONDS` | How long a reader counts as watching without a heartbeat | `45` | Yes | |
-| `PUSH_PRESENCE_HEARTBEAT_SECONDS` | How often a reader refreshes itself | `15` | Yes | Must be greater than 0 and less than `PUSH_PRESENCE_TTL_SECONDS` |
+| `PUSH_VAPID_SUBJECT` | Contact for the push service | — | Yes | A `mailto:` or `https:` URI, e.g. `mailto:ops@example.com` |
+| `PUSH_ALLOWED_ENDPOINT_HOSTS` | Push service hosts a subscription may name | `fcm.googleapis.com` | No | Comma-separated; matched exactly, never by suffix. The default is Chrome's push service |
+| `PUSH_CONNECT_TIMEOUT` | Connect timeout to the push service | `5s` | No | |
+| `PUSH_READ_TIMEOUT` | Read timeout to the push service | `10s` | No | |
+| `PUSH_MAX_ATTEMPTS` | Sends per push on a `5xx` or an unreachable service | `3` | No | Backoff 1s, 2s, 4s |
+| `PUSH_MAX_FAILURES` | Failed pushes before a subscription is deleted | `5` | No | Reset by any delivery |
+| `PUSH_ELICITATION_REMINDER_SECONDS` | Delay before reminding of an unanswered elicitation | `120` | No | Must be greater than 0 and less than `solesonic.elicitation.timeout-seconds` |
+| `PUSH_PRESENCE_TTL_SECONDS` | How long a reader counts as watching without a heartbeat | `45` | No | |
+| `PUSH_PRESENCE_HEARTBEAT_SECONDS` | How often a reader refreshes itself | `15` | No | Must be greater than 0 and less than `PUSH_PRESENCE_TTL_SECONDS` |
 
 **Generating the VAPID keys.** One P-256 pair per deployment, generated once:
 
