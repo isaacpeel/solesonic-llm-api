@@ -314,29 +314,29 @@ first deploy every existing conversation is eligible, which is the whole retroac
 drains at `MEMORY_REFLECTION_BATCH_SIZE` chats per `MEMORY_REFLECTION_CRON` tick. See
 [docs/api.md](api.md#user-memory) and [docs/security.md](security.md#user-memory).
 
-Every variable is **required**: none carries a default, so a missing one fails startup.
+Every variable is optional; the Default column is what applies when it is unset.
 
-| Variable | Description | Example | Required | Notes |
+| Variable | Description | Default | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `MEMORY_MODEL` | Model reflection runs against | `qwen2.5:32b` | Yes | Temperature 0. Never follows a chat's `/model` selection |
-| `MEMORY_READ_TIMEOUT` | Read timeout for the memory model client | `5m` | Yes | Spring duration |
-| `MEMORY_REFLECTION_ENABLED` | Run the reflection task | `true` | Yes | Operational switch for the whole deployment |
-| `MEMORY_REFLECTION_CRON` | Reflection schedule | `0 */5 * * * *` | Yes | Spring cron |
-| `MEMORY_REFLECTION_IDLE_MINUTES` | How long a conversation must be quiet before it is read | `30` | Yes | Also how old an `IN_PROGRESS` claim must be before another instance may take it over |
-| `MEMORY_REFLECTION_BATCH_SIZE` | Conversations claimed per tick | `5` | Yes | Processed one model call at a time |
-| `MEMORY_REFLECTION_MAX_ATTEMPTS` | Failures before a conversation is given up on | `3` | Yes | A failure never changes existing memories |
-| `MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS` | Size of one window of a conversation | `12000` | Yes | Longer conversations are read in windows; nothing is skipped |
-| `MEMORY_INJECTION_ENABLED` | Put active memories in the plain-chat system prompt | `false` | Yes | Deploy with this off first, review the backfill through the memory panel, then turn it on |
-| `MEMORY_PROMPT_MAX_CHARACTERS` | Ceiling on the memory block in the system prompt | `2000` | Yes | The context window is shared with history and retrieval |
-| `MEMORY_RETRIEVAL_MODE` | Which facts and preferences a turn carries: `RELEVANT` (only those relevant to the message and the conversation so far) or `ALL` | `RELEVANT` | Yes | Standing instructions are carried on every turn either way. `ALL` is the behaviour before retrieval, kept for comparison |
-| `MEMORY_RETRIEVAL_TOP_K` | Nearest memories fetched per search | `8` | Yes | Each turn searches with the message alone and with the message plus earlier user messages |
-| `MEMORY_RETRIEVAL_SIMILARITY_THRESHOLD` | Cosine similarity a memory needs to be carried | `0.55` | Yes | Depends on the embedding model; tune it from the `Memory for user …` log line |
-| `MEMORY_RETRIEVAL_QUERY_WINDOW_MESSAGES` | User messages, this one included, that relevance is judged against | `3` | Yes | `1` judges by the message alone |
-| `MEMORY_EMBEDDING_CRON` | Schedule for embedding memories not embedded when written | `0 * * * * *` | Yes | Spring cron. Covers the backfill on first deploy, failed calls and a change of `EMBEDDING_MODEL` |
-| `MEMORY_EMBEDDING_BATCH_SIZE` | Memories embedded per call | `50` | Yes | |
-| `MEMORY_MAX_ACTIVE` | Active memories kept per user | `200` | Yes | Past it, the weakest inferred memory is evicted; one the user set never is |
-| `MEMORY_MAX_CHARACTERS` | Longest single memory | `500` | Yes | Applies to the panel and to reflection |
-| `MEMORY_MIN_CONFIDENCE` | Proposals below this confidence are dropped | `0.6` | Yes | Between 0 and 1 |
+| `MEMORY_MODEL` | Model reflection runs against | `DEFAULT_CHAT_MODEL` | No | Temperature 0. Never follows a chat's `/model` selection |
+| `MEMORY_READ_TIMEOUT` | Read timeout for the memory model client | `5m` | No | Spring duration |
+| `MEMORY_REFLECTION_ENABLED` | Run the reflection task | `true` | No | Operational switch for the whole deployment |
+| `MEMORY_REFLECTION_CRON` | Reflection schedule | `0 */5 * * * *` | No | Spring cron |
+| `MEMORY_REFLECTION_IDLE_MINUTES` | How long a conversation must be quiet before it is read | `30` | No | Also how old an `IN_PROGRESS` claim must be before another instance may take it over |
+| `MEMORY_REFLECTION_BATCH_SIZE` | Conversations claimed per tick | `5` | No | Processed one model call at a time |
+| `MEMORY_REFLECTION_MAX_ATTEMPTS` | Failures before a conversation is given up on | `3` | No | A failure never changes existing memories |
+| `MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS` | Size of one window of a conversation | `12000` | No | Longer conversations are read in windows; nothing is skipped |
+| `MEMORY_INJECTION_ENABLED` | Put active memories in the plain-chat system prompt | `false` | No | Deploy with this off first, review the backfill through the memory panel, then turn it on |
+| `MEMORY_PROMPT_MAX_CHARACTERS` | Ceiling on the memory block in the system prompt | `2000` | No | The context window is shared with history and retrieval |
+| `MEMORY_RETRIEVAL_MODE` | Which facts and preferences a turn carries: `RELEVANT` (only those relevant to the message and the conversation so far) or `ALL` | `RELEVANT` | No | Standing instructions are carried on every turn either way. `ALL` is the behaviour before retrieval, kept for comparison |
+| `MEMORY_RETRIEVAL_TOP_K` | Nearest memories fetched per search | `8` | No | Each turn searches with the message alone and with the message plus earlier user messages |
+| `MEMORY_RETRIEVAL_SIMILARITY_THRESHOLD` | Cosine similarity a memory needs to be carried | `0.55` | No | Depends on the embedding model; tune it from the `Memory for user …` log line |
+| `MEMORY_RETRIEVAL_QUERY_WINDOW_MESSAGES` | User messages, this one included, that relevance is judged against | `3` | No | `1` judges by the message alone |
+| `MEMORY_EMBEDDING_CRON` | Schedule for embedding memories not embedded when written | `0 * * * * *` | No | Spring cron. Covers the backfill on first deploy, failed calls and a change of `EMBEDDING_MODEL` |
+| `MEMORY_EMBEDDING_BATCH_SIZE` | Memories embedded per call | `50` | No | |
+| `MEMORY_MAX_ACTIVE` | Active memories kept per user | `200` | No | Past it, the weakest inferred memory is evicted; one the user set never is |
+| `MEMORY_MAX_CHARACTERS` | Longest single memory | `500` | No | Applies to the panel and to reflection |
+| `MEMORY_MIN_CONFIDENCE` | Proposals below this confidence are dropped | `0.6` | No | Between 0 and 1 |
 
 ### Push Notification Configuration
 
@@ -384,34 +384,35 @@ again. Rotate only when the private key may have leaked.
 
 Discovery reads what memory has learned and offers a news agent; accepted agents search, summarise and
 deliver news chats. Both use the memory model (`MEMORY_MODEL`). See [docs/api.md](api.md#interest-agents)
-and [docs/security.md](security.md#interest-agents). Every variable is **required** and has no default.
+and [docs/security.md](security.md#interest-agents). Every variable is optional; the Default column is what
+applies when it is unset. Both tasks default to off.
 
-| Variable | Description | Example | Required | Notes |
+| Variable | Description | Default | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `INTEREST_DISCOVERY_ENABLED` | Run discovery | `true` | Yes | Also expires lapsed offers and withdraws orphaned ones |
-| `INTEREST_DISCOVERY_CRON` | Discovery schedule | `0 */30 * * * *` | Yes | Spring cron |
-| `INTEREST_DISCOVERY_BATCH_SIZE` | Users read per tick | `5` | Yes | One model call at a time |
-| `INTEREST_DISCOVERY_MAX_ATTEMPTS` | Failures before a user is skipped until their memories change | `3` | Yes | |
-| `INTEREST_DISCOVERY_MIN_CONFIDENCE` | Candidates below this are dropped | `0.7` | Yes | Between 0 and 1 |
-| `INTEREST_OFFER_COOLDOWN_DAYS` | Minimum gap between two offers to one user | `7` | Yes | |
-| `INTEREST_OFFER_TTL_DAYS` | How long an offer can be accepted | `7` | Yes | Also the offer push's TTL |
-| `INTEREST_DECLINE_COOLDOWN_DAYS` | How long a declined topic is not offered again | `90` | Yes | |
-| `INTEREST_MAX_AGENTS_PER_USER` | Agents a user may have | `5` | Yes | |
-| `INTEREST_NEWS_ENABLED` | Run news agents | `true` | Yes | The global kill switch for every agent. Deploy with this `false` first to review offers |
-| `INTEREST_NEWS_CRON` | News schedule | `0 */15 * * * *` | Yes | Spring cron |
-| `INTEREST_NEWS_BATCH_SIZE` | Agents run per tick | `10` | Yes | |
-| `INTEREST_NEWS_MAX_RESULTS` | Results per search | `10` | Yes | 1–10, the tool's limit |
-| `INTEREST_NEWS_EXTRACT_TOP` | New results read in full | `3` | Yes | 0–5, the extract tool's limit; `0` uses snippets only |
-| `INTEREST_NEWS_MAX_ARTICLE_CHARACTERS` | Cap on one article's text | `4000` | Yes | |
-| `INTEREST_NEWS_MAX_SOURCE_CHARACTERS` | Cap on the summary model's input | `20000` | Yes | ~5–6k tokens; check the memory server's `--ctx-size` before raising it |
-| `INTEREST_NEWS_MAX_SOURCES_PER_UPDATE` | Sources one update may cite | `6` | Yes | |
-| `INTEREST_NEWS_MAX_SUMMARY_CHARACTERS` | Cap on the summary text | `2500` | Yes | |
-| `INTEREST_NEWS_DELIVERY_HOUR` | Local hour updates settle onto | `8` | Yes | 0–23, in the user's own time zone |
-| `INTEREST_NEWS_JITTER_MINUTES` | Random spread added to each run | `30` | Yes | |
-| `INTEREST_NEWS_RUN_LEASE_MINUTES` | How long a claimed run is held before another instance may retry it | `30` | Yes | |
-| `INTEREST_NEWS_MAX_FAILURES` | Consecutive failures before an agent is paused | `5` | Yes | |
-| `INTEREST_NEWS_ITEM_RETENTION_DAYS` | How long an agent remembers a URL it has seen | `30` | Yes | At least 7, the widest search window |
-| `INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES` | Minimum gap between a run and a manual run | `10` | Yes | |
+| `INTEREST_DISCOVERY_ENABLED` | Run discovery | `false` | No | Also expires lapsed offers and withdraws orphaned ones |
+| `INTEREST_DISCOVERY_CRON` | Discovery schedule | `0 */30 * * * *` | No | Spring cron |
+| `INTEREST_DISCOVERY_BATCH_SIZE` | Users read per tick | `5` | No | One model call at a time |
+| `INTEREST_DISCOVERY_MAX_ATTEMPTS` | Failures before a user is skipped until their memories change | `3` | No | |
+| `INTEREST_DISCOVERY_MIN_CONFIDENCE` | Candidates below this are dropped | `0.7` | No | Between 0 and 1 |
+| `INTEREST_OFFER_COOLDOWN_DAYS` | Minimum gap between two offers to one user | `7` | No | |
+| `INTEREST_OFFER_TTL_DAYS` | How long an offer can be accepted | `7` | No | Also the offer push's TTL |
+| `INTEREST_DECLINE_COOLDOWN_DAYS` | How long a declined topic is not offered again | `90` | No | |
+| `INTEREST_MAX_AGENTS_PER_USER` | Agents a user may have | `5` | No | |
+| `INTEREST_NEWS_ENABLED` | Run news agents | `false` | No | The global kill switch for every agent. Deploy with this `false` first to review offers |
+| `INTEREST_NEWS_CRON` | News schedule | `0 */15 * * * *` | No | Spring cron |
+| `INTEREST_NEWS_BATCH_SIZE` | Agents run per tick | `10` | No | |
+| `INTEREST_NEWS_MAX_RESULTS` | Results per search | `10` | No | 1–10, the tool's limit |
+| `INTEREST_NEWS_EXTRACT_TOP` | New results read in full | `3` | No | 0–5, the extract tool's limit; `0` uses snippets only |
+| `INTEREST_NEWS_MAX_ARTICLE_CHARACTERS` | Cap on one article's text | `4000` | No | |
+| `INTEREST_NEWS_MAX_SOURCE_CHARACTERS` | Cap on the summary model's input | `20000` | No | ~5–6k tokens; check the memory server's `--ctx-size` before raising it |
+| `INTEREST_NEWS_MAX_SOURCES_PER_UPDATE` | Sources one update may cite | `6` | No | |
+| `INTEREST_NEWS_MAX_SUMMARY_CHARACTERS` | Cap on the summary text | `2500` | No | |
+| `INTEREST_NEWS_DELIVERY_HOUR` | Local hour updates settle onto | `8` | No | 0–23, in the user's own time zone |
+| `INTEREST_NEWS_JITTER_MINUTES` | Random spread added to each run | `30` | No | |
+| `INTEREST_NEWS_RUN_LEASE_MINUTES` | How long a claimed run is held before another instance may retry it | `30` | No | |
+| `INTEREST_NEWS_MAX_FAILURES` | Consecutive failures before an agent is paused | `5` | No | |
+| `INTEREST_NEWS_ITEM_RETENTION_DAYS` | How long an agent remembers a URL it has seen | `30` | No | At least 7, the widest search window |
+| `INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES` | Minimum gap between a run and a manual run | `10` | No | |
 
 **The API's service-account client must hold the `mcp-web-search` role.** A background run has no user
 token, so it searches on the application's client credentials; without the role every run fails as an
@@ -494,31 +495,7 @@ PUSH_ELICITATION_REMINDER_SECONDS=120
 PUSH_PRESENCE_TTL_SECONDS=45
 PUSH_PRESENCE_HEARTBEAT_SECONDS=15
 
-# Interest agents (required)
-INTEREST_DISCOVERY_ENABLED=true
-INTEREST_DISCOVERY_CRON=0 */30 * * * *
-INTEREST_DISCOVERY_BATCH_SIZE=5
-INTEREST_DISCOVERY_MAX_ATTEMPTS=3
-INTEREST_DISCOVERY_MIN_CONFIDENCE=0.7
-INTEREST_OFFER_COOLDOWN_DAYS=7
-INTEREST_OFFER_TTL_DAYS=7
-INTEREST_DECLINE_COOLDOWN_DAYS=90
-INTEREST_MAX_AGENTS_PER_USER=5
-INTEREST_NEWS_ENABLED=false
-INTEREST_NEWS_CRON=0 */15 * * * *
-INTEREST_NEWS_BATCH_SIZE=10
-INTEREST_NEWS_MAX_RESULTS=10
-INTEREST_NEWS_EXTRACT_TOP=3
-INTEREST_NEWS_MAX_ARTICLE_CHARACTERS=4000
-INTEREST_NEWS_MAX_SOURCE_CHARACTERS=20000
-INTEREST_NEWS_MAX_SOURCES_PER_UPDATE=6
-INTEREST_NEWS_MAX_SUMMARY_CHARACTERS=2500
-INTEREST_NEWS_DELIVERY_HOUR=8
-INTEREST_NEWS_JITTER_MINUTES=30
-INTEREST_NEWS_RUN_LEASE_MINUTES=30
-INTEREST_NEWS_MAX_FAILURES=5
-INTEREST_NEWS_ITEM_RETENTION_DAYS=30
-INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES=10
+# Interest agents and user memory are optional: every variable has a default
 
 
 ### Full Configuration (.env)
