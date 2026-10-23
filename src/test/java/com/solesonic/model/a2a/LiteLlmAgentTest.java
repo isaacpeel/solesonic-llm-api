@@ -40,7 +40,6 @@ class LiteLlmAgentTest {
         assert agents != null;
         assertThat(agents.getFirst().agentCardParams().capabilities().toAgentCapabilities().streaming()).isFalse();
         assertThat(agents.getLast().agentCardParams().capabilities().toAgentCapabilities().streaming()).isTrue();
-        assertThat(agents.getLast().agentCardParams().supportedInterfaces().getFirst().url())
-                .isEqualTo("http://litellm.izzy-bot.com/a2a/22932c7f-2ccb-4bf4-a54e-bbc27823485b");
+        assertThat(agents.getLast().agentCardParams().supportedInterfaces().getFirst().url()).isEqualTo("http://litellm.izzy-bot.com/a2a/22932c7f-2ccb-4bf4-a54e-bbc27823485b");
     }
 }

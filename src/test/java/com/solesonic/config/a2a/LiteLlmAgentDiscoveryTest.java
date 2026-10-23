@@ -2,7 +2,9 @@ package com.solesonic.config.a2a;
 
 import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.AgentInterface;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -11,7 +13,13 @@ import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,16 +32,27 @@ class LiteLlmAgentDiscoveryTest {
 
     private static final String GATEWAY = "http://litellm:4000";
     private static final String API_KEY = "sk-izzybot";
+    private static final String AGENTS_PATH = "/v1/agents";
+    private static final String LOGS_ROUTE = "/a2a/56c732c5-b908-4756-800e-5fff4b81719b";
+    private static final String NETWORK_ROUTE = "/a2a/22932c7f-2ccb-4bf4-a54e-bbc27823485b";
+    private static final JsonMapper JSON_MAPPER = JsonMapper.builder().build();
 
     private final List<ClientRequest> requests = new CopyOnWriteArrayList<>();
     private final Map<String, StubbedResponse> responses = new HashMap<>();
 
+    private ArrayNode agents;
+
     private record StubbedResponse(HttpStatus status, String body) {
     }
 
+    @BeforeEach
+    void loadAgents() throws IOException {
+        String body = new ClassPathResource("a2a/litellm-agents.json").getContentAsString(StandardCharsets.UTF_8);
+        agents = (ArrayNode) JSON_MAPPER.readTree(body);
+    }
+
     private LiteLlmAgentDiscovery discovery(String gateway) {
-        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents",
-                new A2AClientProperties.Litellm(gateway, API_KEY));
+        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents", new A2AClientProperties.Litellm(gateway, API_KEY));
 
         WebClient webClient = new LiteLlmA2AWebClientConfig().liteLlmA2AWebClient(properties)
                 .mutate()
@@ -53,48 +72,39 @@ class LiteLlmAgentDiscoveryTest {
         return new LiteLlmAgentDiscovery(webClient, properties);
     }
 
-    private void respond(String path, String body) {
-        responses.put(path, new StubbedResponse(HttpStatus.OK, body));
+    private void respondWithAgents(String path) {
+        responses.put(path, new StubbedResponse(HttpStatus.OK, JSON_MAPPER.writeValueAsString(agents)));
     }
 
+    private void respondWithAgents() {
+        respondWithAgents(AGENTS_PATH);
+    }
+
+    @SuppressWarnings("all")
     private void fail(String path, HttpStatus status) {
         responses.put(path, new StubbedResponse(status, "{}"));
     }
 
-    private static String agents(String... agentNames) {
-        StringBuilder body = new StringBuilder("[");
-
-        for (int index = 0; index < agentNames.length; index++) {
-            if (index > 0) {
-                body.append(',');
+    private ObjectNode agent(String agentName) {
+        for (JsonNode agent : agents) {
+            if (agentName.equals(agent.path("agent_name").asString())) {
+                return (ObjectNode) agent;
             }
-
-            body.append("""
-                    {"agent_id":"id-%d","agent_name":"%s","litellm_params":{"model":"a2a/%s"}}"""
-                    .formatted(index, agentNames[index], agentNames[index]));
         }
 
-        return body.append(']').toString();
+        throw new IllegalArgumentException("No agent named " + agentName + " in the fixture");
     }
 
-    private static String card(String name, String interfaceUrl) {
-        return card(name, interfaceUrl, null);
+    private ObjectNode agentCardParams(String agentName) {
+        return (ObjectNode) agent(agentName).get("agent_card_params");
     }
 
-    private static String card(String name, String interfaceUrl, String legacyUrl) {
-        String interfaces = interfaceUrl == null
-                ? "[]"
-                : """
-                [{"protocolBinding":"JSONRPC","url":"%s","protocolVersion":"1.0"}]""".formatted(interfaceUrl);
-
-        String legacy = legacyUrl == null ? "" : ",\"url\":\"%s\"".formatted(legacyUrl);
-
-        return """
-                {"name":"%s","description":"Answers questions about the network","version":"1.0.0",
-                 "capabilities":{"streaming":true,"pushNotifications":false,"extendedAgentCard":false},
-                 "defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],
-                 "skills":[{"id":"ask","name":"ask","description":"Ask a question","tags":[]}],
-                 "supportedInterfaces":%s%s}""".formatted(name, interfaces, legacy);
+    private void interfaceUrl(String agentName, String url) {
+        agentCardParams(agentName).putArray("supportedInterfaces")
+                .addObject()
+                .put("url", url)
+                .put("protocolBinding", "JSONRPC")
+                .put("protocolVersion", "1.0");
     }
 
     private static List<String> names(List<AgentCard> agentCards) {
@@ -105,55 +115,46 @@ class LiteLlmAgentDiscoveryTest {
         return agentCard.supportedInterfaces().stream().map(AgentInterface::url).toList();
     }
 
-    @Test
-    void discoversEveryListedAgentThroughTheGateway() {
-        respond("/v1/agents", agents("network", "weather"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/a2a/network"));
-        respond("/a2a/weather/.well-known/agent-card.json", card("weather", GATEWAY + "/a2a/weather"));
-
-        List<AgentCard> agentCards = discovery(GATEWAY).discover();
-
-        assertThat(names(agentCards)).containsExactly("network", "weather");
-        assertThat(requests).extracting(request -> request.url().toString()).containsExactly(
-                GATEWAY + "/v1/agents",
-                GATEWAY + "/a2a/network/.well-known/agent-card.json",
-                GATEWAY + "/a2a/weather/.well-known/agent-card.json");
+    private static AgentCard named(List<AgentCard> agentCards, String name) {
+        return agentCards.stream()
+                .filter(agentCard -> agentCard.name().equals(name))
+                .findFirst()
+                .orElseThrow();
     }
 
     @Test
-    void sendsTheVirtualKeyAndNoAuthorizationOnEveryCall() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/a2a/network"));
+    void discoversEveryListedAgentFromTheAgentListAlone() {
+        respondWithAgents();
+
+        List<AgentCard> agentCards = discovery(GATEWAY).discover();
+
+        assertThat(names(agentCards)).containsExactly("logs", "network");
+        assertThat(requests).extracting(request -> request.url().toString()).containsExactly(GATEWAY + AGENTS_PATH);
+    }
+
+    @Test
+    void sendsTheVirtualKeyAndNoAuthorization() {
+        respondWithAgents();
 
         discovery(GATEWAY).discover();
 
-        assertThat(requests).hasSize(2).allSatisfy(request -> {
+        assertThat(requests).singleElement().satisfies(request -> {
             assertThat(request.headers().getFirst("x-litellm-api-key")).isEqualTo("Bearer " + API_KEY);
             assertThat(request.headers().containsHeader(HttpHeaders.AUTHORIZATION)).isFalse();
         });
     }
 
     @Test
-    void skipsAnAgentWhoseCardCannotBeFetchedAndKeepsTheRest() {
-        respond("/v1/agents", agents("weather", "network"));
-        fail("/a2a/weather/.well-known/agent-card.json", HttpStatus.INTERNAL_SERVER_ERROR);
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/a2a/network"));
-
-        assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
-    }
-
-    @Test
     void skipsAnAgentWithNoName() {
-        respond("/v1/agents", """
-                [{"agent_id":"id-0"},{"agent_id":"id-1","agent_name":"network"}]""");
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/a2a/network"));
+        agent("logs").remove("agent_name");
+        respondWithAgents();
 
         assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
     }
 
     @Test
     void failsWhenTheAgentListCannotBeFetched() {
-        fail("/v1/agents", HttpStatus.SERVICE_UNAVAILABLE);
+        fail(AGENTS_PATH, HttpStatus.SERVICE_UNAVAILABLE);
 
         LiteLlmAgentDiscovery discovery = discovery(GATEWAY);
 
@@ -161,60 +162,49 @@ class LiteLlmAgentDiscoveryTest {
     }
 
     /**
-     * The agent name becomes a path segment and the slash command, so only a plain command name is
-     * ever fetched.
+     * The agent name becomes the slash command, so only a plain command name is ever registered.
      */
     @Test
-    void neverFetchesACardForAnAgentNameThatIsNotACommandName() {
-        respond("/v1/agents", agents("..", "net/work", "network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/a2a/network"));
+    void skipsAnAgentNameThatIsNotACommandName() {
+        agent("logs").put("agent_name", "net/work");
+        respondWithAgents();
 
         assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
-        assertThat(requests).extracting(request -> request.url().getRawPath())
-                .containsExactly("/v1/agents", "/a2a/network/.well-known/agent-card.json");
     }
 
     /**
      * LiteLLM serves the agent's display name as the card's name, so the command comes from the
-     * {@code agent_name} the card was fetched by.
+     * {@code agent_name} the agent is listed under.
      */
     @Test
     void namesTheCommandAfterTheAgentNameNotTheCardName() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("Network Analyst", GATEWAY + "/a2a/network"));
+        respondWithAgents();
 
-        List<AgentCard> agentCards = discovery(GATEWAY).discover();
+        AgentCard network = named(discovery(GATEWAY).discover(), "network");
 
-        assertThat(names(agentCards)).containsExactly("network");
-        assertThat(agentCards.getFirst().description()).isEqualTo("Answers questions about the network");
+        assertThat(network.description()).isEqualTo("Answers questions about the household network from UniFi data (read-only).");
     }
 
     /**
-     * The card LiteLLM serves, verbatim: a display name, an http URL, and {@code securitySchemes} and
-     * {@code security} in the A2A 0.3 shape, which a plain Jackson decode of {@link AgentCard} cannot read.
+     * LiteLLM omits every capability it was not told about, and writes {@code securitySchemes} and
+     * {@code security} in the A2A 0.3 shape.
      */
     @Test
-    void parsesTheCardLiteLlmActuallyServes() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", """
-                {"url": "http://litellm.izzy-bot.com/a2a/network", "name": "Network Analyst",
-                 "skills": [{"id": "chat", "name": "Chat", "tags": ["chat"], "description": "Conversational interaction with the agent."}],
-                 "version": "1.0.0", "provider": {"url": "http://litellm.izzy-bot.com", "organization": "LiteLLM Proxy"},
-                 "security": [{"LiteLLMKey": []}],
-                 "description": "Answers questions about the household network from UniFi data (read-only).",
-                 "capabilities": {"streaming": true}, "protocolVersion": "1.0",
-                 "securitySchemes": {"LiteLLMKey": {"type": "http", "scheme": "bearer", "description": "LiteLLM virtual key"}},
-                 "defaultInputModes": ["text"], "defaultOutputModes": ["text"],
-                 "supportedInterfaces": [{"url": "http://litellm.izzy-bot.com/a2a/network", "protocolBinding": "JSONRPC", "protocolVersion": "1.0"}]}""");
+    void parsesTheCardsLiteLlmActuallyServes() {
+        respondWithAgents();
 
-        assertThat(discovery(GATEWAY).discover())
-                .singleElement()
-                .satisfies(agentCard -> {
-                    assertThat(agentCard.name()).isEqualTo("network");
-                    assertThat(agentCard.description()).isEqualTo("Answers questions about the household network from UniFi data (read-only).");
-                    assertThat(agentCard.capabilities().streaming()).isTrue();
-                    assertThat(interfaceUrls(agentCard)).containsExactly(GATEWAY + "/a2a/network");
-                });
+        List<AgentCard> agentCards = discovery(GATEWAY).discover();
+
+        assertThat(named(agentCards, "logs")).satisfies(agentCard -> {
+            assertThat(agentCard.capabilities().streaming()).isFalse();
+            assertThat(interfaceUrls(agentCard)).containsExactly(GATEWAY + LOGS_ROUTE);
+        });
+
+        assertThat(named(agentCards, "network")).satisfies(agentCard -> {
+            assertThat(agentCard.capabilities().streaming()).isTrue();
+            assertThat(agentCard.skills()).extracting("id").containsExactly("chat");
+            assertThat(interfaceUrls(agentCard)).containsExactly(GATEWAY + NETWORK_ROUTE);
+        });
     }
 
     /**
@@ -223,14 +213,11 @@ class LiteLlmAgentDiscoveryTest {
      */
     @Test
     void rebuildsAnHttpInterfaceOnTheConfiguredHttpsGateway() {
-        String gateway = "https://litellm.example.com";
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", "http://litellm.example.com/a2a/network"));
+        String gateway = "https://litellm.izzy-bot.com";
+        respondWithAgents();
 
-        assertThat(discovery(gateway).discover())
-                .singleElement()
-                .satisfies(agentCard -> assertThat(interfaceUrls(agentCard))
-                        .containsExactly("https://litellm.example.com/a2a/network"));
+        assertThat(interfaceUrls(named(discovery(gateway).discover(), "network")))
+                .containsExactly(gateway + NETWORK_ROUTE);
     }
 
     /**
@@ -239,34 +226,19 @@ class LiteLlmAgentDiscoveryTest {
      */
     @Test
     void pinsAnInterfaceOnAnotherHostBackOntoTheGateway() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", "https://attacker.net:8443/a2a/network"));
+        interfaceUrl("network", "https://attacker.net:8443" + NETWORK_ROUTE);
+        respondWithAgents();
 
-        assertThat(discovery(GATEWAY).discover())
-                .singleElement()
-                .satisfies(agentCard -> assertThat(interfaceUrls(agentCard)).containsExactly(GATEWAY + "/a2a/network"));
-    }
-
-    @Test
-    void dropsTheLegacyEndpointsTheClientNeverUses() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json",
-                card("network", GATEWAY + "/a2a/network", "http://elsewhere/a2a/network"));
-
-        assertThat(discovery(GATEWAY).discover())
-                .singleElement()
-                .satisfies(agentCard -> {
-                    assertThat(agentCard.url()).isNull();
-                    assertThat(agentCard.additionalInterfaces()).isNull();
-                });
+        assertThat(interfaceUrls(named(discovery(GATEWAY).discover(), "network")))
+                .containsExactly(GATEWAY + NETWORK_ROUTE);
     }
 
     @Test
     void refusesACardWithNoInterfaces() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", null));
+        agentCardParams("logs").putArray("supportedInterfaces");
+        respondWithAgents();
 
-        assertThat(discovery(GATEWAY).discover()).isEmpty();
+        assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
     }
 
     /**
@@ -275,43 +247,52 @@ class LiteLlmAgentDiscoveryTest {
      */
     @Test
     void refusesAnInterfaceOutsideTheGatewaysAgentRoutes() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", GATEWAY + "/key/generate"));
+        interfaceUrl("logs", GATEWAY + "/key/generate");
+        respondWithAgents();
 
-        assertThat(discovery(GATEWAY).discover()).isEmpty();
+        assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
     }
 
     @Test
     void keepsEveryCallUnderAGatewayBasePath() {
         String gateway = "http://proxy/litellm";
-        respond("/litellm/v1/agents", agents("network", "outside", "escaping"));
-        respond("/litellm/a2a/network/.well-known/agent-card.json", card("network", "https://public.example/litellm/a2a/network"));
-        respond("/litellm/a2a/outside/.well-known/agent-card.json", card("outside", "http://proxy/other/a2a/outside"));
-        respond("/litellm/a2a/escaping/.well-known/agent-card.json", card("escaping", "http://proxy/litellm/a2a/../../other"));
+        interfaceUrl("logs", "http://proxy/other" + LOGS_ROUTE);
+        interfaceUrl("network", "https://public.example/litellm" + NETWORK_ROUTE);
+        respondWithAgents("/litellm" + AGENTS_PATH);
 
         assertThat(discovery(gateway).discover())
                 .singleElement()
                 .satisfies(agentCard -> {
                     assertThat(agentCard.name()).isEqualTo("network");
-                    assertThat(interfaceUrls(agentCard)).containsExactly("http://proxy/litellm/a2a/network");
+                    assertThat(interfaceUrls(agentCard)).containsExactly(gateway + NETWORK_ROUTE);
                 });
+    }
+
+    @Test
+    void refusesADotSegmentTraversalOutOfAGatewayBasePath() {
+        String gateway = "http://proxy/litellm";
+        interfaceUrl("logs", "http://proxy/litellm/a2a/../../other");
+        interfaceUrl("network", gateway + NETWORK_ROUTE);
+        respondWithAgents("/litellm" + AGENTS_PATH);
+
+        assertThat(names(discovery(gateway).discover())).containsExactly("network");
     }
 
     @Test
     void refusesAnEncodedTraversalUnderAGatewayBasePath() {
         String gateway = "http://proxy/litellm";
-        respond("/litellm/v1/agents", agents("network"));
-        respond("/litellm/a2a/network/.well-known/agent-card.json",
-                card("network", "http://proxy/litellm/a2a/%2e%2e/other"));
+        interfaceUrl("logs", "http://proxy/litellm/a2a/%2e%2e/other");
+        interfaceUrl("network", gateway + NETWORK_ROUTE);
+        respondWithAgents("/litellm" + AGENTS_PATH);
 
-        assertThat(discovery(gateway).discover()).isEmpty();
+        assertThat(names(discovery(gateway).discover())).containsExactly("network");
     }
 
     @Test
     void refusesAnUnparseableInterfaceUrl() {
-        respond("/v1/agents", agents("network"));
-        respond("/a2a/network/.well-known/agent-card.json", card("network", "http://bad host/a2a/network"));
+        interfaceUrl("logs", "http://bad host" + LOGS_ROUTE);
+        respondWithAgents();
 
-        assertThat(discovery(GATEWAY).discover()).isEmpty();
+        assertThat(names(discovery(GATEWAY).discover())).containsExactly("network");
     }
 }

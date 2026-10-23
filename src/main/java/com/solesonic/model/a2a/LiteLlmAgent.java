@@ -15,10 +15,10 @@ import java.util.Map;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record LiteLlmAgent(
         @JsonProperty("identity") Object identity,
-        @JsonProperty("identity_managed") boolean identityManaged,
-        @JsonProperty("enabled") boolean enabled,
+        @JsonProperty("identity_managed") Boolean identityManaged,
+        @JsonProperty("enabled") Boolean enabled,
         @JsonProperty("execution_mode") String executionMode,
-        @JsonProperty("jwt_auth_configured") boolean jwtAuthConfigured,
+        @JsonProperty("jwt_auth_configured") Boolean jwtAuthConfigured,
         @JsonProperty("agent_id") String agentId,
         @JsonProperty("agent_name") String agentName,
         @JsonProperty("litellm_params") LiteLlmParams litellmParams,
@@ -42,7 +42,7 @@ public record LiteLlmAgent(
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record LiteLlmParams(
-            @JsonProperty("is_public") boolean isPublic) {
+            @JsonProperty("is_public") Boolean isPublic) {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
