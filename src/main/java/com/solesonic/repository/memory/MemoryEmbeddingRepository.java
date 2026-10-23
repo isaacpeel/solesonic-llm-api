@@ -120,6 +120,29 @@ public class MemoryEmbeddingRepository {
     }
 
     /**
+     * The user's live memories of every kind, active or pending, nearest to {@code query} first, for
+     * reflection to compare what it reads and proposes against.
+     */
+    public List<MemorySimilarity> findNearestLive(UUID userId, float[] query, String model, int limit) {
+        return jdbcClient.sql("""
+                        select id, 1 - (embedding <=> cast(:query as vector)) as similarity
+                          from user_memory
+                         where user_id = :userId
+                           and status in ('ACTIVE', 'PENDING')
+                           and embedding_model = :model
+                           and embedding_hash = md5(content)
+                         order by embedding <=> cast(:query as vector)
+                         limit :limit
+                        """)
+                .param("query", vectorLiteral(query))
+                .param("userId", userId)
+                .param("model", model)
+                .param("limit", limit)
+                .query(MemorySimilarity.class)
+                .list();
+    }
+
+    /**
      * pgvector's text form, {@code [x,y,...]}, which it parses with {@code strtof} and so also
      * accepts the exponent notation {@link Float#toString} can produce.
      */

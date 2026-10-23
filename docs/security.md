@@ -384,10 +384,18 @@ every path. This is enforced by structure rather than convention:
   as evidence. The transcript renders every message as one quoted line, so nothing inside a message
   can forge a `USER` line of its own.
 - **Citing a user message is not enough; the memory must be grounded in it.** An addition or
-  supersession whose content shares no content word with the `USER` messages it cites is dropped
-  (`UNGROUNDED`), so a line lifted from a summarised email cannot be pinned to an unrelated message.
-  This deliberately misses some memories the user only implied: a missed memory is cheaper than a
-  planted one. Assistant replies are shown to the reflection model only as a 300-character excerpt.
+  supersession is dropped (`UNGROUNDED`) unless at least half of its content words, and every number
+  in it, appear in the `USER` messages it cites, so neither a line lifted from a summarised email nor
+  the answer to the user's own question can be pinned to their message. Content that is not a
+  statement about the user at all is dropped first (`NOT_ABOUT_USER`). This deliberately misses some
+  memories the user only implied: a missed memory is cheaper than a planted one. Assistant replies are
+  shown to the reflection model only as a 300-character excerpt.
+- **Pasted text is not the user talking about themselves.** A `USER` message over 1000 characters is
+  shown to the reflection model cut to that length and labelled `pasted=true`, and can evidence a
+  fact but never a preference or a standing instruction (`PASTED_EVIDENCE`).
+- **The user's name** (the token's `given_name`, else `name`) is recorded in `user_profile` by the JWT
+  filters and given to the reflection model, so the user is never recorded as a third person. It is
+  never logged and never sent anywhere else.
 - **Memory in tool calls.** Plain chat turns can call web-search tools, so the memory block tells the
   model to put nothing from it in a tool call or search query unless the request needs it. This is
   an instruction, not a control.

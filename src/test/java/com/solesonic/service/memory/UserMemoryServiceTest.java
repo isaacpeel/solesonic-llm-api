@@ -264,7 +264,7 @@ class UserMemoryServiceTest {
         when(userMemoryRepository.findByUserIdAndSupersedesIn(eq(USER_ID), anyCollection())).thenReturn(List.of());
         when(userMemoryRepository.findByIdAndUserId(original.getId(), USER_ID)).thenReturn(Optional.of(original));
         when(userMemoryEvidenceRepository.findByUserIdAndMemoryIdIn(USER_ID, Set.of(original.getId())))
-                .thenReturn(List.of(evidence(original, OTHER_CHAT_ID)));
+                .thenReturn(List.of(evidence(original, OTHER_CHAT_ID), evidence(original, UUID.randomUUID())));
         when(userMemoryRepository.findByUserIdAndMemoryKeyAndStatus(USER_ID, "units.preference", MemoryStatus.ACTIVE))
                 .thenReturn(Optional.empty());
 
@@ -272,6 +272,29 @@ class UserMemoryServiceTest {
 
         assertThat(deletedMemoryIds()).containsExactlyInAnyOrder(middle.getId(), head.getId());
         assertThat(original.getStatus()).isEqualTo(MemoryStatus.ACTIVE);
+        verify(userMemoryRepository).save(original);
+    }
+
+    /**
+     * A restored inferred preference is held to the same rule as a new one: evidenced by a single
+     * conversation, it comes back pending.
+     */
+    @Test
+    void aRestoredPreferenceEvidencedByOneChatComesBackPending() {
+        UserMemory original = memory(MemoryOrigin.INFERRED, MemoryStatus.SUPERSEDED, "units.preference", null);
+        UserMemory head = memory(MemoryOrigin.INFERRED, MemoryStatus.ACTIVE, "units.preference", original.getId());
+
+        when(chatMemoryReflectionRepository.findByChatIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.empty());
+        when(userMemoryEvidenceRepository.findByUserIdAndChatId(USER_ID, CHAT_ID)).thenReturn(List.of(evidence(head, CHAT_ID)));
+        when(userMemoryRepository.findUnevidenced(eq(USER_ID), anyCollection(), eq(MemoryOrigin.AUTHORED))).thenReturn(List.of(head));
+        when(userMemoryRepository.findByUserIdAndSupersedesIn(eq(USER_ID), anyCollection())).thenReturn(List.of());
+        when(userMemoryRepository.findByIdAndUserId(original.getId(), USER_ID)).thenReturn(Optional.of(original));
+        when(userMemoryEvidenceRepository.findByUserIdAndMemoryIdIn(USER_ID, Set.of(original.getId())))
+                .thenReturn(List.of(evidence(original, OTHER_CHAT_ID)));
+
+        userMemoryService.forgetChat(CHAT_ID, USER_ID);
+
+        assertThat(original.getStatus()).isEqualTo(MemoryStatus.PENDING);
         verify(userMemoryRepository).save(original);
     }
 
@@ -287,7 +310,7 @@ class UserMemoryServiceTest {
         when(userMemoryRepository.findByUserIdAndSupersedesIn(eq(USER_ID), anyCollection())).thenReturn(List.of());
         when(userMemoryRepository.findByIdAndUserId(original.getId(), USER_ID)).thenReturn(Optional.of(original));
         when(userMemoryEvidenceRepository.findByUserIdAndMemoryIdIn(USER_ID, Set.of(original.getId())))
-                .thenReturn(List.of(evidence(original, OTHER_CHAT_ID)));
+                .thenReturn(List.of(evidence(original, OTHER_CHAT_ID), evidence(original, UUID.randomUUID())));
         when(userMemoryRepository.findByUserIdAndMemoryKeyAndStatus(USER_ID, "units.preference", MemoryStatus.ACTIVE))
                 .thenReturn(Optional.of(holder));
 

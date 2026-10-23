@@ -2,6 +2,7 @@ package com.solesonic.security;
 
 import com.solesonic.config.logging.MdcRequestFilter;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.user.UserProfileService;
 import jakarta.annotation.Nonnull;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -32,9 +33,11 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
 
     public static final String SUB = "sub";
     private final UserRequestContext userRequestContext;
+    private final UserProfileService userProfileService;
 
-    public JwtUserRequestFilter(UserRequestContext userRequestContext) {
+    public JwtUserRequestFilter(UserRequestContext userRequestContext, UserProfileService userProfileService) {
         this.userRequestContext = userRequestContext;
+        this.userProfileService = userProfileService;
     }
 
     @Override
@@ -56,8 +59,10 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
             String userId = jwt.getClaimAsString(SUB);
 
             if (userId != null) {
-                userRequestContext.setUserId(UUID.fromString(userId));
+                UUID parsedUserId = UUID.fromString(userId);
+                userRequestContext.setUserId(parsedUserId);
                 MDC.put(MdcRequestFilter.USER_ID, userId);
+                userProfileService.record(parsedUserId, jwt);
             }
         } else {
             //If there is no authentication, always throw an exception. An AuthenticationException

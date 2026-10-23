@@ -108,11 +108,12 @@ public class UserMemoryService {
     }
 
     /**
-     * The status an inferred instruction is allowed: one conversation's request is usually about that
-     * conversation, so it stays pending until its evidence spans two.
+     * The status an inferred instruction or preference is allowed: what one conversation asks for is
+     * usually about that conversation, so it stays pending until its evidence spans two. A fact is
+     * true the first time it is said.
      */
     static MemoryStatus statusFor(MemoryKind kind, MemoryOrigin origin, long evidenceChats) {
-        if (kind == MemoryKind.INSTRUCTION && origin == MemoryOrigin.INFERRED && evidenceChats < 2) {
+        if (kind != MemoryKind.FACT && origin == MemoryOrigin.INFERRED && evidenceChats < 2) {
             return MemoryStatus.PENDING;
         }
 

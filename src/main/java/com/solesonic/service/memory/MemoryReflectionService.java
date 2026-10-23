@@ -10,6 +10,7 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.user.UserProfileService;
 import com.solesonic.util.PromptQuoting;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -58,13 +60,17 @@ public class MemoryReflectionService {
     private final UserMemoryRepository userMemoryRepository;
     private final UserMemoryEvidenceRepository userMemoryEvidenceRepository;
     private final ReflectionValidator reflectionValidator;
+    private final ReflectionDeduplicator reflectionDeduplicator;
     private final UserMemoryService userMemoryService;
+    private final MemoryEmbeddingService memoryEmbeddingService;
+    private final UserProfileService userProfileService;
     private final ChatClient memoryChatClient;
     private final String reflectionPrompt;
     private final Duration idle;
     private final int batchSize;
     private final int maxAttempts;
     private final int maxTranscriptCharacters;
+    private final int shownMemories;
 
     public MemoryReflectionService(ChatMemoryReflectionService chatMemoryReflectionService,
                                    ChatRepository chatRepository,
@@ -72,26 +78,34 @@ public class MemoryReflectionService {
                                    UserMemoryRepository userMemoryRepository,
                                    UserMemoryEvidenceRepository userMemoryEvidenceRepository,
                                    ReflectionValidator reflectionValidator,
+                                   ReflectionDeduplicator reflectionDeduplicator,
                                    UserMemoryService userMemoryService,
+                                   MemoryEmbeddingService memoryEmbeddingService,
+                                   UserProfileService userProfileService,
                                    @Qualifier(MEMORY_CHAT_MODEL) ChatModel memoryChatModel,
                                    @Value("classpath:prompts/memory-reflection-prompt.st") Resource reflectionPromptResource,
                                    @Value("${solesonic.llm.memory.reflection.idle-minutes}") long idleMinutes,
                                    @Value("${solesonic.llm.memory.reflection.batch-size}") int batchSize,
                                    @Value("${solesonic.llm.memory.reflection.max-attempts}") int maxAttempts,
-                                   @Value("${solesonic.llm.memory.reflection.max-transcript-characters}") int maxTranscriptCharacters) {
+                                   @Value("${solesonic.llm.memory.reflection.max-transcript-characters}") int maxTranscriptCharacters,
+                                   @Value("${solesonic.llm.memory.reflection.shown-memories}") int shownMemories) {
         this.chatMemoryReflectionService = chatMemoryReflectionService;
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.userMemoryRepository = userMemoryRepository;
         this.userMemoryEvidenceRepository = userMemoryEvidenceRepository;
         this.reflectionValidator = reflectionValidator;
+        this.reflectionDeduplicator = reflectionDeduplicator;
         this.userMemoryService = userMemoryService;
+        this.memoryEmbeddingService = memoryEmbeddingService;
+        this.userProfileService = userProfileService;
         this.memoryChatClient = ChatClient.create(memoryChatModel);
         this.reflectionPrompt = read(reflectionPromptResource);
         this.idle = Duration.ofMinutes(idleMinutes);
         this.batchSize = batchSize;
         this.maxAttempts = maxAttempts;
         this.maxTranscriptCharacters = maxTranscriptCharacters;
+        this.shownMemories = shownMemories;
     }
 
     /**
@@ -154,6 +168,11 @@ public class MemoryReflectionService {
         }
     }
 
+    /**
+     * The model is shown only the memories nearest the conversation, but every live memory stays in
+     * the context it is validated against, so a key or a duplicate it was not shown still resolves to
+     * the memory that holds it.
+     */
     private ValidatedReflection validated(UUID userId, UUID chatId, List<ChatMessage> messages) {
         List<UserMemory> memories = userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(userId, UserMemoryService.LIVE_STATUSES);
 
@@ -167,11 +186,51 @@ public class MemoryReflectionService {
 
         ReflectionResult result = memoryChatClient.prompt()
                 .system(reflectionPrompt)
-                .user(render(context))
+                .user(render(context, shown(userId, memories, messages), displayName(userId)))
                 .call()
                 .entity(ReflectionResult.class);
 
-        return reflectionValidator.validate(context, result == null ? NOTHING : result);
+        ReflectionResult proposed = reflectionDeduplicator.deduplicate(userId, result == null ? NOTHING : result, memories);
+
+        return reflectionValidator.validate(context, proposed);
+    }
+
+    /**
+     * All of the user's live memories when there are few enough, otherwise those nearest what the
+     * user said in this window — or all of them again when the search fails, since a longer prompt is
+     * better than a reflection that cannot see a memory it is about to repeat.
+     */
+    private List<UserMemory> shown(UUID userId, List<UserMemory> memories, List<ChatMessage> messages) {
+        if (memories.size() <= shownMemories) {
+            return memories;
+        }
+
+        String said = messages.stream()
+                .filter(message -> message.getMessageType() == MessageType.USER)
+                .map(MemoryReflectionService::shown)
+                .collect(Collectors.joining("\n"));
+
+        try {
+            Set<UUID> nearest = new HashSet<>(memoryEmbeddingService.nearestLiveIds(userId, said, shownMemories));
+
+            return memories.stream().filter(memory -> nearest.contains(memory.getId())).toList();
+        } catch (RuntimeException exception) {
+            log.warn("Could not find the memories nearest a conversation for user {}, showing all ({})",
+                    userId, exception.getClass().getSimpleName());
+            return memories;
+        }
+    }
+
+    /**
+     * @return the user's name, or null when it is not known or cannot be read
+     */
+    private String displayName(UUID userId) {
+        try {
+            return userProfileService.displayName(userId).orElse(null);
+        } catch (RuntimeException exception) {
+            log.warn("Could not read the display name of user {} ({})", userId, exception.getClass().getSimpleName());
+            return null;
+        }
     }
 
     /**
@@ -213,15 +272,23 @@ public class MemoryReflectionService {
      * Each message is one line, its text a quoted string with every line break escaped, so nothing
      * inside a message — an email, a web page — can start a line of its own that looks like a USER
      * label.
+     *
+     * @param displayName the user's own name, or null when it is not known
      */
-    private static String render(ReflectionContext context) {
-        StringBuilder rendered = new StringBuilder("Existing memories:\n");
+    private static String render(ReflectionContext context, List<UserMemory> shownMemories, String displayName) {
+        StringBuilder rendered = new StringBuilder();
 
-        if (context.memories().isEmpty()) {
+        if (displayName != null) {
+            rendered.append("The user's name: ").append(PromptQuoting.quote(displayName)).append("\n\n");
+        }
+
+        rendered.append("Existing memories:\n");
+
+        if (shownMemories.isEmpty()) {
             rendered.append("(none)\n");
         }
 
-        for (UserMemory memory : context.memories()) {
+        for (UserMemory memory : shownMemories) {
             rendered.append("- id=").append(memory.getId())
                     .append(" kind=").append(memory.getKind())
                     .append(" key=").append(Objects.toString(memory.getMemoryKey(), "none"))
@@ -235,8 +302,13 @@ public class MemoryReflectionService {
         for (ChatMessage message : context.window()) {
             rendered.append(message.getMessageType())
                     .append(" id=").append(message.getId())
-                    .append(" at=").append(message.getTimestamp())
-                    .append(": ").append(PromptQuoting.quote(shown(message)))
+                    .append(" at=").append(message.getTimestamp());
+
+            if (message.getMessageType() == MessageType.USER && ReflectionValidator.pasted(message)) {
+                rendered.append(" pasted=true");
+            }
+
+            rendered.append(": ").append(PromptQuoting.quote(shown(message)))
                     .append('\n');
         }
 
@@ -244,18 +316,23 @@ public class MemoryReflectionService {
     }
 
     /**
-     * The user's words in full; an assistant reply only as an excerpt. A reply is where mail, web
-     * pages and tool results reach the transcript, and the model needs only enough of it to read what
-     * the user was answering — not a whole summarised email to be talked into remembering.
+     * The user's words in full unless they were pasted; an assistant reply only as an excerpt. A
+     * reply is where mail, web pages and tool results reach the transcript, and the model needs only
+     * enough of it to read what the user was answering — not a whole summarised email to be talked
+     * into remembering. A pasted log or prompt is cut for the same reason.
      */
     private static String shown(ChatMessage message) {
         String text = Objects.toString(message.getMessage(), "");
 
-        if (message.getMessageType() != MessageType.ASSISTANT || text.length() <= ASSISTANT_EXCERPT_CHARACTERS) {
+        int limit = message.getMessageType() == MessageType.ASSISTANT
+                ? ASSISTANT_EXCERPT_CHARACTERS
+                : ReflectionValidator.PASTED_MESSAGE_CHARACTERS;
+
+        if (text.length() <= limit) {
             return text;
         }
 
-        return text.substring(0, ASSISTANT_EXCERPT_CHARACTERS) + " [truncated]";
+        return text.substring(0, limit) + " [truncated]";
     }
 
     private static String read(Resource resource) {

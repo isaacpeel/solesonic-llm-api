@@ -3,12 +3,18 @@ package com.solesonic.service.memory;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.memory.ChatMemoryReflection;
+import com.solesonic.model.memory.MemoryKind;
+import com.solesonic.model.memory.MemoryOrigin;
+import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.ReflectionStatus;
+import com.solesonic.model.memory.UserMemory;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
+import com.solesonic.repository.memory.MemoryEmbeddingRepository.MemorySimilarity;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
 import com.solesonic.service.memory.ValidatedReflection.DropReason;
+import com.solesonic.service.user.UserProfileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -34,6 +40,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -47,6 +54,8 @@ class MemoryReflectionServiceTest {
     private static final UUID CHAT_ID = UUID.randomUUID();
     private static final ZonedDateTime START = ZonedDateTime.now().minusHours(2);
     private static final int MAX_TRANSCRIPT_CHARACTERS = 500;
+    private static final int SHOWN_MEMORIES = 2;
+    private static final double DUPLICATE_SIMILARITY = 0.9;
 
     @Mock
     private ChatMemoryReflectionService chatMemoryReflectionService;
@@ -66,6 +75,12 @@ class MemoryReflectionServiceTest {
     @Mock
     private UserMemoryService userMemoryService;
 
+    @Mock
+    private MemoryEmbeddingService memoryEmbeddingService;
+
+    @Mock
+    private UserProfileService userProfileService;
+
     @Captor
     private ArgumentCaptor<ValidatedReflection> validatedCaptor;
 
@@ -83,13 +98,17 @@ class MemoryReflectionServiceTest {
                 userMemoryRepository,
                 userMemoryEvidenceRepository,
                 new ReflectionValidator(500, 0.5),
+                new ReflectionDeduplicator(memoryEmbeddingService, DUPLICATE_SIMILARITY),
                 userMemoryService,
+                memoryEmbeddingService,
+                userProfileService,
                 fakeChatModel,
                 new ByteArrayResource("You maintain long-term memory about one user.".getBytes(StandardCharsets.UTF_8)),
                 10,
                 5,
                 3,
-                MAX_TRANSCRIPT_CHARACTERS);
+                MAX_TRANSCRIPT_CHARACTERS,
+                SHOWN_MEMORIES);
 
         claimed.setChatId(CHAT_ID);
         claimed.setUserId(USER_ID);
@@ -110,14 +129,14 @@ class MemoryReflectionServiceTest {
 
         ownedChat(USER_ID);
         unreflected(userMessage, assistantMessage, systemMessage);
-        fakeChatModel.respond(json("{'add':[{'kind':'FACT','key':'home.city','content':'Lives in Leeds','confidence':0.9,"
+        fakeChatModel.respond(json("{'add':[{'kind':'FACT','key':'home.city','content':'The user lives in Leeds','confidence':0.9,"
                 + "'evidenceMessageIds':['" + userMessage.getId() + "']}],'supersede':[],'confirm':[]}"));
 
         ReflectionRun run = memoryReflectionService.reflectEligible();
 
         verify(userMemoryService).applyReflection(eq(CHAT_ID), eq(USER_ID), eq(START), eq(systemMessage.getTimestamp()), validatedCaptor.capture());
         assertThat(validatedCaptor.getValue().additions()).singleElement()
-                .satisfies(addition -> assertThat(addition.content()).isEqualTo("Lives in Leeds"));
+                .satisfies(addition -> assertThat(addition.content()).isEqualTo("The user lives in Leeds"));
         assertThat(run.additions()).isEqualTo(1);
         assertThat(fakeChatModel.lastUserText()).doesNotContain("Chat canceled.");
     }
@@ -133,7 +152,7 @@ class MemoryReflectionServiceTest {
 
         ownedChat(USER_ID);
         unreflected(userMessage, assistantMessage);
-        fakeChatModel.respond(json("{'add':[{'kind':'FACT','content':'Bank is Acme','confidence':0.9,"
+        fakeChatModel.respond(json("{'add':[{'kind':'FACT','content':'The user banks with Acme','confidence':0.9,"
                 + "'evidenceMessageIds':['" + assistantMessage.getId() + "']}]}"));
 
         ReflectionRun run = memoryReflectionService.reflectEligible();
@@ -181,6 +200,90 @@ class MemoryReflectionServiceTest {
                 .contains("y".repeat(100))
                 .doesNotContain("z".repeat(400))
                 .contains("[truncated]");
+    }
+
+    /**
+     * A long USER message is almost always a paste — a log, a prompt for another tool — so it is cut
+     * like an assistant reply and labelled, rather than read as the user talking about themselves.
+     */
+    @Test
+    void showsAPastedUserMessageOnlyInPartAndLabelsIt() {
+        String pasted = "Here is my log " + "p".repeat(ReflectionValidator.PASTED_MESSAGE_CHARACTERS + 500);
+
+        ownedChat(USER_ID);
+        unreflected(message(MessageType.USER, pasted, 1));
+        fakeChatModel.respond(json("{'add':[],'supersede':[],'confirm':[]}"));
+
+        memoryReflectionService.reflectEligible();
+
+        assertThat(fakeChatModel.lastUserText())
+                .contains("pasted=true")
+                .contains("[truncated]")
+                .doesNotContain("p".repeat(ReflectionValidator.PASTED_MESSAGE_CHARACTERS));
+    }
+
+    @Test
+    void tellsTheModelTheUsersOwnName() {
+        ownedChat(USER_ID);
+        unreflected(message(MessageType.USER, "Hello", 1));
+        when(userProfileService.displayName(USER_ID)).thenReturn(Optional.of("Sam"));
+        fakeChatModel.respond(json("{'add':[],'supersede':[],'confirm':[]}"));
+
+        memoryReflectionService.reflectEligible();
+
+        assertThat(fakeChatModel.lastUserText()).contains("The user's name: \"Sam\"");
+    }
+
+    /**
+     * Past {@code shown-memories}, the model sees only the memories nearest what the user said, so the
+     * prompt does not grow with everything ever learned.
+     */
+    @Test
+    void showsOnlyTheMemoriesNearestTheConversationOnceThereAreMany() {
+        UserMemory near = memory("The user lives in Leeds", "home.city");
+        UserMemory alsoNear = memory("The user moved last year", "home.moved");
+        UserMemory far = memory("The user owns an Underwood typewriter", "typewriter");
+
+        ownedChat(USER_ID);
+        unreflected(message(MessageType.USER, "I moved to Leeds last year", 1));
+        when(userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(eq(USER_ID), anyCollection()))
+                .thenReturn(List.of(near, alsoNear, far));
+        when(memoryEmbeddingService.nearestLiveIds(eq(USER_ID), any(String.class), eq(SHOWN_MEMORIES)))
+                .thenReturn(List.of(near.getId(), alsoNear.getId()));
+        fakeChatModel.respond(json("{'add':[],'supersede':[],'confirm':[]}"));
+
+        memoryReflectionService.reflectEligible();
+
+        assertThat(fakeChatModel.lastUserText())
+                .contains(near.getId().toString())
+                .contains(alsoNear.getId().toString())
+                .doesNotContain(far.getId().toString());
+    }
+
+    /**
+     * Keys only catch a repeat named the same way. An addition that says what a live memory already
+     * says, under another key, counts as the user saying it again.
+     */
+    @Test
+    void anAdditionDuplicatingALiveMemoryUnderAnotherKeyConfirmsIt() {
+        ChatMessage userMessage = message(MessageType.USER, "I live in Leeds", 1);
+        UserMemory existing = memory("The user lives in Leeds, England", "home.city");
+
+        ownedChat(USER_ID);
+        unreflected(userMessage);
+        when(userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(eq(USER_ID), anyCollection()))
+                .thenReturn(List.of(existing));
+        when(memoryEmbeddingService.nearestLive(eq(USER_ID), anyList()))
+                .thenReturn(List.of(Optional.of(new MemorySimilarity(existing.getId(), 0.95))));
+        fakeChatModel.respond(json("{'add':[{'kind':'FACT','key':'location','content':'The user lives in Leeds','confidence':0.9,"
+                + "'evidenceMessageIds':['" + userMessage.getId() + "']}]}"));
+
+        memoryReflectionService.reflectEligible();
+
+        verify(userMemoryService).applyReflection(eq(CHAT_ID), eq(USER_ID), eq(START), any(ZonedDateTime.class), validatedCaptor.capture());
+        assertThat(validatedCaptor.getValue().additions()).isEmpty();
+        assertThat(validatedCaptor.getValue().confirmations()).singleElement()
+                .satisfies(confirmation -> assertThat(confirmation.target()).isSameAs(existing));
     }
 
     @Test
@@ -331,6 +434,19 @@ class MemoryReflectionServiceTest {
         chatMessage.setMessage(text);
         chatMessage.setTimestamp(START.plusMinutes(minutesAfterStart));
         return chatMessage;
+    }
+
+    private static UserMemory memory(String content, String memoryKey) {
+        UserMemory memory = new UserMemory();
+        memory.setId(UUID.randomUUID());
+        memory.setUserId(USER_ID);
+        memory.setKind(MemoryKind.FACT);
+        memory.setOrigin(MemoryOrigin.INFERRED);
+        memory.setStatus(MemoryStatus.ACTIVE);
+        memory.setMemoryKey(memoryKey);
+        memory.setContent(content);
+        memory.setConfidence(0.9);
+        return memory;
     }
 
     private static String json(String singleQuoted) {

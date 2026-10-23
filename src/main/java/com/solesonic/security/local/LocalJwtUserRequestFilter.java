@@ -4,6 +4,7 @@ import com.solesonic.config.logging.MdcRequestFilter;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.service.user.UserProfileService;
 import jakarta.annotation.Nonnull;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -35,11 +36,14 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
 
     private final UserRequestContext userRequestContext;
     private final UserPreferencesService userPreferencesService;
+    private final UserProfileService userProfileService;
 
     public LocalJwtUserRequestFilter(UserRequestContext userRequestContext,
-                                     UserPreferencesService userPreferencesService) {
+                                     UserPreferencesService userPreferencesService,
+                                     UserProfileService userProfileService) {
         this.userRequestContext = userRequestContext;
         this.userPreferencesService = userPreferencesService;
+        this.userProfileService = userProfileService;
     }
 
     @Override
@@ -54,6 +58,7 @@ public class LocalJwtUserRequestFilter extends OncePerRequestFilter {
         if (authentication != null && authentication.getPrincipal() instanceof Jwt jwt) {
                 String jwtClaim = jwt.getClaimAsString(SUB);
                 userId = UUID.fromString(jwtClaim);
+                userProfileService.record(userId, jwt);
         } else {
             userId = defaultUserId();
         }

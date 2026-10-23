@@ -226,6 +226,36 @@
       "description": "Size of one reflection window. Longer conversations are read across several runs; nothing is skipped."
     },
     {
+      "name": "solesonic.llm.memory.reflection.shown-memories",
+      "type": "java.lang.Integer",
+      "description": "Existing memories shown to the reflection model: those nearest the conversation, or all of them when the user has no more than this."
+    },
+    {
+      "name": "solesonic.llm.memory.reflection.duplicate-similarity",
+      "type": "java.lang.Double",
+      "description": "Cosine similarity at or above which a proposed addition is treated as an existing live memory said again."
+    },
+    {
+      "name": "solesonic.llm.memory.retention.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether the memory retention sweep runs."
+    },
+    {
+      "name": "solesonic.llm.memory.retention.cron",
+      "type": "java.lang.String",
+      "description": "Schedule of the memory retention sweep."
+    },
+    {
+      "name": "solesonic.llm.memory.retention.pending-days",
+      "type": "java.lang.Long",
+      "description": "Days an inferred pending memory may go unconfirmed before the retention sweep removes it."
+    },
+    {
+      "name": "solesonic.llm.memory.retention.min-score",
+      "type": "java.lang.Double",
+      "description": "Decayed score below which the retention sweep removes an active inferred memory."
+    },
+    {
       "name": "solesonic.llm.memory.injection.enabled",
       "type": "java.lang.Boolean",
       "description": "Whether active memories are put in the plain-chat system prompt."

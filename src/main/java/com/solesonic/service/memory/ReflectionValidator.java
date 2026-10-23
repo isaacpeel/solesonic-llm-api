@@ -1,6 +1,7 @@
 package com.solesonic.service.memory;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.memory.MemoryKind;
 import com.solesonic.model.memory.MemoryOrigin;
 import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.ReflectionResult;
@@ -20,7 +21,6 @@ import org.springframework.stereotype.Component;
 
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -34,6 +34,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
+import java.util.regex.MatchResult;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -48,9 +49,18 @@ import java.util.stream.Collectors;
  */
 @Component
 public class ReflectionValidator {
+    /**
+     * A {@code USER} message longer than this is treated as pasted — a log, a document, a prompt for
+     * another tool — rather than the user talking about themselves.
+     */
+    static final int PASTED_MESSAGE_CHARACTERS = 1000;
+
     private static final int STEM_LENGTH = 4;
     private static final int MIN_WORD_LENGTH = 3;
+    private static final double MIN_GROUNDED_SHARE = 0.5;
     private static final Pattern WORD_SEPARATOR = Pattern.compile("[^\\p{L}\\p{N}]+");
+    private static final Pattern NUMBER = Pattern.compile("\\p{N}+");
+    private static final Pattern ABOUT_USER = Pattern.compile("\\buser\\b", Pattern.CASE_INSENSITIVE);
 
     private static final Set<String> FILLER_WORDS = Set.of(
             "the", "and", "you", "your", "for", "are", "was", "but", "not", "has", "had", "his", "her", "its",
@@ -147,10 +157,9 @@ public class ReflectionValidator {
                 return;
             }
 
-            String content = normalizeContent(addition.content());
+            String content = acceptedContent(addition.content());
 
             if (content == null) {
-                drop(DropReason.BLANK_CONTENT);
                 return;
             }
 
@@ -160,13 +169,13 @@ public class ReflectionValidator {
                 return;
             }
 
-            List<ChatMessage> evidence = evidence(addition.evidenceMessageIds());
+            List<ChatMessage> evidence = evidence(addition.evidenceMessageIds(), addition.kind());
 
             if (evidence.isEmpty()) {
                 return;
             }
 
-            if (!grounded(content, evidence)) {
+            if (ungrounded(content, evidence)) {
                 drop(DropReason.UNGROUNDED);
                 return;
             }
@@ -183,10 +192,9 @@ public class ReflectionValidator {
                 return;
             }
 
-            String content = normalizeContent(proposedContent);
+            String content = acceptedContent(proposedContent);
 
             if (content == null) {
-                drop(DropReason.BLANK_CONTENT);
                 return;
             }
 
@@ -196,13 +204,13 @@ public class ReflectionValidator {
                 return;
             }
 
-            List<ChatMessage> evidence = evidence(evidenceMessageIds);
+            List<ChatMessage> evidence = evidence(evidenceMessageIds, target.getKind());
 
             if (evidence.isEmpty()) {
                 return;
             }
 
-            if (!grounded(content, evidence)) {
+            if (ungrounded(content, evidence)) {
                 drop(DropReason.UNGROUNDED);
                 return;
             }
@@ -231,10 +239,9 @@ public class ReflectionValidator {
                 return;
             }
 
-            String content = normalizeContent(addition.content());
+            String content = acceptedContent(addition.content());
 
             if (content == null) {
-                drop(DropReason.BLANK_CONTENT);
                 return;
             }
 
@@ -242,13 +249,13 @@ public class ReflectionValidator {
                 return;
             }
 
-            List<ChatMessage> evidence = evidence(addition.evidenceMessageIds());
+            List<ChatMessage> evidence = evidence(addition.evidenceMessageIds(), target.getKind());
 
             if (evidence.isEmpty()) {
                 return;
             }
 
-            if (!grounded(content, evidence)) {
+            if (ungrounded(content, evidence)) {
                 drop(DropReason.UNGROUNDED);
                 return;
             }
@@ -270,7 +277,7 @@ public class ReflectionValidator {
                 return;
             }
 
-            List<ChatMessage> evidence = evidence(confirmation.evidenceMessageIds());
+            List<ChatMessage> evidence = evidence(confirmation.evidenceMessageIds(), target.getKind());
 
             if (evidence.isEmpty()) {
                 return;
@@ -311,7 +318,12 @@ public class ReflectionValidator {
             return target;
         }
 
-        private List<ChatMessage> evidence(List<UUID> evidenceMessageIds) {
+        /**
+         * A pasted message can support a fact the user stated in it, but not a preference or a
+         * standing instruction: those are about what the user asks for, and a pasted prompt or log is
+         * worded for something else.
+         */
+        private List<ChatMessage> evidence(List<UUID> evidenceMessageIds, MemoryKind kind) {
             List<ChatMessage> evidence = new ArrayList<>();
 
             for (UUID evidenceMessageId : listOrEmpty(evidenceMessageIds)) {
@@ -319,6 +331,11 @@ public class ReflectionValidator {
 
                 if (message == null) {
                     drop(DropReason.INVALID_EVIDENCE);
+                    continue;
+                }
+
+                if (kind != MemoryKind.FACT && pasted(message)) {
+                    drop(DropReason.PASTED_EVIDENCE);
                     continue;
                 }
 
@@ -332,6 +349,28 @@ public class ReflectionValidator {
             }
 
             return evidence;
+        }
+
+        /**
+         * Normalized content, or null when it is blank or is not a statement about the user. The
+         * prompt asks for every memory to begin "The user"; a proposal that names no user at all is
+         * almost always general knowledge the conversation turned up, such as the answer to a
+         * question the user asked.
+         */
+        private String acceptedContent(String proposed) {
+            String content = normalizeContent(proposed);
+
+            if (content == null) {
+                drop(DropReason.BLANK_CONTENT);
+                return null;
+            }
+
+            if (!ABOUT_USER.matcher(content).find()) {
+                drop(DropReason.NOT_ABOUT_USER);
+                return null;
+            }
+
+            return content;
         }
 
         private Double acceptedConfidence(double proposed) {
@@ -359,28 +398,45 @@ public class ReflectionValidator {
     }
 
     /**
-     * Whether the proposed text shares at least one content word with what the user actually wrote.
+     * Whether what the user actually wrote fails to support the proposed text. It is supported when
+     * at least half of its content words, and every number in it, appear in the cited messages.
      * <p>
      * Citing a {@code USER} message proves only that the message exists, not that the memory came from
-     * it: the model could lift a line from a summarised email and attach any real message id to it.
-     * Requiring the words to overlap closes that, at the cost of missing a memory the user only
-     * implied — a missed memory is cheaper than a planted one. Words are compared by their first
+     * it: the model could lift a line from a summarised email, or the answer to the user's own
+     * question, and attach any real message id to it. One shared word is not enough — "What is MGP?"
+     * shares one with "MGP stands for GPU memory" — and a number the user never wrote, such as a
+     * release date, came from somewhere else. The cost is missing a memory the user only implied; a
+     * missed memory is cheaper than a planted one. Words are compared by their first
      * {@value #STEM_LENGTH} characters so "moved" and "moving" still match.
      */
-    static boolean grounded(String content, List<ChatMessage> evidence) {
+    static boolean ungrounded(String content, List<ChatMessage> evidence) {
         Set<String> contentStems = stems(content);
 
         if (contentStems.isEmpty()) {
-            return false;
+            return true;
         }
 
-        for (ChatMessage message : evidence) {
-            if (!Collections.disjoint(contentStems, stems(Objects.toString(message.getMessage(), "")))) {
-                return true;
-            }
+        String evidenceText = evidence.stream()
+                .map(message -> Objects.toString(message.getMessage(), ""))
+                .collect(Collectors.joining("\n"));
+
+        Set<String> evidenceStems = stems(evidenceText);
+
+        long supported = contentStems.stream().filter(evidenceStems::contains).count();
+
+        if (supported < Math.ceil(contentStems.size() * MIN_GROUNDED_SHARE)) {
+            return true;
         }
 
-        return false;
+        return !numbers(evidenceText).containsAll(numbers(content));
+    }
+
+    static boolean pasted(ChatMessage message) {
+        return Objects.toString(message.getMessage(), "").length() > PASTED_MESSAGE_CHARACTERS;
+    }
+
+    private static Set<String> numbers(String text) {
+        return NUMBER.matcher(text).results().map(MatchResult::group).collect(Collectors.toSet());
     }
 
     private static Set<String> stems(String text) {

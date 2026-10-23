@@ -50,6 +50,8 @@ public record ValidatedReflection(List<Addition> additions,
         MISSING_KIND,
         BLANK_CONTENT,
         LOW_CONFIDENCE,
-        UNGROUNDED
+        UNGROUNDED,
+        NOT_ABOUT_USER,
+        PASTED_EVIDENCE
     }
 }

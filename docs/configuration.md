@@ -326,6 +326,12 @@ Every variable is optional; the Default column is what applies when it is unset.
 | `MEMORY_REFLECTION_BATCH_SIZE` | Conversations claimed per tick | `5` | No | Processed one model call at a time |
 | `MEMORY_REFLECTION_MAX_ATTEMPTS` | Failures before a conversation is given up on | `3` | No | A failure never changes existing memories |
 | `MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS` | Size of one window of a conversation | `12000` | No | Longer conversations are read in windows; nothing is skipped |
+| `MEMORY_REFLECTION_SHOWN_MEMORIES` | Existing memories shown to the reflection model | `30` | No | Past it, only those nearest what the user said in the window. Every live memory is still checked for key collisions and duplicates |
+| `MEMORY_REFLECTION_DUPLICATE_SIMILARITY` | Cosine similarity at which a proposed addition counts as a live memory said again | `0.9` | No | It becomes a confirmation, or a supersession when it is more detailed than an active memory. Depends on the embedding model |
+| `MEMORY_RETENTION_ENABLED` | Run the retention sweep | `true` | No | |
+| `MEMORY_RETENTION_CRON` | Retention sweep schedule | `0 15 3 * * *` | No | Spring cron |
+| `MEMORY_RETENTION_PENDING_DAYS` | Days an inferred pending memory may go unconfirmed | `30` | No | Then the sweep removes it |
+| `MEMORY_RETENTION_MIN_SCORE` | Decayed score below which an active inferred memory is removed | `0.3` | No | Score is confidence halved every 90 days without confirmation, so `0.3` retires a `0.9` memory after about 140 days |
 | `MEMORY_INJECTION_ENABLED` | Put active memories in the plain-chat system prompt | `false` | No | Deploy with this off first, review the backfill through the memory panel, then turn it on |
 | `MEMORY_PROMPT_MAX_CHARACTERS` | Ceiling on the memory block in the system prompt | `2000` | No | The context window is shared with history and retrieval |
 | `MEMORY_RETRIEVAL_MODE` | Which facts and preferences a turn carries: `RELEVANT` (only those relevant to the message and the conversation so far) or `ALL` | `RELEVANT` | No | Standing instructions are carried on every turn either way. `ALL` is the behaviour before retrieval, kept for comparison |
@@ -334,7 +340,7 @@ Every variable is optional; the Default column is what applies when it is unset.
 | `MEMORY_RETRIEVAL_QUERY_WINDOW_MESSAGES` | User messages, this one included, that relevance is judged against | `3` | No | `1` judges by the message alone |
 | `MEMORY_EMBEDDING_CRON` | Schedule for embedding memories not embedded when written | `0 * * * * *` | No | Spring cron. Covers the backfill on first deploy, failed calls and a change of `EMBEDDING_MODEL` |
 | `MEMORY_EMBEDDING_BATCH_SIZE` | Memories embedded per call | `50` | No | |
-| `MEMORY_MAX_ACTIVE` | Active memories kept per user | `200` | No | Past it, the weakest inferred memory is evicted; one the user set never is |
+| `MEMORY_MAX_ACTIVE` | Active memories kept per user | `60` | No | Past it, the weakest inferred memory is evicted; one the user set never is |
 | `MEMORY_MAX_CHARACTERS` | Longest single memory | `500` | No | Applies to the panel and to reflection |
 | `MEMORY_MIN_CONFIDENCE` | Proposals below this confidence are dropped | `0.6` | No | Between 0 and 1 |
 
@@ -564,6 +570,12 @@ MEMORY_REFLECTION_IDLE_MINUTES=30
 MEMORY_REFLECTION_BATCH_SIZE=5
 MEMORY_REFLECTION_MAX_ATTEMPTS=3
 MEMORY_REFLECTION_MAX_TRANSCRIPT_CHARACTERS=12000
+MEMORY_REFLECTION_SHOWN_MEMORIES=30
+MEMORY_REFLECTION_DUPLICATE_SIMILARITY=0.9
+MEMORY_RETENTION_ENABLED=true
+MEMORY_RETENTION_CRON=0 15 3 * * *
+MEMORY_RETENTION_PENDING_DAYS=30
+MEMORY_RETENTION_MIN_SCORE=0.3
 MEMORY_INJECTION_ENABLED=false
 MEMORY_PROMPT_MAX_CHARACTERS=2000
 MEMORY_RETRIEVAL_MODE=RELEVANT
@@ -572,7 +584,7 @@ MEMORY_RETRIEVAL_SIMILARITY_THRESHOLD=0.55
 MEMORY_RETRIEVAL_QUERY_WINDOW_MESSAGES=3
 MEMORY_EMBEDDING_CRON=0 * * * * *
 MEMORY_EMBEDDING_BATCH_SIZE=50
-MEMORY_MAX_ACTIVE=200
+MEMORY_MAX_ACTIVE=60
 MEMORY_MAX_CHARACTERS=500
 MEMORY_MIN_CONFIDENCE=0.6
 

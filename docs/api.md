@@ -1325,7 +1325,8 @@ Memories come from three places:
 | `AUTHORED` | Written or edited through this API. Has no evidence, and reflection never changes it |
 
 `kind` is `FACT`, `PREFERENCE` or `INSTRUCTION`; `status` is `ACTIVE` or `PENDING` (an inferred
-instruction stays pending until it has been seen in two conversations), or `SUPERSEDED` once a newer
+preference or instruction stays pending until it has been seen in two conversations, and is removed
+if that does not happen within `MEMORY_RETENTION_PENDING_DAYS`), or `SUPERSEDED` once a newer
 memory replaced it. Only `ACTIVE` memories are put in front of the model, and only on plain chat
 turns — never on slash-command tool turns, MCP prompt commands or turns delegated to an A2A agent.
 Standing instructions are carried on every such turn; facts and preferences only when relevant to the

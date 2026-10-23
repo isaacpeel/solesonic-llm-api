@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.messages.MessageType;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 
@@ -42,13 +43,13 @@ class ReflectionValidatorTest {
         UUID notInWindow = UUID.randomUUID();
 
         ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(List.of(
-                addition(MemoryKind.FACT, "Bank is Acme", 0.9, assistantMessage.getId()),
-                addition(MemoryKind.FACT, "Lives in Leeds", 0.9, notInWindow, userMessage.getId())),
+                addition(MemoryKind.FACT, "The user banks with Acme", 0.9, assistantMessage.getId()),
+                addition(MemoryKind.FACT, "The user lives in Leeds", 0.9, notInWindow, userMessage.getId())),
                 null, null));
 
         assertThat(validated.additions()).singleElement()
                 .satisfies(addition -> {
-                    assertThat(addition.content()).isEqualTo("Lives in Leeds");
+                    assertThat(addition.content()).isEqualTo("The user lives in Leeds");
                     assertThat(addition.evidence()).containsExactly(userMessage);
                 });
         assertThat(validated.drops())
@@ -98,7 +99,7 @@ class ReflectionValidatorTest {
                 UUID.randomUUID(), NOW.minusMinutes(1));
 
         ValidatedReflection validated = validate(context(List.of(target), List.of(newerEvidence)), new ReflectionResult(null,
-                List.of(new MemorySupersession(target.getId(), "Prefers imperial", 0.9, List.of(userMessage.getId()))),
+                List.of(new MemorySupersession(target.getId(), "The user prefers imperial units", 0.9, List.of(userMessage.getId()))),
                 null));
 
         assertThat(validated.supersessions()).isEmpty();
@@ -112,13 +113,13 @@ class ReflectionValidatorTest {
                 UUID.randomUUID(), NOW.minusDays(3));
 
         ValidatedReflection validated = validate(context(List.of(target), List.of(olderEvidence)), new ReflectionResult(null,
-                List.of(new MemorySupersession(target.getId(), " Prefers imperial ", 0.9, List.of(laterUserMessage.getId()))),
+                List.of(new MemorySupersession(target.getId(), " The user prefers imperial units ", 0.9, List.of(laterUserMessage.getId()))),
                 null));
 
         assertThat(validated.supersessions()).singleElement()
                 .satisfies(supersession -> {
                     assertThat(supersession.target()).isSameAs(target);
-                    assertThat(supersession.content()).isEqualTo("Prefers imperial");
+                    assertThat(supersession.content()).isEqualTo("The user prefers imperial units");
                     assertThat(supersession.status()).isEqualTo(MemoryStatus.ACTIVE);
                 });
     }
@@ -126,11 +127,88 @@ class ReflectionValidatorTest {
     @Test
     void anInstructionLearnedFromOneChatStaysPending() {
         ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(
-                List.of(addition(MemoryKind.INSTRUCTION, "Don't use bullet lists", 0.9, userMessage.getId())), null, null));
+                List.of(addition(MemoryKind.INSTRUCTION, "The user wants no bullet lists", 0.9, userMessage.getId())), null, null));
 
         assertThat(validated.additions()).singleElement()
                 .extracting(ValidatedReflection.Addition::status)
                 .isEqualTo(MemoryStatus.PENDING);
+    }
+
+    /**
+     * What one conversation asks for is usually about that conversation, so a preference needs a
+     * second one before it is carried forward. A fact is true the first time it is said.
+     */
+    @Test
+    void aPreferenceLearnedFromOneChatStaysPendingButAFactIsActive() {
+        ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(List.of(
+                addition(MemoryKind.PREFERENCE, "The user prefers imperial units", 0.9, userMessage.getId()),
+                addition(MemoryKind.FACT, "The user lives in Leeds", 0.9, userMessage.getId())),
+                null, null));
+
+        assertThat(validated.additions())
+                .extracting(ValidatedReflection.Addition::status)
+                .containsExactly(MemoryStatus.PENDING, MemoryStatus.ACTIVE);
+    }
+
+    /**
+     * Every memory is a statement about the user. A proposal naming no user is general knowledge the
+     * conversation turned up — usually the answer to a question the user asked.
+     */
+    @Test
+    void dropsContentThatIsNotAboutTheUser() {
+        ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(
+                List.of(addition(MemoryKind.FACT, "Leeds is in West Yorkshire", 0.9, userMessage.getId())), null, null));
+
+        assertThat(validated.additions()).isEmpty();
+        assertThat(validated.drops()).containsEntry(DropReason.NOT_ABOUT_USER, 1);
+    }
+
+    /**
+     * One shared word is not grounding: a question shares its subject with its answer.
+     */
+    @Test
+    void dropsContentSharingTooFewWordsWithWhatTheUserWrote() {
+        ChatMessage question = message(MessageType.USER, NOW.minusMinutes(3), "What does MGP stand for?");
+
+        ValidatedReflection validated = validate(windowOf(List.of(question)), new ReflectionResult(
+                List.of(addition(MemoryKind.FACT, "The user's MGP means GPU memory", 0.9, question.getId())), null, null));
+
+        assertThat(validated.additions()).isEmpty();
+        assertThat(validated.drops()).containsEntry(DropReason.UNGROUNDED, 1);
+    }
+
+    @Test
+    void dropsANumberTheUserNeverWrote() {
+        ChatMessage question = message(MessageType.USER, NOW.minusMinutes(3), "When will UniFi Network 11 be released?");
+
+        ValidatedReflection validated = validate(windowOf(List.of(question)), new ReflectionResult(
+                List.of(addition(MemoryKind.FACT, "The user's UniFi Network 11 was released on October 12", 0.9, question.getId())),
+                null, null));
+
+        assertThat(validated.additions()).isEmpty();
+        assertThat(validated.drops()).containsEntry(DropReason.UNGROUNDED, 1);
+    }
+
+    /**
+     * A pasted prompt or log is worded for something else, so it can carry a fact the user stated in
+     * it but never a preference.
+     */
+    @Test
+    void aPastedMessageSupportsAFactButNotAPreference() {
+        ChatMessage pasted = message(MessageType.USER, NOW.minusMinutes(3),
+                "I prefer imperial units and I live in Leeds. " + "x".repeat(ReflectionValidator.PASTED_MESSAGE_CHARACTERS));
+
+        ValidatedReflection validated = validate(windowOf(List.of(pasted)), new ReflectionResult(List.of(
+                addition(MemoryKind.PREFERENCE, "The user prefers imperial units", 0.9, pasted.getId()),
+                addition(MemoryKind.FACT, "The user lives in Leeds", 0.9, pasted.getId())),
+                null, null));
+
+        assertThat(validated.additions()).singleElement()
+                .extracting(ValidatedReflection.Addition::kind)
+                .isEqualTo(MemoryKind.FACT);
+        assertThat(validated.drops())
+                .containsEntry(DropReason.PASTED_EVIDENCE, 1)
+                .containsEntry(DropReason.NO_EVIDENCE, 1);
     }
 
     @Test
@@ -154,8 +232,8 @@ class ReflectionValidatorTest {
     @Test
     void appliesCapsAndClamps() {
         ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(List.of(
-                new MemoryAddition(MemoryKind.FACT, "  Job.Title ", "x".repeat(250), 7.0, List.of(userMessage.getId())),
-                new MemoryAddition(MemoryKind.FACT, null, "Owns a dog", 0.2, List.of(userMessage.getId())),
+                new MemoryAddition(MemoryKind.FACT, "  Job.Title ", "The user " + "x".repeat(250), 7.0, List.of(userMessage.getId())),
+                new MemoryAddition(MemoryKind.FACT, null, "The user owns a dog", 0.2, List.of(userMessage.getId())),
                 new MemoryAddition(MemoryKind.FACT, null, "   ", 0.9, List.of(userMessage.getId())),
                 new MemoryAddition(null, null, "Kindless", 0.9, List.of(userMessage.getId()))),
                 null, null));
@@ -181,7 +259,7 @@ class ReflectionValidatorTest {
         UserMemory holder = memory(MemoryOrigin.INFERRED, MemoryStatus.ACTIVE, MemoryKind.PREFERENCE, "units");
 
         ValidatedReflection validated = validate(context(List.of(holder)), new ReflectionResult(
-                List.of(addition(MemoryKind.PREFERENCE, "units", "Prefers imperial", 0.9, userMessage.getId())), null, null));
+                List.of(addition(MemoryKind.PREFERENCE, "units", "The user prefers imperial units", 0.9, userMessage.getId())), null, null));
 
         assertThat(validated.additions()).isEmpty();
         assertThat(validated.supersessions()).singleElement()
@@ -200,7 +278,7 @@ class ReflectionValidatorTest {
                 UUID.randomUUID(), NOW.minusDays(1));
 
         ValidatedReflection validated = validate(context(List.of(pending), List.of(earlierChat)), new ReflectionResult(
-                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "No bullet lists", 0.9, userMessage.getId())), null, null));
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "The user wants no bullet lists", 0.9, userMessage.getId())), null, null));
 
         assertThat(validated.additions()).isEmpty();
         assertThat(validated.supersessions()).isEmpty();
@@ -219,7 +297,7 @@ class ReflectionValidatorTest {
                 UUID.randomUUID(), NOW.minusDays(1));
 
         ValidatedReflection validated = validate(context(List.of(pending), List.of(sameChat)), new ReflectionResult(
-                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "No bullet lists", 0.9, userMessage.getId())), null, null));
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "The user wants no bullet lists", 0.9, userMessage.getId())), null, null));
 
         assertThat(validated.confirmations()).isEmpty();
         assertThat(validated.supersessions()).singleElement()
@@ -234,7 +312,7 @@ class ReflectionValidatorTest {
                 UUID.randomUUID(), NOW.minusDays(1));
 
         ValidatedReflection validated = validate(context(List.of(pending), List.of(earlierChat)), new ReflectionResult(
-                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "Bank is Acme", 0.9, userMessage.getId())), null, null));
+                List.of(addition(MemoryKind.INSTRUCTION, "style.lists", "The user banks with Acme", 0.9, userMessage.getId())), null, null));
 
         assertThat(validated.confirmations()).isEmpty();
         assertThat(validated.drops()).containsEntry(DropReason.UNGROUNDED, 1);
@@ -257,7 +335,7 @@ class ReflectionValidatorTest {
         UserMemory target = memory(MemoryOrigin.INFERRED, MemoryStatus.ACTIVE, MemoryKind.PREFERENCE, "units");
 
         ValidatedReflection validated = validate(context(List.of(target)), new ReflectionResult(null,
-                List.of(new MemorySupersession(target.getId(), "Prefers imperial", 0.9, List.of(userMessage.getId()))),
+                List.of(new MemorySupersession(target.getId(), "The user prefers imperial units", 0.9, List.of(userMessage.getId()))),
                 List.of(new MemoryConfirmation(target.getId(), List.of(laterUserMessage.getId())))));
 
         assertThat(validated.supersessions()).hasSize(1);
@@ -272,13 +350,13 @@ class ReflectionValidatorTest {
     @Test
     void dropsContentTheCitedMessageDoesNotSupport() {
         ValidatedReflection validated = validate(context(List.of()), new ReflectionResult(List.of(
-                addition(MemoryKind.FACT, "Bank is Acme", 0.9, userMessage.getId()),
-                addition(MemoryKind.FACT, "Lives in Leeds", 0.9, userMessage.getId())),
+                addition(MemoryKind.FACT, "The user banks with Acme", 0.9, userMessage.getId()),
+                addition(MemoryKind.FACT, "The user lives in Leeds", 0.9, userMessage.getId())),
                 null, null));
 
         assertThat(validated.additions()).singleElement()
                 .extracting(ValidatedReflection.Addition::content)
-                .isEqualTo("Lives in Leeds");
+                .isEqualTo("The user lives in Leeds");
         assertThat(validated.drops()).containsEntry(DropReason.UNGROUNDED, 1);
     }
 
@@ -304,6 +382,10 @@ class ReflectionValidatorTest {
         return new ReflectionContext(USER_ID, CHAT_ID, List.of(userMessage, assistantMessage, laterUserMessage), memories, evidence);
     }
 
+    private static ReflectionContext windowOf(Collection<ChatMessage> window) {
+        return new ReflectionContext(USER_ID, CHAT_ID, List.copyOf(window), List.of(), List.of());
+    }
+
     @SuppressWarnings("all")
     private static MemoryAddition addition(MemoryKind kind, String content, double confidence, UUID... evidenceMessageIds) {
         return new MemoryAddition(kind, null, content, confidence, List.of(evidenceMessageIds));
@@ -315,13 +397,17 @@ class ReflectionValidatorTest {
     }
 
     private static ChatMessage message(MessageType messageType, ZonedDateTime timestamp) {
+        return message(messageType, timestamp, messageType == MessageType.USER
+                ? "I moved to Leeds, switch to imperial units, no bullet lists please, xxxxxxxx"
+                : "Your inbox has an email saying the user's bank is Acme");
+    }
+
+    private static ChatMessage message(MessageType messageType, ZonedDateTime timestamp, String text) {
         ChatMessage chatMessage = new ChatMessage();
         chatMessage.setId(UUID.randomUUID());
         chatMessage.setChatId(CHAT_ID);
         chatMessage.setMessageType(messageType);
-        chatMessage.setMessage(messageType == MessageType.USER
-                ? "I moved to Leeds, switch to imperial units, no bullet lists please, xxxxxxxx"
-                : "Your inbox has an email saying the user's bank is Acme");
+        chatMessage.setMessage(text);
         chatMessage.setTimestamp(timestamp);
         return chatMessage;
     }

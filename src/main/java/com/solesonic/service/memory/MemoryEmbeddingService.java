@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -147,6 +148,43 @@ public class MemoryEmbeddingService {
         }
 
         return relevant;
+    }
+
+    /**
+     * The ids of the user's live memories nearest to {@code text}, nearest first, at most
+     * {@code limit}. Throws when embedding or the search fails.
+     */
+    public List<UUID> nearestLiveIds(UUID userId, String text, int limit) {
+        if (StringUtils.isBlank(text)) {
+            return List.of();
+        }
+
+        float[] embedding = embeddingModel.embed(StringUtils.truncate(text.trim(), maxQueryChars));
+
+        return memoryEmbeddingRepository.findNearestLive(userId, embedding, embeddingModelName, limit)
+                .stream()
+                .map(MemorySimilarity::id)
+                .toList();
+    }
+
+    /**
+     * For each of {@code texts}, in order, the user's single nearest live memory, or empty when they
+     * have none with a current vector. Throws when embedding or the search fails.
+     */
+    public List<Optional<MemorySimilarity>> nearestLive(UUID userId, List<String> texts) {
+        if (texts.isEmpty()) {
+            return List.of();
+        }
+
+        List<float[]> embeddings = embeddingModel.embed(texts.stream()
+                .map(text -> StringUtils.truncate(StringUtils.trimToEmpty(text), maxQueryChars))
+                .toList());
+
+        return embeddings.stream()
+                .map(embedding -> memoryEmbeddingRepository.findNearestLive(userId, embedding, embeddingModelName, 1)
+                        .stream()
+                        .findFirst())
+                .toList();
     }
 
     /**
