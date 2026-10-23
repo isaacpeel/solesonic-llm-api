@@ -2,11 +2,9 @@ package com.solesonic.config.a2a;
 
 import com.solesonic.model.a2a.LiteLlmAgent;
 import com.solesonic.util.logging.Redactor;
-import org.a2aproject.sdk.grpc.utils.JSONRPCUtils;
-import org.a2aproject.sdk.grpc.utils.ProtoUtils;
-import org.a2aproject.sdk.jsonrpc.common.json.JsonProcessingException;
 import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.AgentInterface;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
 import org.jspecify.annotations.Nullable;
@@ -16,10 +14,6 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
-import tools.jackson.databind.node.ObjectNode;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -50,8 +44,6 @@ public class LiteLlmAgentDiscovery {
     private static final String AGENT_ROUTES = "/a2a/";
     private static final List<String> ENCODED_PATH_SEPARATORS = List.of("%2e", "%2f", "%5c");
     private static final Pattern COMMAND_NAME = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,63}");
-    private static final List<String> SECURITY_FIELDS = List.of("securitySchemes", "security", "securityRequirements");
-    private static final JsonMapper JSON_MAPPER = JsonMapper.builder().build();
 
     /**
      * Discovery runs at startup, which an unreachable LiteLLM must not hold up for the turn timeout.
@@ -84,9 +76,23 @@ public class LiteLlmAgentDiscovery {
 
         return agents.stream()
                 .filter(LiteLlmAgentDiscovery::hasCommandName)
-                .flatMap(agent -> fetchAgentCard(agent)
-                        .flatMap(agentCard -> pinToGateway(agent.agentName(), agentCard))
-                        .stream())
+                .flatMap(agent -> {
+                    LiteLlmAgent.AgentCardParams agentCardParams = agent.agentCardParams();
+
+                    AgentCard agentCard = AgentCard.builder()
+                            .name(agentCardParams.name())
+                            .url(agentCardParams.url())
+                            .version(agentCardParams.version())
+                            .description(agentCardParams.description())
+                            .capabilities(agentCardParams.capabilities().toAgentCapabilities())
+                            .defaultInputModes(agentCardParams.defaultInputModes())
+                            .defaultOutputModes(agentCardParams.defaultOutputModes())
+                            .skills(agentCardParams.skills())
+                            .supportedInterfaces(agentCardParams.supportedInterfaces())
+                            .build();
+
+                    return pinToGateway(agent.agentName(), agentCard).stream();
+                })
                 .toList();
     }
 
@@ -98,7 +104,12 @@ public class LiteLlmAgentDiscovery {
                 .timeout(DISCOVERY_TIMEOUT)
                 .block();
 
-        return agents == null ? List.of() : agents;
+        if(CollectionUtils.isNotEmpty(agents)) {
+            log.info("Discovered litellm agents: {}", agents.size());
+            return agents;
+        }
+
+        return List.of();
     }
 
     private static boolean hasCommandName(LiteLlmAgent agent) {
@@ -108,47 +119,6 @@ public class LiteLlmAgentDiscovery {
         }
 
         return true;
-    }
-
-    private Optional<AgentCard> fetchAgentCard(LiteLlmAgent agent) {
-        try {
-            String body = webClient.get()
-                    .uri(uriBuilder -> uriBuilder.pathSegment("a2a", "{agentName}", ".well-known", "agent-card.json")
-                            .build(agent.agentName()))
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .timeout(DISCOVERY_TIMEOUT)
-                    .block();
-
-            if (StringUtils.isBlank(body)) {
-                log.warn("Skipping LiteLLM agent '{}': its card is empty", agent.agentName());
-                return Optional.empty();
-            }
-
-            return Optional.of(parseAgentCard(body));
-        } catch (RuntimeException | JsonProcessingException exception) {
-            log.warn("Skipping LiteLLM agent '{}': its card could not be fetched ({})", agent.agentName(), describe(exception));
-            return Optional.empty();
-        }
-    }
-
-    /**
-     * Parsed the way the SDK's own {@code A2ACardResolver} parses a card: through its protobuf JSON
-     * form, ignoring fields it does not recognise. The security fields are removed first: LiteLLM writes
-     * them in the A2A 0.3 shape, which the SDK rejects, and they only describe authenticating to LiteLLM,
-     * which the virtual key header already does.
-     */
-    private static AgentCard parseAgentCard(String body) throws JsonProcessingException {
-        JsonNode card = JSON_MAPPER.readTree(body);
-
-        if (card instanceof ObjectNode cardFields) {
-            cardFields.remove(SECURITY_FIELDS);
-        }
-
-        org.a2aproject.sdk.grpc.AgentCard.Builder agentCardBuilder = org.a2aproject.sdk.grpc.AgentCard.newBuilder();
-        JSONRPCUtils.parseJsonString(JSON_MAPPER.writeValueAsString(card), agentCardBuilder, "", true);
-
-        return ProtoUtils.FromProto.agentCard(agentCardBuilder);
     }
 
     /**
@@ -210,13 +180,5 @@ public class LiteLlmAgentDiscovery {
         }
 
         return Optional.of(gatewayOrigin + path);
-    }
-
-    static String describe(Throwable exception) {
-        if (exception instanceof WebClientResponseException webClientResponseException) {
-            return "HTTP " + webClientResponseException.getStatusCode().value();
-        }
-
-        return exception.getClass().getSimpleName();
     }
 }

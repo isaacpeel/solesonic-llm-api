@@ -4,6 +4,7 @@ import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.mcp.client.McpServerDisconnectedEvent;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.security.McpFilterService;
+import io.micrometer.observation.ObservationRegistry;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -47,17 +48,23 @@ public class WebClientConfig {
      *                        {@code spring.codec.max-in-memory-size}: this builder is created from
      *                        {@link WebClient#builder()} directly, which bypasses Boot's codec
      *                        auto-configuration entirely.
+     * @param observationRegistry for the same reason, Boot's observation customizer never reaches this
+     *                            builder: without it MCP calls carry no {@code traceparent}, and
+     *                            mcp-server's logs could not be tied to the llm-api request that caused
+     *                            them (solesonic-log-agent's {@code trace} tool).
      */
     @Bean
     public WebClient.Builder webClientBuilder(
             TokenExchangeService tokenExchangeService,
             McpFilterService mcpFilterService,
+            ObservationRegistry observationRegistry,
             @Value("${solesonic.mcp.reconnect.enabled:false}") boolean reconnectEnabled,
             @Value("${solesonic.mcp.client.max-in-memory-size}") DataSize maxInMemorySize) {
 
         log.info("MCP WebClient buffers up to {} per response", maxInMemorySize);
 
         WebClient.Builder builder = WebClient.builder()
+                .observationRegistry(observationRegistry)
                 .codecs(codecConfigurer -> codecConfigurer.defaultCodecs()
                         .maxInMemorySize((int) maxInMemorySize.toBytes()));
 

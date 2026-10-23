@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Optional;
 
 import static com.solesonic.config.a2a.A2AWebClientConfig.A2A_WEB_CLIENT;
-import static com.solesonic.config.a2a.LiteLlmAgentDiscovery.describe;
 
 /**
  * Holds every A2A agent card, from two sources: the agent host, which must be reachable at startup, and
@@ -57,7 +56,13 @@ public class A2AAgentRegistry {
         discoverLiteLlmAgents();
 
         if (MapUtils.isNotEmpty(agents)) {
-            agents.keySet().forEach(agentKey -> log.info("Agent Found: {}", agents.get(agentKey).agentCard().description()));
+            agents.keySet().forEach(agentKey -> {
+                RegisteredAgent registeredAgent = agents.get(agentKey);
+                String agentName = registeredAgent.agentCard().name();
+                String agentUrl = registeredAgent.agentCard().url();
+
+                log.info("Agent Found: {} ({})", agentName, agentUrl);
+            });
         }
 
         log.info("A2A agent registry initialized with {} agent(s)", agents.size());
@@ -82,7 +87,7 @@ public class A2AAgentRegistry {
         try {
             agentCards = liteLlmAgentDiscovery.discover();
         } catch (RuntimeException exception) {
-            log.warn("LiteLLM A2A agent discovery failed ({}); continuing without LiteLLM agents", describe(exception));
+            log.error("LiteLLM A2A agent discovery failed: ", exception);
             return;
         }
 
@@ -91,7 +96,10 @@ public class A2AAgentRegistry {
 
             if (existing != null) {
                 log.error("A2A agent '{}' is offered by both {} and {}; keeping the {} agent",
-                        agentCard.name(), existing.source(), A2AAgentSource.LITELLM, existing.source());
+                        agentCard.name(),
+                        existing.source(),
+                        A2AAgentSource.LITELLM,
+                        existing.source());
                 continue;
             }
 

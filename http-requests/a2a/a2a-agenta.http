@@ -71,7 +71,7 @@ x-litellm-api-key: Bearer {{litellm-agent-key}}
       "role": "ROLE_USER",
       "messageId": "{{$random.uuid}}",
       "contextId": "{{context-id}}",
-      "parts": [{"text": "is the collector healthy?"}]
+      "parts": [{"text": "What application errors happened yesterday?"}]
     }
   }
 }
