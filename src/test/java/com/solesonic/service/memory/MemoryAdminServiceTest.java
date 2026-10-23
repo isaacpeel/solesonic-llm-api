@@ -10,6 +10,7 @@ import com.solesonic.model.memory.ReflectionStatus;
 import com.solesonic.model.memory.ReflectionSummary;
 import com.solesonic.model.memory.UserMemory;
 import com.solesonic.model.memory.UserMemoryEvidence;
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.MemoryAdminRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository;
@@ -37,6 +38,8 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -87,6 +90,9 @@ class MemoryAdminServiceTest {
                 50,
                 true,
                 MemoryRetrievalMode.RELEVANT);
+
+        lenient().when(userProfileService.filter(any(), isNull()))
+                .thenAnswer(invocation -> UserFilter.of(invocation.getArgument(0)));
     }
 
     /**
@@ -97,7 +103,7 @@ class MemoryAdminServiceTest {
         when(userMemoryAdminRepository.findByStatusInAndKindIn(EnumSet.allOf(MemoryStatus.class), EnumSet.allOf(MemoryKind.class), NEWEST_FIRST))
                 .thenReturn(new PageImpl<>(List.of(), NEWEST_FIRST, 0));
 
-        assertThat(memoryAdminService.listMemories(null, null, List.of(), PageRequest.of(0, 50))).isEmpty();
+        assertThat(memoryAdminService.listMemories(null, null, null, List.of(), PageRequest.of(0, 50))).isEmpty();
     }
 
     @Test
@@ -106,7 +112,34 @@ class MemoryAdminServiceTest {
                 EnumSet.allOf(MemoryKind.class), NEWEST_FIRST))
                 .thenReturn(new PageImpl<>(List.of(), NEWEST_FIRST, 0));
 
-        assertThat(memoryAdminService.listMemories(OWNER_ID, List.of(MemoryStatus.ACTIVE), null, PageRequest.of(0, 50))).isEmpty();
+        assertThat(memoryAdminService.listMemories(OWNER_ID, null, List.of(MemoryStatus.ACTIVE), null, PageRequest.of(0, 50))).isEmpty();
+    }
+
+    @Test
+    void narrowsToTheUserAUsernameNames() {
+        when(userProfileService.filter(null, "sam")).thenReturn(UserFilter.of(OWNER_ID));
+        when(userMemoryAdminRepository.findByUserIdAndStatusInAndKindIn(OWNER_ID, EnumSet.allOf(MemoryStatus.class),
+                EnumSet.allOf(MemoryKind.class), NEWEST_FIRST))
+                .thenReturn(new PageImpl<>(List.of(), NEWEST_FIRST, 0));
+
+        assertThat(memoryAdminService.listMemories(null, "sam", null, null, PageRequest.of(0, 50))).isEmpty();
+
+        verify(userMemoryAdminRepository).findByUserIdAndStatusInAndKindIn(OWNER_ID, EnumSet.allOf(MemoryStatus.class),
+                EnumSet.allOf(MemoryKind.class), NEWEST_FIRST);
+    }
+
+    /**
+     * A username nobody holds is an empty page, never every user's memories.
+     */
+    @Test
+    void listsNothingForAnUnknownUsername() {
+        when(userProfileService.filter(null, "nobody")).thenReturn(UserFilter.NOBODY);
+        when(userProfileService.filter(OWNER_ID, "nobody")).thenReturn(UserFilter.NOBODY);
+
+        assertThat(memoryAdminService.listMemories(null, "nobody", null, null, PageRequest.of(0, 50))).isEmpty();
+        assertThat(memoryAdminService.reflections(OWNER_ID, "nobody", null, PageRequest.of(0, 50))).isEmpty();
+
+        verifyNoInteractions(userMemoryAdminRepository, chatMemoryReflectionRepository);
     }
 
     /**
@@ -120,7 +153,7 @@ class MemoryAdminServiceTest {
         when(userMemoryAdminRepository.findByStatusInAndKindIn(any(), any(), any()))
                 .thenReturn(new PageImpl<>(List.of(), expected, 0));
 
-        memoryAdminService.listMemories(null, null, null, requested);
+        memoryAdminService.listMemories(null, null, null, null, requested);
 
         verify(userMemoryAdminRepository).findByStatusInAndKindIn(EnumSet.allOf(MemoryStatus.class), EnumSet.allOf(MemoryKind.class), expected);
     }
@@ -131,7 +164,7 @@ class MemoryAdminServiceTest {
      */
     @Test
     void refusesToSortByAnythingOutsideTheAllowList() {
-        assertThatThrownBy(() -> memoryAdminService.listMemories(null, null, null, PageRequest.of(0, 50, Sort.by("content"))))
+        assertThatThrownBy(() -> memoryAdminService.listMemories(null, null, null, null, PageRequest.of(0, 50, Sort.by("content"))))
                 .isInstanceOfSatisfying(ResponseStatusException.class,
                         exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
 
@@ -146,7 +179,7 @@ class MemoryAdminServiceTest {
         when(chatMemoryReflectionRepository.findByStatusIn(EnumSet.of(ReflectionStatus.FAILED), expected))
                 .thenReturn(new PageImpl<>(List.of(), expected, 0));
 
-        assertThat(memoryAdminService.reflections(null, List.of(ReflectionStatus.FAILED), requested)).isEmpty();
+        assertThat(memoryAdminService.reflections(null, null, List.of(ReflectionStatus.FAILED), requested)).isEmpty();
     }
 
     /**
@@ -167,7 +200,7 @@ class MemoryAdminServiceTest {
                 .thenReturn(List.of(new UserMemoryEvidence(second.getId(), OTHER_OWNER_ID, secondChat, UUID.randomUUID(), ZonedDateTime.now())));
         when(userProfileService.usernames(List.of(OWNER_ID, OTHER_OWNER_ID))).thenReturn(Map.of(OWNER_ID, "sam"));
 
-        List<MemorySummary> summaries = memoryAdminService.listMemories(null, null, null, PageRequest.of(0, 50)).getContent();
+        List<MemorySummary> summaries = memoryAdminService.listMemories(null, null, null, null, PageRequest.of(0, 50)).getContent();
 
         assertThat(summaries).extracting(MemorySummary::chatIds)
                 .containsExactly(List.of(firstChat), List.of(secondChat));
@@ -184,7 +217,7 @@ class MemoryAdminServiceTest {
                 .thenReturn(new PageImpl<>(List.of(first, second), NEWEST_FIRST, 2));
         when(userProfileService.usernames(List.of(OWNER_ID, OTHER_OWNER_ID))).thenReturn(Map.of(OTHER_OWNER_ID, "alex"));
 
-        assertThat(memoryAdminService.reflections(null, null, PageRequest.of(0, 50)).getContent())
+        assertThat(memoryAdminService.reflections(null, null, null, PageRequest.of(0, 50)).getContent())
                 .extracting(ReflectionSummary::username)
                 .containsExactly(null, "alex");
     }

@@ -64,7 +64,7 @@ class MemoryMethodSecurityTest {
     private static final List<ThrowingConsumer<AnnotationConfigApplicationContext>> ENDPOINTS = List.of(
             context -> {
                 assert context != null;
-                context.getBean(MemoryController.class).list(null, null, null, FIRST_PAGE);
+                context.getBean(MemoryController.class).list(null, null, null, null, FIRST_PAGE);
             },
             context -> {
                 assert context != null;
@@ -72,7 +72,7 @@ class MemoryMethodSecurityTest {
             },
             context -> {
                 assert context != null;
-                context.getBean(MemoryReflectionController.class).list(null, null, FIRST_PAGE);
+                context.getBean(MemoryReflectionController.class).list(null, null, null, FIRST_PAGE);
             });
 
     @BeforeEach
@@ -126,8 +126,8 @@ class MemoryMethodSecurityTest {
 
     @Test
     void letsAMemberOfTheGroupThrough() {
-        when(memoryAdminService.listMemories(any(), any(), any(), any())).thenReturn(Page.empty(FIRST_PAGE));
-        when(memoryAdminService.reflections(any(), any(), any())).thenReturn(Page.empty(FIRST_PAGE));
+        when(memoryAdminService.listMemories(any(), any(), any(), any(), any())).thenReturn(Page.empty(FIRST_PAGE));
+        when(memoryAdminService.reflections(any(), any(), any(), any())).thenReturn(Page.empty(FIRST_PAGE));
 
         authenticated("GROUP_izzy-bot-admin");
 

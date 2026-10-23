@@ -1,5 +1,6 @@
 package com.solesonic.service.user;
 
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.model.user.UserProfile;
 import com.solesonic.repository.user.UserProfileRepository;
 import org.apache.commons.lang3.StringUtils;
@@ -94,6 +95,25 @@ public class UserProfileService {
         });
 
         return usernames;
+    }
+
+    /**
+     * Narrows a cross-user listing by id, by username, or both. A blank username leaves the id as
+     * given; a username that matches no recorded user, or matches a user other than {@code userId},
+     * narrows the listing to nobody.
+     */
+    public UserFilter filter(UUID userId, String username) {
+        if (StringUtils.isBlank(username)) {
+            return UserFilter.of(userId);
+        }
+
+        Optional<UUID> match = userProfileRepository.findUserIdByUsername(username.strip());
+
+        if (match.isEmpty() || (userId != null && !userId.equals(match.get()))) {
+            return UserFilter.NOBODY;
+        }
+
+        return UserFilter.of(match.get());
     }
 
     public Optional<String> username(UUID userId) {

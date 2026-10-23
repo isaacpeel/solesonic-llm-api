@@ -196,13 +196,14 @@ public class GeneratedImageController {
     @GetMapping("/admin")
     public ResponseEntity<PagedModel<GeneratedImageSummary>> listAll(
             @RequestParam(required = false) UUID userId,
+            @RequestParam(required = false) String username,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
         Pageable imagePage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
         log.info("Listing generated images page {} size {} user {}",
                 imagePage.getPageNumber(), imagePage.getPageSize(), userId);
 
-        Page<GeneratedImageSummary> summaries = generatedImageService.listAll(userId, imagePage);
+        Page<GeneratedImageSummary> summaries = generatedImageService.listAll(userId, username, imagePage);
 
         return ResponseEntity.ok(new PagedModel<>(summaries));
     }

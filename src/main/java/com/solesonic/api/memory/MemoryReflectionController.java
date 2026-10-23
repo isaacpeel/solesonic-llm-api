@@ -45,11 +45,12 @@ public class MemoryReflectionController {
     @GetMapping
     public ResponseEntity<PagedModel<ReflectionSummary>> list(
             @RequestParam(required = false) UUID userId,
+            @RequestParam(required = false) String username,
             @RequestParam(required = false) List<ReflectionStatus> status,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
         log.info("Admin {} listing reflections user {} status {} page {} size {} sort {}",
                 userRequestContext.getUserId(), userId, status, pageable.getPageNumber(), pageable.getPageSize(), pageable.getSort());
 
-        return ResponseEntity.ok(new PagedModel<>(memoryAdminService.reflections(userId, status, pageable)));
+        return ResponseEntity.ok(new PagedModel<>(memoryAdminService.reflections(userId, username, status, pageable)));
     }
 }

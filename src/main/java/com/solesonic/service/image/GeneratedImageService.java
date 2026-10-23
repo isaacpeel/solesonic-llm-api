@@ -3,6 +3,7 @@ package com.solesonic.service.image;
 import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationMetadata;
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.repository.image.GeneratedImageRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.user.UserProfileService;
@@ -222,15 +223,21 @@ public class GeneratedImageService {
     }
 
     /**
-     * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter}
-     * narrows the listing to one user without needing a separate endpoint. The only listing that
-     * names each image's owner.
+     * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter} or
+     * {@code username} narrows the listing to one user without needing a separate endpoint. The only
+     * listing that names each image's owner.
      */
     @Transactional(readOnly = true)
-    public Page<GeneratedImageSummary> listAll(UUID userIdFilter, Pageable pageable) {
-        Page<GeneratedImageSummary> summaries = userIdFilter == null
+    public Page<GeneratedImageSummary> listAll(UUID userIdFilter, String username, Pageable pageable) {
+        UserFilter userFilter = userProfileService.filter(userIdFilter, username);
+
+        if (userFilter.matchesNobody()) {
+            return Page.empty(pageable);
+        }
+
+        Page<GeneratedImageSummary> summaries = userFilter.userId() == null
                 ? generatedImageRepository.findSummaryPage(pageable)
-                : generatedImageRepository.findSummaryPageByUserId(userIdFilter, pageable);
+                : generatedImageRepository.findSummaryPageByUserId(userFilter.userId(), pageable);
 
         Map<UUID, String> usernames = userProfileService.usernames(summaries.map(GeneratedImageSummary::userId).getContent());
 

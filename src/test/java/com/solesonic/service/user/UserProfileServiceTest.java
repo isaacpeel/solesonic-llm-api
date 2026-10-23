@@ -1,5 +1,6 @@
 package com.solesonic.service.user;
 
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.model.user.UserProfile;
 import com.solesonic.repository.user.UserProfileRepository;
 import org.junit.jupiter.api.Test;
@@ -10,6 +11,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -113,6 +115,36 @@ class UserProfileServiceTest {
         when(userProfileRepository.findAllById(any())).thenThrow(new IllegalStateException("database down"));
 
         assertThat(new UserProfileService(userProfileRepository).profiles(List.of(USER_ID))).isEmpty();
+    }
+
+    @Test
+    void aBlankUsernameLeavesTheIdFilterAsGiven() {
+        UserProfileService userProfileService = new UserProfileService(userProfileRepository);
+
+        assertThat(userProfileService.filter(USER_ID, " ")).isEqualTo(UserFilter.of(USER_ID));
+        assertThat(userProfileService.filter(null, null)).isEqualTo(UserFilter.EVERYONE);
+        verify(userProfileRepository, never()).findUserIdByUsername(any());
+    }
+
+    @Test
+    void aUsernameNarrowsToItsHolder() {
+        when(userProfileRepository.findUserIdByUsername("Sam")).thenReturn(Optional.of(USER_ID));
+
+        assertThat(new UserProfileService(userProfileRepository).filter(null, " Sam ")).isEqualTo(UserFilter.of(USER_ID));
+    }
+
+    @Test
+    void anUnknownUsernameMatchesNobody() {
+        when(userProfileRepository.findUserIdByUsername("ghost")).thenReturn(Optional.empty());
+
+        assertThat(new UserProfileService(userProfileRepository).filter(null, "ghost")).isEqualTo(UserFilter.NOBODY);
+    }
+
+    @Test
+    void aUsernameAndIdNamingDifferentUsersMatchNobody() {
+        when(userProfileRepository.findUserIdByUsername("sam")).thenReturn(Optional.of(OTHER_USER_ID));
+
+        assertThat(new UserProfileService(userProfileRepository).filter(USER_ID, "sam")).isEqualTo(UserFilter.NOBODY);
     }
 
     private static Jwt jwt(Map<String, Object> claims) {

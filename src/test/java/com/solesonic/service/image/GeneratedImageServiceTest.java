@@ -2,6 +2,7 @@ package com.solesonic.service.image;
 
 import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.repository.image.GeneratedImageRepository;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.user.UserProfileService;
@@ -79,14 +80,35 @@ class GeneratedImageServiceTest {
         GeneratedImageSummary first = summary(OWNER_ID);
         GeneratedImageSummary second = summary(OTHER_OWNER_ID);
 
+        when(userProfileService.filter(null, null)).thenReturn(UserFilter.EVERYONE);
         when(generatedImageRepository.findSummaryPage(PAGE)).thenReturn(new PageImpl<>(List.of(first, second), PAGE, 2));
         when(userProfileService.usernames(List.of(OWNER_ID, OTHER_OWNER_ID))).thenReturn(Map.of(OWNER_ID, "sam"));
 
-        List<GeneratedImageSummary> summaries = generatedImageService.listAll(null, PAGE).getContent();
+        List<GeneratedImageSummary> summaries = generatedImageService.listAll(null, null, PAGE).getContent();
 
         assertThat(summaries).extracting(GeneratedImageSummary::username).containsExactly("sam", null);
         assertThat(summaries).extracting(GeneratedImageSummary::imageUrl)
                 .containsExactly(CONTEXT_PATH + "/images/" + first.imageId(), CONTEXT_PATH + "/images/" + second.imageId());
+    }
+
+    @Test
+    void theAdminListingFiltersByUsername() {
+        when(userProfileService.filter(null, "sam")).thenReturn(UserFilter.of(OWNER_ID));
+        when(generatedImageRepository.findSummaryPageByUserId(OWNER_ID, PAGE))
+                .thenReturn(new PageImpl<>(List.of(summary(OWNER_ID)), PAGE, 1));
+        when(userProfileService.usernames(List.of(OWNER_ID))).thenReturn(Map.of(OWNER_ID, "sam"));
+
+        assertThat(generatedImageService.listAll(null, "sam", PAGE).getContent())
+                .extracting(GeneratedImageSummary::username)
+                .containsExactly("sam");
+    }
+
+    @Test
+    void theAdminListingIsEmptyForAnUnknownUsername() {
+        when(userProfileService.filter(null, "nobody")).thenReturn(UserFilter.NOBODY);
+
+        assertThat(generatedImageService.listAll(null, "nobody", PAGE)).isEmpty();
+        verifyNoInteractions(generatedImageRepository);
     }
 
     @Test

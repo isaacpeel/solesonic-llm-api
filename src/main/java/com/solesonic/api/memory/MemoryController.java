@@ -51,13 +51,14 @@ public class MemoryController {
     @GetMapping
     public ResponseEntity<PagedModel<MemorySummary>> list(
             @RequestParam(required = false) UUID userId,
+            @RequestParam(required = false) String username,
             @RequestParam(required = false) List<MemoryStatus> status,
             @RequestParam(required = false) List<MemoryKind> kind,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
         log.info("Admin {} listing memories user {} status {} kind {} page {} size {} sort {}",
                 userRequestContext.getUserId(), userId, status, kind, pageable.getPageNumber(), pageable.getPageSize(), pageable.getSort());
 
-        return ResponseEntity.ok(new PagedModel<>(memoryAdminService.listMemories(userId, status, kind, pageable)));
+        return ResponseEntity.ok(new PagedModel<>(memoryAdminService.listMemories(userId, username, status, kind, pageable)));
     }
 
     /**

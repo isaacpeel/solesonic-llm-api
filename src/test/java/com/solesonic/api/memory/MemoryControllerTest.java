@@ -67,7 +67,7 @@ class MemoryControllerTest {
 
     @Test
     void listsEveryUsersMemoriesWithTheirOwner() throws Exception {
-        when(memoryAdminService.listMemories(eq(null), eq(List.of(MemoryStatus.SUPERSEDED)), eq(null), any()))
+        when(memoryAdminService.listMemories(eq(null), eq(null), eq(List.of(MemoryStatus.SUPERSEDED)), eq(null), any()))
                 .thenReturn(new PageImpl<>(List.of(summary()), PageRequest.of(0, 50), 1));
 
         mockMvc.perform(get("/memories").param("status", "SUPERSEDED"))
@@ -86,7 +86,7 @@ class MemoryControllerTest {
     void passesPagingAndSortThrough() throws Exception {
         PageRequest expected = PageRequest.of(2, 10, Sort.by(Sort.Order.asc("userId"), Sort.Order.desc("confidence")));
 
-        when(memoryAdminService.listMemories(USER_ID, List.of(MemoryStatus.ACTIVE, MemoryStatus.PENDING), List.of(MemoryKind.FACT), expected))
+        when(memoryAdminService.listMemories(USER_ID, null, List.of(MemoryStatus.ACTIVE, MemoryStatus.PENDING), List.of(MemoryKind.FACT), expected))
                 .thenReturn(new PageImpl<>(List.of(), expected, 0));
 
         mockMvc.perform(get("/memories")
@@ -99,17 +99,31 @@ class MemoryControllerTest {
                         .param("sort", "confidence,desc"))
                 .andExpect(status().isOk());
 
-        verify(memoryAdminService).listMemories(USER_ID, List.of(MemoryStatus.ACTIVE, MemoryStatus.PENDING), List.of(MemoryKind.FACT), expected);
+        verify(memoryAdminService).listMemories(USER_ID, null, List.of(MemoryStatus.ACTIVE, MemoryStatus.PENDING), List.of(MemoryKind.FACT), expected);
     }
 
     @Test
     void defaultsToFiftyAPage() throws Exception {
-        when(memoryAdminService.listMemories(null, null, null, PageRequest.of(0, 50)))
+        when(memoryAdminService.listMemories(null, null, null, null, PageRequest.of(0, 50)))
                 .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 50), 0));
 
         mockMvc.perform(get("/memories")).andExpect(status().isOk());
 
-        verify(memoryAdminService).listMemories(null, null, null, PageRequest.of(0, 50));
+        verify(memoryAdminService).listMemories(null, null, null, null, PageRequest.of(0, 50));
+    }
+
+    @Test
+    void passesAUsernameFilterThrough() throws Exception {
+        when(memoryAdminService.listMemories(null, USERNAME, null, null, PageRequest.of(0, 50)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 50), 0));
+        when(memoryAdminService.reflections(null, USERNAME, null, PageRequest.of(0, 50)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 50), 0));
+
+        mockMvc.perform(get("/memories").param("username", USERNAME)).andExpect(status().isOk());
+        mockMvc.perform(get("/memories/reflections").param("username", USERNAME)).andExpect(status().isOk());
+
+        verify(memoryAdminService).listMemories(null, USERNAME, null, null, PageRequest.of(0, 50));
+        verify(memoryAdminService).reflections(null, USERNAME, null, PageRequest.of(0, 50));
     }
 
     @Test
@@ -123,7 +137,7 @@ class MemoryControllerTest {
     void listsReflectionsFilteredAndPaged() throws Exception {
         PageRequest expected = PageRequest.of(1, 20, Sort.by(Sort.Order.desc("attempts")));
 
-        when(memoryAdminService.reflections(USER_ID, List.of(ReflectionStatus.FAILED), expected))
+        when(memoryAdminService.reflections(USER_ID, null, List.of(ReflectionStatus.FAILED), expected))
                 .thenReturn(new PageImpl<>(List.of(), expected, 0));
 
         mockMvc.perform(get("/memories/reflections")
@@ -135,6 +149,6 @@ class MemoryControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.page.number").value(1));
 
-        verify(memoryAdminService).reflections(USER_ID, List.of(ReflectionStatus.FAILED), expected);
+        verify(memoryAdminService).reflections(USER_ID, null, List.of(ReflectionStatus.FAILED), expected);
     }
 }

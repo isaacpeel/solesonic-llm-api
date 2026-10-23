@@ -10,6 +10,7 @@ import com.solesonic.model.memory.ReflectionStatus;
 import com.solesonic.model.memory.ReflectionSummary;
 import com.solesonic.model.memory.UserMemory;
 import com.solesonic.model.memory.UserMemoryEvidence;
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
 import com.solesonic.repository.memory.MemoryAdminRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository;
@@ -113,20 +114,27 @@ public class MemoryAdminService {
      * {@code statuses} or {@code kinds} means all of them, so superseded memories are included unless
      * filtered out.
      *
-     * @param userId narrows the listing to one user; may be null
+     * @param userId   narrows the listing to one user; may be null
+     * @param username narrows the listing to the user with this username; may be null
      */
     @Transactional(readOnly = true)
     public Page<MemorySummary> listMemories(UUID userId,
+                                                 String username,
                                                  Collection<MemoryStatus> statuses,
                                                  Collection<MemoryKind> kinds,
                                                  Pageable pageable) {
         Set<MemoryStatus> statusFilter = orAll(statuses, MemoryStatus.class);
         Set<MemoryKind> kindFilter = orAll(kinds, MemoryKind.class);
         PageRequest pageRequest = pageRequest(pageable, MEMORY_SORTS, "id");
+        UserFilter userFilter = userProfileService.filter(userId, username);
 
-        Page<UserMemory> memories = userId == null
+        if (userFilter.matchesNobody()) {
+            return Page.empty(pageRequest);
+        }
+
+        Page<UserMemory> memories = userFilter.userId() == null
                 ? userMemoryAdminRepository.findByStatusInAndKindIn(statusFilter, kindFilter, pageRequest)
-                : userMemoryAdminRepository.findByUserIdAndStatusInAndKindIn(userId, statusFilter, kindFilter, pageRequest);
+                : userMemoryAdminRepository.findByUserIdAndStatusInAndKindIn(userFilter.userId(), statusFilter, kindFilter, pageRequest);
 
         Map<UUID, List<UUID>> chatIdsByMemoryId = chatIdsByMemoryId(memories.getContent());
         Map<UUID, String> usernames = userProfileService.usernames(memories.map(UserMemory::getUserId).getContent());
@@ -140,16 +148,25 @@ public class MemoryAdminService {
      * Every conversation's reflection progress, newest change first unless {@code pageable} sorts
      * otherwise. An empty {@code statuses} means all of them.
      *
-     * @param userId narrows the listing to one user; may be null
+     * @param userId   narrows the listing to one user; may be null
+     * @param username narrows the listing to the user with this username; may be null
      */
     @Transactional(readOnly = true)
-    public Page<ReflectionSummary> reflections(UUID userId, Collection<ReflectionStatus> statuses, Pageable pageable) {
+    public Page<ReflectionSummary> reflections(UUID userId,
+                                               String username,
+                                               Collection<ReflectionStatus> statuses,
+                                               Pageable pageable) {
         Set<ReflectionStatus> statusFilter = orAll(statuses, ReflectionStatus.class);
         PageRequest pageRequest = pageRequest(pageable, REFLECTION_SORTS, "chatId");
+        UserFilter userFilter = userProfileService.filter(userId, username);
 
-        Page<ChatMemoryReflection> reflections = userId == null
+        if (userFilter.matchesNobody()) {
+            return Page.empty(pageRequest);
+        }
+
+        Page<ChatMemoryReflection> reflections = userFilter.userId() == null
                 ? chatMemoryReflectionRepository.findByStatusIn(statusFilter, pageRequest)
-                : chatMemoryReflectionRepository.findByUserIdAndStatusIn(userId, statusFilter, pageRequest);
+                : chatMemoryReflectionRepository.findByUserIdAndStatusIn(userFilter.userId(), statusFilter, pageRequest);
 
         Map<UUID, String> usernames = userProfileService.usernames(reflections.map(ChatMemoryReflection::getUserId).getContent());
 

@@ -1411,7 +1411,7 @@ again if the user says it again.
 ### List Every User's Memories
 
 - **Endpoint**: `GET /memories` — `izzy-bot-admin` only
-- **Query**: `userId` (optional), `status` and `kind` (optional, repeatable:
+- **Query**: `userId` (optional), `username` (optional), `status` and `kind` (optional, repeatable:
   `?status=ACTIVE&status=PENDING`), `page` (from `0`), `size` (default `50`), and `sort`
   (repeatable, `property[,asc|desc]`)
 - **Response**: paged `MemorySummary`, newest change first unless `sort` says otherwise
@@ -1425,7 +1425,11 @@ Paged responses have the same `content` / `page` shape as the document listings.
 
 `username` is the owner's identity-provider username (`preferred_username`), recorded from their
 token on each request. It is absent for a user who has not signed in since it began being recorded.
-It is display-only: sorting and filtering stay on `userId`.
+
+The `username` query parameter narrows a listing to the user holding that username. It is matched
+exactly but case-insensitively, after trimming. A username nobody holds — or one held by someone other
+than the `userId` also given — is an empty page, never every user's rows. The same parameter works on
+`GET /memories/reflections` and `GET /images/admin`. Sorting stays on `userId`.
 
 ```
 GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
@@ -1485,7 +1489,7 @@ GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
 ### List Reflection Progress
 
 - **Endpoint**: `GET /memories/reflections` — `izzy-bot-admin` only
-- **Query**: `userId` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
+- **Query**: `userId` (optional), `username` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
   `sort` (`updated`, `reflectedThrough`, `attempts`, `status`, `userId`)
 - **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `username`, `status`, `attempts`,
   `reflectedThrough`, `updated` — newest change first unless `sort` says otherwise
@@ -2105,7 +2109,7 @@ caller's — the same idiom `rag-admin` uses for the shared document corpus.
 
 | Method | Endpoint | Notes |
 |---|---|---|
-| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` narrows to one user's images |
+| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` or `?username=` narrows to one user's images |
 | `PATCH` | `/images/admin/{imageId}` | Rename any image; same request/response shape as the self-service rename |
 | `DELETE` | `/images/admin/{imageId}` | Delete any image; `204`, same retroactive-history caveat as above |
 

@@ -64,6 +64,23 @@ public class UserProfileRepository {
                 .list();
     }
 
+    /**
+     * Case-insensitive. A username can outlive its account — deleted and created again under a new
+     * id — so the most recently seen holder wins.
+     */
+    public Optional<UUID> findUserIdByUsername(String username) {
+        return jdbcClient.sql("""
+                        select user_id
+                          from user_profile
+                         where lower(username) = lower(:username)
+                         order by updated desc
+                         limit 1
+                        """)
+                .param("username", username)
+                .query((resultSet, _) -> resultSet.getObject("user_id", UUID.class))
+                .optional();
+    }
+
     private static UserProfile profile(ResultSet resultSet) throws SQLException {
         return new UserProfile(resultSet.getObject("user_id", UUID.class),
                 resultSet.getString("username"),
