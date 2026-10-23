@@ -7,7 +7,9 @@ import com.solesonic.config.a2a.LiteLlmA2AAuthInterceptor;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AAgentSource;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.security.McpFilterService;
+import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.events.NotificationService;
 import org.a2aproject.sdk.client.MessageEvent;
 import org.a2aproject.sdk.client.TaskEvent;
@@ -25,8 +27,10 @@ import org.a2aproject.sdk.spec.TextPart;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.messages.MessageType;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
 import reactor.core.publisher.Mono;
@@ -66,6 +70,9 @@ class A2AAgentServiceTest {
     @Mock
     private A2AStickyAgentService stickyAgentService;
 
+    @Mock
+    private ChatMessageService chatMessageService;
+
     private A2AAgentService agentService;
 
     @BeforeEach
@@ -74,7 +81,7 @@ class A2AAgentServiceTest {
                 new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"));
 
         agentService = new A2AAgentService(agentRegistry, tokenExchangeService, mcpFilterService,
-                notificationService, stickyAgentService, properties);
+                notificationService, stickyAgentService, chatMessageService, properties);
     }
 
     private Flux<String> captureFromEvents(Consumer<FluxSink<String>> emitter) {
@@ -162,6 +169,41 @@ class A2AAgentServiceTest {
                 .verify();
 
         assertThat(taskReleased).isTrue();
+    }
+
+    @Test
+    void aCompletedReplyIsSavedToHistoryAsOneAssistantMessage() {
+        StepVerifier.create(agentService.savingReply(CHAT_ID, Flux.just("", "Two devices ", "are offline.")))
+                .expectNext("", "Two devices ", "are offline.")
+                .verifyComplete();
+
+        ArgumentCaptor<ChatMessage> saved = ArgumentCaptor.forClass(ChatMessage.class);
+        verify(chatMessageService).save(saved.capture());
+
+        assertThat(saved.getValue().getChatId()).isEqualTo(CHAT_ID);
+        assertThat(saved.getValue().getMessageType()).isEqualTo(MessageType.ASSISTANT);
+        assertThat(saved.getValue().getMessage()).isEqualTo("Two devices are offline.");
+    }
+
+    @Test
+    void aFailedReplyIsNotSaved() {
+        Flux<String> reply = Flux.concat(Flux.just("partial"), Flux.error(new IllegalStateException("A2A agent task failed")));
+
+        StepVerifier.create(agentService.savingReply(CHAT_ID, reply))
+                .expectNext("partial")
+                .expectError(IllegalStateException.class)
+                .verify();
+
+        verifyNoInteractions(chatMessageService);
+    }
+
+    @Test
+    void aReplyOfProgressOnlyIsNotSaved() {
+        StepVerifier.create(agentService.savingReply(CHAT_ID, Flux.just("", "")))
+                .expectNext("", "")
+                .verifyComplete();
+
+        verifyNoInteractions(chatMessageService);
     }
 
     @Test

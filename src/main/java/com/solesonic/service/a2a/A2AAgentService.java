@@ -8,7 +8,9 @@ import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.RegisteredAgent;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.security.McpFilterService;
+import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.events.NotificationService;
 import org.a2aproject.sdk.client.*;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport;
@@ -18,6 +20,7 @@ import org.a2aproject.sdk.spec.*;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.FluxSink;
@@ -38,6 +41,7 @@ public class A2AAgentService {
     private final McpFilterService mcpFilterService;
     private final NotificationService notificationService;
     private final A2AStickyAgentService a2aStickyAgentService;
+    private final ChatMessageService chatMessageService;
     private final LiteLlmA2AAuthInterceptor liteLlmAuthInterceptor;
     private final long timeoutSeconds;
 
@@ -46,12 +50,14 @@ public class A2AAgentService {
                            McpFilterService mcpFilterService,
                            NotificationService notificationService,
                            A2AStickyAgentService a2aStickyAgentService,
+                           ChatMessageService chatMessageService,
                            A2AClientProperties properties) {
         this.agentRegistry = agentRegistry;
         this.tokenExchangeService = tokenExchangeService;
         this.mcpFilterService = mcpFilterService;
         this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
+        this.chatMessageService = chatMessageService;
         this.liteLlmAuthInterceptor = new LiteLlmA2AAuthInterceptor(properties.litellm().apiKey());
         this.timeoutSeconds = properties.timeoutSeconds();
     }
@@ -62,9 +68,37 @@ public class A2AAgentService {
      */
     public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
         return Flux.defer(() -> agentRegistry.agent(agentName)
-                        .map(registeredAgent -> delegate(chatId, registeredAgent, message, userToken))
+                        .map(registeredAgent -> savingReply(chatId, delegate(chatId, registeredAgent, message, userToken)))
                         .orElseGet(() -> releaseUnavailableAgent(chatId, agentName)))
                 .timeout(Duration.ofSeconds(timeoutSeconds));
+    }
+
+    /**
+     * The chat memory advisor that writes the assistant row on every other route only runs inside a
+     * {@code ChatClient} call, which a delegated turn never makes. The reply is saved on completion
+     * only, so a failed, timed-out or cancelled turn records nothing, as on the other routes.
+     */
+    Flux<String> savingReply(UUID chatId, Flux<String> reply) {
+        return Flux.defer(() -> {
+            StringBuilder assembled = new StringBuilder();
+
+            return reply
+                    .doOnNext(assembled::append)
+                    .doOnComplete(() -> saveReply(chatId, assembled.toString()));
+        });
+    }
+
+    private void saveReply(UUID chatId, String reply) {
+        if (StringUtils.isBlank(reply)) {
+            return;
+        }
+
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.ASSISTANT);
+        chatMessage.setMessage(reply.trim());
+
+        chatMessageService.save(chatMessage);
     }
 
     private Flux<String> delegate(UUID chatId, RegisteredAgent registeredAgent, String message, String userToken) {
