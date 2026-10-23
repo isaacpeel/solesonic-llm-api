@@ -396,6 +396,10 @@ every path. This is enforced by structure rather than convention:
 - **The user's name** (the token's `given_name`, else `name`) is recorded in `user_profile` by the JWT
   filters and given to the reflection model, so the user is never recorded as a third person. It is
   never logged and never sent anywhere else.
+- **Username and email** (`preferred_username`, `email`) are recorded in the same row. The username
+  is returned only by admin-gated listings (`/memories`, `/memories/reflections`, `/memories/status`,
+  `/images/admin`), next to the `userId` they already expose. The email is stored for later use and
+  returned by no endpoint. Neither is logged.
 - **Memory in tool calls.** Plain chat turns can call web-search tools, so the memory block tells the
   model to put nothing from it in a tool call or search query unless the request needs it. This is
   an instruction, not a control.

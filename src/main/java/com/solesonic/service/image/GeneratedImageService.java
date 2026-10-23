@@ -5,6 +5,7 @@ import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationMetadata;
 import com.solesonic.repository.image.GeneratedImageRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.user.UserProfileService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +21,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.ZonedDateTime;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -44,6 +46,7 @@ public class GeneratedImageService {
 
     private final GeneratedImageRepository generatedImageRepository;
     private final UserRequestContext userRequestContext;
+    private final UserProfileService userProfileService;
     private final String contextPath;
 
     /**
@@ -56,9 +59,11 @@ public class GeneratedImageService {
      */
     public GeneratedImageService(GeneratedImageRepository generatedImageRepository,
                                  UserRequestContext userRequestContext,
+                                 UserProfileService userProfileService,
                                  @Value("${server.servlet.context-path}") String contextPath) {
         this.generatedImageRepository = generatedImageRepository;
         this.userRequestContext = userRequestContext;
+        this.userProfileService = userProfileService;
         this.contextPath = contextPath;
     }
 
@@ -218,7 +223,8 @@ public class GeneratedImageService {
 
     /**
      * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter}
-     * narrows the listing to one user without needing a separate endpoint.
+     * narrows the listing to one user without needing a separate endpoint. The only listing that
+     * names each image's owner.
      */
     @Transactional(readOnly = true)
     public Page<GeneratedImageSummary> listAll(UUID userIdFilter, Pageable pageable) {
@@ -226,7 +232,9 @@ public class GeneratedImageService {
                 ? generatedImageRepository.findSummaryPage(pageable)
                 : generatedImageRepository.findSummaryPageByUserId(userIdFilter, pageable);
 
-        return withImageUrls(summaries);
+        Map<UUID, String> usernames = userProfileService.usernames(summaries.map(GeneratedImageSummary::userId).getContent());
+
+        return withImageUrls(summaries).map(summary -> summary.withUsername(usernames.get(summary.userId())));
     }
 
     /**
@@ -243,7 +251,8 @@ public class GeneratedImageService {
     }
 
     /**
-     * Renames any user's image, for the {@code image-admin} role.
+     * Renames any user's image, for the {@code image-admin} role. Names the owner, like the admin
+     * listing the renamed image came from.
      */
     @Transactional
     public GeneratedImageSummary rename(UUID imageId, String name) {
@@ -251,7 +260,10 @@ public class GeneratedImageService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Generated image not found: " + imageId));
 
-        return rename(generatedImage, name);
+        UUID ownerId = generatedImage.getUserId();
+
+        return rename(generatedImage, name)
+                .withUsername(userProfileService.usernames(List.of(ownerId)).get(ownerId));
     }
 
     /**

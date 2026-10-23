@@ -1,11 +1,13 @@
 package com.solesonic.service.memory;
 
+import com.solesonic.model.memory.ChatMemoryReflection;
 import com.solesonic.model.memory.MemoryKind;
 import com.solesonic.model.memory.MemoryOrigin;
 import com.solesonic.model.memory.MemoryRetrievalMode;
 import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.MemorySummary;
 import com.solesonic.model.memory.ReflectionStatus;
+import com.solesonic.model.memory.ReflectionSummary;
 import com.solesonic.model.memory.UserMemory;
 import com.solesonic.model.memory.UserMemoryEvidence;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
@@ -13,6 +15,7 @@ import com.solesonic.repository.memory.MemoryAdminRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository;
 import com.solesonic.repository.memory.UserMemoryAdminRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
+import com.solesonic.service.user.UserProfileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -27,6 +30,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.ZonedDateTime;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -59,6 +63,9 @@ class MemoryAdminServiceTest {
     @Mock
     private MemoryEmbeddingRepository memoryEmbeddingRepository;
 
+    @Mock
+    private UserProfileService userProfileService;
+
     private MemoryAdminService memoryAdminService;
 
     @BeforeEach
@@ -68,6 +75,7 @@ class MemoryAdminServiceTest {
                 chatMemoryReflectionRepository,
                 memoryAdminRepository,
                 memoryEmbeddingRepository,
+                userProfileService,
                 true,
                 "qwen3.5-9b",
                 "0 */5 * * * *",
@@ -157,12 +165,37 @@ class MemoryAdminServiceTest {
                 .thenReturn(List.of(new UserMemoryEvidence(first.getId(), OWNER_ID, firstChat, UUID.randomUUID(), ZonedDateTime.now())));
         when(userMemoryEvidenceRepository.findByUserIdAndMemoryIdIn(OTHER_OWNER_ID, Set.of(second.getId())))
                 .thenReturn(List.of(new UserMemoryEvidence(second.getId(), OTHER_OWNER_ID, secondChat, UUID.randomUUID(), ZonedDateTime.now())));
+        when(userProfileService.usernames(List.of(OWNER_ID, OTHER_OWNER_ID))).thenReturn(Map.of(OWNER_ID, "sam"));
 
         List<MemorySummary> summaries = memoryAdminService.listMemories(null, null, null, PageRequest.of(0, 50)).getContent();
 
         assertThat(summaries).extracting(MemorySummary::chatIds)
                 .containsExactly(List.of(firstChat), List.of(secondChat));
         assertThat(summaries).extracting(MemorySummary::userId).containsExactly(OWNER_ID, OTHER_OWNER_ID);
+        assertThat(summaries).extracting(MemorySummary::username).containsExactly("sam", null);
+    }
+
+    @Test
+    void namesEachReflectionsOwner() {
+        ChatMemoryReflection first = reflection(OWNER_ID);
+        ChatMemoryReflection second = reflection(OTHER_OWNER_ID);
+
+        when(chatMemoryReflectionRepository.findByStatusIn(any(), any()))
+                .thenReturn(new PageImpl<>(List.of(first, second), NEWEST_FIRST, 2));
+        when(userProfileService.usernames(List.of(OWNER_ID, OTHER_OWNER_ID))).thenReturn(Map.of(OTHER_OWNER_ID, "alex"));
+
+        assertThat(memoryAdminService.reflections(null, null, PageRequest.of(0, 50)).getContent())
+                .extracting(ReflectionSummary::username)
+                .containsExactly(null, "alex");
+    }
+
+    private static ChatMemoryReflection reflection(UUID ownerId) {
+        ChatMemoryReflection reflection = new ChatMemoryReflection();
+        reflection.setChatId(UUID.randomUUID());
+        reflection.setUserId(ownerId);
+        reflection.setStatus(ReflectionStatus.COMPLETED);
+        reflection.setUpdated(ZonedDateTime.now());
+        return reflection;
     }
 
     private static UserMemory memory(UUID ownerId) {

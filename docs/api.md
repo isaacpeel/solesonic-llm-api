@@ -1346,7 +1346,7 @@ Deleting a conversation or a message forgets what was learned from it — see
 | `DELETE` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `204` |
 | `GET` | `/memories` | `izzy-bot-admin` | paged `MemorySummary` — every user's |
 | `GET` | `/memories/status` | `izzy-bot-admin` | `MemoryProcessingStatus` |
-| `GET` | `/memories` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
+| `GET` | `/memories/reflections` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
 
 ### UserMemorySummary
 
@@ -1420,8 +1420,12 @@ again if the user says it again.
 
 Left out, `status` and `kind` mean all values, so `SUPERSEDED` memories are listed too. Memories are
 read-only here: one is changed through its owner's `/users/{userId}/memories/{memoryId}`.
-`MemorySummary` is `UserMemorySummary` plus `userId`, `memoryKey` and `supersedes`. Paged responses
-have the same `content` / `page` shape as the document listings.
+`MemorySummary` is `UserMemorySummary` plus `userId`, `username`, `memoryKey` and `supersedes`.
+Paged responses have the same `content` / `page` shape as the document listings.
+
+`username` is the owner's identity-provider username (`preferred_username`), recorded from their
+token on each request. It is absent for a user who has not signed in since it began being recorded.
+It is display-only: sorting and filtering stay on `userId`.
 
 ```
 GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
@@ -1454,6 +1458,7 @@ GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
   "users": [
     {
       "userId": "user-uuid",
+      "username": "sam",
       "activeMemories": 25,
       "pendingMemories": 0,
       "supersededMemories": 0,
@@ -1474,18 +1479,19 @@ GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
   `cron` firing, so at the defaults the ceiling is 60 an hour.
 - `embedding.stale` — live memories with no current vector, which relevance retrieval cannot find
   until the embedding task catches up.
-- `users` — one entry per user with a memory or a conversation queued for reflection.
+- `users` — one entry per user with a memory or a conversation queued for reflection. `username` is
+  absent for a user with none recorded, as on `MemorySummary`.
 
 ### List Reflection Progress
 
-- **Endpoint**: `GET /memories` — `izzy-bot-admin` only
+- **Endpoint**: `GET /memories/reflections` — `izzy-bot-admin` only
 - **Query**: `userId` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
   `sort` (`updated`, `reflectedThrough`, `attempts`, `status`, `userId`)
-- **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `status`, `attempts`,
+- **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `username`, `status`, `attempts`,
   `reflectedThrough`, `updated` — newest change first unless `sort` says otherwise
 
 ```
-GET /memories?status=FAILED&sort=updated,desc
+GET /memories/reflections?status=FAILED&sort=updated,desc
 ```
 
 ---
@@ -2102,6 +2108,10 @@ caller's — the same idiom `rag-admin` uses for the shared document corpus.
 | `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` narrows to one user's images |
 | `PATCH` | `/images/admin/{imageId}` | Rename any image; same request/response shape as the self-service rename |
 | `DELETE` | `/images/admin/{imageId}` | Delete any image; `204`, same retroactive-history caveat as above |
+
+Each image on `GET /images/admin`, and the image `PATCH /images/admin/{imageId}` returns, also
+carries `username`, the owner's identity-provider username, absent when none is recorded. No other
+image response carries it.
 
 ### Image Generation Errors
 

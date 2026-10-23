@@ -40,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class MemoryControllerTest {
     private static final UUID USER_ID = UUID.randomUUID();
     private static final UUID MEMORY_ID = UUID.randomUUID();
+    private static final String USERNAME = "sam";
 
     @Mock
     private MemoryAdminService memoryAdminService;
@@ -60,7 +61,7 @@ class MemoryControllerTest {
     static MemorySummary summary() {
         ZonedDateTime now = ZonedDateTime.now();
 
-        return new MemorySummary(MEMORY_ID, USER_ID, MemoryKind.FACT, MemoryOrigin.INFERRED, MemoryStatus.ACTIVE,
+        return new MemorySummary(MEMORY_ID, USER_ID, USERNAME, MemoryKind.FACT, MemoryOrigin.INFERRED, MemoryStatus.ACTIVE,
                 "home-city", "Lives in Austin", 0.8, now, now, now, null, List.of());
     }
 
@@ -73,6 +74,7 @@ class MemoryControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content[0].id").value(MEMORY_ID.toString()))
                 .andExpect(jsonPath("$.content[0].userId").value(USER_ID.toString()))
+                .andExpect(jsonPath("$.content[0].username").value(USERNAME))
                 .andExpect(jsonPath("$.content[0].memoryKey").value("home-city"))
                 .andExpect(jsonPath("$.page.totalElements").value(1));
     }

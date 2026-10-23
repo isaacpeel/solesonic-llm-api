@@ -6,10 +6,12 @@ import java.util.UUID;
 
 /**
  * A memory as an administrator sees it: {@link UserMemorySummary} plus what the owner's own panel
- * deliberately leaves out — whose it is, its key, and what it superseded.
+ * deliberately leaves out — whose it is, its key, and what it superseded. {@code username} is null
+ * when the owner has no recorded profile.
  */
 public record MemorySummary(UUID id,
                                  UUID userId,
+                                 String username,
                                  MemoryKind kind,
                                  MemoryOrigin origin,
                                  MemoryStatus status,
@@ -22,9 +24,10 @@ public record MemorySummary(UUID id,
                                  UUID supersedes,
                                  List<UUID> chatIds) {
 
-    public static MemorySummary of(UserMemory userMemory, List<UUID> chatIds) {
+    public static MemorySummary of(UserMemory userMemory, String username, List<UUID> chatIds) {
         return new MemorySummary(userMemory.getId(),
                 userMemory.getUserId(),
+                username,
                 userMemory.getKind(),
                 userMemory.getOrigin(),
                 userMemory.getStatus(),

@@ -1,5 +1,6 @@
 package com.solesonic.service.memory;
 
+import com.solesonic.model.memory.ChatMemoryReflection;
 import com.solesonic.model.memory.MemoryKind;
 import com.solesonic.model.memory.MemoryProcessingStatus;
 import com.solesonic.model.memory.MemoryRetrievalMode;
@@ -14,6 +15,7 @@ import com.solesonic.repository.memory.MemoryAdminRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository;
 import com.solesonic.repository.memory.UserMemoryAdminRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
+import com.solesonic.service.user.UserProfileService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -57,6 +59,7 @@ public class MemoryAdminService {
     private final ChatMemoryReflectionRepository chatMemoryReflectionRepository;
     private final MemoryAdminRepository memoryAdminRepository;
     private final MemoryEmbeddingRepository memoryEmbeddingRepository;
+    private final UserProfileService userProfileService;
     private final boolean reflectionEnabled;
     private final String memoryModel;
     private final String reflectionCron;
@@ -74,6 +77,7 @@ public class MemoryAdminService {
                               ChatMemoryReflectionRepository chatMemoryReflectionRepository,
                               MemoryAdminRepository memoryAdminRepository,
                               MemoryEmbeddingRepository memoryEmbeddingRepository,
+                              UserProfileService userProfileService,
                               @Value("${solesonic.llm.memory.reflection.enabled}") boolean reflectionEnabled,
                               @Value("${solesonic.llm.memory.model}") String memoryModel,
                               @Value("${solesonic.llm.memory.reflection.cron}") String reflectionCron,
@@ -90,6 +94,7 @@ public class MemoryAdminService {
         this.chatMemoryReflectionRepository = chatMemoryReflectionRepository;
         this.memoryAdminRepository = memoryAdminRepository;
         this.memoryEmbeddingRepository = memoryEmbeddingRepository;
+        this.userProfileService = userProfileService;
         this.reflectionEnabled = reflectionEnabled;
         this.memoryModel = memoryModel;
         this.reflectionCron = reflectionCron;
@@ -124,8 +129,11 @@ public class MemoryAdminService {
                 : userMemoryAdminRepository.findByUserIdAndStatusInAndKindIn(userId, statusFilter, kindFilter, pageRequest);
 
         Map<UUID, List<UUID>> chatIdsByMemoryId = chatIdsByMemoryId(memories.getContent());
+        Map<UUID, String> usernames = userProfileService.usernames(memories.map(UserMemory::getUserId).getContent());
 
-        return memories.map(memory -> MemorySummary.of(memory, chatIdsByMemoryId.getOrDefault(memory.getId(), List.of())));
+        return memories.map(memory -> MemorySummary.of(memory,
+                usernames.get(memory.getUserId()),
+                chatIdsByMemoryId.getOrDefault(memory.getId(), List.of())));
     }
 
     /**
@@ -139,10 +147,13 @@ public class MemoryAdminService {
         Set<ReflectionStatus> statusFilter = orAll(statuses, ReflectionStatus.class);
         PageRequest pageRequest = pageRequest(pageable, REFLECTION_SORTS, "chatId");
 
-        return (userId == null
+        Page<ChatMemoryReflection> reflections = userId == null
                 ? chatMemoryReflectionRepository.findByStatusIn(statusFilter, pageRequest)
-                : chatMemoryReflectionRepository.findByUserIdAndStatusIn(userId, statusFilter, pageRequest))
-                .map(ReflectionSummary::of);
+                : chatMemoryReflectionRepository.findByUserIdAndStatusIn(userId, statusFilter, pageRequest);
+
+        Map<UUID, String> usernames = userProfileService.usernames(reflections.map(ChatMemoryReflection::getUserId).getContent());
+
+        return reflections.map(reflection -> ReflectionSummary.of(reflection, usernames.get(reflection.getUserId())));
     }
 
     @Transactional(readOnly = true)

@@ -237,6 +237,19 @@ Load-bearing details:
 - **`chat_message_timestamp` on evidence** is what lets reflection refuse to let an older statement
   replace a newer one during backfill.
 
+### User profile (V3_38, V3_39)
+
+`user_profile` holds who each user id belongs to, as their identity provider last described them:
+`user_id` (PK), `username` (`preferred_username`), `email`, `display_name` (`given_name`, else
+`name`), `updated`. The JWT filters write it on every authenticated request through
+`UserProfileService.record`; nothing else does.
+
+- **Every column but the key is nullable**, because a token need not carry any of the claims.
+- **A claim missing from a later token never clears the stored value**: the upsert `coalesce`s each
+  column, and rewrites the row only when something changed.
+- **No foreign key to anything**, as elsewhere in the schema. A user who has not signed in since a
+  column was added has no value in it until their next request.
+
 ### Push notifications — two tables (V3_36)
 
 | Table | Holds |

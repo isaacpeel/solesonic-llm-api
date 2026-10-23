@@ -139,20 +139,25 @@ public class MemoryAdminRepository {
                                    max(updated) filter (where status = 'COMPLETED') as last_reflected
                               from chat_memory_reflection
                              group by user_id)
-                        select coalesce(memories.user_id, reflections.user_id) as user_id,
-                               coalesce(memories.active_memories, 0) as active_memories,
-                               coalesce(memories.pending_memories, 0) as pending_memories,
-                               coalesce(memories.superseded_memories, 0) as superseded_memories,
-                               coalesce(reflections.pending_chats, 0) as pending_chats,
-                               coalesce(reflections.in_progress_chats, 0) as in_progress_chats,
-                               coalesce(reflections.completed_chats, 0) as completed_chats,
-                               coalesce(reflections.failed_chats, 0) as failed_chats,
-                               reflections.last_reflected
-                          from memories
-                          full outer join reflections on reflections.user_id = memories.user_id
-                         order by user_id
+                        users as (
+                            select coalesce(memories.user_id, reflections.user_id) as user_id,
+                                   coalesce(memories.active_memories, 0) as active_memories,
+                                   coalesce(memories.pending_memories, 0) as pending_memories,
+                                   coalesce(memories.superseded_memories, 0) as superseded_memories,
+                                   coalesce(reflections.pending_chats, 0) as pending_chats,
+                                   coalesce(reflections.in_progress_chats, 0) as in_progress_chats,
+                                   coalesce(reflections.completed_chats, 0) as completed_chats,
+                                   coalesce(reflections.failed_chats, 0) as failed_chats,
+                                   reflections.last_reflected
+                              from memories
+                              full outer join reflections on reflections.user_id = memories.user_id)
+                        select users.*, profile.username
+                          from users
+                          left join user_profile profile on profile.user_id = users.user_id
+                         order by users.user_id
                         """)
                 .query((resultSet, _) -> new UserMemoryOverview(resultSet.getObject("user_id", UUID.class),
+                        resultSet.getString("username"),
                         resultSet.getLong("active_memories"),
                         resultSet.getLong("pending_memories"),
                         resultSet.getLong("superseded_memories"),
