@@ -22,7 +22,7 @@ public class UserProfileRepository {
 
     /**
      * Rewrites the row only when something changed. A field the token did not carry keeps its stored
-     * value rather than being cleared.
+     * value rather than being cleared. A login proves the account exists, so it clears {@code removed}.
      */
     public void save(UserProfile userProfile) {
         jdbcClient.sql("""
@@ -32,12 +32,14 @@ public class UserProfileRepository {
                            set username = coalesce(excluded.username, user_profile.username),
                                email = coalesce(excluded.email, user_profile.email),
                                display_name = coalesce(excluded.display_name, user_profile.display_name),
-                               updated = excluded.updated
+                               updated = excluded.updated,
+                               removed = null
                          where (user_profile.username, user_profile.email, user_profile.display_name)
                                is distinct from
                                (coalesce(excluded.username, user_profile.username),
                                 coalesce(excluded.email, user_profile.email),
                                 coalesce(excluded.display_name, user_profile.display_name))
+                            or user_profile.removed is not null
                         """)
                 .param("userId", userProfile.userId())
                 .param("username", userProfile.username())

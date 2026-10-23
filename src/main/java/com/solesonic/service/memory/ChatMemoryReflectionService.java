@@ -3,6 +3,7 @@ package com.solesonic.service.memory;
 import com.solesonic.model.memory.ChatMemoryReflection;
 import com.solesonic.model.memory.ReflectionStatus;
 import com.solesonic.repository.memory.ChatMemoryReflectionRepository;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -17,9 +18,12 @@ import java.util.UUID;
 @Service
 public class ChatMemoryReflectionService {
     private final ChatMemoryReflectionRepository chatMemoryReflectionRepository;
+    private final long dormantDays;
 
-    public ChatMemoryReflectionService(ChatMemoryReflectionRepository chatMemoryReflectionRepository) {
+    public ChatMemoryReflectionService(ChatMemoryReflectionRepository chatMemoryReflectionRepository,
+                                       @Value("${solesonic.user.lifecycle.dormant-days}") long dormantDays) {
         this.chatMemoryReflectionRepository = chatMemoryReflectionRepository;
+        this.dormantDays = dormantDays;
     }
 
     /**
@@ -29,10 +33,12 @@ public class ChatMemoryReflectionService {
      */
     @Transactional
     public List<ChatMemoryReflection> claim(ZonedDateTime idleBefore, int batchSize) {
-        chatMemoryReflectionRepository.seedMissing();
-
-        List<ChatMemoryReflection> claimed = chatMemoryReflectionRepository.findClaimable(idleBefore, batchSize);
         ZonedDateTime now = ZonedDateTime.now();
+        ZonedDateTime activeSince = now.minusDays(dormantDays);
+
+        chatMemoryReflectionRepository.seedMissing(activeSince);
+
+        List<ChatMemoryReflection> claimed = chatMemoryReflectionRepository.findClaimable(idleBefore, activeSince, batchSize);
 
         for (ChatMemoryReflection reflection : claimed) {
             reflection.setStatus(ReflectionStatus.IN_PROGRESS);

@@ -27,6 +27,30 @@ This document serves as the single source of truth for all environment variables
 | `ISSUER_URI` | OAuth2/JWT token issuer URI | `https://your-issuer` | Yes (prod) | OAuth2 provider |
 | `JWK_SET_URI` | JSON Web Key Set URI | `https://your-issuer/.well-known/jwks.json` | Yes (prod) | For JWT token validation |
 
+### User Lifecycle Configuration
+
+An hourly sweep purges the memory data — memories, reflection cursors, interest scans, offers and
+agents — of users who are no longer around: those Keycloak no longer has or has disabled, and those
+with no message of their own in `USER_DORMANT_DAYS`. Reflection skips the same users between sweeps.
+The sweep also records each user's username and email from Keycloak, so users who have not signed in
+since are shown by name. See [docs/security.md](security.md#user-lifecycle).
+
+The `keycloak-admin` client must be a confidential client in the **user realm** with *Service
+accounts roles* enabled and the `realm-management` → `view-users` role assigned to its service
+account — nothing more. Removal is concluded only from Keycloak answering `404` (or `enabled:
+false`) for a user, after `GET {KEYCLOAK_ADMIN_URI}/users/count` has succeeded in the same sweep; if
+that check fails, no one is marked removed.
+
+| Variable | Description | Default | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `KEYCLOAK_ADMIN_URI` | Admin REST base of the user realm | — | Yes | `https://auth.example.com/admin/realms/izzy-bot` — the same realm as `ISSUER_URI`, with `/admin` before `/realms` |
+| `KEYCLOAK_ADMIN_CLIENT_ID` | Client id of the `keycloak-admin` client | — | Yes | Token from `ISSUER_URI`'s token endpoint, client credentials |
+| `KEYCLOAK_ADMIN_CLIENT_SECRET` | Its secret | — | Yes | |
+| `USER_LIFECYCLE_ENABLED` | Run the sweep | `true` | No | Reflection still skips dormant and removed users when off |
+| `USER_LIFECYCLE_CRON` | Sweep schedule | `0 45 * * * *` | No | Spring cron |
+| `USER_DORMANT_DAYS` | Days without a message of their own before a user is dormant | `30` | No | Only `USER` messages count: an interest agent's news chats do not keep a user active. A dormant user who returns has their whole history reflected again |
+| `USER_KEYCLOAK_RECHECK_HOURS` | How long a Keycloak lookup is trusted | `24` | No | A user already found removed is not looked up again; a login clears the mark |
+
 ### Encryption Configuration
 
 | Variable | Description | Example | Required | Notes |

@@ -89,7 +89,8 @@ class MemoryAdminServiceTest {
                 "0 * * * * *",
                 50,
                 true,
-                MemoryRetrievalMode.RELEVANT);
+                MemoryRetrievalMode.RELEVANT,
+                30);
 
         lenient().when(userProfileService.filter(any(), isNull()))
                 .thenAnswer(invocation -> UserFilter.of(invocation.getArgument(0)));

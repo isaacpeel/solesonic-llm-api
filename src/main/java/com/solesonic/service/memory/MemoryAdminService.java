@@ -72,6 +72,7 @@ public class MemoryAdminService {
     private final int embeddingBatchSize;
     private final boolean injectionEnabled;
     private final MemoryRetrievalMode retrievalMode;
+    private final long dormantDays;
 
     public MemoryAdminService(UserMemoryAdminRepository userMemoryAdminRepository,
                               UserMemoryEvidenceRepository userMemoryEvidenceRepository,
@@ -89,7 +90,8 @@ public class MemoryAdminService {
                               @Value("${solesonic.llm.memory.embedding.cron}") String embeddingCron,
                               @Value("${solesonic.llm.memory.embedding.batch-size}") int embeddingBatchSize,
                               @Value("${solesonic.llm.memory.injection.enabled}") boolean injectionEnabled,
-                              @Value("${solesonic.llm.memory.retrieval.mode}") MemoryRetrievalMode retrievalMode) {
+                              @Value("${solesonic.llm.memory.retrieval.mode}") MemoryRetrievalMode retrievalMode,
+                              @Value("${solesonic.user.lifecycle.dormant-days}") long dormantDays) {
         this.userMemoryAdminRepository = userMemoryAdminRepository;
         this.userMemoryEvidenceRepository = userMemoryEvidenceRepository;
         this.chatMemoryReflectionRepository = chatMemoryReflectionRepository;
@@ -107,6 +109,7 @@ public class MemoryAdminService {
         this.embeddingBatchSize = embeddingBatchSize;
         this.injectionEnabled = injectionEnabled;
         this.retrievalMode = retrievalMode;
+        this.dormantDays = dormantDays;
     }
 
     /**
@@ -185,7 +188,7 @@ public class MemoryAdminService {
                 reflectionIdleMinutes,
                 memoryAdminRepository.countReflectionsByStatus(),
                 memoryAdminRepository.countAwaitingReflection(),
-                memoryAdminRepository.countUnseededChats(),
+                memoryAdminRepository.countUnseededChats(now.minusDays(dormantDays)),
                 memoryAdminRepository.countCompletedSince(now.minusHours(1)),
                 memoryAdminRepository.lastCompleted());
 

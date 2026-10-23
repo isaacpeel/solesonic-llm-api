@@ -241,6 +241,31 @@
       "description": "Whether the memory retention sweep runs."
     },
     {
+      "name": "solesonic.user.lifecycle.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether the hourly sweep purges the memory data of removed and dormant users."
+    },
+    {
+      "name": "solesonic.user.lifecycle.cron",
+      "type": "java.lang.String",
+      "description": "Schedule of the user lifecycle sweep."
+    },
+    {
+      "name": "solesonic.user.lifecycle.dormant-days",
+      "type": "java.lang.Long",
+      "description": "Days without a message of their own after which a user is dormant: their memory data is purged and reflection skips them."
+    },
+    {
+      "name": "solesonic.user.lifecycle.keycloak-recheck-hours",
+      "type": "java.lang.Long",
+      "description": "How long a Keycloak lookup of a user is trusted before it is made again."
+    },
+    {
+      "name": "solesonic.user.keycloak.admin-uri",
+      "type": "java.lang.String",
+      "description": "Keycloak admin REST base for the user realm, e.g. https://auth.example.com/admin/realms/izzy-bot."
+    },
+    {
       "name": "solesonic.llm.memory.retention.cron",
       "type": "java.lang.String",
       "description": "Schedule of the memory retention sweep."

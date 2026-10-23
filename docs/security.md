@@ -396,6 +396,13 @@ every path. This is enforced by structure rather than convention:
 - **The user's name** (the token's `given_name`, else `name`) is recorded in `user_profile` by the JWT
   filters and given to the reflection model, so the user is never recorded as a third person. It is
   never logged and never sent anywhere else.
+- **User lifecycle** <a id="user-lifecycle"></a>— memory data is purged for users who are no longer
+  around, and reflection skips them in the meantime. *Removed* means Keycloak answered `404` or
+  `enabled: false` for the user, and is only ever concluded after `GET /users/count` on the configured
+  realm succeeded in the same sweep, so a wrong `KEYCLOAK_ADMIN_URI`, a missing role or an outage marks
+  nobody removed. *Dormant* means no `USER` message in `USER_DORMANT_DAYS`; an interest agent's news
+  chats do not count. The `keycloak-admin` client holds only `realm-management/view-users`. A login
+  clears a removed mark, since a valid token proves the account exists.
 - **Username and email** (`preferred_username`, `email`) are recorded in the same row. The username
   is returned only by admin-gated listings (`/memories`, `/memories/reflections`, `/memories/status`,
   `/images/admin`), next to the `userId` they already expose. The email is stored for later use and

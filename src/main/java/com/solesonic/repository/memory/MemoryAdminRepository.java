@@ -78,14 +78,25 @@ public class MemoryAdminRepository {
      * Conversations the next reflection run will seed: the same condition as
      * {@link ChatMemoryReflectionRepository#seedMissing()}.
      */
-    public long countUnseededChats() {
+    public long countUnseededChats(ZonedDateTime activeSince) {
         return jdbcClient.sql("""
                         select count(*)
                           from chat
                          where chat.user_id is not null
                            and not exists (select 1 from chat_memory_reflection reflection where reflection.chat_id = chat.id)
                            and exists (select 1 from chat_message message where message.chat_id = chat.id)
+                           and exists (select 1
+                                         from chat recent
+                                         join chat_message message on message.chat_id = recent.id
+                                        where recent.user_id = chat.user_id
+                                          and message.message_type = 'USER'
+                                          and message.timestamp >= :activeSince)
+                           and not exists (select 1
+                                             from user_profile profile
+                                            where profile.user_id = chat.user_id
+                                              and profile.removed is not null)
                         """)
+                .param("activeSince", activeSince.toOffsetDateTime())
                 .query(Long.class)
                 .single();
     }

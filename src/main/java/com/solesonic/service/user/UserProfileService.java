@@ -59,6 +59,14 @@ public class UserProfileService {
         }
     }
 
+    /**
+     * Drops what this instance remembers writing for a user, so their next login is written through
+     * even if nothing about them changed — which is what clears a {@code removed} mark.
+     */
+    public void forget(UUID userId) {
+        recordedProfiles.remove(userId);
+    }
+
     public Optional<UserProfile> profile(UUID userId) {
         return userProfileRepository.findById(userId);
     }

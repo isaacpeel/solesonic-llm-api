@@ -237,12 +237,17 @@ Load-bearing details:
 - **`chat_message_timestamp` on evidence** is what lets reflection refuse to let an older statement
   replace a newer one during backfill.
 
-### User profile (V3_38, V3_39)
+### User profile (V3_38, V3_39, V3_40)
 
 `user_profile` holds who each user id belongs to, as their identity provider last described them:
 `user_id` (PK), `username` (`preferred_username`), `email`, `display_name` (`given_name`, else
 `name`), `updated`. The JWT filters write it on every authenticated request through
-`UserProfileService.record`; nothing else does.
+`UserProfileService.record`, and the lifecycle sweep writes it from Keycloak's admin API.
+
+`checked` is when the sweep last looked the user up in Keycloak; `removed` is when Keycloak was found
+not to have them, or to have disabled them. A row with `removed` set is never seeded for reflection
+again, and a login clears it. To see who has been concluded removed:
+`select user_id, username, removed from public.user_profile where removed is not null;`
 
 - **Every column but the key is nullable**, because a token need not carry any of the claims.
 - **A claim missing from a later token never clears the stored value**: the upsert `coalesce`s each
