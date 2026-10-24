@@ -149,7 +149,7 @@ public class MemoryAdminRepository {
                                    count(*) filter (where status = 'FAILED') as failed_chats,
                                    max(updated) filter (where status = 'COMPLETED') as last_reflected
                               from chat_memory_reflection
-                             group by user_id)
+                             group by user_id),
                         users as (
                             select coalesce(memories.user_id, reflections.user_id) as user_id,
                                    coalesce(memories.active_memories, 0) as active_memories,
