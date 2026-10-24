@@ -51,6 +51,11 @@ public class ElicitationService {
     private static final String ENUM = "enum";
     private static final String ENUM_NAMES = "enumNames";
     private static final String SCHEMA_KEY_PREFIX = "elicitation:schema:";
+    private static final String MODE = "mode";
+    private static final String MESSAGE = "message";
+    private static final String REQUESTED_SCHEMA = "requestedSchema";
+    private static final String URL = "url";
+    private static final String META = "_meta";
 
     private static final String CLOSE_EVENT = "__close__";
     private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
@@ -136,8 +141,7 @@ public class ElicitationService {
         log.debug("Emitting elicitation for chat id {}", chatId);
 
         try {
-            Map<String, Object> requestJson = jsonMapper.convertValue(request, new TypeReference<>() {
-            });
+            Map<String, Object> requestJson = requestJson(request);
             requestJson.put(ELICITATION_ID, elicitationId.toString());
             requestJson.put(CHAT_ID, chatId.toString());
 
@@ -161,11 +165,35 @@ public class ElicitationService {
 
             //Registered before this returns, so the cancel from awaitResultAsync can never come first.
             elicitationReminderScheduler.waiting(chatId, elicitationId);
-        } catch (IllegalArgumentException illegalArgumentException) {
-            log.error("Failed to serialize elicitation request for chat {}", chatId, illegalArgumentException);
+        } catch (JacksonException jacksonException) {
+            log.error("Failed to serialize elicitation request for chat {}", chatId, jacksonException);
         }
 
         log.info("Finished emitting elicitation event for chat {}", chatId);
+    }
+
+    /**
+     * Built from the accessors rather than {@code convertValue}: {@link McpSchema.ElicitRequest}'s type
+     * id property {@code mode} collides with the records' own {@code mode()}, which Jackson refuses.
+     */
+    private static Map<String, Object> requestJson(McpSchema.ElicitRequest request) {
+        Map<String, Object> requestJson = new LinkedHashMap<>();
+        requestJson.put(MODE, request.mode());
+        requestJson.put(MESSAGE, request.message());
+
+        if (request instanceof McpSchema.ElicitFormRequest formRequest) {
+            requestJson.put(REQUESTED_SCHEMA, formRequest.requestedSchema());
+        }
+
+        if (request instanceof McpSchema.ElicitUrlRequest urlRequest) {
+            requestJson.put(URL, urlRequest.url());
+        }
+
+        if (request.meta() != null) {
+            requestJson.put(META, request.meta());
+        }
+
+        return requestJson;
     }
 
     public Mono<Boolean> completeFromFrontend(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
