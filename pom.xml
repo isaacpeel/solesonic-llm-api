@@ -35,7 +35,7 @@
         <a2a-java-sdk.version>1.4.0.Final</a2a-java-sdk.version>
         <ag-ui.version>0.1.1</ag-ui.version>
         <jackson-bom.version>3.2.4</jackson-bom.version>
-        <logback.version>1.5.21</logback.version>
+        <logback.version>1.6.5</logback.version>
     </properties>
 
     <dependencyManagement>
@@ -51,7 +51,7 @@
             <dependency>
                 <groupId>com.github.junrar</groupId>
                 <artifactId>junrar</artifactId>
-                <version>7.5.8</version>
+                <version>8.1.2</version>
             </dependency>
 
             <dependency>
@@ -166,14 +166,14 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
-            <version>13.4.0</version>
+            <version>13.11.1</version>
             <scope>runtime</scope>
         </dependency>
 
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
-            <version>13.7.0</version>
+            <version>13.11.1</version>
         </dependency>
 
         <dependency>
@@ -184,14 +184,12 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-annotations</artifactId>
-            <version>2.21</version>
             <scope>compile</scope>
         </dependency>
 
         <dependency>
             <groupId>com.fasterxml.jackson.datatype</groupId>
             <artifactId>jackson-datatype-jsr310</artifactId>
-            <version>2.22.3</version>
         </dependency>
 
         <dependency>
@@ -216,7 +214,7 @@
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
-            <version>3.20.0</version>
+            <version>3.21.0</version>
         </dependency>
 
         <dependency>
@@ -229,7 +227,7 @@
         <dependency>
             <groupId>io.rest-assured</groupId>
             <artifactId>rest-assured</artifactId>
-            <version>6.0.0</version>
+            <version>6.3.0</version>
             <scope>test</scope>
         </dependency>
 
@@ -262,13 +260,13 @@
         <dependency>
             <groupId>com.github.ben-manes.caffeine</groupId>
             <artifactId>caffeine</artifactId>
-            <version>3.2.2</version>
+            <version>3.3.1</version>
         </dependency>
 
         <dependency>
             <groupId>com.javaaidev.agenticpatterns</groupId>
             <artifactId>task-execution</artifactId>
-            <version>0.7.0</version>
+            <version>1.0.0</version>
             <scope>compile</scope>
         </dependency>
 
