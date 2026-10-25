@@ -69,6 +69,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
+import static com.solesonic.service.chat.events.ElicitationService.ELICITATION;
 import static com.solesonic.service.redis.RedisStreamingChatService.CHAT_CANCELED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -661,6 +662,31 @@ class RedisStreamingChatServiceTest {
 
         ToolCallStartEvent start = (ToolCallStartEvent) eventsOfType("TOOL_CALL_START").getFirst().payload();
         assertThat(start.toolCallId()).isEqualTo(elicitationId.toString());
+    }
+
+    /**
+     * The client shows the text before a prompt as its own message and opens a new bubble for the
+     * answer, which {@code RUN_FINISHED} then replaces. Carrying the whole run there repeated the
+     * earlier reply inside the new bubble.
+     */
+    @Test
+    void finishedMessageIsOnlyTheTextAfterTheLatestPrompt() {
+        Sinks.Many<SideChannelMessage> elicitationSink = Sinks.many().replay().all();
+        SideChannelMessage elicitation = new SideChannelMessage(ELICITATION,
+                JSON_MAPPER.readTree("{\"message\":\"Play or pass?\",\"elicitationId\":\"%s\"}".formatted(UUID.randomUUID())));
+
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(
+                Flux.just("Dad, play or pass?")
+                        .doOnComplete(() -> elicitationSink.tryEmitNext(elicitation))
+                        .concatWith(Flux.just("Dad passes. ", "Penny has to play.")));
+
+        runTurn();
+
+        assertThat(eventsOfType(TEXT_MESSAGE_CONTENT))
+                .extracting(event -> ((TextMessageContentEvent) event.payload()).delta())
+                .containsExactly("Dad, play or pass?", "Dad passes. ", "Penny has to play.");
+        assertThat(finishedMessage().getMessage()).isEqualTo("Dad passes. Penny has to play.");
     }
 
     @Test

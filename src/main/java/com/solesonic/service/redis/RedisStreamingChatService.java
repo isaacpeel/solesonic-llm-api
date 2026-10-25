@@ -64,6 +64,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
+import static com.solesonic.service.chat.events.ElicitationService.ELICITATION;
 import static org.springframework.ai.chat.messages.MessageType.ASSISTANT;
 import static org.springframework.ai.chat.messages.MessageType.SYSTEM;
 
@@ -264,11 +265,14 @@ public class RedisStreamingChatService {
                 .filter(message -> CANCEL_ACTION.equalsIgnoreCase(message.event()))
                 .take(1);
 
+        Flux<SideChannelMessage> promptEvents = elicitationEvents
+                .filter(message -> ELICITATION.equalsIgnoreCase(message.event()));
+
         forwardElicitationEvents(chatId, userId, elicitationEvents);
 
         Turn turn = new Turn(chatId, userId, runId, UUID.randomUUID().toString(), turnStarted);
 
-        return streamTurn(turn, chatRequest, authentication, cancelEvents)
+        return streamTurn(turn, chatRequest, authentication, cancelEvents, promptEvents)
                 .onErrorResume(error -> handleStreamError(turn, error))
                 .doFinally(_ -> cleanup(chatId, userId));
     }
@@ -284,13 +288,19 @@ public class RedisStreamingChatService {
     /**
      * Runs one turn: stream text until the model stops or the user cancels, then publish exactly one
      * terminal frame saying which of the two happened.
+     * <p>
+     * The finished message is only the text since the latest prompt: the client shows the text before
+     * a prompt as its own message and replaces the bubble it opened for the answer with this one. The
+     * buffer is synchronized because chunks append on the model's thread while a prompt clears it from
+     * the pub/sub thread.
      */
     private Mono<Void> streamTurn(Turn turn,
                                   ChatRequest chatRequest,
                                   Authentication authentication,
-                                  Flux<SideChannelMessage> cancelEvents) {
+                                  Flux<SideChannelMessage> cancelEvents,
+                                  Flux<SideChannelMessage> promptEvents) {
 
-        StringBuilder assembled = new StringBuilder();
+        StringBuffer assembled = new StringBuffer();
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicBoolean messageStarted = new AtomicBoolean();
 
@@ -308,7 +318,14 @@ public class RedisStreamingChatService {
                         .then(publish(turn, new TextMessageContentEvent(turn.messageId(), chunk, null, null))))
                 .then();
 
-        return publishChunks
+        //Never terminates on its own, so it lives exactly as long as the chunks do; subscribed first so
+        //no prompt can arrive before it is listening.
+        Mono<Void> resetOnPrompt = promptEvents
+                .doOnNext(_ -> assembled.setLength(0))
+                .onErrorComplete()
+                .then(Mono.never());
+
+        return Mono.firstWithSignal(resetOnPrompt, publishChunks)
                 .then(Mono.defer(() -> endMessageIfStarted(turn, messageStarted)))
                 .then(Mono.defer(() -> cancelled.get()
                         ? publishCancelledOutcome(turn)
