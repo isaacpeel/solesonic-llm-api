@@ -66,6 +66,6 @@ class ElicitationProviderTest {
         assertThatThrownBy(() -> elicitationProvider.handleElicitationRequest(request))
                 .isInstanceOf(ElicitationException.class);
 
-        verify(elicitationService, never()).emitElicitation(any(), any(), any());
+        verify(elicitationService, never()).emitElicitation(any(), any(), any(McpSchema.ElicitRequest.class));
     }
 }

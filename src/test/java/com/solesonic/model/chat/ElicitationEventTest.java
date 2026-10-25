@@ -57,6 +57,21 @@ class ElicitationEventTest {
     }
 
     @Test
+    void aFormBuiltFromItsPartsSerializesLikeTheSameMcpFormRequest() {
+        Map<String, Object> requestedSchema = Map.of("type", "object",
+                "properties", Map.of("choice", Map.of("type", "string")));
+        Map<String, Object> meta = Map.of("feud/prompt", "play_or_pass");
+        McpSchema.ElicitFormRequest request = new McpSchema.ElicitFormRequest("Play or pass?", requestedSchema, meta);
+
+        JsonNode fromParts = jsonMapper.valueToTree(
+                ElicitationEvent.form(CHAT_ID, ELICITATION_ID, "Play or pass?", requestedSchema, meta));
+        JsonNode fromRequest = jsonMapper.valueToTree(ElicitationEvent.of(CHAT_ID, ELICITATION_ID, request));
+
+        assertThat(fromParts).isEqualTo(fromRequest);
+        assertThat(fromParts.path("mode").asString()).isEqualTo("form");
+    }
+
+    @Test
     void requestedPropertiesAreTheSchemasPropertiesByName() {
         Map<String, Object> assignee = Map.of("type", "string");
         McpSchema.ElicitFormRequest request = new McpSchema.ElicitFormRequest("Who?",

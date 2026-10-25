@@ -131,9 +131,11 @@ public class ElicitationService {
      * no ten-minute wait for an answer that cannot come.
      */
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
-        log.info("Emitting elicitation event for chat {}", chatId);
+        emitElicitation(chatId, elicitationId, ElicitationEvent.of(chatId, elicitationId, request));
+    }
 
-        ElicitationEvent elicitationEvent = ElicitationEvent.of(chatId, elicitationId, request);
+    public void emitElicitation(UUID chatId, UUID elicitationId, ElicitationEvent elicitationEvent) {
+        log.info("Emitting elicitation event for chat {}", chatId);
 
         Mono<Long> publication = sideChannelPublisher.publish(chatId, ELICITATION, elicitationEvent);
         Mono<Boolean> requestedPropertiesStore = storeRequestedProperties(elicitationEvent);

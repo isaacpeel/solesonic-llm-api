@@ -2,6 +2,8 @@ package com.solesonic.service.chat.events;
 
 import com.agui.community.core.message.ToolMessage;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
+import com.solesonic.model.chat.ElicitationEvent;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.push.ElicitationReminderScheduler;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -12,6 +14,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveSetOperations;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -362,6 +365,38 @@ class ElicitationServiceTest {
                     assertThat(elicitResult.content()).isNull();
                 })
                 .verifyComplete();
+    }
+
+    /**
+     * An A2A agent's prompt arrives as its parts, not as an MCP request, and must take the same path:
+     * the question in history, the schema stored for narrowing, the publish and the reminder.
+     */
+    @Test
+    void anElicitationEventIsSavedStoredPublishedAndReminded() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        elicitationService.emitElicitation(chatId, elicitationId, ElicitationEvent.form(chatId, elicitationId,
+                "Play or pass?", Map.of("type", "object", "properties", Map.of("choice", Map.of("type", "string"))),
+                Map.of("feud/prompt", "play_or_pass")));
+
+        ArgumentCaptor<ChatMessage> saved = ArgumentCaptor.forClass(ChatMessage.class);
+        verify(chatMessageService).save(saved.capture());
+        assertThat(saved.getValue().getMessageType()).isEqualTo(MessageType.SYSTEM);
+        assertThat(saved.getValue().getElicitationId()).isEqualTo(elicitationId);
+        assertThat(saved.getValue().getMessage()).isEqualTo("Play or pass?");
+
+        verify(valueOperations).set(eq(schemaKey(chatId, elicitationId)), anyString(), any(Duration.class));
+
+        ArgumentCaptor<String> envelope = ArgumentCaptor.forClass(String.class);
+        verify(redisTemplate).convertAndSend(eq("elicitation:events:" + chatId), envelope.capture());
+        JsonNode data = jsonMapper.readTree(envelope.getValue()).path("data");
+        assertThat(data.path("elicitationId").asString()).isEqualTo(elicitationId.toString());
+        assertThat(data.path("_meta").path("feud/prompt").asString()).isEqualTo("play_or_pass");
+
+        verify(elicitationReminderScheduler).waiting(chatId, elicitationId);
     }
 
     @Test

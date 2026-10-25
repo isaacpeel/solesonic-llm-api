@@ -23,6 +23,7 @@ public record ElicitationEvent(UUID elicitationId,
                                String url,
                                @JsonProperty("_meta") Map<String, Object> meta) {
     private static final String PROPERTIES = "properties";
+    private static final String FORM_MODE = "form";
 
     public static ElicitationEvent of(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
         Map<String, Object> requestedSchema = null;
@@ -38,6 +39,18 @@ public record ElicitationEvent(UUID elicitationId,
 
         return new ElicitationEvent(elicitationId, chatId, request.mode(), request.message(), requestedSchema, url,
                 request.meta());
+    }
+
+    /**
+     * A form elicitation that did not arrive as an MCP request, such as an A2A agent's prompt. It
+     * reaches the client in exactly the shape {@link #of} gives an MCP form request.
+     */
+    public static ElicitationEvent form(UUID chatId,
+                                        UUID elicitationId,
+                                        String message,
+                                        Map<String, Object> requestedSchema,
+                                        Map<String, Object> meta) {
+        return new ElicitationEvent(elicitationId, chatId, FORM_MODE, message, requestedSchema, null, meta);
     }
 
     /**
