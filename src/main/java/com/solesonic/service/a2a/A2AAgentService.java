@@ -50,8 +50,10 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -216,7 +218,7 @@ public class A2AAgentService {
 
     private void handleUpdate(DelegatedTurn turn, UpdateEvent updateEvent) {
         switch (updateEvent) {
-            case TaskArtifactUpdateEvent artifactEvent -> emitParts(turn, artifactEvent.artifact().parts());
+            case TaskArtifactUpdateEvent artifactEvent -> emitArtifactUpdate(turn, artifactEvent);
             case TaskStatusUpdateEvent statusEvent -> {
                 TaskState state = statusEvent.status().state();
                 Message statusMessage = statusEvent.status().message();
@@ -272,12 +274,31 @@ public class A2AAgentService {
         turn.progress();
     }
 
+    private void emitArtifactUpdate(DelegatedTurn turn, TaskArtifactUpdateEvent artifactEvent) {
+        Artifact artifact = artifactEvent.artifact();
+        boolean append = Boolean.TRUE.equals(artifactEvent.append());
+        turn.recordArtifact(artifact.artifactId(), extractText(artifact.parts()), append);
+        emitParts(turn, artifact.parts());
+    }
+
+    /**
+     * A task snapshot carries every artifact the task holds. When an answered prompt continued the task,
+     * that includes the artifacts this turn already showed before the prompt, so only the ones it has
+     * not shown are emitted.
+     */
     private void emitArtifactsIfAny(DelegatedTurn turn, List<Artifact> artifacts) {
         if (artifacts == null) {
             return;
         }
 
         for (Artifact artifact : artifacts) {
+            String text = extractText(artifact.parts());
+
+            if (turn.alreadyShown(artifact.artifactId(), text)) {
+                continue;
+            }
+
+            turn.recordArtifact(artifact.artifactId(), text, false);
             emitParts(turn, artifact.parts());
         }
     }
@@ -341,6 +362,7 @@ public class A2AAgentService {
         private final Disposable.Composite disposables = Disposables.composite();
         private final AtomicBoolean ended = new AtomicBoolean();
         private final AtomicBoolean awaitingAnswer = new AtomicBoolean();
+        private final Map<String, String> shownArtifacts = new ConcurrentHashMap<>();
         private final ExchangeWatchdog watchdog;
         private volatile Consumer<Message> sender = _ -> {
         };
@@ -371,6 +393,27 @@ public class A2AAgentService {
 
         void progress() {
             sink.next("");
+        }
+
+        /**
+         * Records the text this turn has shown for an artifact; an appended chunk adds to what was
+         * shown before it.
+         */
+        void recordArtifact(String artifactId, String text, boolean append) {
+            if (append) {
+                shownArtifacts.merge(artifactId, text, (shown, chunk) -> shown + "\n" + chunk);
+                return;
+            }
+
+            shownArtifacts.put(artifactId, text);
+        }
+
+        /**
+         * Whether this turn has already shown this artifact with this text. An artifact replaced under
+         * the same id with new text has not been shown.
+         */
+        boolean alreadyShown(String artifactId, String text) {
+            return text.equals(shownArtifacts.get(artifactId));
         }
 
         /**

@@ -461,6 +461,65 @@ class A2AAgentServiceTest {
     }
 
     /**
+     * The continued task's snapshot carries the reply shown before the prompt as well as the new one;
+     * the user sees each once.
+     */
+    @Test
+    void aContinuedTasksSnapshotDoesNotShowTheReplyFromBeforeThePromptAgain() {
+        promptIsRaised(Mono.just(new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.ACCEPT, Map.of("choice", "play"))));
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        Artifact beforePrompt = Artifact.builder().artifactId("reply-1").parts(new TextPart("Face-off! ")).build();
+        Artifact afterPrompt = Artifact.builder().artifactId("reply-2").parts(new TextPart("Alex plays.")).build();
+        List<Message> sent = new ArrayList<>();
+
+        StepVerifier.create(turnOf(turn -> {
+                    turn.start(outgoing -> {
+                        sent.add(outgoing);
+
+                        if (sent.size() == 2) {
+                            Task finished = task("task-3", TaskState.TASK_STATE_COMPLETED, List.of(beforePrompt, afterPrompt));
+                            agentService.handleEvent(turn, new TaskEvent(finished));
+                        }
+                    }, agentService.firstMessage(CHAT_ID, "sunscreen", "task-3"));
+
+                    agentService.handleEvent(turn, update(new TaskArtifactUpdateEvent("task-3", beforePrompt, "context-1", false, true, null)));
+                    agentService.handleEvent(turn, prompt("task-3"));
+                }))
+                .expectNext("Face-off! ", "Alex plays.")
+                .verifyComplete();
+
+        assertThat(savedReplies()).containsExactly("Face-off!", "Alex plays.");
+    }
+
+    /**
+     * An agent that keeps one artifact id for its reply replaces the earlier text; the new text is shown.
+     */
+    @Test
+    void aReplyReplacedUnderTheSameArtifactIdIsShown() {
+        promptIsRaised(Mono.just(new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.ACCEPT, Map.of("choice", "play"))));
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        List<Message> sent = new ArrayList<>();
+
+        StepVerifier.create(turnOf(turn -> {
+                    turn.start(outgoing -> {
+                        sent.add(outgoing);
+
+                        if (sent.size() == 2) {
+                            Task finished = task("task-3", TaskState.TASK_STATE_COMPLETED, List.of(artifact("Alex plays.")));
+                            agentService.handleEvent(turn, new TaskEvent(finished));
+                        }
+                    }, agentService.firstMessage(CHAT_ID, "sunscreen", "task-3"));
+
+                    agentService.handleEvent(turn, text("task-3", "Face-off! "));
+                    agentService.handleEvent(turn, prompt("task-3"));
+                }))
+                .expectNext("Face-off! ", "Alex plays.")
+                .verifyComplete();
+    }
+
+    /**
      * Nothing is sent: the task stays waiting and sticky, so the user's next typed message continues it.
      */
     @Test
