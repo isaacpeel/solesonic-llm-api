@@ -16,13 +16,14 @@ import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveSetOperations;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.ReactiveValueOperations;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.test.util.ReflectionTestUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -34,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -78,7 +80,8 @@ class ElicitationServiceTest {
                     return Mono.just(1L);
                 });
 
-        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate, elicitationReminderScheduler);
+        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate,
+                new SideChannelPublisher(jsonMapper, redisTemplate), elicitationReminderScheduler);
         ReflectionTestUtils.setField(elicitationService, "timeoutSeconds", 60L);
     }
 
@@ -89,13 +92,13 @@ class ElicitationServiceTest {
     @Test
     void cancelChatPublishesTheCancelSignalOnTheChatsEventsChannel() {
         UUID chatId = UUID.randomUUID();
-        AtomicReference<ServerSentEvent<?>> received = new AtomicReference<>();
+        AtomicReference<SideChannelMessage> received = new AtomicReference<>();
         CountDownLatch countDownLatch = new CountDownLatch(1);
 
         elicitationService.registerChat(chatId)
                 .take(1)
-                .subscribe(serverSentEvent -> {
-                    received.set(serverSentEvent);
+                .subscribe(message -> {
+                    received.set(message);
                     countDownLatch.countDown();
                 });
 
@@ -111,9 +114,9 @@ class ElicitationServiceTest {
 
         assertThat(eventReceived).isTrue();
 
-        ServerSentEvent<?> serverSentEvent = received.get();
-        assertThat(serverSentEvent.event()).isEqualTo(ElicitationService.CANCEL_ACTION);
-        assertThat(serverSentEvent.data()).isEqualTo(ElicitationService.CANCEL_ACTION);
+        SideChannelMessage message = received.get();
+        assertThat(message.event()).isEqualTo(ElicitationService.CANCEL_ACTION);
+        assertThat(message.data().asString()).isEqualTo(ElicitationService.CANCEL_ACTION);
     }
 
     /**
@@ -369,6 +372,55 @@ class ElicitationServiceTest {
         elicitationService.emitElicitation(chatId, elicitationId, formRequest(chatId, Map.of("type", "object")));
 
         verify(elicitationReminderScheduler).waiting(chatId, elicitationId);
+    }
+
+    /**
+     * The translator takes the tool-call id from {@code elicitationId}, and the MCP server's own
+     * metadata travels as {@code _meta} — the names the client reads.
+     */
+    @Test
+    void theEmittedElicitationCarriesBothIdsAndMetaUnderItsWireName() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+
+        elicitationService.emitElicitation(chatId, elicitationId, formRequest(chatId, Map.of("type", "object")));
+
+        ArgumentCaptor<String> envelope = ArgumentCaptor.forClass(String.class);
+        verify(redisTemplate).convertAndSend(eq("elicitation:events:" + chatId), envelope.capture());
+
+        JsonNode published = jsonMapper.readTree(envelope.getValue());
+        assertThat(published.path("event").asString()).isEqualTo(ElicitationService.ELICITATION);
+
+        JsonNode data = published.path("data");
+        assertThat(data.path("elicitationId").asString()).isEqualTo(elicitationId.toString());
+        assertThat(data.path("chatId").asString()).isEqualTo(chatId.toString());
+        assertThat(data.path("message").asString()).isEqualTo("Who should this be assigned to?");
+        assertThat(data.path("_meta").path("chatId").asString()).isEqualTo(chatId.toString());
+    }
+
+    /**
+     * Fails the parked tool call now rather than at its timeout, and leaves no question in history
+     * that was never asked.
+     */
+    @Test
+    void anElicitationThatCannotBeSerializedSavesNothingAndSchedulesNoReminder() {
+        UUID chatId = UUID.randomUUID();
+        UUID elicitationId = UUID.randomUUID();
+        McpSchema.ElicitFormRequest request = new McpSchema.ElicitFormRequest("Who?", Map.of("type", "object"),
+                Map.of("chatId", chatId.toString(), "unwritable", new Unserializable()));
+
+        assertThatThrownBy(() -> elicitationService.emitElicitation(chatId, elicitationId, request))
+                .isInstanceOf(JacksonException.class);
+
+        verify(chatMessageService, never()).save(any());
+        verify(redisTemplate, never()).convertAndSend(anyString(), anyString());
+        verify(elicitationReminderScheduler, never()).waiting(any(), any());
+    }
+
+    public static final class Unserializable {
+        public String getValue() {
+            throw new IllegalStateException("unwritable");
+        }
     }
 
     @Test

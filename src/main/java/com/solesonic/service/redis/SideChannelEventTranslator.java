@@ -5,16 +5,15 @@ import com.agui.community.core.event.Event;
 import com.agui.community.core.event.ToolCallArgsEvent;
 import com.agui.community.core.event.ToolCallEndEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
-import org.springframework.http.codec.ServerSentEvent;
+import com.solesonic.model.chat.ElicitationEvent;
+import com.solesonic.service.chat.events.SideChannelMessage;
 import org.springframework.stereotype.Component;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 
 import static com.solesonic.service.chat.events.ElicitationService.ELICITATION;
-import static com.solesonic.service.chat.events.ElicitationService.ELICITATION_ID;
 
 /**
  * Turns what the elicitation/notification pub/sub channel carries into the AG-UI frames written to
@@ -34,33 +33,24 @@ public class SideChannelEventTranslator {
         this.jsonMapper = jsonMapper;
     }
 
-    public List<Event> translate(ServerSentEvent<?> forwarded) {
-        String eventName = forwarded.event();
-        String data = String.valueOf(forwarded.data());
-
-        if (ELICITATION.equalsIgnoreCase(eventName)) {
-            return toolCall(data);
+    public List<Event> translate(SideChannelMessage message) {
+        if (ELICITATION.equalsIgnoreCase(message.event())) {
+            return toolCall(message.data());
         }
 
-        return List.of(new CustomEvent(eventName, parsedOrText(data), null, null));
+        return List.of(new CustomEvent(message.event(), message.data(), null, null));
     }
 
-    private List<Event> toolCall(String elicitationJson) {
-        String toolCallId = jsonMapper.readTree(elicitationJson).path(ELICITATION_ID).asString();
+    /**
+     * The arguments are written back to a string only because AG-UI defines a tool call's delta as
+     * one.
+     */
+    private List<Event> toolCall(JsonNode elicitation) {
+        String toolCallId = jsonMapper.treeToValue(elicitation, ElicitationEvent.class).elicitationId().toString();
 
         return List.of(
                 new ToolCallStartEvent(toolCallId, ELICITATION_TOOL_NAME, null, null, null),
-                new ToolCallArgsEvent(toolCallId, elicitationJson, null, null),
+                new ToolCallArgsEvent(toolCallId, jsonMapper.writeValueAsString(elicitation), null, null),
                 new ToolCallEndEvent(toolCallId, null, null));
-    }
-
-    private Object parsedOrText(String data) {
-        try {
-            JsonNode parsed = jsonMapper.readTree(data);
-
-            return parsed.isContainer() ? parsed : data;
-        } catch (JacksonException jacksonException) {
-            return data;
-        }
     }
 }

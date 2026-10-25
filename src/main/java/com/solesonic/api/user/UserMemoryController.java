@@ -8,6 +8,10 @@ import com.solesonic.service.security.ResourceOwnershipService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
+import org.springframework.data.web.PagedModel;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -21,7 +25,6 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
-import java.util.List;
 import java.util.UUID;
 
 import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
@@ -40,6 +43,8 @@ import static com.solesonic.security.SecurityConfig.IZZY_BOT_ADMIN;
 public class UserMemoryController {
     private static final Logger log = LoggerFactory.getLogger(UserMemoryController.class);
 
+    private static final int DEFAULT_PAGE_SIZE = 50;
+
     private final UserMemoryService userMemoryService;
     private final ResourceOwnershipService resourceOwnershipService;
     private final UserRequestContext userRequestContext;
@@ -52,13 +57,21 @@ public class UserMemoryController {
         this.userRequestContext = userRequestContext;
     }
 
+    /**
+     * Active and pending memories, oldest first. Only the window is taken from the request, for the
+     * reason {@code IngestedGlobalDocumentController.list} gives: the ordering belongs to the query.
+     */
     @GetMapping
-    public ResponseEntity<List<UserMemorySummary>> list(@PathVariable UUID userId, HttpServletRequest request) {
+    public ResponseEntity<PagedModel<UserMemorySummary>> list(@PathVariable UUID userId,
+                                                              @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable,
+                                                              HttpServletRequest request) {
         if (!mayManage(userId, request, "listing memories")) {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        return ResponseEntity.ok(userMemoryService.list(userId));
+        Pageable memoryPage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
+
+        return ResponseEntity.ok(new PagedModel<>(userMemoryService.list(userId, memoryPage)));
     }
 
     @GetMapping("/{memoryId}")

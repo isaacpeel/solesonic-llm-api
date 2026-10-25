@@ -19,6 +19,10 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -78,17 +82,20 @@ class UserMemoryServiceTest {
     void listsOnlyTheCallersActiveAndPendingMemoriesWithTheChatsTheyCameFrom() {
         UserMemory memory = memory(MemoryOrigin.INFERRED, MemoryStatus.ACTIVE, "units.preference", null);
 
-        when(userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(eq(USER_ID), anyCollection()))
-                .thenReturn(List.of(memory));
+        PageRequest pageRequest = PageRequest.of(0, 10);
+
+        when(userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAscIdAsc(eq(USER_ID), anyCollection(), eq(pageRequest)))
+                .thenReturn(new PageImpl<>(List.of(memory), pageRequest, 11));
         when(userMemoryEvidenceRepository.findByUserIdAndMemoryIdIn(eq(USER_ID), anyCollection()))
                 .thenReturn(List.of(evidence(memory, CHAT_ID), evidence(memory, CHAT_ID), evidence(memory, OTHER_CHAT_ID)));
 
-        List<UserMemorySummary> summaries = userMemoryService.list(USER_ID);
+        Page<UserMemorySummary> summaries = userMemoryService.list(USER_ID, pageRequest);
 
-        assertThat(summaries).singleElement()
+        assertThat(summaries.getContent()).singleElement()
                 .satisfies(summary -> assertThat(summary.chatIds()).containsExactlyInAnyOrder(CHAT_ID, OTHER_CHAT_ID));
+        assertThat(summaries.getTotalElements()).isEqualTo(11);
 
-        verify(userMemoryRepository, never()).findByUserIdAndStatusInOrderByCreatedAsc(eq(OTHER_USER_ID), anyCollection());
+        verify(userMemoryRepository, never()).findByUserIdAndStatusInOrderByCreatedAscIdAsc(eq(OTHER_USER_ID), anyCollection(), any(Pageable.class));
     }
 
     @Test

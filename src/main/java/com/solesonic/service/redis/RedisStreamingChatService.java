@@ -32,6 +32,7 @@ import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
+import com.solesonic.service.chat.events.SideChannelMessage;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
@@ -255,12 +256,12 @@ public class RedisStreamingChatService {
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
-        Flux<ServerSentEvent<?>> elicitationEvents = elicitationService.registerChat(chatId);
+        Flux<SideChannelMessage> elicitationEvents = elicitationService.registerChat(chatId);
 
         //Exactly one consumer, inside streamTurn. Subscribing a second time would reconnect to the
         //underlying pub/sub channel, which replays nothing already delivered.
-        Flux<ServerSentEvent<?>> cancelEvents = elicitationEvents
-                .filter(serverSentEvent -> CANCEL_ACTION.equalsIgnoreCase(serverSentEvent.event()))
+        Flux<SideChannelMessage> cancelEvents = elicitationEvents
+                .filter(message -> CANCEL_ACTION.equalsIgnoreCase(message.event()))
                 .take(1);
 
         forwardElicitationEvents(chatId, userId, elicitationEvents);
@@ -287,7 +288,7 @@ public class RedisStreamingChatService {
     private Mono<Void> streamTurn(Turn turn,
                                   ChatRequest chatRequest,
                                   Authentication authentication,
-                                  Flux<ServerSentEvent<?>> cancelEvents) {
+                                  Flux<SideChannelMessage> cancelEvents) {
 
         StringBuilder assembled = new StringBuilder();
         AtomicBoolean cancelled = new AtomicBoolean();
@@ -553,10 +554,10 @@ public class RedisStreamingChatService {
         };
     }
 
-    private void forwardElicitationEvents(UUID chatId, UUID userId, Flux<ServerSentEvent<?>> elicitationEvents) {
+    private void forwardElicitationEvents(UUID chatId, UUID userId, Flux<SideChannelMessage> elicitationEvents) {
         elicitationEvents
-                .filter(serverSentEvent -> !CANCEL_ACTION.equalsIgnoreCase(serverSentEvent.event()))
-                .concatMap(serverSentEvent -> Flux.fromIterable(sideChannelEventTranslator.translate(serverSentEvent))
+                .filter(message -> !CANCEL_ACTION.equalsIgnoreCase(message.event()))
+                .concatMap(message -> Flux.fromIterable(sideChannelEventTranslator.translate(message))
                         .concatMap(event -> publish(chatId, userId, event)))
                 .subscribe();
     }

@@ -37,6 +37,7 @@ import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
+import com.solesonic.service.chat.events.SideChannelMessage;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
@@ -50,13 +51,13 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.List;
 import java.util.Map;
@@ -101,6 +102,8 @@ class RedisStreamingChatServiceTest {
     private static final String RUN_FINISHED = "RUN_FINISHED";
     private static final String RUN_ERROR = "RUN_ERROR";
     private static final String CUSTOM = "CUSTOM";
+
+    private static final JsonMapper JSON_MAPPER = new JacksonConfig().jsonMapper();
 
     @Mock
     private ChatRepository chatRepository;
@@ -152,7 +155,7 @@ class RedisStreamingChatServiceTest {
                 activeStreamTracker,
                 notificationService,
                 generatedImageService,
-                new SideChannelEventTranslator(new JacksonConfig().jsonMapper()),
+                new SideChannelEventTranslator(JSON_MAPPER),
                 chatModelSelection,
                 pushNotificationService);
 
@@ -198,8 +201,8 @@ class RedisStreamingChatServiceTest {
         when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.just(chunks));
     }
 
-    private static ServerSentEvent<?> cancelEvent() {
-        return ServerSentEvent.builder(CANCEL_ACTION).event(CANCEL_ACTION).build();
+    private static SideChannelMessage cancelEvent() {
+        return new SideChannelMessage(CANCEL_ACTION, JSON_MAPPER.valueToTree(CANCEL_ACTION));
     }
 
     private List<String> publishedTypes() {
@@ -646,10 +649,8 @@ class RedisStreamingChatServiceTest {
     @Test
     void forwardsAnElicitationAsAToolCall() {
         UUID elicitationId = UUID.randomUUID();
-        ServerSentEvent<?> elicitation = ServerSentEvent
-                .builder("{\"message\":\"Sure?\",\"elicitationId\":\"%s\"}".formatted(elicitationId))
-                .event("elicitation")
-                .build();
+        SideChannelMessage elicitation = new SideChannelMessage("elicitation",
+                JSON_MAPPER.readTree("{\"message\":\"Sure?\",\"elicitationId\":\"%s\"}".formatted(elicitationId)));
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(elicitation));
         modelStreams("Hello");
@@ -664,7 +665,7 @@ class RedisStreamingChatServiceTest {
 
     @Test
     void forwardsProgressAsACustomEvent() {
-        ServerSentEvent<?> progress = ServerSentEvent.builder("{\"message\":\"Searching\"}").event("progress").build();
+        SideChannelMessage progress = new SideChannelMessage("progress", JSON_MAPPER.readTree("{\"message\":\"Searching\"}"));
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(progress));
         modelStreams("Hello");
@@ -827,7 +828,7 @@ class RedisStreamingChatServiceTest {
      * turn, deterministically and without a sleep.
      */
     private void cancelAfterChunks(String... chunks) {
-        Sinks.Many<ServerSentEvent<?>> elicitationSink = Sinks.many().replay().all();
+        Sinks.Many<SideChannelMessage> elicitationSink = Sinks.many().replay().all();
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
 

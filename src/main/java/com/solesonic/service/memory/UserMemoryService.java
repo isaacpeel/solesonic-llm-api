@@ -27,6 +27,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -121,14 +123,12 @@ public class UserMemoryService {
     }
 
     @Transactional(readOnly = true)
-    public List<UserMemorySummary> list(UUID userId) {
-        List<UserMemory> memories = userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(userId, LIVE_STATUSES);
+    public Page<UserMemorySummary> list(UUID userId, Pageable pageable) {
+        Page<UserMemory> memories = userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAscIdAsc(userId, LIVE_STATUSES, pageable);
 
-        Map<UUID, List<UUID>> chatIdsByMemoryId = chatIdsByMemoryId(userId, memories);
+        Map<UUID, List<UUID>> chatIdsByMemoryId = chatIdsByMemoryId(userId, memories.getContent());
 
-        return memories.stream()
-                .map(memory -> UserMemorySummary.of(memory, chatIdsByMemoryId.getOrDefault(memory.getId(), List.of())))
-                .toList();
+        return memories.map(memory -> UserMemorySummary.of(memory, chatIdsByMemoryId.getOrDefault(memory.getId(), List.of())));
     }
 
     @Transactional(readOnly = true)

@@ -11,7 +11,6 @@ import org.a2aproject.sdk.spec.TextPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
@@ -29,20 +28,16 @@ public class NotificationService {
     public static final String ATTACHMENT = "attachment";
     public static final String IMAGE = "image";
 
-    private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
-    public static final String EVENT = "event";
-    public static final String DATA = "data";
-
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
-    private final ReactiveStringRedisTemplate redisTemplate;
+    private final SideChannelPublisher sideChannelPublisher;
 
     public NotificationService(JsonMapper jsonMapper,
                                ChatMessageService chatMessageService,
-                               ReactiveStringRedisTemplate redisTemplate) {
+                               SideChannelPublisher sideChannelPublisher) {
         this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
-        this.redisTemplate = redisTemplate;
+        this.sideChannelPublisher = sideChannelPublisher;
     }
 
     public void emitProgress(UUID chatId, NotificationEventMessage notificationEventMessage) {
@@ -60,9 +55,7 @@ public class NotificationService {
         chatMessage.setProgressData(progressJson);
         chatMessageService.save(chatMessage);
 
-        String message = serializeEventMessage(PROGRESS, progressJson);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, PROGRESS, progressJson)
                 .subscribe(subscriberCount -> log.debug("Emitted progress event to {} subscribers for chat {}", subscriberCount, chatId));
     }
     /**
@@ -77,9 +70,7 @@ public class NotificationService {
     public void emitAttachment(UUID chatId, ChatAttachmentEvent chatAttachmentEvent) {
         log.debug("Emitting attachment event for chat {}: {}", chatId, chatAttachmentEvent);
 
-        String message = serializeEventMessage(ATTACHMENT, chatAttachmentEvent);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, ATTACHMENT, chatAttachmentEvent)
                 .subscribe(subscriberCount ->
                         log.debug("Emitted attachment event to {} subscribers for chat {}", subscriberCount, chatId));
     }
@@ -98,9 +89,7 @@ public class NotificationService {
     public void emitGeneratedImage(UUID chatId, GeneratedImageSummary generatedImageSummary) {
         log.info("Emitting generated image {} for chat {}", generatedImageSummary.imageId(), chatId);
 
-        String message = serializeEventMessage(IMAGE, generatedImageSummary);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, IMAGE, generatedImageSummary)
                 .subscribe(subscriberCount ->
                         log.debug("Emitted image event to {} subscribers for chat {}", subscriberCount, chatId));
     }
@@ -159,13 +148,5 @@ public class NotificationService {
         chatMessageService.save(chatMessage);
 
         return errorData;
-    }
-
-    private String serializeEventMessage(String eventType, Object data) {
-        return jsonMapper.writeValueAsString(Map.of(EVENT, eventType, DATA, data));
-    }
-
-    private static String eventsChannelKey(UUID chatId) {
-        return EVENTS_CHANNEL_PREFIX + chatId;
     }
 }

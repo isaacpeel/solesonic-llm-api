@@ -2,6 +2,7 @@ package com.solesonic.service.chat.events;
 
 import com.agui.community.core.message.ToolMessage;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
+import com.solesonic.model.chat.ElicitationEvent;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.push.ElicitationReminderScheduler;
@@ -12,7 +13,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -37,28 +37,18 @@ import static io.modelcontextprotocol.spec.McpSchema.ElicitResult.Action.*;
 @Service
 public class ElicitationService {
     private static final Logger log = LoggerFactory.getLogger(ElicitationService.class);
-    public static final String ELICITATION_ID = "elicitationId";
-    public static final String CHAT_ID = "chatId";
     public static final String ELICITATION = "elicitation";
     public static final String CANCEL_ACTION = "cancel";
     private static final String ACTION = "action";
     private static final String CONTENT = "content";
     private static final String SUMMARY = "summary";
-    private static final String PROPERTIES = "properties";
     private static final String ONE_OF = "oneOf";
     private static final String CONST = "const";
     private static final String TITLE = "title";
     private static final String ENUM = "enum";
     private static final String ENUM_NAMES = "enumNames";
     private static final String SCHEMA_KEY_PREFIX = "elicitation:schema:";
-    private static final String MODE = "mode";
-    private static final String MESSAGE = "message";
-    private static final String REQUESTED_SCHEMA = "requestedSchema";
-    private static final String URL = "url";
-    private static final String META = "_meta";
 
-    private static final String CLOSE_EVENT = "__close__";
-    private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
     private static final String RESULT_CHANNEL_PREFIX = "elicitation:result:";
     private static final String FIELDS_KEY_PREFIX = "elicitation:fields:";
     private static final String PENDING_SET_PREFIX = "elicitation:pending:";
@@ -69,6 +59,7 @@ public class ElicitationService {
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
     private final ReactiveStringRedisTemplate redisTemplate;
+    private final SideChannelPublisher sideChannelPublisher;
     private final ElicitationReminderScheduler elicitationReminderScheduler;
 
     @Value("${solesonic.elicitation.timeout-seconds:600}")
@@ -77,25 +68,22 @@ public class ElicitationService {
     public ElicitationService(JsonMapper jsonMapper,
                               ChatMessageService chatMessageService,
                               ReactiveStringRedisTemplate redisTemplate,
+                              SideChannelPublisher sideChannelPublisher,
                               ElicitationReminderScheduler elicitationReminderScheduler) {
         this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
         this.redisTemplate = redisTemplate;
+        this.sideChannelPublisher = sideChannelPublisher;
         this.elicitationReminderScheduler = elicitationReminderScheduler;
     }
 
-    @SuppressWarnings("unchecked")
-    public Flux<ServerSentEvent<?>> registerChat(UUID chatId) {
-        return (Flux<ServerSentEvent<?>>) (Flux<?>) redisTemplate.listenToChannel(eventsChannelKey(chatId))
-                .map(message -> deserializeEventMessage(message.getMessage()))
-                .takeWhile(serverSentEvent -> !CLOSE_EVENT.equals(serverSentEvent.event()))
-                .share();
+    public Flux<SideChannelMessage> registerChat(UUID chatId) {
+        return sideChannelPublisher.listen(chatId);
     }
 
     public void closeChat(UUID chatId) {
-        String closeMessage = serializeEventMessage(CLOSE_EVENT, "");
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), closeMessage)
-                .subscribe(count -> log.debug("Closed elicitation channel for chat {}", count));
+        sideChannelPublisher.close(chatId)
+                .subscribe(_ -> log.debug("Closed elicitation channel for chat {}", chatId));
 
         String pendingKey = pendingSetKey(chatId);
         redisTemplate.opsForSet().members(pendingKey)
@@ -119,7 +107,7 @@ public class ElicitationService {
      * silently, so that count is logged rather than discarded.
      */
     public Mono<Void> cancelChat(UUID chatId) {
-        return redisTemplate.convertAndSend(eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION))
+        return sideChannelPublisher.publish(chatId, CANCEL_ACTION, CANCEL_ACTION)
                 .doOnNext(receiverCount -> {
                     if (receiverCount == 0) {
                         log.warn("Cancel signal for chat {} had no live subscriber — the turn may have missed it", chatId);
@@ -137,63 +125,39 @@ public class ElicitationService {
         return new ElicitationHandle(elicitationId);
     }
 
+    /**
+     * Both payloads are serialized before anything is saved, so a request that cannot be written
+     * throws out to the parked tool call at once — no question in history that was never asked, and
+     * no ten-minute wait for an answer that cannot come.
+     */
     public void emitElicitation(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
-        log.debug("Emitting elicitation for chat id {}", chatId);
+        log.info("Emitting elicitation event for chat {}", chatId);
 
-        try {
-            Map<String, Object> requestJson = requestJson(request);
-            requestJson.put(ELICITATION_ID, elicitationId.toString());
-            requestJson.put(CHAT_ID, chatId.toString());
+        ElicitationEvent elicitationEvent = ElicitationEvent.of(chatId, elicitationId, request);
 
-            log.info("Emitting elicitation event for chat {}", chatId);
+        Mono<Long> publication = sideChannelPublisher.publish(chatId, ELICITATION, elicitationEvent);
+        Mono<Boolean> requestedPropertiesStore = storeRequestedProperties(elicitationEvent);
 
-            String elicitationMessage = request.message();
-            ChatMessage chatMessage = new ChatMessage();
-            chatMessage.setMessage(elicitationMessage);
-            chatMessage.setChatId(chatId);
-            chatMessage.setMessageType(MessageType.SYSTEM);
-            chatMessage.setElicitationId(elicitationId);
-            chatMessageService.save(chatMessage);
+        chatMessageService.save(systemMessage(elicitationEvent));
 
-            String message = jsonMapper.writeValueAsString(Map.of("event", ELICITATION, "data", requestJson));
+        //The requested properties are stored before the question is published, so they are
+        //already in place by the time any client can answer it.
+        requestedPropertiesStore
+                .then(publication)
+                .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
 
-            //The requested properties are stored before the question is published, so they are
-            //already in place by the time any client can answer it.
-            storeRequestedProperties(chatId, elicitationId, request)
-                    .then(Mono.defer(() -> redisTemplate.convertAndSend(eventsChannelKey(chatId), message)))
-                    .subscribe(subscriberCount -> log.info("Emitted elicitation event to {} subscribers for chat {}", subscriberCount, chatId));
-
-            //Registered before this returns, so the cancel from awaitResultAsync can never come first.
-            elicitationReminderScheduler.waiting(chatId, elicitationId);
-        } catch (JacksonException jacksonException) {
-            log.error("Failed to serialize elicitation request for chat {}", chatId, jacksonException);
-        }
-
-        log.info("Finished emitting elicitation event for chat {}", chatId);
+        //Registered before this returns, so the cancel from awaitResultAsync can never come first.
+        elicitationReminderScheduler.waiting(chatId, elicitationId);
     }
 
-    /**
-     * Built from the accessors rather than {@code convertValue}: {@link McpSchema.ElicitRequest}'s type
-     * id property {@code mode} collides with the records' own {@code mode()}, which Jackson refuses.
-     */
-    private static Map<String, Object> requestJson(McpSchema.ElicitRequest request) {
-        Map<String, Object> requestJson = new LinkedHashMap<>();
-        requestJson.put(MODE, request.mode());
-        requestJson.put(MESSAGE, request.message());
+    private static ChatMessage systemMessage(ElicitationEvent elicitationEvent) {
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setMessage(elicitationEvent.message());
+        chatMessage.setChatId(elicitationEvent.chatId());
+        chatMessage.setMessageType(MessageType.SYSTEM);
+        chatMessage.setElicitationId(elicitationEvent.elicitationId());
 
-        if (request instanceof McpSchema.ElicitFormRequest formRequest) {
-            requestJson.put(REQUESTED_SCHEMA, formRequest.requestedSchema());
-        }
-
-        if (request instanceof McpSchema.ElicitUrlRequest urlRequest) {
-            requestJson.put(URL, urlRequest.url());
-        }
-
-        if (request.meta() != null) {
-            requestJson.put(META, request.meta());
-        }
-
-        return requestJson;
+        return chatMessage;
     }
 
     public Mono<Boolean> completeFromFrontend(ElicitationProvider.ElicitationActionResult elicitationActionResult) {
@@ -363,8 +327,8 @@ public class ElicitationService {
 
         if (action == CANCEL) {
             log.info("Emitting cancel event for chat {}", chatId);
-            return storeAndSignal.then(Mono.defer(() -> redisTemplate
-                    .convertAndSend(eventsChannelKey(chatId), serializeEventMessage(CANCEL_ACTION, CANCEL_ACTION))
+            return storeAndSignal.then(Mono.defer(() -> sideChannelPublisher
+                    .publish(chatId, CANCEL_ACTION, CANCEL_ACTION)
                     .thenReturn(true)));
         }
 
@@ -461,55 +425,23 @@ public class ElicitationService {
         }
     }
 
-    private Mono<Boolean> storeRequestedProperties(UUID chatId, UUID elicitationId, McpSchema.ElicitRequest request) {
-        Map<String, Object> properties = requestedProperties(request);
+    /**
+     * Serializes now and writes on subscription, for the same reason
+     * {@link SideChannelPublisher#publish} does. Stored by full property schema rather than name
+     * alone, so an accepted answer can later be resolved back to the label the user picked.
+     */
+    private Mono<Boolean> storeRequestedProperties(ElicitationEvent elicitationEvent) {
+        Map<String, Object> properties = elicitationEvent.requestedProperties();
 
         if (properties.isEmpty()) {
             return Mono.just(false);
         }
 
-        return redisTemplate.opsForValue().set(schemaKey(chatId, elicitationId),
-                jsonMapper.writeValueAsString(properties), Duration.ofSeconds(timeoutSeconds + 60));
-    }
+        String propertiesJson = jsonMapper.writeValueAsString(properties);
+        String schemaKey = schemaKey(elicitationEvent.chatId(), elicitationEvent.elicitationId());
 
-    /**
-     * Only a form elicitation asks for values; a URL elicitation sends the user elsewhere and has
-     * nothing to forward. Stored by full property schema rather than name alone, so an accepted
-     * answer can later be resolved back to the label the user picked, not just narrowed by key.
-     */
-    private static Map<String, Object> requestedProperties(McpSchema.ElicitRequest request) {
-        if (!(request instanceof McpSchema.ElicitFormRequest formRequest) || formRequest.requestedSchema() == null) {
-            return Map.of();
-        }
-
-        if (!(formRequest.requestedSchema().get(PROPERTIES) instanceof Map<?, ?> properties)) {
-            return Map.of();
-        }
-
-        Map<String, Object> byName = new LinkedHashMap<>();
-        properties.forEach((name, schema) -> byName.put(String.valueOf(name), schema));
-
-        return byName;
-    }
-
-    private String serializeEventMessage(String event, Object data) {
-        return jsonMapper.writeValueAsString(Map.of("event", event, "data", data));
-    }
-
-    private ServerSentEvent<?> deserializeEventMessage(String json) {
-        Map<String, Object> wrapper = jsonMapper.readValue(json, new TypeReference<>() {
-        });
-        String event = (String) wrapper.get("event");
-        Object data = wrapper.get("data");
-        String dataJson = (data instanceof String stringData)
-                ? stringData
-                : jsonMapper.writeValueAsString(data);
-
-        return ServerSentEvent.builder(dataJson).event(event).build();
-    }
-
-    private static String eventsChannelKey(UUID chatId) {
-        return EVENTS_CHANNEL_PREFIX + chatId;
+        return Mono.defer(() -> redisTemplate.opsForValue()
+                .set(schemaKey, propertiesJson, Duration.ofSeconds(timeoutSeconds + 60)));
     }
 
     private static String resultChannelKey(UUID chatId, UUID elicitationId) {

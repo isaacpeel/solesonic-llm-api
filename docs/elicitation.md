@@ -36,9 +36,11 @@ wakes the parked call in place.
   - `prepareElicitation` mints the id and adds it to `elicitation:pending:{chatId}`.
   - `emitElicitation` writes a `SYSTEM` chat message carrying the id (for history replay), stores
     the requested schema's `properties` — the full per-field definitions, not just their names — at
-    `elicitation:schema:{chatId}:{elicitationId}`, and publishes the request on the Redis pub/sub
-    channel `elicitation:events:{chatId}`. The properties are stored before the request is
-    published, so they are in place before any client can answer.
+    `elicitation:schema:{chatId}:{elicitationId}`, and publishes the request — an
+    `ElicitationEvent` (`model/chat/`) carrying both ids — on the chat's side channel. The
+    properties are stored before the request is published, so they are in place before any client
+    can answer. Both payloads are serialized before the `SYSTEM` message is saved, so a request
+    that cannot be written fails the tool call at once and leaves nothing behind in history.
   - `actionResult` reads the action, and the form values sent alongside it, out of the client's
     `ToolMessage`.
   - `completeFromFrontend` narrows the values to the stored property names (on `accept` only),
@@ -50,6 +52,10 @@ wakes the parked call in place.
     after a page refresh.
   - `awaitResultAsync` is what the provider is blocked on. It wakes on that result channel, or
     after the timeout, and resolves to the `ElicitResult` the provider returns to the MCP server.
+- **`SideChannelPublisher`** (`service/chat/events/`) is the one definition of a chat's side
+  channel — the Redis pub/sub channel `elicitation:events:{chatId}` and its `{event, data}`
+  envelope — shared by `ElicitationService` and `NotificationService`. A payload is serialized
+  once when published and parsed once on arrival; `data` then stays a JSON tree.
 - **`RedisStreamingChatService`** subscribes to `elicitation:events:{chatId}` once per turn, and
   `SideChannelEventTranslator` turns each event into AG-UI frames on the durable Redis stream. That
   is what gives an elicitation an SSE `id:` and makes it replayable through `Last-Event-ID`.

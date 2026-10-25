@@ -1338,7 +1338,7 @@ Deleting a conversation or a message forgets what was learned from it — see
 
 | Method | Path | Who | Response |
 |---|---|---|---|
-| `GET` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `UserMemorySummary[]` |
+| `GET` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | paged `UserMemorySummary` |
 | `POST` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `201` + `Location`, `UserMemorySummary` |
 | `GET` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
 | `PATCH` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
@@ -1370,7 +1370,15 @@ Deleting a conversation or a message forgets what was learned from it — see
 ### List a User's Memories
 
 - **Endpoint**: `GET /users/{userId}/memories`
-- **Response**: `UserMemorySummary[]` — active and pending memories
+- **Query**: `page`, `size` (default `50`); a client-supplied `sort` is ignored
+- **Response**: `PagedModel` of `UserMemorySummary` — active and pending memories, oldest first
+
+```json
+{
+  "content": [ { "id": "memory-uuid", "content": "Prefers metric units" } ],
+  "page": { "size": 50, "number": 0, "totalElements": 12, "totalPages": 1 }
+}
+```
 
 ### Get a Memory
 

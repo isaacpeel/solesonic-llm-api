@@ -3,6 +3,8 @@ package com.solesonic.repository.memory;
 import com.solesonic.model.memory.MemoryOrigin;
 import com.solesonic.model.memory.MemoryStatus;
 import com.solesonic.model.memory.UserMemory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -23,6 +25,8 @@ public interface UserMemoryRepository extends JpaRepository<UserMemory, UUID> {
     Optional<UserMemory> findByIdAndUserIdAndStatusIn(UUID id, UUID userId, Collection<MemoryStatus> statuses);
 
     List<UserMemory> findByUserIdAndStatusInOrderByCreatedAsc(UUID userId, Collection<MemoryStatus> statuses);
+
+    Page<UserMemory> findByUserIdAndStatusInOrderByCreatedAscIdAsc(UUID userId, Collection<MemoryStatus> statuses, Pageable pageable);
 
     List<UserMemory> findByUserIdAndSupersedesIn(UUID userId, Collection<UUID> supersedes);
 

@@ -14,6 +14,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableHandlerMethodArgumentResolver;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -66,7 +71,9 @@ class UserMemoryControllerTest {
         lenient().when(resourceOwnershipService.isOwnerOrHasAuthority(eq(otherUserId), eq(IZZY_BOT_ADMIN), any())).thenReturn(false);
         lenient().when(userRequestContext.getUserId()).thenReturn(userId);
 
-        mockMvc = MockMvcBuilders.standaloneSetup(userMemoryController).build();
+        mockMvc = MockMvcBuilders.standaloneSetup(userMemoryController)
+                .setCustomArgumentResolvers(new PageableHandlerMethodArgumentResolver())
+                .build();
     }
 
     @Test
@@ -88,25 +95,46 @@ class UserMemoryControllerTest {
 
         when(userRequestContext.getUserId()).thenReturn(administratorId);
         when(resourceOwnershipService.isOwnerOrHasAuthority(eq(otherUserId), eq(IZZY_BOT_ADMIN), any())).thenReturn(true);
+        when(userMemoryService.list(eq(otherUserId), any(Pageable.class))).thenReturn(Page.empty());
 
         mockMvc.perform(get("/users/{userId}/memories", otherUserId)).andExpect(status().isOk());
         mockMvc.perform(delete("/users/{userId}/memories/{memoryId}", otherUserId, memoryId)).andExpect(status().isNoContent());
 
-        verify(userMemoryService).list(otherUserId);
+        verify(userMemoryService).list(eq(otherUserId), any(Pageable.class));
         verify(userMemoryService).delete(otherUserId, memoryId);
-        verify(userMemoryService, never()).list(administratorId);
+        verify(userMemoryService, never()).list(eq(administratorId), any(Pageable.class));
     }
 
     @Test
     void listsTheCallersMemories() throws Exception {
-        when(userMemoryService.list(userId)).thenReturn(List.of(summary()));
+        when(userMemoryService.list(eq(userId), any(Pageable.class)))
+                .thenAnswer(invocation -> new PageImpl<>(List.of(summary()), invocation.getArgument(1), 1));
 
         mockMvc.perform(get("/users/{userId}/memories", userId))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$[0].id").value(memoryId.toString()))
-                .andExpect(jsonPath("$[0].content").value("Prefers metric units"))
-                .andExpect(jsonPath("$[0].userId").doesNotExist())
-                .andExpect(jsonPath("$[0].memoryKey").doesNotExist());
+                .andExpect(jsonPath("$.content[0].id").value(memoryId.toString()))
+                .andExpect(jsonPath("$.content[0].content").value("Prefers metric units"))
+                .andExpect(jsonPath("$.content[0].userId").doesNotExist())
+                .andExpect(jsonPath("$.content[0].memoryKey").doesNotExist())
+                .andExpect(jsonPath("$.page.size").value(50))
+                .andExpect(jsonPath("$.page.totalElements").value(1));
+    }
+
+    /**
+     * The window comes from the request; a caller-supplied sort does not, since the ordering belongs
+     * to the query.
+     */
+    @Test
+    void passesThePageWindowButNotTheSort() throws Exception {
+        when(userMemoryService.list(eq(userId), any(Pageable.class))).thenReturn(Page.empty());
+
+        mockMvc.perform(get("/users/{userId}/memories", userId)
+                        .param("page", "2")
+                        .param("size", "10")
+                        .param("sort", "content,desc"))
+                .andExpect(status().isOk());
+
+        verify(userMemoryService).list(userId, PageRequest.of(2, 10));
     }
 
     @Test
