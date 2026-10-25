@@ -9,3 +9,4 @@
 /docker/.env.redis
 /http-requests/llm/http-client.env.json
 /http-requests/a2a/http-client.private.env.json
+/http-requests/a2a/http-client.env.json
