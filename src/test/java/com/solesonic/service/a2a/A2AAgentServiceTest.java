@@ -9,10 +9,14 @@ import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.A2AElicitationExtension;
+import com.solesonic.model.a2a.A2ASound;
+import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.chat.ElicitationEvent;
+import com.solesonic.model.chat.SoundCue;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -23,6 +27,8 @@ import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallIntercepto
 import org.a2aproject.sdk.client.transport.spi.interceptors.PayloadAndHeaders;
 import org.a2aproject.sdk.spec.Artifact;
 import org.a2aproject.sdk.spec.DataPart;
+import org.a2aproject.sdk.spec.FilePart;
+import org.a2aproject.sdk.spec.FileWithBytes;
 import org.a2aproject.sdk.spec.Message;
 import org.a2aproject.sdk.spec.Task;
 import org.a2aproject.sdk.spec.TaskArtifactUpdateEvent;
@@ -38,6 +44,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.util.unit.DataSize;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
@@ -46,6 +53,7 @@ import reactor.test.publisher.PublisherProbe;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -74,6 +82,10 @@ class A2AAgentServiceTest {
     private static final UUID CHAT_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID ELICITATION_ID = UUID.fromString("00000000-0000-0000-0000-000000000002");
     private static final Duration AGENT_TIMEOUT = Duration.ofSeconds(5);
+    private static final DataSize MAX_SOUND = DataSize.ofKilobytes(1);
+    private static final byte[] CLIP = "ID3-fake-mp3".getBytes(StandardCharsets.UTF_8);
+    private static final SoundCue CUE = new SoundCue("sound-1", "a".repeat(64), "theme", true,
+            new SoundCue.PartSource("url", "/izzybot/sounds/" + "a".repeat(64), "audio/mpeg"));
 
     @Mock
     private A2AAgentRegistry agentRegistry;
@@ -96,6 +108,11 @@ class A2AAgentServiceTest {
     @Mock
     private ElicitationService elicitationService;
 
+    @Mock
+    private A2ASoundService soundService;
+
+    private final PendingMessageMetadata pendingMessageMetadata = new PendingMessageMetadata();
+
     private final JsonMapper jsonMapper = new JacksonConfig().jsonMapper();
 
     private A2AAgentService agentService;
@@ -103,10 +120,26 @@ class A2AAgentServiceTest {
     @BeforeEach
     void setUp() {
         A2AClientProperties properties = new A2AClientProperties(false, AGENT_TIMEOUT.toSeconds(), "http://agents",
-                new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"));
+                new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"),
+                new A2AClientProperties.Sound(MAX_SOUND, Duration.ofDays(7)));
 
         agentService = new A2AAgentService(agentRegistry, tokenExchangeService, mcpFilterService,
-                notificationService, stickyAgentService, chatMessageService, elicitationService, jsonMapper, properties);
+                notificationService, stickyAgentService, chatMessageService, elicitationService, jsonMapper, properties,
+                soundService, pendingMessageMetadata);
+    }
+
+    private static Artifact soundArtifact() {
+        return Artifact.builder()
+                .artifactId("sound-1")
+                .name("sound")
+                .parts(new FilePart(new FileWithBytes("audio/mpeg", "theme.mp3", CLIP)))
+                .metadata(Map.of(A2ASoundExtension.METADATA_KEY, Map.of("cue", "theme", "playOnce", true)))
+                .build();
+    }
+
+    @SuppressWarnings("all")
+    private static TaskUpdateEvent sound(String taskId) {
+        return update(new TaskArtifactUpdateEvent(taskId, soundArtifact(), "context-1", false, true, null));
     }
 
     /**
@@ -269,15 +302,150 @@ class A2AAgentServiceTest {
     }
 
     @Test
-    void everyFirstMessageAsksForTheElicitationExtension() {
+    void everyFirstMessageAsksForTheElicitationAndSoundExtensions() {
         Message continuing = agentService.firstMessage(CHAT_ID, "play", "task-1");
         Message starting = agentService.firstMessage(CHAT_ID, "new game Alex vs Sam", null);
 
-        assertThat(continuing.extensions()).containsExactly(A2AElicitationExtension.URI);
+        assertThat(continuing.extensions()).containsExactly(A2AElicitationExtension.URI, A2ASoundExtension.URI);
         assertThat(continuing.taskId()).isEqualTo("task-1");
         assertThat(continuing.contextId()).isEqualTo(CHAT_ID.toString());
-        assertThat(starting.extensions()).containsExactly(A2AElicitationExtension.URI);
+        assertThat(starting.extensions()).containsExactly(A2AElicitationExtension.URI, A2ASoundExtension.URI);
         assertThat(starting.taskId()).isNull();
+    }
+
+    /**
+     * The cue is pending before the reply's first chunk can arrive, and never waits on Redis: the
+     * store here never completes, yet the cue is already there.
+     */
+    @Test
+    void aSoundIsCuedForTheReplyAndNeverShownOrSavedAsText() {
+        Sinks.Empty<Void> store = Sinks.empty();
+        AtomicReference<Map<String, Object>> pendingBeforeReply = new AtomicReference<>();
+        when(soundService.cue(any())).thenReturn(CUE);
+        when(soundService.store(eq(CUE.soundId()), any())).thenReturn(store.asMono());
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, sound("task-1"));
+                    pendingBeforeReply.set(pendingMessageMetadata.take(CHAT_ID));
+                    agentService.handleEvent(turn, text("task-1", "Welcome to Family Feud!"));
+                    agentService.handleEvent(turn, status("task-1", TaskState.TASK_STATE_COMPLETED));
+                }))
+                .expectNext("Welcome to Family Feud!")
+                .verifyComplete();
+
+        assertThat(pendingBeforeReply.get()).containsEntry(A2ASoundExtension.METADATA_KEY, CUE);
+        assertThat(savedReplies()).containsExactly("Welcome to Family Feud!");
+        assertThat(store.currentSubscriberCount()).isEqualTo(1);
+
+        ArgumentCaptor<A2ASound> cued = ArgumentCaptor.forClass(A2ASound.class);
+        verify(soundService).cue(cued.capture());
+        assertThat(cued.getValue().cueId()).isEqualTo("sound-1");
+        assertThat(cued.getValue().bytes()).isEqualTo(CLIP);
+    }
+
+    @Test
+    void aSoundRepeatedInTheTaskSnapshotIsCuedOnce() {
+        when(soundService.cue(any())).thenReturn(CUE);
+        when(soundService.store(any(), any())).thenReturn(Mono.empty());
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, sound("task-1"));
+                    agentService.handleEvent(turn, text("task-1", "Welcome!"));
+                    agentService.handleEvent(turn, new TaskEvent(task("task-1", TaskState.TASK_STATE_COMPLETED,
+                            List.of(soundArtifact(), artifact("Welcome!")))));
+                }))
+                .expectNext("Welcome!")
+                .verifyComplete();
+
+        verify(soundService).cue(any());
+        verify(soundService).store(any(), any());
+    }
+
+    @Test
+    void aSoundOnlyInTheTaskSnapshotIsCued() {
+        when(soundService.cue(any())).thenReturn(CUE);
+        when(soundService.store(any(), any())).thenReturn(Mono.empty());
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(turnOf(turn -> agentService.handleEvent(turn, new TaskEvent(task("task-1",
+                        TaskState.TASK_STATE_COMPLETED, List.of(soundArtifact(), artifact("Welcome!")))))))
+                .expectNext("Welcome!")
+                .verifyComplete();
+
+        assertThat(pendingMessageMetadata.take(CHAT_ID)).containsEntry(A2ASoundExtension.METADATA_KEY, CUE);
+        assertThat(savedReplies()).containsExactly("Welcome!");
+    }
+
+    @Test
+    void onlyTheTurnsFirstSoundIsCuedOrStored() {
+        when(soundService.cue(any())).thenReturn(CUE);
+        when(soundService.store(any(), any())).thenReturn(Mono.empty());
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+        Artifact second = Artifact.builder(soundArtifact()).artifactId("sound-2").build();
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, sound("task-1"));
+                    agentService.handleEvent(turn, update(new TaskArtifactUpdateEvent("task-1", second, "context-1", false, true, null)));
+                    agentService.handleEvent(turn, text("task-1", "Welcome!"));
+                    agentService.handleEvent(turn, status("task-1", TaskState.TASK_STATE_COMPLETED));
+                }))
+                .expectNext("Welcome!")
+                .verifyComplete();
+
+        verify(soundService).cue(any());
+        verify(soundService).store(any(), any());
+    }
+
+    @Test
+    void aSoundAfterTheReplyHasStartedIsNeitherCuedNorStored() {
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, text("task-1", "Welcome!"));
+                    agentService.handleEvent(turn, sound("task-1"));
+                    agentService.handleEvent(turn, status("task-1", TaskState.TASK_STATE_COMPLETED));
+                }))
+                .expectNext("Welcome!")
+                .verifyComplete();
+
+        verifyNoInteractions(soundService);
+        assertThat(pendingMessageMetadata.take(CHAT_ID)).isEmpty();
+    }
+
+    @Test
+    void aSoundThatCannotBeStoredDoesNotFailTheTurn() {
+        when(soundService.cue(any())).thenReturn(CUE);
+        when(soundService.store(any(), any())).thenReturn(Mono.error(new IllegalStateException("redis down")));
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, sound("task-1"));
+                    agentService.handleEvent(turn, text("task-1", "Welcome!"));
+                    agentService.handleEvent(turn, status("task-1", TaskState.TASK_STATE_COMPLETED));
+                }))
+                .expectNext("Welcome!")
+                .verifyComplete();
+    }
+
+    @Test
+    void anAudioFileOverTheLimitIsNeitherCuedNorShown() {
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+        Artifact oversized = Artifact.builder()
+                .artifactId("sound-2")
+                .name("sound")
+                .parts(new FilePart(new FileWithBytes("audio/mpeg", "theme.mp3", new byte[(int) MAX_SOUND.toBytes() + 1])))
+                .build();
+
+        StepVerifier.create(turnOf(turn -> {
+                    agentService.handleEvent(turn, update(new TaskArtifactUpdateEvent("task-1", oversized, "context-1", false, true, null)));
+                    agentService.handleEvent(turn, status("task-1", TaskState.TASK_STATE_COMPLETED));
+                }))
+                .verifyComplete();
+
+        verifyNoInteractions(soundService);
+        assertThat(pendingMessageMetadata.take(CHAT_ID)).isEmpty();
     }
 
     @Test

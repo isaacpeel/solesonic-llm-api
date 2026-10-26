@@ -13,8 +13,11 @@ import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository.MemorySimilarity;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.exception.llm.LlmKeyMissingException;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.ValidatedReflection.DropReason;
 import com.solesonic.service.user.UserProfileService;
+import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -36,12 +39,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -81,6 +86,9 @@ class MemoryReflectionServiceTest {
     @Mock
     private UserProfileService userProfileService;
 
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
     @Captor
     private ArgumentCaptor<ValidatedReflection> validatedCaptor;
 
@@ -102,6 +110,7 @@ class MemoryReflectionServiceTest {
                 userMemoryService,
                 memoryEmbeddingService,
                 userProfileService,
+                userLlmKeyService,
                 fakeChatModel,
                 new ByteArrayResource("You maintain long-term memory about one user.".getBytes(StandardCharsets.UTF_8)),
                 10,
@@ -119,6 +128,40 @@ class MemoryReflectionServiceTest {
         lenient().when(userMemoryRepository.findByUserIdAndStatusInOrderByCreatedAsc(eq(USER_ID), anyCollection())).thenReturn(List.of());
         lenient().when(userMemoryService.applyReflection(eq(CHAT_ID), eq(USER_ID), eq(START), any(ZonedDateTime.class), any(ValidatedReflection.class)))
                 .thenReturn(true);
+        lenient().when(userLlmKeyService.asUser(eq(USER_ID), any()))
+                .thenAnswer(invocation -> invocation.<Supplier<?>>getArgument(1).get());
+    }
+
+    /**
+     * Reflection is made on the owner's key, so the call is the owner's to pay for.
+     */
+    @Test
+    void reflectsOnTheOwnersKey() {
+        ownedChat(USER_ID);
+        unreflected(message(MessageType.USER, "Hello", 1));
+        fakeChatModel.respond(json("{'add':[],'supersede':[],'confirm':[]}"));
+
+        memoryReflectionService.reflectEligible();
+
+        verify(userLlmKeyService).asUser(eq(USER_ID), any());
+        assertThat(fakeChatModel.prompts).hasSize(1);
+    }
+
+    /**
+     * A key removed between the claim and the call fails the chat like any other failure, without a
+     * model call.
+     */
+    @Test
+    void anOwnerWhoseKeyWasRemovedGetsNoModelCall() {
+        ownedChat(USER_ID);
+        unreflected(message(MessageType.USER, "Hello", 1));
+        doThrow(new LlmKeyMissingException()).when(userLlmKeyService).asUser(eq(USER_ID), any());
+
+        ReflectionRun run = memoryReflectionService.reflectEligible();
+
+        assertThat(fakeChatModel.prompts).isEmpty();
+        verify(chatMemoryReflectionService).recordFailure(CHAT_ID, USER_ID, 3);
+        assertThat(run.failedCount()).isEqualTo(1);
     }
 
     @Test
@@ -471,7 +514,7 @@ class MemoryReflectionServiceTest {
         }
 
         @Override
-        public ChatResponse call(Prompt prompt) {
+        public @NonNull ChatResponse call(@NonNull Prompt prompt) {
             prompts.add(prompt);
 
             if (failure != null) {

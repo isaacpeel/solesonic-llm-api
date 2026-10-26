@@ -2,12 +2,14 @@ package com.solesonic.config.openai;
 
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The model that reads idle conversations and proposes what to remember about their owner, served
@@ -31,7 +33,8 @@ public class MemoryOpenAiConfig {
     public OpenAiChatModel memoryChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                            @Value("${spring.ai.openai.base-url}") String baseUrl,
                                            @Value("${solesonic.llm.memory.model}") String memoryModel,
-                                           @Value("${solesonic.llm.memory.openai.read-timeout}") Duration readTimeout) {
+                                           @Value("${solesonic.llm.memory.openai.read-timeout}") Duration readTimeout,
+                                           List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -42,6 +45,7 @@ public class MemoryOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 }

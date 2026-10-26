@@ -5,6 +5,9 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository.MemorySimilarity;
 import com.solesonic.repository.memory.MemoryEmbeddingRepository.StaleMemory;
+import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.service.llm.LlmCredentialScope;
+import com.solesonic.service.llm.UserLlmKeyService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,10 +21,12 @@ import org.springframework.transaction.event.TransactionalEventListener;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * Keeps memory vectors in step with memory content, and finds the memories relevant to a chat turn.
@@ -29,6 +34,9 @@ import java.util.UUID;
  * Vectors are written off the request path: after the transaction that changed a memory commits, and
  * by {@code MemoryEmbeddingTask} for whatever that missed — a failed call, the backfill of memories
  * that predate embedding, or a change of embedding model.
+ * <p>
+ * Every embedding is made on the key of the user whose memories they are. A user without one keeps
+ * their memories unembedded until they have one.
  */
 @Service
 public class MemoryEmbeddingService {
@@ -37,6 +45,7 @@ public class MemoryEmbeddingService {
     private final MemoryEmbeddingRepository memoryEmbeddingRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final EmbeddingModel embeddingModel;
+    private final UserLlmKeyService userLlmKeyService;
     private final String embeddingModelName;
     private final int batchSize;
     private final int topK;
@@ -47,6 +56,7 @@ public class MemoryEmbeddingService {
     public MemoryEmbeddingService(MemoryEmbeddingRepository memoryEmbeddingRepository,
                                   ChatMessageRepository chatMessageRepository,
                                   EmbeddingModel embeddingModel,
+                                  UserLlmKeyService userLlmKeyService,
                                   @Value("${spring.ai.openai.embedding.model}") String embeddingModelName,
                                   @Value("${solesonic.llm.memory.embedding.batch-size}") int batchSize,
                                   @Value("${solesonic.llm.memory.retrieval.top-k}") int topK,
@@ -56,6 +66,7 @@ public class MemoryEmbeddingService {
         this.memoryEmbeddingRepository = memoryEmbeddingRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.embeddingModel = embeddingModel;
+        this.userLlmKeyService = userLlmKeyService;
         this.embeddingModelName = embeddingModelName;
         this.batchSize = batchSize;
         this.topK = topK;
@@ -70,7 +81,17 @@ public class MemoryEmbeddingService {
      * @return how many vectors were written
      */
     public int embedStale() {
-        return embed(memoryEmbeddingRepository.findStale(embeddingModelName, batchSize));
+        Map<UUID, List<StaleMemory>> staleByUser = memoryEmbeddingRepository.findStale(embeddingModelName, batchSize)
+                .stream()
+                .collect(Collectors.groupingBy(StaleMemory::userId, LinkedHashMap::new, Collectors.toList()));
+
+        int saved = 0;
+
+        for (Map.Entry<UUID, List<StaleMemory>> userStale : staleByUser.entrySet()) {
+            saved += embedStale(userStale.getKey(), userStale.getValue());
+        }
+
+        return saved;
     }
 
     /**
@@ -79,7 +100,22 @@ public class MemoryEmbeddingService {
      * @return how many vectors were written
      */
     public int embedStale(UUID userId) {
-        return embed(memoryEmbeddingRepository.findStale(userId, embeddingModelName, batchSize));
+        return embedStale(userId, memoryEmbeddingRepository.findStale(userId, embeddingModelName, batchSize));
+    }
+
+    private int embedStale(UUID userId, List<StaleMemory> stale) {
+        if (stale.isEmpty()) {
+            return 0;
+        }
+
+        Optional<LlmApiKey> llmApiKey = userLlmKeyService.findKey(userId);
+
+        if (llmApiKey.isEmpty()) {
+            log.debug("Leaving {} memory(ies) of user {} unembedded: they have no model key", stale.size(), userId);
+            return 0;
+        }
+
+        return LlmCredentialScope.asUser(llmApiKey.get(), () -> embed(stale));
     }
 
     /**
@@ -136,7 +172,7 @@ public class MemoryEmbeddingService {
             return Map.of();
         }
 
-        List<float[]> embeddings = embeddingModel.embed(queries);
+        List<float[]> embeddings = userLlmKeyService.asUser(userId, () -> embeddingModel.embed(queries));
         Map<UUID, Double> relevant = new HashMap<>();
 
         for (float[] embedding : embeddings) {
@@ -159,7 +195,8 @@ public class MemoryEmbeddingService {
             return List.of();
         }
 
-        float[] embedding = embeddingModel.embed(StringUtils.truncate(text.trim(), maxQueryChars));
+        float[] embedding = userLlmKeyService.asUser(userId,
+                () -> embeddingModel.embed(StringUtils.truncate(text.trim(), maxQueryChars)));
 
         return memoryEmbeddingRepository.findNearestLive(userId, embedding, embeddingModelName, limit)
                 .stream()
@@ -176,9 +213,11 @@ public class MemoryEmbeddingService {
             return List.of();
         }
 
-        List<float[]> embeddings = embeddingModel.embed(texts.stream()
+        List<String> queries = texts.stream()
                 .map(text -> StringUtils.truncate(StringUtils.trimToEmpty(text), maxQueryChars))
-                .toList());
+                .toList();
+
+        List<float[]> embeddings = userLlmKeyService.asUser(userId, () -> embeddingModel.embed(queries));
 
         return embeddings.stream()
                 .map(embedding -> memoryEmbeddingRepository.findNearestLive(userId, embedding, embeddingModelName, 1)

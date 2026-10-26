@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
@@ -22,6 +23,7 @@ import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -98,14 +100,16 @@ public class SlashCommandService {
     /**
      * @param imageTool whether the MCP server tagged the tool as an image tool, which its
      *                  {@link ToolCallback} cannot say for itself
+     * @param llmApiKey the user's own key, which every call through the client carries
      */
-    public ChatClient taskClient(ToolCallback toolCallback, boolean imageTool) {
+    public ChatClient taskClient(ToolCallback toolCallback, boolean imageTool, LlmApiKey llmApiKey) {
         log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
         IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder,
                 jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector, imageTool);
 
         return ChatClient.builder(taskChatModel)
+                .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()))
                 .defaultTools(identityToolCallback)
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),

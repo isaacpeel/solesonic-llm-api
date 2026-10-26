@@ -501,6 +501,32 @@ user's behalf and writes a chat. Each of those is a boundary:
 - **Topic labels, queries, search results and summaries are never logged above DEBUG** and never reach
   the security log; run logs carry counts and ids only (`DiscoveryRun`, `NewsRun`).
 
+## Per-User Model Keys
+
+Every model call made for a user — chat, embeddings, vision, document enrichment, RAG tasks, tool-call
+routing, memory reflection, interest discovery and news summaries — carries that user's own
+model-server key rather than the shared `OPENAI_API_KEY`, so the model server (LiteLLM) attributes
+spend, budgets and model access to the person. Rules: [API](api.md#model-access-keys).
+
+- **Only the `llm-key-admin` role manages keys.** Every `/llm-keys` endpoint, reads included, is gated
+  on the role; a key hint, and who holds model access at all, are an administrator's business.
+- **A key is write-only.** It is encrypted at rest with the same `BytesEncryptor` as the stored
+  Atlassian and Google tokens, no response ever carries it, and only its last four characters are
+  kept in the clear, for telling keys apart. `LlmApiKey.toString()` and the request body's
+  `toString()` are redacted, and nothing logs a key or any part of one.
+- **A key is checked before it is stored.** It is used once to list the model server's models; a key
+  the server refuses is a `400`, and the shared service key is refused outright.
+- **No key fails closed.** A user without one gets a `403` from both send endpoints and from
+  `GET /chats/models`, before anything is persisted, and background work for them (memory reflection,
+  interest discovery, news runs, memory embedding, queued document ingestion) is skipped at claim time
+  or fails rather than falling back to the shared key.
+- **The shared key is for the shared corpus only.** Ingesting a global document — which has no owner —
+  is the one model work that runs on `OPENAI_API_KEY`, and it has to say so (`LlmCredentialScope.asService`).
+  `UserLlmKeyInterceptor`, on every OpenAI client in the application, refuses any other request that
+  would leave on the shared key, so a call site that forgot whose turn it is fails loudly instead of
+  quietly spending on it.
+- **A2A is unchanged.** The LiteLLM agent gateway is still called with `A2A_LITELLM_API_KEY`, below.
+
 ## A2A Agents through LiteLLM
 
 Agents such as `/network` are reached through LiteLLM's agent gateway instead of the A2A agent host.

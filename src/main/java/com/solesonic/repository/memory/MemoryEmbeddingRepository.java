@@ -39,8 +39,14 @@ public class MemoryEmbeddingRepository {
     public record MemorySimilarity(UUID id, double similarity) {
     }
 
+    /**
+     * Only users who have a model key: their memories are embedded on their key, and a user without
+     * one would otherwise hold the head of the queue forever.
+     */
     public List<StaleMemory> findStale(String model, int limit) {
-        return jdbcClient.sql("select id, user_id, content from user_memory where " + STALE_CONDITION + " order by updated limit :limit")
+        return jdbcClient.sql("select id, user_id, content from user_memory where " + STALE_CONDITION
+                        + " and exists (select 1 from user_llm_key llm_key where llm_key.user_id = user_memory.user_id)"
+                        + " order by updated limit :limit")
                 .param("model", model)
                 .param("limit", limit)
                 .query(StaleMemory.class)

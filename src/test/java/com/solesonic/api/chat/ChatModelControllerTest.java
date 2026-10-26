@@ -5,11 +5,14 @@ import com.solesonic.exception.handler.AttachmentExceptionHandler;
 import com.solesonic.exception.handler.ChatModelExceptionHandler;
 import com.solesonic.exception.handler.ExceptionService;
 import com.solesonic.exception.handler.GeneralExceptionHandler;
+import com.solesonic.exception.handler.LlmKeyExceptionHandler;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.model.AvailableModel;
 import com.solesonic.model.chat.model.ChatModelErrorCode;
 import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelState;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.ChatModelService;
 import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.security.ResourceOwnershipService;
@@ -48,6 +51,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ChatModelControllerTest {
 
     private static final String DEFAULT_MODEL = "qwen3-8b";
+    private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
 
     @Mock
     private ChatModelService chatModelService;
@@ -72,12 +76,24 @@ class ChatModelControllerTest {
     void setUp() {
         chatId = UUID.randomUUID();
 
+        UserRequestContext userRequestContext = new UserRequestContext();
+        userRequestContext.setUserId(USER_ID);
+
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new ChatModelController(chatModelService, chatService),
+                .standaloneSetup(new ChatModelController(chatModelService, chatService, userRequestContext),
                         new ChatController(chatService, resourceOwnershipService))
                 .setControllerAdvice(new ChatModelExceptionHandler(), new AttachmentExceptionHandler(),
-                        new GeneralExceptionHandler(exceptionService, securityEventLogger))
+                        new LlmKeyExceptionHandler(), new GeneralExceptionHandler(exceptionService, securityEventLogger))
                 .build();
+    }
+
+    @Test
+    void refusesToListModelsForAUserWithNoModelKey() throws Exception {
+        when(chatModelService.options(USER_ID)).thenThrow(new LlmKeyMissingException());
+
+        mockMvc.perform(get("/chats/models"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("LLM_KEY_MISSING"));
     }
 
     /**
@@ -86,7 +102,7 @@ class ChatModelControllerTest {
      */
     @Test
     void listsModelsRatherThanLookingUpAChatCalledModels() throws Exception {
-        when(chatModelService.options()).thenReturn(new ChatModelOptions(
+        when(chatModelService.options(USER_ID)).thenReturn(new ChatModelOptions(
                 List.of(new AvailableModel("openai/gpt-4o", "openai")), DEFAULT_MODEL, null, null));
 
         mockMvc.perform(get("/chats/models"))
@@ -111,12 +127,12 @@ class ChatModelControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(chatId.toString()));
 
-        verify(chatModelService, never()).options();
+        verify(chatModelService, never()).options(any());
     }
 
     @Test
     void listsModelsForAnOwnedChat() throws Exception {
-        when(chatModelService.options(chatId)).thenReturn(new ChatModelOptions(
+        when(chatModelService.options(USER_ID, chatId)).thenReturn(new ChatModelOptions(
                 List.of(new AvailableModel("openai/gpt-4o", "openai")), DEFAULT_MODEL, "openai/gpt-4o", "jira"));
 
         mockMvc.perform(get("/chats/models").param("chatId", chatId.toString()))
@@ -134,12 +150,12 @@ class ChatModelControllerTest {
         mockMvc.perform(get("/chats/models").param("chatId", chatId.toString()))
                 .andExpect(status().isNotFound());
 
-        verify(chatModelService, never()).options(any());
+        verify(chatModelService, never()).options(any(), any());
     }
 
     @Test
     void answersServiceUnavailableWhenTheListCannotBeFetched() throws Exception {
-        when(chatModelService.options()).thenThrow(
+        when(chatModelService.options(USER_ID)).thenThrow(
                 new ChatModelException(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE, "The model list could not be retrieved."));
 
         mockMvc.perform(get("/chats/models"))
@@ -149,7 +165,7 @@ class ChatModelControllerTest {
 
     @Test
     void selectsAModelForAnOwnedChat() throws Exception {
-        when(chatModelService.select(chatId, "OpenAI/GPT-4o"))
+        when(chatModelService.select(USER_ID, chatId, "OpenAI/GPT-4o"))
                 .thenReturn(new ChatModelState(DEFAULT_MODEL, "openai/gpt-4o", null));
 
         mockMvc.perform(put("/chats/{chatId}/model", chatId)
@@ -165,7 +181,7 @@ class ChatModelControllerTest {
 
     @Test
     void refusesAnUnknownModel() throws Exception {
-        when(chatModelService.select(chatId, "gpt-5"))
+        when(chatModelService.select(USER_ID, chatId, "gpt-5"))
                 .thenThrow(new ChatModelException(ChatModelErrorCode.UNKNOWN_MODEL, "The model gpt-5 is not offered."));
 
         mockMvc.perform(put("/chats/{chatId}/model", chatId)
@@ -177,7 +193,7 @@ class ChatModelControllerTest {
 
     @Test
     void answersServiceUnavailableWhenASelectionCannotBeValidated() throws Exception {
-        when(chatModelService.select(chatId, "openai/gpt-4o")).thenThrow(
+        when(chatModelService.select(USER_ID, chatId, "openai/gpt-4o")).thenThrow(
                 new ChatModelException(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE, "The model list could not be retrieved."));
 
         mockMvc.perform(put("/chats/{chatId}/model", chatId)
@@ -196,7 +212,7 @@ class ChatModelControllerTest {
                         .content("{\"model\":\"openai/gpt-4o\"}"))
                 .andExpect(status().isNotFound());
 
-        verify(chatModelService, never()).select(any(), any());
+        verify(chatModelService, never()).select(any(), any(), any());
     }
 
     @Test
@@ -232,6 +248,6 @@ class ChatModelControllerTest {
                         .content("{\"model\":\"openai/gpt-4o\"}"))
                 .andExpect(status().isBadRequest());
 
-        verify(chatModelService, never()).select(any(), any());
+        verify(chatModelService, never()).select(any(), any(), any());
     }
 }

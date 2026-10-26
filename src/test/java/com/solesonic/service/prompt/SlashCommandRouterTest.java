@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ModelSlashCommand;
@@ -95,6 +96,8 @@ class SlashCommandRouterTest {
 
     private static final Map<String, Object> CONTEXT_MAP = Map.of("userToken", "token-abc");
 
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
+
     @BeforeEach
     void setUp() {
         chatId = UUID.randomUUID();
@@ -113,7 +116,7 @@ class SlashCommandRouterTest {
                 "Izzy",
                 Duration.ofMinutes(30));
 
-        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
+        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
                 .thenReturn(mock(Advisor.class));
     }
 
@@ -143,14 +146,18 @@ class SlashCommandRouterTest {
         stubPromptChain(Flux.just("answer"));
 
         StepVerifier.create(slashCommandRouter.route(promptCommand, chatId, userId, "tell me something",
-                        NO_ATTACHMENTS, CONTEXT_MAP, "token-abc", "openai/gpt-4o"))
+                        NO_ATTACHMENTS, CONTEXT_MAP, "token-abc", "openai/gpt-4o", LLM_API_KEY))
                 .expectNext("answer")
                 .verifyComplete();
 
         ArgumentCaptor<OpenAiChatOptions.Builder> optionsCaptor = ArgumentCaptor.captor();
         verify(requestSpec).options(optionsCaptor.capture());
 
-        assertThat(optionsCaptor.getValue().build().getModel()).isEqualTo("openai/gpt-4o");
+        OpenAiChatOptions options = optionsCaptor.getValue().build();
+
+        assertThat(options.getModel()).isEqualTo("openai/gpt-4o");
+        assertThat(options.getCustomHeaders()).containsEntry("Authorization", "Bearer sk-user-0000000001");
+        verify(vectorStoreService).retrievalAugmentationAdvisor(userId, chatId, LLM_API_KEY);
     }
 
     private void stubPromptChain(Flux<String> emissions) {
@@ -314,7 +321,7 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", NO_ATTACHMENTS))
@@ -322,7 +329,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP);
+        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     @Test
@@ -331,7 +338,7 @@ class SlashCommandRouterTest {
                 new LocalToolSlashCommand("create_invoice", "create_invoice", "Create an invoice");
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(localToolCommand), any()))
+        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(localToolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("local-tool-result"));
 
         StepVerifier.create(route(localToolCommand, "invoice Acme for 200", NO_ATTACHMENTS))
@@ -339,7 +346,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", localToolCommand, CONTEXT_MAP);
+        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", localToolCommand, CONTEXT_MAP, LLM_API_KEY);
         verifyNoInteractions(mcpClient);
     }
 
@@ -392,14 +399,14 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", withImage("cat.png", "a cat")))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP);
+        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     private Flux<String> route(SlashCommand slashCommand,
@@ -407,6 +414,6 @@ class SlashCommandRouterTest {
                                AttachmentResolution attachments) {
 
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
-                attachments, CONTEXT_MAP, "token-abc", "qwen3-8b");
+                attachments, CONTEXT_MAP, "token-abc", "qwen3-8b", LLM_API_KEY);
     }
 }

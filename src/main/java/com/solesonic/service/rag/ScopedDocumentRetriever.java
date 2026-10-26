@@ -1,6 +1,8 @@
 package com.solesonic.service.rag;
 
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.service.llm.LlmCredentialScope;
 import org.jspecify.annotations.NullMarked;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,6 +40,9 @@ import java.util.Set;
  * {@code topK} budget and reaching the model as a duplicated passage. The first tier to match wins,
  * which is also the most specific one — so de-duplication preserves the precedence rather than
  * fighting it.
+ * <p>
+ * The query is embedded on the user's own key. Retrieval runs on the advisor's thread, not the one
+ * that built this retriever, so the scope is bound here around the searches rather than by the caller.
  */
 @NullMarked
 public class ScopedDocumentRetriever implements DocumentRetriever {
@@ -46,6 +51,7 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
     private final VectorStore vectorStore;
     private final int topK;
     private final List<ScopedTier> scopedTiers;
+    private final LlmApiKey llmApiKey;
 
     /**
      * One scope's filter and similarity threshold, plus the scope itself for logging.
@@ -60,14 +66,20 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
 
     public ScopedDocumentRetriever(VectorStore vectorStore,
                                    int topK,
-                                   List<ScopedTier> scopedTiers) {
+                                   List<ScopedTier> scopedTiers,
+                                   LlmApiKey llmApiKey) {
         this.vectorStore = vectorStore;
         this.topK = topK;
         this.scopedTiers = List.copyOf(scopedTiers);
+        this.llmApiKey = llmApiKey;
     }
 
     @Override
     public List<Document> retrieve(Query query) {
+        return LlmCredentialScope.asUser(llmApiKey, () -> retrieveTiers(query));
+    }
+
+    private List<Document> retrieveTiers(Query query) {
         List<Document> retrieved = new ArrayList<>(topK);
         Set<String> seen = new LinkedHashSet<>();
 

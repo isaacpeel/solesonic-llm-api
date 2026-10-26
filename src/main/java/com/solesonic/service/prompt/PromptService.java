@@ -4,12 +4,15 @@ import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.address.Address;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.llm.LlmCredentialScope;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -96,6 +99,7 @@ public class PromptService {
     private final ChatMessageService chatMessageService;
     private final UserMemoryService userMemoryService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
+    private final UserLlmKeyService userLlmKeyService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -120,6 +124,7 @@ public class PromptService {
             ChatMessageService chatMessageService,
             UserMemoryService userMemoryService,
             LiteLlmHeaderRegistry liteLlmHeaderRegistry,
+            UserLlmKeyService userLlmKeyService,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
@@ -135,6 +140,7 @@ public class PromptService {
         this.chatMessageService = chatMessageService;
         this.userMemoryService = userMemoryService;
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
+        this.userLlmKeyService = userLlmKeyService;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
     }
@@ -147,9 +153,16 @@ public class PromptService {
 
         String authToken = AuthenticationTokens.token(authentication);
 
+        //Ahead of the attachment work for the same reason as the token: a user with no key must not
+        //wait through vision and embedding calls only to be refused behind them.
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
+
         String model = chatModel(chatId);
 
-        AttachmentResolution attachments = attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds());
+        //Vision and document indexing are blocking calls made on this thread, which is what lets the
+        //scope carry the key to them.
+        AttachmentResolution attachments = LlmCredentialScope.asUser(llmApiKey,
+                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds()));
 
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
@@ -161,7 +174,7 @@ public class PromptService {
         Set<String> commands = chatMessage.commands();
 
         if (CollectionUtils.isEmpty(commands)) {
-            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken, model);
+            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken, model, llmApiKey);
         }
 
         SlashCommand slashCommand = slashCommandService.commands(commands).stream()
@@ -169,7 +182,7 @@ public class PromptService {
                 .orElseThrow(IllegalStateException::new);
 
         return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
-                contextMap, authToken, model);
+                contextMap, authToken, model, llmApiKey);
     }
 
     /**
@@ -202,7 +215,8 @@ public class PromptService {
                                               AttachmentResolution attachments,
                                               Map<String, Object> contextMap,
                                               String authToken,
-                                              String model) {
+                                              String model,
+                                              LlmApiKey llmApiKey) {
         return a2aStickyAgentService
                 .getActiveAgent(chatId)
                 .flatMapMany(stickyAgent -> {
@@ -218,7 +232,7 @@ public class PromptService {
 
                     log.info("No command or sticky agent, using default system prompt.");
 
-                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, model);
+                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, model, llmApiKey);
                 });
     }
 
@@ -238,13 +252,15 @@ public class PromptService {
      *                     rewrites the last user message
      * @param contextMap   tool context forwarded to any MCP tool the model calls mid-turn
      * @param model        the chat model name requested via {@code OpenAiChatOptions}
+     * @param llmApiKey    the user's own key, which every model call of the turn carries
      */
     private Flux<String> streamDefaultSystemPrompt(UUID chatId,
                                                    UUID userId,
                                                    String message,
                                                    String attachmentContext,
                                                    Map<String, Object> contextMap,
-                                                   String model) {
+                                                   String model,
+                                                   LlmApiKey llmApiKey) {
 
         //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
         //chat memory advisor is about to write rather than the previous turn's.
@@ -285,13 +301,13 @@ public class PromptService {
                 .system(defaultSystemPrompt.getContents())
                 .user(message)
                 .tools(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS))
-                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
+                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture)
                 )
                 .toolContext(contextMap)
-                .options(chatOptions(model, chatTimeout, correlationId));
+                .options(chatOptions(model, chatTimeout, correlationId, llmApiKey));
 
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));

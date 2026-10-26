@@ -4,8 +4,10 @@ import com.solesonic.model.VectorSearch;
 import com.solesonic.model.rag.DocumentPrincipal;
 import com.solesonic.model.rag.RetrievalMetadata;
 import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.user.UserPreferences;
 import com.solesonic.repository.rag.VectorStoreRepository;
+import com.solesonic.service.llm.LlmCredentialScope;
 import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +15,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
 import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.preretrieval.query.expansion.MultiQueryExpander;
@@ -79,9 +82,13 @@ public class VectorStoreService {
      * <p>
      * {@code chatId} may be null for a call that belongs to no conversation, in which case the
      * conversation tier is simply absent rather than filtered to nothing.
+     * <p>
+     * Every model call the advisor makes carries {@code llmApiKey}: the task clients as a request
+     * header, since the advisor runs on a thread of its own, and the retriever's embeddings through
+     * the scope it binds around each search.
      */
     @SuppressWarnings("unused")
-    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
+    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId, LlmApiKey llmApiKey) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
 
         QueryTransformer truncatingTransformer = query -> {
@@ -96,18 +103,19 @@ public class VectorStoreService {
         };
 
         RewriteQueryTransformer rewriteQueryTransformer = RewriteQueryTransformer.builder()
-                .chatClientBuilder(ChatClient.builder(taskChatModel))
+                .chatClientBuilder(taskClientBuilder(llmApiKey))
                 .build();
 
         MultiQueryExpander multiQueryExpander = MultiQueryExpander.builder()
-                .chatClientBuilder(ChatClient.builder(taskChatModel))
+                .chatClientBuilder(taskClientBuilder(llmApiKey))
                 .numberOfQueries(EXPANSION_QUERIES)
                 .build();
 
-        LlmDocumentReranker documentReranker = new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
+        LlmDocumentReranker documentReranker = new LlmDocumentReranker(taskClientBuilder(llmApiKey).build(), RERANK_TOP_N);
 
         RetrievalLoggingPostProcessor retrievalLoggingPostProcessor = new RetrievalLoggingPostProcessor();
-        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K, tiers(userId, chatId, userPreferences));
+        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K,
+                tiers(userId, chatId, userPreferences), llmApiKey);
 
         VectorStoreDocumentRetriever vectorStoreDocumentRetriever = VectorStoreDocumentRetriever.builder()
                 .similarityThreshold(0.5)
@@ -124,6 +132,11 @@ public class VectorStoreService {
                         .allowEmptyContext(true)
                         .build())
                 .build();
+    }
+
+    private ChatClient.Builder taskClientBuilder(LlmApiKey llmApiKey) {
+        return ChatClient.builder(taskChatModel)
+                .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()));
     }
 
     /**
@@ -183,14 +196,17 @@ public class VectorStoreService {
         }
     }
 
-    public List<Document> findSimilarDocuments(VectorSearch vectorSearch) {
+    /**
+     * The query is embedded on {@code llmApiKey}, the caller's own key.
+     */
+    public List<Document> findSimilarDocuments(VectorSearch vectorSearch, LlmApiKey llmApiKey) {
         SearchRequest searchRequest = SearchRequest.builder()
                 .query(vectorSearch.query())
                 .similarityThreshold(vectorSearch.similarityThreshold())
                 .topK(vectorSearch.topK())
                 .build();
 
-        return vectorStore.similaritySearch(searchRequest);
+        return LlmCredentialScope.asUser(llmApiKey, () -> vectorStore.similaritySearch(searchRequest));
     }
 
     public List<VectorDocument> findByIngestedDocumentId(UUID ingestedDocumentId) {

@@ -1,7 +1,10 @@
 package com.solesonic.api.document;
 
 import com.solesonic.model.VectorSearch;
+import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.StatusHistoryService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -15,8 +18,10 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.util.List;
+import java.util.UUID;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -36,8 +41,17 @@ class DocumentControllerTest {
     @Mock
     private VectorStoreService vectorStoreService;
 
+    private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
+
     @Mock
     private StatusHistoryService statusHistoryService;
+
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
+    @Mock
+    private UserRequestContext userRequestContext;
 
     @InjectMocks
     private DocumentController documentController;
@@ -48,8 +62,10 @@ class DocumentControllerTest {
     }
 
     @Test
-    void searchReturnsTheMatchingText() throws Exception {
-        when(vectorStoreService.findSimilarDocuments(any(VectorSearch.class)))
+    void searchEmbedsTheQueryOnTheCallersKey() throws Exception {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(userLlmKeyService.requireKey(USER_ID)).thenReturn(LLM_API_KEY);
+        when(vectorStoreService.findSimilarDocuments(any(VectorSearch.class), eq(LLM_API_KEY)))
                 .thenReturn(List.of(new Document("the handbook says so")));
 
         mockMvc.perform(post("/documents/data/search")

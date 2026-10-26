@@ -3,16 +3,20 @@ package com.solesonic.service.chat;
 import com.openai.client.OpenAIClient;
 import com.openai.errors.OpenAIException;
 import com.openai.models.models.Model;
+import com.openai.models.models.ModelListParams;
 import com.solesonic.exception.chat.ChatModelException;
 import com.solesonic.model.chat.model.AvailableModel;
 import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelState;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -26,7 +30,8 @@ import static com.solesonic.model.chat.model.ChatModelErrorCode.UNKNOWN_MODEL;
 
 /**
  * Chooses the chat model a conversation uses. Every list and every validation asks the endpoint
- * live, with the chat's own credentials; nothing about it is kept.
+ * live, with the user's own key, so a user is offered exactly the models their key may use; nothing
+ * about it is kept.
  * <p>
  * Ownership is the caller's to check: this service takes a chat id on trust.
  */
@@ -37,34 +42,37 @@ public class ChatModelService {
     private final OpenAIClient openAiClient;
     private final ChatModelSelection chatModelSelection;
     private final A2AStickyAgentService a2aStickyAgentService;
+    private final UserLlmKeyService userLlmKeyService;
     private final String defaultModel;
 
     public ChatModelService(@Qualifier(OPENAI_CLIENT) OpenAIClient openAiClient,
                             ChatModelSelection chatModelSelection,
                             A2AStickyAgentService a2aStickyAgentService,
+                            UserLlmKeyService userLlmKeyService,
                             @Value("${spring.ai.openai.model}") String defaultModel) {
         this.openAiClient = openAiClient;
         this.chatModelSelection = chatModelSelection;
         this.a2aStickyAgentService = a2aStickyAgentService;
+        this.userLlmKeyService = userLlmKeyService;
         this.defaultModel = defaultModel;
     }
 
     /**
      * The options for a chat that does not exist yet: nothing is selected and no agent holds it.
      */
-    public ChatModelOptions options() {
-        return new ChatModelOptions(availableModels(), defaultModel, null, null);
+    public ChatModelOptions options(UUID userId) {
+        return new ChatModelOptions(availableModels(userId), defaultModel, null, null);
     }
 
-    public ChatModelOptions options(UUID chatId) {
-        return ChatModelOptions.of(availableModels(), state(chatId));
+    public ChatModelOptions options(UUID userId, UUID chatId) {
+        return ChatModelOptions.of(availableModels(userId), state(chatId));
     }
 
     /**
      * Stores the endpoint's spelling of the model, which is the one a completion request has to carry.
      */
-    public ChatModelState select(UUID chatId, String requestedModel) {
-        String model = resolve(requestedModel);
+    public ChatModelState select(UUID userId, UUID chatId, String requestedModel) {
+        String model = resolve(userId, requestedModel);
 
         chatModelSelection.set(chatId, model).block();
 
@@ -85,14 +93,14 @@ public class ChatModelService {
      *
      * @return the endpoint's own spelling of the model
      */
-    public String resolve(String requestedModel) {
+    public String resolve(UUID userId, String requestedModel) {
         String trimmedModel = StringUtils.trimToEmpty(requestedModel);
 
         if (trimmedModel.isEmpty()) {
             throw new ChatModelException(UNKNOWN_MODEL, "A model name is required.");
         }
 
-        return availableModels().stream()
+        return availableModels(userId).stream()
                 .map(AvailableModel::id)
                 .filter(modelId -> modelId.equalsIgnoreCase(trimmedModel))
                 .findFirst()
@@ -127,10 +135,19 @@ public class ChatModelService {
         return new ChatModelState(defaultModel, selectedModel, activeAgent);
     }
 
-    private List<AvailableModel> availableModels() {
+    /**
+     * @throws com.solesonic.exception.llm.LlmKeyMissingException when the user has no key
+     */
+    private List<AvailableModel> availableModels(UUID userId) {
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
+
+        ModelListParams modelListParams = ModelListParams.builder()
+                .putAdditionalHeader(HttpHeaders.AUTHORIZATION, llmApiKey.bearer())
+                .build();
+
         try {
             return openAiClient.models()
-                    .list()
+                    .list(modelListParams)
                     .data()
                     .stream()
                     .map(ChatModelService::availableModel)

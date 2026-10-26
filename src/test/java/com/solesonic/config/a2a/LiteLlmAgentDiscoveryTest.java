@@ -8,6 +8,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -20,6 +21,7 @@ import tools.jackson.databind.node.ObjectNode;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +54,8 @@ class LiteLlmAgentDiscoveryTest {
     }
 
     private LiteLlmAgentDiscovery discovery(String gateway) {
-        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents", new A2AClientProperties.Litellm(gateway, API_KEY));
+        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents", new A2AClientProperties.Litellm(gateway, API_KEY),
+                new A2AClientProperties.Sound(DataSize.ofMegabytes(5), Duration.ofDays(7)));
 
         WebClient webClient = new LiteLlmA2AWebClientConfig().liteLlmA2AWebClient(properties)
                 .mutate()

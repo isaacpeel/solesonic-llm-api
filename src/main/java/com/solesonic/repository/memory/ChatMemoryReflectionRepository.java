@@ -60,6 +60,7 @@ public interface ChatMemoryReflectionRepository extends JpaRepository<ChatMemory
      * died is claimable again once it is as old as the idle window. A {@code FAILED} chat gets one more
      * attempt each time the conversation carries on after the failure. Owners who are removed or
      * dormant are skipped, as in {@link #seedMissing}, until the lifecycle sweep purges their rows.
+     * Owners with no model key are skipped until they have one: reflection runs on their key.
      */
     @Query(nativeQuery = true, value = """
             select reflection.*
@@ -89,6 +90,7 @@ public interface ChatMemoryReflectionRepository extends JpaRepository<ChatMemory
                                  from user_profile profile
                                 where profile.user_id = reflection.user_id
                                   and profile.removed is not null)
+               and exists (select 1 from user_llm_key llm_key where llm_key.user_id = reflection.user_id)
              order by (select min(message.timestamp)
                          from chat_message message
                         where message.chat_id = reflection.chat_id

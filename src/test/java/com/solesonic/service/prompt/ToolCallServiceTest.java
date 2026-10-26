@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.tools.LocalToolRegistry;
@@ -58,6 +59,8 @@ class ToolCallServiceTest {
 
     private static final Map<String, Object> CONTEXT_MAP = Map.of("userToken", "token-abc");
 
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
+
     @Mock
     private McpSyncClient mcpClient;
     @Mock
@@ -104,7 +107,7 @@ class ToolCallServiceTest {
 
     private void toolAnswers(ChatResponse chatResponse) {
         when(localToolRegistry.callback("create_invoice")).thenReturn(mock(ToolCallback.class));
-        when(slashCommandService.taskClient(any(), anyBoolean())).thenReturn(taskClient);
+        when(slashCommandService.taskClient(any(), anyBoolean(), eq(LLM_API_KEY))).thenReturn(taskClient);
         when(taskClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
@@ -118,7 +121,7 @@ class ToolCallServiceTest {
     void streamLocalPersistsWhatTheServerReportedAboutTheTurn() {
         toolAnswers(toolResponse("invoice created", 300, 40));
 
-        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP))
+        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP, LLM_API_KEY))
                 .expectNext("invoice created")
                 .verifyComplete();
 
@@ -143,7 +146,7 @@ class ToolCallServiceTest {
     void streamLocalWithNoResponsePersistsNothing() {
         toolAnswers(null);
 
-        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP))
+        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP, LLM_API_KEY))
                 .verifyComplete();
 
         verifyNoInteractions(chatMessageService);
@@ -158,7 +161,7 @@ class ToolCallServiceTest {
     void streamLocalWithABlankAnswerStillRecordsTheModelCall() {
         toolAnswers(toolResponse("   ", 300, 40));
 
-        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP))
+        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP, LLM_API_KEY))
                 .verifyComplete();
 
         verify(chatMessageService).updateResponseMetadata(eq(chatId), any(ZonedDateTime.class), any(), anyList());
@@ -178,7 +181,7 @@ class ToolCallServiceTest {
                         .usage(new DefaultUsage(0, 0, 0))
                         .build()));
 
-        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP))
+        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP, LLM_API_KEY))
                 .expectNext("invoice created")
                 .verifyComplete();
 
@@ -196,7 +199,7 @@ class ToolCallServiceTest {
         doThrow(new IllegalStateException("the database is down"))
                 .when(chatMessageService).updateResponseMetadata(any(), any(), any(), anyList());
 
-        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP))
+        StepVerifier.create(toolCallService.streamLocal(chatId, "invoice Acme for 200", LOCAL_TOOL_COMMAND, CONTEXT_MAP, LLM_API_KEY))
                 .expectNext("invoice created")
                 .verifyComplete();
     }

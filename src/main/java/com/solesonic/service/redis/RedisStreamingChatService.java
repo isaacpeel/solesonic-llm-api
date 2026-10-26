@@ -3,6 +3,7 @@ package com.solesonic.service.redis;
 import com.agui.community.core.agent.RunAgentInput;
 import com.agui.community.core.event.CustomEvent;
 import com.agui.community.core.event.Event;
+import com.agui.community.core.event.EventType;
 import com.agui.community.core.event.RunErrorEvent;
 import com.agui.community.core.event.RunFinishedEvent;
 import com.agui.community.core.event.RunStartedEvent;
@@ -17,8 +18,10 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.exception.rag.DocumentReadException;
 import com.solesonic.model.SolesonicChatResponse;
+import com.solesonic.model.agui.MetadataTextMessageStartEvent;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
@@ -36,6 +39,7 @@ import com.solesonic.service.chat.events.SideChannelMessage;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.util.ResponseSanitizer;
@@ -108,6 +112,7 @@ public class RedisStreamingChatService {
     private final SideChannelEventTranslator sideChannelEventTranslator;
     private final ChatModelSelection chatModelSelection;
     private final PushNotificationService pushNotificationService;
+    private final PendingMessageMetadata pendingMessageMetadata;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -119,7 +124,8 @@ public class RedisStreamingChatService {
                                      GeneratedImageService generatedImageService,
                                      SideChannelEventTranslator sideChannelEventTranslator,
                                      ChatModelSelection chatModelSelection,
-                                     PushNotificationService pushNotificationService) {
+                                     PushNotificationService pushNotificationService,
+                                     PendingMessageMetadata pendingMessageMetadata) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -131,6 +137,7 @@ public class RedisStreamingChatService {
         this.sideChannelEventTranslator = sideChannelEventTranslator;
         this.chatModelSelection = chatModelSelection;
         this.pushNotificationService = pushNotificationService;
+        this.pendingMessageMetadata = pendingMessageMetadata;
     }
 
     private Chat save(Chat chat) {
@@ -337,7 +344,16 @@ public class RedisStreamingChatService {
             return Mono.empty();
         }
 
-        return publish(turn, new TextMessageStartEvent(turn.messageId(), Role.ASSISTANT, null, null)).then();
+        //Taken when the first chunk arrives, by which point a route has put whatever it has for the
+        //message. A frame with nothing to carry is the SDK's own record, unchanged.
+        Map<String, Object> metadata = pendingMessageMetadata.take(turn.chatId());
+
+        if (metadata.isEmpty()) {
+            return publish(turn, new TextMessageStartEvent(turn.messageId(), Role.ASSISTANT, null, null)).then();
+        }
+
+        return redisStreamService.publish(turn.chatId(), turn.userId(), EventType.TEXT_MESSAGE_START.value(),
+                new MetadataTextMessageStartEvent(turn.messageId(), Role.ASSISTANT, metadata)).then();
     }
 
     private Mono<Void> endMessageIfStarted(Turn turn, AtomicBoolean messageStarted) {
@@ -478,6 +494,10 @@ public class RedisStreamingChatService {
     }
 
     private static TurnErrorCode classify(Throwable unwrapped) {
+        if (unwrapped instanceof LlmKeyMissingException) {
+            return TurnErrorCode.LLM_KEY_MISSING;
+        }
+
         if (unwrapped instanceof TimeoutException) {
             return TurnErrorCode.TIMEOUT;
         }
@@ -567,6 +587,7 @@ public class RedisStreamingChatService {
             case RATE_LIMITED -> RATE_LIMITED_MESSAGE;
             case TOOL_FAILURE -> TOOL_FAILURE_MESSAGE;
             case CONTEXT_LENGTH_EXCEEDED -> CONTEXT_LENGTH_EXCEEDED_MESSAGE;
+            case LLM_KEY_MISSING -> LlmKeyMissingException.MESSAGE;
             case RECONNECT_REQUIRED, VALIDATION, STREAM_UNAVAILABLE, INTERNAL -> INTERNAL_MESSAGE;
         };
     }
@@ -611,6 +632,7 @@ public class RedisStreamingChatService {
         log.debug("Cleaning up Redis stream for chat id: {}", chatId);
 
         elicitationService.closeChat(chatId);
+        pendingMessageMetadata.clear(chatId);
         untrackActiveStream(userId, chatId);
     }
 }

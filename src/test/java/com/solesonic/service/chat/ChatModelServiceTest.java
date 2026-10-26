@@ -4,14 +4,19 @@ import com.openai.client.OpenAIClient;
 import com.openai.errors.OpenAIIoException;
 import com.openai.models.models.Model;
 import com.openai.models.models.ModelListPage;
+import com.openai.models.models.ModelListParams;
 import com.openai.services.blocking.ModelService;
 import com.solesonic.exception.chat.ChatModelException;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.model.chat.model.AvailableModel;
 import com.solesonic.model.chat.model.ChatModelErrorCode;
 import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelState;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -37,6 +42,8 @@ import static org.mockito.Mockito.when;
 class ChatModelServiceTest {
 
     private static final String DEFAULT_MODEL = "qwen3-8b";
+    private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
 
     @Mock
     private OpenAIClient openAiClient;
@@ -48,6 +55,8 @@ class ChatModelServiceTest {
     private ChatModelSelection chatModelSelection;
     @Mock
     private A2AStickyAgentService a2aStickyAgentService;
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
 
     private UUID chatId;
 
@@ -57,7 +66,9 @@ class ChatModelServiceTest {
     void setUp() {
         chatId = UUID.randomUUID();
 
-        chatModelService = new ChatModelService(openAiClient, chatModelSelection, a2aStickyAgentService, DEFAULT_MODEL);
+        chatModelService = new ChatModelService(openAiClient, chatModelSelection, a2aStickyAgentService, userLlmKeyService, DEFAULT_MODEL);
+
+        lenient().when(userLlmKeyService.requireKey(USER_ID)).thenReturn(LLM_API_KEY);
 
         lenient().when(a2aStickyAgentService.getActiveAgent(any())).thenReturn(Mono.just(Optional.empty()));
         lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
@@ -69,7 +80,7 @@ class ChatModelServiceTest {
     void optionsListTheEndpointsModelsInItsOwnOrderAndSpelling() {
         stubAvailableModels("openai/gpt-4o", "qwen3:8b");
 
-        ChatModelOptions options = chatModelService.options();
+        ChatModelOptions options = chatModelService.options(USER_ID);
 
         assertThat(options.models()).containsExactly(
                 new AvailableModel("openai/gpt-4o", "owner"),
@@ -85,7 +96,7 @@ class ChatModelServiceTest {
         when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("jira")));
 
-        ChatModelOptions options = chatModelService.options(chatId);
+        ChatModelOptions options = chatModelService.options(USER_ID, chatId);
 
         assertThat(options.selectedModel()).isEqualTo("openai/gpt-4o");
         assertThat(options.activeAgent()).isEqualTo("jira");
@@ -95,9 +106,9 @@ class ChatModelServiceTest {
     @Test
     void optionsAreUnavailableWhenTheListCannotBeFetched() {
         when(openAiClient.models()).thenReturn(modelService);
-        when(modelService.list()).thenThrow(new OpenAIIoException("connection refused"));
+        when(modelService.list(any(ModelListParams.class))).thenThrow(new OpenAIIoException("connection refused"));
 
-        assertThatThrownBy(() -> chatModelService.options())
+        assertThatThrownBy(() -> chatModelService.options(USER_ID))
                 .isInstanceOfSatisfying(ChatModelException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE));
     }
@@ -111,7 +122,7 @@ class ChatModelServiceTest {
         stubAvailableModels("openai/gpt-4o", "qwen3:8b");
         when(chatModelSelection.get(chatId)).thenReturn(Mono.just("qwen3:8b"));
 
-        ChatModelState state = chatModelService.select(chatId, "  QWEN3:8B ");
+        ChatModelState state = chatModelService.select(USER_ID, chatId, "  QWEN3:8B ");
 
         verify(chatModelSelection).set(chatId, "qwen3:8b");
         assertThat(state.selectedModel()).isEqualTo("qwen3:8b");
@@ -121,7 +132,7 @@ class ChatModelServiceTest {
     void selectStoresNothingForAnUnknownModel() {
         stubAvailableModels("openai/gpt-4o");
 
-        assertThatThrownBy(() -> chatModelService.select(chatId, "gpt-5"))
+        assertThatThrownBy(() -> chatModelService.select(USER_ID, chatId, "gpt-5"))
                 .isInstanceOfSatisfying(ChatModelException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(ChatModelErrorCode.UNKNOWN_MODEL));
 
@@ -130,7 +141,7 @@ class ChatModelServiceTest {
 
     @Test
     void selectStoresNothingForABlankName() {
-        assertThatThrownBy(() -> chatModelService.select(chatId, " "))
+        assertThatThrownBy(() -> chatModelService.select(USER_ID, chatId, " "))
                 .isInstanceOfSatisfying(ChatModelException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(ChatModelErrorCode.UNKNOWN_MODEL));
 
@@ -141,9 +152,9 @@ class ChatModelServiceTest {
     @Test
     void selectStoresNothingWhenTheListCannotBeFetched() {
         when(openAiClient.models()).thenReturn(modelService);
-        when(modelService.list()).thenThrow(new OpenAIIoException("connection refused"));
+        when(modelService.list(any(ModelListParams.class))).thenThrow(new OpenAIIoException("connection refused"));
 
-        assertThatThrownBy(() -> chatModelService.select(chatId, "openai/gpt-4o"))
+        assertThatThrownBy(() -> chatModelService.select(USER_ID, chatId, "openai/gpt-4o"))
                 .isInstanceOfSatisfying(ChatModelException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE));
 
@@ -177,7 +188,34 @@ class ChatModelServiceTest {
                 .toList();
 
         when(openAiClient.models()).thenReturn(modelService);
-        when(modelService.list()).thenReturn(modelListPage);
+        when(modelService.list(any(ModelListParams.class))).thenReturn(modelListPage);
         when(modelListPage.data()).thenReturn(models);
+    }
+
+    /**
+     * The list a user is offered is what their own key may use, so it is asked for with that key.
+     */
+    @Test
+    void listsModelsWithTheUsersOwnKey() {
+        stubAvailableModels("openai/gpt-4o");
+
+        chatModelService.options(USER_ID);
+
+        ArgumentCaptor<ModelListParams> paramsCaptor = ArgumentCaptor.captor();
+        verify(modelService).list(paramsCaptor.capture());
+
+        assertThat(paramsCaptor.getValue()._additionalHeaders().values("Authorization"))
+                .containsExactly("Bearer sk-user-0000000001");
+    }
+
+    @Test
+    void aUserWithNoKeyIsOfferedNothingAndNoListIsFetched() {
+        UUID keylessUserId = UUID.randomUUID();
+        when(userLlmKeyService.requireKey(keylessUserId)).thenThrow(new LlmKeyMissingException());
+
+        assertThatThrownBy(() -> chatModelService.options(keylessUserId))
+                .isInstanceOf(LlmKeyMissingException.class);
+
+        verifyNoInteractions(openAiClient);
     }
 }

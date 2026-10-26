@@ -2,6 +2,7 @@ package com.solesonic.config.a2a;
 
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AElicitationExtension;
+import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.security.McpFilterService;
 import org.a2aproject.sdk.client.transport.spi.interceptors.PayloadAndHeaders;
 import org.junit.jupiter.api.Test;
@@ -24,7 +25,7 @@ class A2AAuthInterceptorTest {
     private McpFilterService mcpFilterService;
 
     @Test
-    void everyCallAsksForTheElicitationExtension() {
+    void everyCallAsksForTheElicitationAndSoundExtensions() {
         when(mcpFilterService.getClientCredentialsAccessToken()).thenReturn("service-token");
 
         A2AAuthInterceptor interceptor = new A2AAuthInterceptor(tokenExchangeService, mcpFilterService, null);
@@ -33,6 +34,6 @@ class A2AAuthInterceptorTest {
 
         assertThat(payloadAndHeaders.getHeaders())
                 .containsEntry("Authorization", "Bearer service-token")
-                .containsEntry("A2A-Extensions", A2AElicitationExtension.URI);
+                .containsEntry("A2A-Extensions", A2AElicitationExtension.URI + ", " + A2ASoundExtension.URI);
     }
 }

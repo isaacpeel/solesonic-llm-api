@@ -1,7 +1,9 @@
 package com.solesonic.api.document;
 
 import com.solesonic.model.VectorSearch;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.StatusHistoryService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,16 +30,23 @@ public class DocumentController {
 
     private final VectorStoreService vectorStoreService;
     private final StatusHistoryService statusHistoryService;
+    private final UserLlmKeyService userLlmKeyService;
+    private final UserRequestContext userRequestContext;
 
     public DocumentController(VectorStoreService vectorStoreService,
-                              StatusHistoryService statusHistoryService) {
+                              StatusHistoryService statusHistoryService,
+                              UserLlmKeyService userLlmKeyService,
+                              UserRequestContext userRequestContext) {
         this.vectorStoreService = vectorStoreService;
         this.statusHistoryService = statusHistoryService;
+        this.userLlmKeyService = userLlmKeyService;
+        this.userRequestContext = userRequestContext;
     }
 
     @PostMapping("/data/search")
     public ResponseEntity<List<String>> search(@RequestBody VectorSearch vectorSearch) {
-        List<Document> similarDocuments = vectorStoreService.findSimilarDocuments(vectorSearch);
+        List<Document> similarDocuments = vectorStoreService.findSimilarDocuments(vectorSearch,
+                userLlmKeyService.requireKey(userRequestContext.getUserId()));
 
         return ResponseEntity.ok().body(similarDocuments.stream().map(Document::getText).toList());
     }

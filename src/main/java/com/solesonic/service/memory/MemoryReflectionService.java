@@ -10,6 +10,7 @@ import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.repository.memory.UserMemoryEvidenceRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.user.UserProfileService;
 import com.solesonic.util.PromptQuoting;
 import org.slf4j.Logger;
@@ -64,6 +65,7 @@ public class MemoryReflectionService {
     private final UserMemoryService userMemoryService;
     private final MemoryEmbeddingService memoryEmbeddingService;
     private final UserProfileService userProfileService;
+    private final UserLlmKeyService userLlmKeyService;
     private final ChatClient memoryChatClient;
     private final String reflectionPrompt;
     private final Duration idle;
@@ -82,6 +84,7 @@ public class MemoryReflectionService {
                                    UserMemoryService userMemoryService,
                                    MemoryEmbeddingService memoryEmbeddingService,
                                    UserProfileService userProfileService,
+                                   UserLlmKeyService userLlmKeyService,
                                    @Qualifier(MEMORY_CHAT_MODEL) ChatModel memoryChatModel,
                                    @Value("classpath:prompts/memory-reflection-prompt.st") Resource reflectionPromptResource,
                                    @Value("${solesonic.llm.memory.reflection.idle-minutes}") long idleMinutes,
@@ -99,6 +102,7 @@ public class MemoryReflectionService {
         this.userMemoryService = userMemoryService;
         this.memoryEmbeddingService = memoryEmbeddingService;
         this.userProfileService = userProfileService;
+        this.userLlmKeyService = userLlmKeyService;
         this.memoryChatClient = ChatClient.create(memoryChatModel);
         this.reflectionPrompt = read(reflectionPromptResource);
         this.idle = Duration.ofMinutes(idleMinutes);
@@ -151,7 +155,7 @@ public class MemoryReflectionService {
             }
 
             ValidatedReflection validated = window.hasUserMessage()
-                    ? validated(userId, chatId, window.messages())
+                    ? userLlmKeyService.asUser(userId, () -> validated(userId, chatId, window.messages()))
                     : ValidatedReflection.empty();
 
             if (userMemoryService.applyReflection(chatId, userId, claimed.getReflectedThrough(), window.reflectedThrough(), validated)) {

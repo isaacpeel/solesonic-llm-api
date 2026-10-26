@@ -6,6 +6,7 @@ import com.solesonic.model.interest.NewsSummary;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.repository.interest.InterestAgentItemRepository;
 import com.solesonic.service.interest.NewsSearchClient.SearchResult;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.PromptQuoting;
@@ -60,6 +61,7 @@ public class NewsAgentService {
     private final UserPreferencesService userPreferencesService;
     private final InterestSettings interestSettings;
     private final Clock clock;
+    private final UserLlmKeyService userLlmKeyService;
     private final ChatClient memoryChatClient;
     private final String summaryPrompt;
 
@@ -71,6 +73,7 @@ public class NewsAgentService {
                             UserPreferencesService userPreferencesService,
                             InterestSettings interestSettings,
                             Clock clock,
+                            UserLlmKeyService userLlmKeyService,
                             @Qualifier(MEMORY_CHAT_MODEL) ChatModel memoryChatModel,
                             @Value("classpath:prompts/news-summary-prompt.st") Resource summaryPromptResource) {
         this.newsRunRecorder = newsRunRecorder;
@@ -81,6 +84,7 @@ public class NewsAgentService {
         this.userPreferencesService = userPreferencesService;
         this.interestSettings = interestSettings;
         this.clock = clock;
+        this.userLlmKeyService = userLlmKeyService;
         this.memoryChatClient = ChatClient.create(memoryChatModel);
         this.summaryPrompt = read(summaryPromptResource);
     }
@@ -135,11 +139,11 @@ public class NewsAgentService {
             List<NewsItem> items = budgeted(items(fresh));
             Map<Integer, NewsItem> itemsByNumber = items.stream().collect(Collectors.toMap(NewsItem::number, item -> item));
 
-            NewsSummary newsSummary = memoryChatClient.prompt()
+            NewsSummary newsSummary = userLlmKeyService.asUser(agent.getUserId(), () -> memoryChatClient.prompt()
                     .system(summaryPrompt)
                     .user(render(agent.getLabel(), today, items))
                     .call()
-                    .entity(NewsSummary.class);
+                    .entity(NewsSummary.class));
 
             Optional<ValidatedSummary> validated = newsSummaryValidator.validate(newsSummary, items.size());
 

@@ -7,7 +7,9 @@ import com.solesonic.model.interest.AgentType;
 import com.solesonic.model.interest.InterestAgent;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.repository.interest.InterestAgentItemRepository;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.service.interest.NewsSearchClient.SearchResult;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -68,6 +71,9 @@ class NewsAgentServiceTest {
     @Mock
     private UserPreferencesService userPreferencesService;
 
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
     @Captor
     private ArgumentCaptor<Collection<String>> hashesCaptor;
 
@@ -93,6 +99,7 @@ class NewsAgentServiceTest {
         when(interestAgentItemRepository.findSeen(any(), any(), anyCollection())).thenReturn(List.of());
         when(userPreferencesService.getZone(USER_ID)).thenReturn(ZoneOffset.UTC);
         when(newsRunRecorder.deliver(any(), anyCollection(), any(), any(), any(), anyInt(), any())).thenReturn(Optional.of(CHAT_ID));
+        when(userLlmKeyService.asUser(eq(USER_ID), any())).thenAnswer(invocation -> invocation.<Supplier<?>>getArgument(1).get());
 
         fakeChatModel.respond("{'headline':'Verstappen wins','summary':'Verstappen won [1].','sources':[{'index':1,'note':'Race report'}]}");
     }
@@ -100,7 +107,8 @@ class NewsAgentServiceTest {
     private NewsAgentService service(int maxSourceCharacters) {
         return new NewsAgentService(newsRunRecorder, newsSearchClient, new NewsSummaryValidator(InterestSettingsFixture.settings()),
                 interestAgentItemRepository, pushNotificationService, userPreferencesService,
-                InterestSettingsFixture.settings(3, maxSourceCharacters, Duration.ZERO), Clock.fixed(NOW, ZoneOffset.UTC), fakeChatModel,
+                InterestSettingsFixture.settings(3, maxSourceCharacters, Duration.ZERO), Clock.fixed(NOW, ZoneOffset.UTC),
+                userLlmKeyService, fakeChatModel,
                 new ByteArrayResource("You write a short, neutral news briefing.".getBytes(StandardCharsets.UTF_8)));
     }
 
@@ -256,6 +264,30 @@ class NewsAgentServiceTest {
 
         verify(pushNotificationService, never()).push(any(), any());
         assertThat(run.discardedCount()).isEqualTo(1);
+    }
+
+    @Test
+    void summarisesOnTheOwnersKey() {
+        service(20_000).runDue();
+
+        verify(userLlmKeyService).asUser(eq(USER_ID), any());
+        assertThat(fakeChatModel.prompts).hasSize(1);
+    }
+
+    /**
+     * An owner whose key was removed after the claim gets no summary and no chat, and the run counts
+     * as failed.
+     */
+    @Test
+    void anOwnerWhoseKeyWasRemovedGetsNoSummaryAndNoChat() {
+        doThrow(new LlmKeyMissingException()).when(userLlmKeyService).asUser(eq(USER_ID), any());
+
+        NewsRun run = service(20_000).runDue();
+
+        assertThat(fakeChatModel.prompts).isEmpty();
+        verify(newsRunRecorder, never()).deliver(any(), anyCollection(), any(), any(), any(), anyInt(), any());
+        verify(newsRunRecorder).failed(eq(agent), any());
+        assertThat(run.failedCount()).isEqualTo(1);
     }
 
     @Test

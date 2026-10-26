@@ -21,6 +21,7 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.exception.rag.DocumentReadException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
@@ -35,6 +36,7 @@ import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.chat.events.SideChannelMessage;
@@ -57,7 +59,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.util.List;
 import java.util.Map;
@@ -78,6 +82,8 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -139,6 +145,8 @@ class RedisStreamingChatServiceTest {
     @Mock
     private PushNotificationService pushNotificationService;
 
+    private final PendingMessageMetadata pendingMessageMetadata = spy(new PendingMessageMetadata());
+
     private RedisStreamingChatService redisStreamingChatService;
 
     private final List<PublishedEvent> published = new CopyOnWriteArrayList<>();
@@ -158,7 +166,8 @@ class RedisStreamingChatServiceTest {
                 generatedImageService,
                 new SideChannelEventTranslator(JSON_MAPPER),
                 chatModelSelection,
-                pushNotificationService);
+                pushNotificationService,
+                pendingMessageMetadata);
 
         published.clear();
 
@@ -250,6 +259,55 @@ class RedisStreamingChatServiceTest {
 
         TextMessageEndEvent end = (TextMessageEndEvent) eventsOfType(TEXT_MESSAGE_END).getFirst().payload();
         assertThat(end.messageId()).isEqualTo(start.messageId());
+    }
+
+    /**
+     * Metadata a route left pending rides on the start frame, which otherwise serializes exactly as
+     * the SDK's own record does.
+     */
+    @Test
+    void pendingMetadataRidesOnTheStartFrame() {
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1", "playOnce", true));
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+
+        String messageId = ((TextMessageContentEvent) eventsOfType(TEXT_MESSAGE_CONTENT).getFirst().payload()).messageId();
+        JsonNode frame = JSON_MAPPER.valueToTree(eventsOfType(TEXT_MESSAGE_START).getFirst().payload());
+
+        assertThat(frame.at("/metadata/solesonic~1sound/cueId").asString()).isEqualTo("sound-1");
+        assertThat(frame.at("/metadata/solesonic~1sound/playOnce").asBoolean()).isTrue();
+
+        ObjectNode withoutMetadata = (ObjectNode) frame.deepCopy();
+        withoutMetadata.remove("metadata");
+        assertThat(withoutMetadata).isEqualTo(JSON_MAPPER.valueToTree(new TextMessageStartEvent(messageId, Role.ASSISTANT, null, null)));
+        assertThat(JSON_MAPPER.writeValueAsString(eventsOfType(TEXT_MESSAGE_START).getFirst().payload()))
+                .startsWith("{\"type\":\"TEXT_MESSAGE_START\"");
+    }
+
+    @Test
+    void withoutPendingMetadataTheStartFrameIsTheSdksOwn() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        Object start = eventsOfType(TEXT_MESSAGE_START).getFirst().payload();
+        assertThat(start).isInstanceOf(TextMessageStartEvent.class);
+        assertThat(JSON_MAPPER.valueToTree(start).has("metadata")).isFalse();
+    }
+
+    @Test
+    void metadataATurnNeverUsedDoesNotReachTheNextTurn() {
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1"));
+        modelStreams();
+
+        runTurn();
+
+        //Cleanup runs in doFinally, after the completion the verifier waits on.
+        verify(pendingMessageMetadata, timeout(1000)).clear(CHAT_ID);
+        assertThat(pendingMessageMetadata.take(CHAT_ID)).isEmpty();
     }
 
     @Test
@@ -473,6 +531,18 @@ class RedisStreamingChatServiceTest {
         assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
         assertThat(publishedRunError().message())
                 .isEqualTo("The network agent is not available right now. Send your message again to continue without it.");
+    }
+
+    /**
+     * A key removed between the send and the turn: the user is told why in words they can act on,
+     * never the generic failure.
+     */
+    @Test
+    void aMissingModelKeyTellsTheUserToAskAnAdministrator() {
+        errorTurn(new LlmKeyMissingException());
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.LLM_KEY_MISSING.wireValue());
+        assertThat(publishedRunError().message()).isEqualTo(LlmKeyMissingException.MESSAGE);
     }
 
     /**

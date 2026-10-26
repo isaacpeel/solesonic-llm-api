@@ -1,6 +1,8 @@
 package com.solesonic.service.rag;
 
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.service.llm.LlmCredentialScope;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -13,8 +15,10 @@ import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +31,8 @@ import static org.mockito.Mockito.when;
 class ScopedDocumentRetrieverTest {
 
     private static final int TOP_K = 5;
+
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
 
     @Mock
     private VectorStore vectorStore;
@@ -57,7 +63,7 @@ class ScopedDocumentRetrieverTest {
     }
 
     private ScopedDocumentRetriever retriever() {
-        return new ScopedDocumentRetriever(vectorStore, TOP_K, tiers());
+        return new ScopedDocumentRetriever(vectorStore, TOP_K, tiers(), LLM_API_KEY);
     }
 
     private List<SearchRequest> capturedSearches() {
@@ -182,10 +188,28 @@ class ScopedDocumentRetrieverTest {
 
     @Test
     void searchesNothingWithoutTiers() {
-        ScopedDocumentRetriever retriever = new ScopedDocumentRetriever(vectorStore, TOP_K, List.of());
+        ScopedDocumentRetriever retriever = new ScopedDocumentRetriever(vectorStore, TOP_K, List.of(), LLM_API_KEY);
 
         assertThat(retriever.retrieve(query)).isEmpty();
 
         verify(vectorStore, never()).similaritySearch(any(SearchRequest.class));
+    }
+
+    /**
+     * The query is embedded inside the search, on whatever thread the advisor runs it on, so the
+     * user's key has to be bound by the retriever itself.
+     */
+    @Test
+    void searchesEveryTierOnTheUsersKey() {
+        List<Optional<LlmApiKey>> keysSeen = new ArrayList<>();
+
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenAnswer(_ -> {
+            keysSeen.add(LlmCredentialScope.userKey());
+            return List.of();
+        });
+
+        retriever().retrieve(query);
+
+        assertThat(keysSeen).hasSize(3).containsOnly(Optional.of(LLM_API_KEY));
     }
 }

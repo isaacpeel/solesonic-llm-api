@@ -34,13 +34,14 @@ public interface InterestAgentRepository extends JpaRepository<InterestAgent, UU
 
     /**
      * Active agents whose run is due, earliest first. {@code skip locked} keeps two instances from
-     * claiming the same agent.
+     * claiming the same agent. An agent whose owner has no model key waits until they have one.
      */
     @Query(nativeQuery = true, value = """
             select agent.*
               from interest_agent agent
              where agent.status = 'ACTIVE'
                and agent.next_run_at <= :now
+               and exists (select 1 from user_llm_key llm_key where llm_key.user_id = agent.user_id)
              order by agent.next_run_at
              limit :batchSize
                for update of agent skip locked

@@ -2,12 +2,14 @@ package com.solesonic.config.openai;
 
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The model a slash command routes through when it has to turn a user's message into a single tool
@@ -30,7 +32,8 @@ public class ToolCallOpenAiConfig {
     public OpenAiChatModel toolCallChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                              @Value("${spring.ai.openai.base-url}") String baseUrl,
                                              @Value("${solesonic.llm.tool-call.model}") String toolCallModel,
-                                             @Value("${solesonic.llm.tool-call.openai.read-timeout}") Duration readTimeout) {
+                                             @Value("${solesonic.llm.tool-call.openai.read-timeout}") Duration readTimeout,
+                                             List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -40,6 +43,7 @@ public class ToolCallOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 }

@@ -10,6 +10,7 @@ import com.solesonic.model.push.PushEvent;
 import com.solesonic.repository.interest.InterestAgentRepository;
 import com.solesonic.repository.interest.InterestOfferRepository;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.util.PromptQuoting;
 import org.slf4j.Logger;
@@ -58,6 +59,7 @@ public class InterestDiscoveryService {
     private final PushNotificationService pushNotificationService;
     private final InterestSettings interestSettings;
     private final Clock clock;
+    private final UserLlmKeyService userLlmKeyService;
     private final ChatClient memoryChatClient;
     private final String discoveryPrompt;
 
@@ -71,6 +73,7 @@ public class InterestDiscoveryService {
                                     PushNotificationService pushNotificationService,
                                     InterestSettings interestSettings,
                                     Clock clock,
+                                    UserLlmKeyService userLlmKeyService,
                                     @Qualifier(MEMORY_CHAT_MODEL) ChatModel memoryChatModel,
                                     @Value("classpath:prompts/interest-discovery-prompt.st") Resource discoveryPromptResource) {
         this.interestScanService = interestScanService;
@@ -83,6 +86,7 @@ public class InterestDiscoveryService {
         this.pushNotificationService = pushNotificationService;
         this.interestSettings = interestSettings;
         this.clock = clock;
+        this.userLlmKeyService = userLlmKeyService;
         this.memoryChatClient = ChatClient.create(memoryChatModel);
         this.discoveryPrompt = read(discoveryPromptResource);
     }
@@ -143,11 +147,11 @@ public class InterestDiscoveryService {
 
             Set<String> blocked = blocked(userId);
 
-            InterestCandidates candidates = memoryChatClient.prompt()
+            InterestCandidates candidates = userLlmKeyService.asUser(userId, () -> memoryChatClient.prompt()
                     .system(discoveryPrompt)
                     .user(render(memories, blocked))
                     .call()
-                    .entity(InterestCandidates.class);
+                    .entity(InterestCandidates.class));
 
             ValidCandidate best = interestCandidateValidator.validate(memories, blocked, candidates, run).orElse(null);
 

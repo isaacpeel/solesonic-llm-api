@@ -76,12 +76,15 @@ class SecurityEventLoggerTest {
                 "/documents/global/abc",
                 "/documents/users/abc",
                 "/models/abc",
+                "/llm-keys",
+                "/llm-keys/abc",
                 "/users/abc",
                 "/slash/commands",
                 "/atlassian/auth",
                 "/confluence/spaces",
                 "/broker/atlassian/token",
                 "/push/vapid-public-key",
+                "/sounds/abc",
                 "/users/abc/push-subscriptions",
                 "/users/abc/push-preferences");
 

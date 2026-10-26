@@ -45,6 +45,7 @@ public interface InterestScanRepository extends JpaRepository<InterestScan, UUID
      * {@code IN_PROGRESS} by an instance that died is claimable again once it is older than
      * {@code staleBefore}; a {@code PENDING} one that has failed before only once that failure is older
      * than {@code retryBefore}; a {@code FAILED} one only once the user's memories change after the failure.
+     * A user with no model key is skipped until they have one: discovery runs on their key.
      */
     @Query(nativeQuery = true, value = """
             select scan.*
@@ -71,6 +72,7 @@ public interface InterestScanRepository extends JpaRepository<InterestScan, UUID
                                   and offer.status = 'PENDING')
                and (scan.last_offered is null or scan.last_offered < :offerCooldownBefore)
                and (select count(*) from interest_agent agent where agent.user_id = scan.user_id) < :maxAgents
+               and exists (select 1 from user_llm_key llm_key where llm_key.user_id = scan.user_id)
              order by scan.scanned_through nulls first
              limit :batchSize
                for update of scan skip locked

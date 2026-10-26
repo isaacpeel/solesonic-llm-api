@@ -49,13 +49,15 @@ public class SecurityEventLogger {
             "/memories",
             "/documents",
             "/models",
+            "/llm-keys",
             "/users",
             "/addresses",
             "/slash",
             "/atlassian",
             "/confluence",
             "/broker",
-            "/push");
+            "/push",
+            "/sounds");
 
     private static final String ROUTE_KNOWN = "known";
     private static final String ROUTE_UNKNOWN = "unknown";

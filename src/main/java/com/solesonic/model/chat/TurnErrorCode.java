@@ -58,6 +58,12 @@ public enum TurnErrorCode {
     STREAM_UNAVAILABLE("STREAM_UNAVAILABLE"),
 
     /**
+     * The user has no model-server key, so no model may be called for them. Retrying cannot fix it;
+     * an administrator has to register one.
+     */
+    LLM_KEY_MISSING("LLM_KEY_MISSING"),
+
+    /**
      * Anything else.
      */
     INTERNAL("internal");

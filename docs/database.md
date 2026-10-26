@@ -255,6 +255,22 @@ again, and a login clears it. To see who has been concluded removed:
 - **No foreign key to anything**, as elsewhere in the schema. A user who has not signed in since a
   column was added has no value in it until their next request.
 
+### Model access keys (V3_41)
+
+`user_llm_key` holds each user's own model-server key, which every model call made for them carries
+in place of the shared service key: `user_id` (PK), `api_key` (`bytea`, encrypted by the same
+`BytesEncryptor` as the Atlassian and Google tokens), `key_hint` (the key's last four characters),
+`created`, `updated`, `updated_by` (the administrator who last set it). Written only through
+`/llm-keys`; read only through `UserLlmKeyRepository`, whose `findApiKey` is the one query that
+selects the key column.
+
+- **The claim queries depend on it.** `ChatMemoryReflectionRepository.findClaimable`,
+  `InterestScanRepository.findClaimable`, `InterestAgentRepository.findDue` and
+  `MemoryEmbeddingRepository.findStale` each require a `user_llm_key` row for the owner, so work for a
+  user without a key waits rather than being claimed and failed every tick.
+- **The user lifecycle purge leaves it alone**: a dormant user keeps their key. Only an administrator's
+  `DELETE` removes it.
+
 ### Push notifications — two tables (V3_36)
 
 | Table | Holds |

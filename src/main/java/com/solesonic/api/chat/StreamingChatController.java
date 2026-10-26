@@ -7,6 +7,7 @@ import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.chat.ChatStreamAccessService;
 import com.solesonic.service.chat.ChatStreamAccessService.ChatAccess;
 import com.solesonic.service.chat.events.ElicitationService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.redis.StreamResumeService;
 import com.solesonic.util.SseResponse;
@@ -37,19 +38,22 @@ public class StreamingChatController {
     private final ChatStreamAccessService chatStreamAccessService;
     private final ChatService chatService;
     private final ChatModelService chatModelService;
+    private final UserLlmKeyService userLlmKeyService;
 
     public StreamingChatController(RedisStreamingChatService streamingChatService,
                                    ElicitationService elicitationService,
                                    StreamResumeService streamResumeService,
                                    ChatStreamAccessService chatStreamAccessService,
                                    ChatService chatService,
-                                   ChatModelService chatModelService) {
+                                   ChatModelService chatModelService,
+                                   UserLlmKeyService userLlmKeyService) {
         this.streamingChatService = streamingChatService;
         this.elicitationService = elicitationService;
         this.streamResumeService = streamResumeService;
         this.chatStreamAccessService = chatStreamAccessService;
         this.chatService = chatService;
         this.chatModelService = chatModelService;
+        this.userLlmKeyService = userLlmKeyService;
     }
 
     @PostMapping(value = "/users/{userId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -64,9 +68,10 @@ public class StreamingChatController {
         }
 
         rejectSettingCommands(chatRequest);
+        userLlmKeyService.requireKey(userId);
 
         //Resolved before the response starts, so an unknown model is a status code and no chat is created.
-        String model = chatRequest.model() == null ? null : chatModelService.resolve(chatRequest.model());
+        String model = chatRequest.model() == null ? null : chatModelService.resolve(userId, chatRequest.model());
 
         return SseResponse.ok(streamingChatService.create(userId, chatRequest, model, authentication));
     }
@@ -104,12 +109,15 @@ public class StreamingChatController {
                     "An existing chat changes model through PUT /chats/{chatId}/model");
         }
 
+        userLlmKeyService.requireKey(userId);
+
         return SseResponse.ok(streamingChatService.update(chatId, userId, chatRequest, authentication));
     }
 
     /**
      * Checked before anything is persisted: by the time the turn could reject one, the user message
-     * is written and {@code RUN_STARTED} is out.
+     * is written and {@code RUN_STARTED} is out. The same holds for a user with no model key, which
+     * both send endpoints refuse with a {@code 403} before this point is passed.
      */
     private static void rejectSettingCommands(ChatRequest chatRequest) {
         if (chatRequest.namesSettingCommand()) {

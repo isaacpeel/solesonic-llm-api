@@ -1,15 +1,19 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
+import com.solesonic.service.llm.LlmCredentialScope;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
@@ -47,6 +51,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -71,6 +76,8 @@ import static org.mockito.Mockito.when;
 class PromptServiceTest {
 
     private static final String SERVER_REPORTED_MODEL = "qwen3-8b-instruct-q6";
+
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
 
     @Mock
     private ChatClient chatClient;
@@ -107,6 +114,9 @@ class PromptServiceTest {
     @Mock
     private UserMemoryService userMemoryService;
 
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
     private UUID chatId;
     private UUID userId;
 
@@ -131,6 +141,7 @@ class PromptServiceTest {
                 chatMessageService,
                 userMemoryService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
+                userLlmKeyService,
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
@@ -145,8 +156,10 @@ class PromptServiceTest {
         lenient().when(attachmentContextResolver.resolve(any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null));
 
-        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
+        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
                 .thenReturn(mock(Advisor.class));
+
+        lenient().when(userLlmKeyService.requireKey(any())).thenReturn(LLM_API_KEY);
 
         lenient().when(userPreferencesService.getZone(any())).thenReturn(ZoneOffset.UTC);
 
@@ -191,7 +204,7 @@ class PromptServiceTest {
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"))).thenReturn(Flux.just("done"));
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
 
         StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
                 .expectNext("done")
@@ -275,7 +288,7 @@ class PromptServiceTest {
         when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
-                any(), any(), anyString(), anyString())).thenReturn(Flux.just("tool-result"));
+                any(), any(), anyString(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId,
                         new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
@@ -283,7 +296,7 @@ class PromptServiceTest {
                 .verifyComplete();
 
         verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("openai/gpt-4o"));
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("openai/gpt-4o"), eq(LLM_API_KEY));
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {
@@ -351,6 +364,64 @@ class PromptServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         verifyNoInteractions(attachmentContextResolver);
+    }
+
+    /**
+     * A user without a key fails before any attachment is read, so they are not made to wait through
+     * vision and indexing calls that could only have been made on someone else's key.
+     */
+    @Test
+    void stream_forAUserWithNoKey_throwsBeforeResolvingAttachments() {
+        when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
+
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
+                .isInstanceOf(LlmKeyMissingException.class);
+
+        verifyNoInteractions(attachmentContextResolver, chatClient, slashCommandRouter);
+    }
+
+    /**
+     * Vision and document indexing are blocking calls made inside the resolver, so they see the
+     * user's key through the scope.
+     */
+    @Test
+    void stream_resolvesAttachmentsOnTheUsersKey() {
+        List<Optional<LlmApiKey>> keysSeen = new ArrayList<>();
+
+        when(attachmentContextResolver.resolve(any(), any(), any())).thenAnswer(_ -> {
+            keysSeen.add(LlmCredentialScope.userKey());
+            return new AttachmentResolution(List.of(), null);
+        });
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        assertThat(keysSeen).containsExactly(Optional.of(LLM_API_KEY));
+    }
+
+    /**
+     * A streamed call runs on the SDK's dispatcher, out of reach of the scope, so the key travels on
+     * the call itself.
+     */
+    @Test
+    void stream_sendsTheUsersKeyOnTheStreamedCallAndToRetrieval() {
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        ArgumentCaptor<OpenAiChatOptions.Builder> optionsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).options(optionsCaptor.capture());
+
+        assertThat(optionsCaptor.getValue().build().getCustomHeaders())
+                .containsEntry("Authorization", "Bearer sk-user-0000000001");
+        verify(vectorStoreService).retrievalAugmentationAdvisor(userId, chatId, LLM_API_KEY);
     }
 
     @Test
@@ -435,14 +506,14 @@ class PromptServiceTest {
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
-                any(), any(), anyString(), anyString())).thenReturn(Flux.just("tool-result"));
+                any(), any(), anyString(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
         verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"));
+                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"), eq(LLM_API_KEY));
 
         //A slash command never reaches the sticky-agent lookup: the router owns that bookkeeping.
         verify(a2aStickyAgentService, never()).getActiveAgent(any());

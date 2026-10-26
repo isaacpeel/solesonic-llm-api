@@ -148,8 +148,11 @@ Model names are environment variables as well, because a `llama-server`-style pr
 whichever single model it was launched with regardless of what is requested. On such a server the
 model name mainly seeds a new user's default model preference and labels the request.
 
-Each server is expected to run with no API key enforcement — the client is wired in Spring AI's
-no-auth mode, so no `Authorization` header is sent.
+Every client is built with `spring.ai.openai.api-key` (`OPENAI_API_KEY`), but that shared key is
+not what a user's calls carry: each user's own key, registered through `/llm-keys`, replaces it on
+every model call made for them (see [Security](security.md#per-user-model-keys)). The shared key is
+sent only to ingest global documents, which have no owner, and any other request on it is refused
+before it leaves. No new variable is needed — user keys live in the database, not in configuration.
 
 **What is a server-launch concern rather than app configuration.** Context size, batch size, thread
 count and GPU placement are flags on the target server (`--ctx-size`, `--batch-size`, `--threads`,
@@ -165,8 +168,7 @@ unqualified parameter there is no way to add a qualifier to — so nothing else 
 candidate. The remaining four models are hand-built in `config/openai` as
 `@Bean(defaultCandidate = false)` with a `@Qualifier`, and must be injected by qualifier only.
 
-`spring.ai.openai.api-key=none` is set because each server is expected to run with no API key
-enforcement.
+`spring.ai.openai.api-key` is `${OPENAI_API_KEY}`, the shared service key described above.
 
 ### Slash Commands Cache Configuration
 
@@ -466,6 +468,11 @@ token, so it searches on the application's client credentials; without the role 
 | `A2A_BASE_URI` | Base URI of the remote A2A agent host | `https://agents.yourdomain.com` | Yes | Maps to `solesonic.a2a.base-uri`; no default, so a missing value fails startup. The request timeout is fixed at `solesonic.a2a.timeout-seconds=300` |
 | `A2A_LITELLM_BASE_URI` | Base URL of the LiteLLM proxy whose agent gateway serves agents such as `/network` | `https://litellm.yourdomain.com` | Yes | Maps to `solesonic.a2a.litellm.base-uri`; no default. The API calls only `{base}/v1/agents`, `{base}/a2a/{agent}/.well-known/agent-card.json` and the card's own interface URL, and refuses any card whose endpoints are not on this scheme, host and port under `{path}/a2a/`. Use `https` unless LiteLLM is on the same host or a private network, since the virtual key travels on every call. An unreachable LiteLLM at startup is tolerated: discovery gives up after 10 seconds per call, and the API starts without its agents and logs a WARN |
 | `A2A_LITELLM_API_KEY` | LiteLLM virtual key, sent as `x-litellm-api-key: Bearer <key>` | `sk-…` | Yes | Maps to `solesonic.a2a.litellm.api-key`; no default. Scope it in LiteLLM to the agents izzybot may call (start with `network`) and treat it like `MCP_CLIENT_SECRET`. The user's token is never sent to LiteLLM |
+
+Sounds an agent sends with its reply are governed by two fixed properties, not environment
+variables: `solesonic.a2a.sound.max-bytes=5MB` (a larger clip is ignored) and
+`solesonic.a2a.sound.ttl=P7D` (how long a clip stays fetchable from `/sounds/{soundId}` after it was
+last cued). Both are required; neither has a default.
 
 ### CORS Configuration
 

@@ -2,12 +2,14 @@ package com.solesonic.config.openai;
 
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The vision model used to describe image attachments, served by the same OpenAI-compatible server
@@ -41,7 +43,8 @@ public class VisionOpenAiConfig {
     public OpenAiChatModel visionChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                            @Value("${spring.ai.openai.base-url}") String baseUrl,
                                            @Value("${solesonic.llm.vision.model}") String visionModel,
-                                           @Value("${solesonic.llm.vision.openai.read-timeout}") Duration readTimeout) {
+                                           @Value("${solesonic.llm.vision.openai.read-timeout}") Duration readTimeout,
+                                           List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -53,6 +56,7 @@ public class VisionOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 }

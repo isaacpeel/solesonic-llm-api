@@ -7,7 +7,9 @@ import com.solesonic.model.memory.UserMemory;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.repository.interest.InterestAgentRepository;
 import com.solesonic.repository.interest.InterestOfferRepository;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.repository.memory.UserMemoryRepository;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.push.PushNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +29,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -69,6 +72,9 @@ class InterestDiscoveryServiceTest {
     @Mock
     private PushNotificationService pushNotificationService;
 
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
     private final FakeChatModel fakeChatModel = new FakeChatModel();
 
     private InterestDiscoveryService interestDiscoveryService;
@@ -88,6 +94,7 @@ class InterestDiscoveryServiceTest {
                 pushNotificationService,
                 InterestSettingsFixture.settings(),
                 Clock.fixed(NOW, ZoneOffset.UTC),
+                userLlmKeyService,
                 fakeChatModel,
                 new ByteArrayResource("You suggest news topics for one user.".getBytes(StandardCharsets.UTF_8)));
 
@@ -103,6 +110,33 @@ class InterestDiscoveryServiceTest {
         when(interestAgentRepository.findTopicKeys(USER_ID)).thenReturn(List.of("places.leeds"));
         when(interestOfferRepository.findBlockedTopicKeys(eq(USER_ID), any())).thenReturn(List.of("finance.markets"));
         when(interestScanService.complete(eq(USER_ID), any(), any())).thenReturn(new InterestScanService.Outcome(true, OFFER_ID));
+        when(userLlmKeyService.asUser(any(), any())).thenAnswer(invocation -> invocation.<Supplier<?>>getArgument(1).get());
+    }
+
+    @Test
+    void discoversOnTheOwnersKey() {
+        fakeChatModel.respond("{'candidates':[]}");
+
+        interestDiscoveryService.discoverEligible();
+
+        verify(userLlmKeyService).asUser(eq(USER_ID), any());
+        assertThat(fakeChatModel.prompts).hasSize(1);
+    }
+
+    /**
+     * A key removed between the claim and the call is a failure like any other: no model call, no
+     * offer, one attempt counted.
+     */
+    @Test
+    void anOwnerWhoseKeyWasRemovedGetsNoModelCallAndNoOffer() {
+        doThrow(new LlmKeyMissingException()).when(userLlmKeyService).asUser(eq(USER_ID), any());
+
+        DiscoveryRun run = interestDiscoveryService.discoverEligible();
+
+        assertThat(fakeChatModel.prompts).isEmpty();
+        verify(interestScanService).recordFailure(USER_ID);
+        verify(pushNotificationService, never()).push(any(), any());
+        assertThat(run.failedCount()).isEqualTo(1);
     }
 
     @Test

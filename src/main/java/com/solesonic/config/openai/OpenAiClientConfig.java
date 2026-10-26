@@ -3,6 +3,7 @@ package com.solesonic.config.openai;
 import com.openai.client.OpenAIClient;
 import com.openai.client.OpenAIClientImpl;
 import com.openai.core.ClientOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.ai.openai.http.okhttp.SpringAiOpenAiHttpClient;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -10,6 +11,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * An OpenAI SDK client for the endpoint chat talks to, with the same base URL and key, for the parts
@@ -26,9 +28,14 @@ public class OpenAiClientConfig {
     @Qualifier(OPENAI_CLIENT)
     public OpenAIClient openAiClient(@Value("${spring.ai.openai.api-key}") String apiKey,
                                      @Value("${spring.ai.openai.base-url}") String baseUrl,
-                                     @Value("${spring.ai.openai.timeout}") Duration timeout) {
+                                     @Value("${spring.ai.openai.timeout}") Duration timeout,
+                                     List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
+        SpringAiOpenAiHttpClient.Builder httpClientBuilder = SpringAiOpenAiHttpClient.builder().timeout(timeout);
+
+        httpClientBuilderCustomizers.forEach(customizer -> customizer.customize(httpClientBuilder));
+
         ClientOptions clientOptions = ClientOptions.builder()
-                .httpClient(SpringAiOpenAiHttpClient.builder().timeout(timeout).build())
+                .httpClient(httpClientBuilder.build())
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
                 .timeout(timeout)

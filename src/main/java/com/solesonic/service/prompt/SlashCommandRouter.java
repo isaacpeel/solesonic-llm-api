@@ -2,6 +2,7 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ModelSlashCommand;
@@ -99,6 +100,7 @@ public class SlashCommandRouter {
      * @param authToken   the user's own bearer token, so a remote agent acts as the user
      * @param model       the chat model this turn uses — the chat's selection or the default,
      *                    resolved once by {@code PromptService}
+     * @param llmApiKey   the user's own key, which every model call of the turn carries
      */
     public Flux<String> route(SlashCommand slashCommand,
                               UUID chatId,
@@ -107,17 +109,18 @@ public class SlashCommandRouter {
                               AttachmentResolution attachments,
                               Map<String, Object> contextMap,
                               String authToken,
-                              String model) {
+                              String model,
+                              LlmApiKey llmApiKey) {
 
         return switch (slashCommand) {
             case PromptSlashCommand promptCommand -> releasingStickyAgent(chatId,
-                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model));
+                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey));
 
             case ToolSlashCommand toolCommand -> releasingStickyAgent(chatId,
-                    toolCallService.stream(chatId, message, toolCommand, contextMap));
+                    toolCallService.stream(chatId, message, toolCommand, contextMap, llmApiKey));
 
             case LocalToolSlashCommand localToolCommand -> releasingStickyAgent(chatId,
-                    toolCallService.streamLocal(chatId, message, localToolCommand, contextMap));
+                    toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, llmApiKey));
 
             case AgentSlashCommand agentCommand -> {
                 log.info("A2A agent invoke: {}", agentCommand.command());
@@ -144,7 +147,8 @@ public class SlashCommandRouter {
                                          String message,
                                          AttachmentResolution attachments,
                                          Map<String, Object> contextMap,
-                                         String model) {
+                                         String model,
+                                         LlmApiKey llmApiKey) {
 
         log.info("Prompt invoke: {}", promptCommand.name());
 
@@ -169,12 +173,12 @@ public class SlashCommandRouter {
 
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
                 .tools((Object[]) toolCallbacks)
-                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId))
+                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture))
                 .toolContext(contextMap)
-                .options(chatOptions(model, chatTimeout, correlationId))
+                .options(chatOptions(model, chatTimeout, correlationId, llmApiKey))
                 .stream()
                 .chatResponse();
 

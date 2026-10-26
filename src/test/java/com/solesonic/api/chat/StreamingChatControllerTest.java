@@ -4,6 +4,8 @@ import com.agui.community.core.message.ToolMessage;
 import com.solesonic.exception.chat.ChatModelException;
 import com.solesonic.exception.handler.AttachmentExceptionHandler;
 import com.solesonic.exception.handler.ChatModelExceptionHandler;
+import com.solesonic.exception.handler.LlmKeyExceptionHandler;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.mcp.client.elicitation.ElicitationProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.model.ChatModelErrorCode;
@@ -13,6 +15,7 @@ import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.chat.ChatStreamAccessService;
 import com.solesonic.service.chat.ChatStreamAccessService.ChatAccess;
 import com.solesonic.service.chat.events.ElicitationService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.redis.RedisStreamingChatService.CancelOutcome;
 import com.solesonic.service.redis.StreamResumeService;
@@ -75,6 +78,9 @@ class StreamingChatControllerTest {
     private ChatModelService chatModelService;
 
     @Mock
+    private UserLlmKeyService userLlmKeyService;
+
+    @Mock
     private Authentication authentication;
 
     private StreamingChatController streamingChatController;
@@ -88,7 +94,41 @@ class StreamingChatControllerTest {
         userId = UUID.randomUUID();
 
         streamingChatController = new StreamingChatController(streamingChatService, elicitationService,
-                streamResumeService, chatStreamAccessService, chatService, chatModelService);
+                streamResumeService, chatStreamAccessService, chatService, chatModelService, userLlmKeyService);
+    }
+
+    /**
+     * Refused before anything is persisted, with a status a streaming client still receives: a user
+     * the model cannot answer gets no chat, no message and no {@code RUN_STARTED}.
+     */
+    @Test
+    void refusesANewChatForAUserWithNoModelKey() throws Exception {
+        when(chatStreamAccessService.forNewChat(any(), any())).thenReturn(ChatAccess.GRANTED);
+        when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
+
+        mockMvc().perform(post("/streaming/chats/users/{userId}", userId)
+                        .principal(authentication)
+                        .accept(MediaType.TEXT_EVENT_STREAM)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"chatMessage\":\"hello\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("LLM_KEY_MISSING"))
+                .andExpect(jsonPath("$.message").value(LlmKeyMissingException.MESSAGE));
+
+        verify(streamingChatService, never()).create(any(), any(), any(), any());
+    }
+
+    @Test
+    void refusesATurnOnAnExistingChatForAUserWithNoModelKey() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
+
+        when(chatStreamAccessService.forExistingChat(authentication, chatId, userId)).thenReturn(ChatAccess.GRANTED);
+        when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
+
+        assertThatThrownBy(() -> streamingChatController.update(userId, chatId, chatRequest, null, authentication))
+                .isInstanceOf(LlmKeyMissingException.class);
+
+        verify(streamingChatService, never()).update(any(), any(), any(), any());
     }
 
     @Test
@@ -207,7 +247,7 @@ class StreamingChatControllerTest {
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), "OPENAI/GPT-4O");
 
         when(chatStreamAccessService.forNewChat(authentication, userId)).thenReturn(ChatAccess.GRANTED);
-        when(chatModelService.resolve("OPENAI/GPT-4O")).thenReturn("openai/gpt-4o");
+        when(chatModelService.resolve(userId, "OPENAI/GPT-4O")).thenReturn("openai/gpt-4o");
         when(streamingChatService.create(userId, chatRequest, "openai/gpt-4o", authentication)).thenReturn(Flux.empty());
 
         assertThat(streamingChatController.create(userId, chatRequest, authentication).getStatusCode())
@@ -225,7 +265,7 @@ class StreamingChatControllerTest {
 
         streamingChatController.create(userId, chatRequest, authentication);
 
-        verify(chatModelService, never()).resolve(any());
+        verify(chatModelService, never()).resolve(any(), any());
         verify(streamingChatService).create(userId, chatRequest, null, authentication);
     }
 
@@ -236,7 +276,7 @@ class StreamingChatControllerTest {
     @Test
     void refusesAnUnknownModelBeforeCreatingAChat() throws Exception {
         when(chatStreamAccessService.forNewChat(any(), any())).thenReturn(ChatAccess.GRANTED);
-        when(chatModelService.resolve("nope"))
+        when(chatModelService.resolve(userId, "nope"))
                 .thenThrow(new ChatModelException(ChatModelErrorCode.UNKNOWN_MODEL, "The model nope is not offered."));
 
         mockMvc().perform(post("/streaming/chats/users/{userId}", userId)
@@ -253,7 +293,7 @@ class StreamingChatControllerTest {
     @Test
     void answersServiceUnavailableWhenTheModelListCannotBeFetched() throws Exception {
         when(chatStreamAccessService.forNewChat(any(), any())).thenReturn(ChatAccess.GRANTED);
-        when(chatModelService.resolve("openai/gpt-4o")).thenThrow(
+        when(chatModelService.resolve(userId, "openai/gpt-4o")).thenThrow(
                 new ChatModelException(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE, "The model list could not be retrieved."));
 
         mockMvc().perform(post("/streaming/chats/users/{userId}", userId)
@@ -333,7 +373,7 @@ class StreamingChatControllerTest {
 
     private MockMvc mockMvc() {
         return MockMvcBuilders.standaloneSetup(streamingChatController)
-                .setControllerAdvice(new ChatModelExceptionHandler(), new AttachmentExceptionHandler())
+                .setControllerAdvice(new ChatModelExceptionHandler(), new AttachmentExceptionHandler(), new LlmKeyExceptionHandler())
                 .build();
     }
 }

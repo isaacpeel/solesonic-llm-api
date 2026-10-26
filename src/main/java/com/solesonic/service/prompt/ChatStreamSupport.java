@@ -3,6 +3,7 @@ package com.solesonic.service.prompt;
 import com.solesonic.config.chat.ResponseMetadataCaptureAdvisor;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import org.apache.commons.lang3.StringUtils;
@@ -71,12 +72,17 @@ public final class ChatStreamSupport {
      * that built its own options could otherwise stream from a llama.cpp-backed model and never see
      * {@code timings} at all, which is what {@link com.solesonic.model.chat.ResponseMetadataCapture}
      * needs for everything but {@code cachedPromptTokens}, {@code totalMillis} and {@code routedModel}.
+     * <p>
+     * {@code llmApiKey} is the user's own key, as a per-request {@code Authorization} header. A streamed
+     * call runs on the SDK's dispatcher thread, out of reach of {@code LlmCredentialScope}, so the
+     * header is the only way the user's key reaches it.
      */
-    public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout, UUID correlationId) {
+    public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout, UUID correlationId, LlmApiKey llmApiKey) {
         return OpenAiChatOptions.builder()
                 .model(model)
                 .streamUsage(true)
                 .timeout(timeout)
+                .customHeaders(llmApiKey.authorizationHeaders())
                 .extraBody(Map.of(
                         METADATA, Map.of(TURN_ID, correlationId.toString()),
                         TIMINGS_PER_TOKEN, true));
@@ -157,9 +163,8 @@ public final class ChatStreamSupport {
 
     /**
      * The same write for a route that sends no correlation id, and so has no proxy headers to
-     * attach. {@code ToolCallService} is the only one: it never sets request options, taking them
-     * from the hand-built tool-call model instead, and overriding them at the call site to smuggle
-     * an id in would replace that model's own base URL and key along with them.
+     * attach. {@code ToolCallService} is the only one: its task client adds nothing to the hand-built
+     * tool-call model's options but the user's key.
      */
     static void persist(ResponseMetadataCapture responseMetadataCapture,
                         ChatMessageService chatMessageService,

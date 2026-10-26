@@ -2,6 +2,7 @@ package com.solesonic.config.a2a;
 
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AElicitationExtension;
+import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.security.McpFilterService;
 import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallContext;
 import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallInterceptor;
@@ -44,7 +45,7 @@ public class A2AAuthInterceptor extends ClientCallInterceptor {
 
         Map<String, String> authenticatedHeaders = new HashMap<>(headers);
         authenticatedHeaders.put(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
-        authenticatedHeaders.put(A2AHeaders.A2A_EXTENSIONS, A2AElicitationExtension.URI);
+        authenticatedHeaders.put(A2AHeaders.A2A_EXTENSIONS, String.join(", ", A2AElicitationExtension.URI, A2ASoundExtension.URI));
 
         return new PayloadAndHeaders(payload, authenticatedHeaders);
     }

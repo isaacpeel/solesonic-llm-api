@@ -3,6 +3,7 @@ package com.solesonic.api.chat;
 import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelRequest;
 import com.solesonic.model.chat.model.ChatModelState;
+import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.ChatModelService;
 import com.solesonic.service.chat.ChatService;
 import org.slf4j.Logger;
@@ -34,28 +35,33 @@ public class ChatModelController {
 
     private final ChatModelService chatModelService;
     private final ChatService chatService;
+    private final UserRequestContext userRequestContext;
 
-    public ChatModelController(ChatModelService chatModelService, ChatService chatService) {
+    public ChatModelController(ChatModelService chatModelService,
+                               ChatService chatService,
+                               UserRequestContext userRequestContext) {
         this.chatModelService = chatModelService;
         this.chatService = chatService;
+        this.userRequestContext = userRequestContext;
     }
 
     /**
-     * Without a chat, the new-chat composer's case: the list and the default only.
+     * Without a chat, the new-chat composer's case: the list and the default only. The list is the
+     * models the caller's own key may use.
      */
     @GetMapping("/models")
     public ResponseEntity<ChatModelOptions> options(@RequestParam(required = false) UUID chatId) {
         if (chatId == null) {
             log.info("Listing chat models");
 
-            return ResponseEntity.ok(chatModelService.options());
+            return ResponseEntity.ok(chatModelService.options(userRequestContext.getUserId()));
         }
 
         log.info("Listing chat models for chat {}", chatId);
 
         chatService.requireOwned(chatId);
 
-        return ResponseEntity.ok(chatModelService.options(chatId));
+        return ResponseEntity.ok(chatModelService.options(userRequestContext.getUserId(), chatId));
     }
 
     /**
@@ -67,7 +73,7 @@ public class ChatModelController {
 
         chatService.requireOwned(chatId);
 
-        return ResponseEntity.ok(chatModelService.select(chatId, chatModelRequest.model()));
+        return ResponseEntity.ok(chatModelService.select(userRequestContext.getUserId(), chatId, chatModelRequest.model()));
     }
 
     /**

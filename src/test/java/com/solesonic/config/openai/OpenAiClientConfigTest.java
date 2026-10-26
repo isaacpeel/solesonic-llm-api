@@ -1,7 +1,11 @@
 package com.solesonic.config.openai;
 
 import com.openai.client.OpenAIClient;
+import com.openai.errors.OpenAIIoException;
 import com.openai.models.models.Model;
+import com.openai.models.models.ModelListParams;
+import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.service.llm.LlmCredentialScope;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -16,6 +20,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Runs the configured client against a real local HTTP endpoint, because what matters here is what
@@ -63,7 +68,7 @@ class OpenAiClientConfigTest {
         String baseUrl = "http://localhost:" + httpServer.getAddress().getPort() + "/v1";
 
         OpenAIClient openAiClient = new OpenAiClientConfig()
-                .openAiClient("service-key", baseUrl, Duration.ofSeconds(5));
+                .openAiClient("service-key", baseUrl, Duration.ofSeconds(5), List.of());
 
         try {
             List<String> modelIds = openAiClient.models().list().data().stream()
@@ -76,5 +81,70 @@ class OpenAiClientConfigTest {
         } finally {
             openAiClient.close();
         }
+    }
+
+    /**
+     * What every per-user call rests on: a request's own {@code Authorization} header replaces the
+     * key the client was built with.
+     */
+    @Test
+    void aRequestHeaderReplacesTheClientKey() {
+        OpenAIClient openAiClient = userKeyGuardedClient();
+
+        try {
+            openAiClient.models().list(ModelListParams.builder()
+                    .putAdditionalHeader("Authorization", new LlmApiKey("user-key-0001").bearer())
+                    .build());
+
+            assertThat(authorization.get()).isEqualTo("Bearer user-key-0001");
+        } finally {
+            openAiClient.close();
+        }
+    }
+
+    @Test
+    void aBlockingCallInsideAUserScopeCarriesTheUsersKey() {
+        OpenAIClient openAiClient = userKeyGuardedClient();
+
+        try {
+            LlmCredentialScope.runAsUser(new LlmApiKey("user-key-0002"), () -> openAiClient.models().list());
+
+            assertThat(authorization.get()).isEqualTo("Bearer user-key-0002");
+        } finally {
+            openAiClient.close();
+        }
+    }
+
+    @Test
+    void aCallOnTheServiceKeyOutsideAnyScopeNeverLeaves() {
+        OpenAIClient openAiClient = userKeyGuardedClient();
+
+        try {
+            assertThatThrownBy(() -> openAiClient.models().list()).isInstanceOf(OpenAIIoException.class);
+
+            assertThat(requestedPath.get()).isNull();
+        } finally {
+            openAiClient.close();
+        }
+    }
+
+    @Test
+    void theServiceScopeSendsTheServiceKey() {
+        OpenAIClient openAiClient = userKeyGuardedClient();
+
+        try {
+            LlmCredentialScope.runAsService(() -> openAiClient.models().list());
+
+            assertThat(authorization.get()).isEqualTo("Bearer service-key");
+        } finally {
+            openAiClient.close();
+        }
+    }
+
+    private OpenAIClient userKeyGuardedClient() {
+        String baseUrl = "http://localhost:" + httpServer.getAddress().getPort() + "/v1";
+
+        return new OpenAiClientConfig().openAiClient("service-key", baseUrl, Duration.ofSeconds(5),
+                List.of(new UserLlmKeyConfig().userLlmKeyCustomizer("service-key")));
     }
 }

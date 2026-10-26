@@ -9,11 +9,15 @@ import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.A2AElicitationExtension;
 import com.solesonic.model.a2a.A2APrompt;
+import com.solesonic.model.a2a.A2ASound;
+import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.a2a.RegisteredAgent;
 import com.solesonic.model.chat.ElicitationEvent;
+import com.solesonic.model.chat.SoundCue;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -52,6 +56,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -73,6 +78,9 @@ public class A2AAgentService {
     private final JsonMapper jsonMapper;
     private final LiteLlmA2AAuthInterceptor liteLlmAuthInterceptor;
     private final Duration timeout;
+    private final A2ASoundService soundService;
+    private final PendingMessageMetadata pendingMessageMetadata;
+    private final long maxSoundBytes;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
                            TokenExchangeService tokenExchangeService,
@@ -82,7 +90,9 @@ public class A2AAgentService {
                            ChatMessageService chatMessageService,
                            ElicitationService elicitationService,
                            JsonMapper jsonMapper,
-                           A2AClientProperties properties) {
+                           A2AClientProperties properties,
+                           A2ASoundService soundService,
+                           PendingMessageMetadata pendingMessageMetadata) {
         this.agentRegistry = agentRegistry;
         this.tokenExchangeService = tokenExchangeService;
         this.mcpFilterService = mcpFilterService;
@@ -93,6 +103,9 @@ public class A2AAgentService {
         this.jsonMapper = jsonMapper;
         this.liteLlmAuthInterceptor = new LiteLlmA2AAuthInterceptor(properties.litellm().apiKey());
         this.timeout = Duration.ofSeconds(properties.timeoutSeconds());
+        this.soundService = soundService;
+        this.pendingMessageMetadata = pendingMessageMetadata;
+        this.maxSoundBytes = properties.sound().maxBytes().toBytes();
     }
 
     /**
@@ -138,7 +151,7 @@ public class A2AAgentService {
                 .contextId(chatId.toString())
                 .taskId(activeTaskId)
                 .messageId(UUID.randomUUID().toString())
-                .extensions(List.of(A2AElicitationExtension.URI))
+                .extensions(List.of(A2AElicitationExtension.URI, A2ASoundExtension.URI))
                 .parts(new TextPart(message))
                 .build();
     }
@@ -276,6 +289,13 @@ public class A2AAgentService {
 
     private void emitArtifactUpdate(DelegatedTurn turn, TaskArtifactUpdateEvent artifactEvent) {
         Artifact artifact = artifactEvent.artifact();
+        Optional<A2ASound> sound = A2ASoundExtension.sound(artifact, maxSoundBytes);
+
+        if (sound.isPresent()) {
+            turn.sound(sound.get());
+            return;
+        }
+
         boolean append = Boolean.TRUE.equals(artifactEvent.append());
         turn.recordArtifact(artifact.artifactId(), extractText(artifact.parts()), append);
         emitParts(turn, artifact.parts());
@@ -292,6 +312,17 @@ public class A2AAgentService {
         }
 
         for (Artifact artifact : artifacts) {
+            if (turn.soundCued(artifact.artifactId())) {
+                continue;
+            }
+
+            Optional<A2ASound> sound = A2ASoundExtension.sound(artifact, maxSoundBytes);
+
+            if (sound.isPresent()) {
+                turn.sound(sound.get());
+                continue;
+            }
+
             String text = extractText(artifact.parts());
 
             if (turn.alreadyShown(artifact.artifactId(), text)) {
@@ -363,6 +394,8 @@ public class A2AAgentService {
         private final AtomicBoolean ended = new AtomicBoolean();
         private final AtomicBoolean awaitingAnswer = new AtomicBoolean();
         private final Map<String, String> shownArtifacts = new ConcurrentHashMap<>();
+        private final Set<String> cuedSounds = ConcurrentHashMap.newKeySet();
+        private final AtomicBoolean textEmitted = new AtomicBoolean();
         private final ExchangeWatchdog watchdog;
         private volatile Consumer<Message> sender = _ -> {
         };
@@ -387,6 +420,7 @@ public class A2AAgentService {
                 return;
             }
 
+            textEmitted.set(true);
             segment.append(text);
             sink.next(text);
         }
@@ -414,6 +448,38 @@ public class A2AAgentService {
          */
         boolean alreadyShown(String artifactId, String text) {
             return text.equals(shownArtifacts.get(artifactId));
+        }
+
+        boolean soundCued(String artifactId) {
+            return cuedSounds.contains(artifactId);
+        }
+
+        /**
+         * Cues a sound for the reply's start frame. Only the turn's first sound is played, and only
+         * before any reply text: the start frame carries one cue and is published with the first
+         * chunk, so a later sound could never be heard, and storing it would only cost Redis. A task
+         * snapshot repeating a sound already seen is skipped. The cue is pending before this returns,
+         * while the clip is stored in the background; a failed store leaves a fetch that 404s, never a
+         * failed turn.
+         */
+        void sound(A2ASound sound) {
+            if (!cuedSounds.add(sound.cueId())) {
+                return;
+            }
+
+            if (ended.get() || textEmitted.get() || cuedSounds.size() > 1) {
+                log.debug("Ignoring an A2A sound for chat {}: only one, sent before the reply, is played", chatId);
+                return;
+            }
+
+            SoundCue cue = soundService.cue(sound);
+            pendingMessageMetadata.put(chatId, A2ASoundExtension.METADATA_KEY, cue);
+
+            soundService.store(cue.soundId(), sound)
+                    .doOnError(exception -> log.warn("Could not store the A2A sound cued for chat {} ({})", chatId,
+                            exception.getClass().getSimpleName()))
+                    .onErrorComplete()
+                    .subscribe();
         }
 
         /**

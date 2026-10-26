@@ -14,9 +14,11 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.web.reactive.function.client.ClientResponse;
+import org.springframework.util.unit.DataSize;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +37,8 @@ class A2AAgentRegistryTest {
 
     private A2AAgentRegistry registry(HttpStatus agentListStatus) {
         A2AClientProperties properties = new A2AClientProperties(false, 5, AGENT_HOST,
-                new A2AClientProperties.Litellm(GATEWAY, "sk-izzybot"));
+                new A2AClientProperties.Litellm(GATEWAY, "sk-izzybot"),
+                new A2AClientProperties.Sound(DataSize.ofMegabytes(5), Duration.ofDays(7)));
 
         WebClient agentHostWebClient = WebClient.builder()
                 .baseUrl(AGENT_HOST)

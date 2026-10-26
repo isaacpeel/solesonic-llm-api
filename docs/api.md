@@ -28,6 +28,15 @@ All chat creation and continuation happens over Server-Sent Events (SSE). There 
 `{userId}` must be the subject of the bearer token, and `{chatId}` must name a chat that user owns —
 otherwise `403`. An unknown `{chatId}` is `404`.
 
+A user with no [model access key](#model-access-keys) is refused by both send endpoints with `403`
+and a JSON body, before anything is persisted — no chat, no message, no `RUN_STARTED`:
+
+```json
+{ "code": "LLM_KEY_MISSING", "message": "Model access isn't configured for your account. Ask an administrator." }
+```
+
+A key removed while a turn is already running ends that turn with `RUN_ERROR` code `LLM_KEY_MISSING`.
+
 ### Start Streaming Chat
 
 - **Endpoint**: `POST /streaming/chats/users/{userId}`
@@ -140,7 +149,7 @@ A turn is one AG-UI run, with `threadId` = the chat id.
 | Event | Description |
 |-------|-------------|
 | `RUN_STARTED` | First frame of every turn. `input.messages[0]` is the persisted user message — see below |
-| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"` |
+| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"`, and `metadata` when the reply has a sound to play — see below |
 | `TEXT_MESSAGE_CONTENT` | Incremental assistant response text, in `delta` |
 | `TEXT_MESSAGE_END` | The assistant's reply is complete |
 | `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | An MCP tool is asking the user something — see [elicitation.md](elicitation.md) |
@@ -179,6 +188,7 @@ keepalives and mid-turn image frames working across an elicitation. It is not an
 | `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
 | `CONTEXT_LENGTH_EXCEEDED` | The conversation — history, retrieved documents, and attachments combined — exceeds the model's context window | Nothing to retry as-is — start a new conversation, or remove an attachment or some earlier messages |
 | `STREAM_UNAVAILABLE` | The durable Redis stream this response is built from failed to read; the turn itself may still be running | Reconnect via `GET .../stream` to resume — see [Resume a Stream](#resume-a-stream) |
+| `LLM_KEY_MISSING` | The user has no model access key, so no model may be called for them — see [Model Access Keys](#model-access-keys). The message is fixed and safe to show | Nothing a retry fixes — an administrator has to register a key |
 | `internal` | Anything else | Retry; if it keeps failing, it is a server bug |
 
 `timeout` and `internal` are lowercase for backward compatibility — they predate this table. Every
@@ -217,6 +227,45 @@ image appears in history.
 The same references are repeated on the `RUN_FINISHED` result as `message.generatedImages`, so a client
 that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
 De-duplicate by `imageId`.
+
+### Sounds on TEXT_MESSAGE_START
+
+An A2A agent can send a sound to play with its reply (the Family Feud theme on a new game). The
+reply's start frame then carries AG-UI `metadata` under the namespaced key `solesonic/sound`;
+a frame without a sound has no `metadata` field at all:
+
+```json
+{
+  "type": "TEXT_MESSAGE_START",
+  "messageId": "…",
+  "role": "assistant",
+  "metadata": {
+    "solesonic/sound": {
+      "cueId": "sound-…",
+      "soundId": "<sha256 hex of the bytes>",
+      "cue": "theme",
+      "playOnce": true,
+      "source": { "type": "url", "value": "/izzybot/sounds/<soundId>", "mimeType": "audio/mpeg" }
+    }
+  }
+}
+```
+
+`source` has AG-UI's `PartSource` shape, and `value` is context-relative like `imageUrl`. `cueId`
+identifies this one cue — play each `cueId` once — while `soundId` identifies the clip, which is the
+same every game, so never de-duplicate on it. Only the cue travels on the stream; the bytes are
+fetched from `source.value`, and the clip is written to Redis in the background, so a fetch made the
+instant the frame arrives can `404` once — retry it once, then stay silent.
+
+#### Fetch a Sound
+
+`GET /sounds/{soundId}` — any signed-in user. A sound is the same for every user and its id is only
+learned from a stream the caller could read, so there is no ownership check.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | The clip, with its stored `Content-Type` (always `audio/*`), `ETag: "<soundId>"` and `Cache-Control: max-age=31536000, private, immutable` — the id is the hash of the bytes |
+| `404` | Unknown, malformed or expired id. A clip is kept for `solesonic.a2a.sound.ttl` (7 days) after it was last cued |
 
 ### RUN_FINISHED Event Payload
 
@@ -738,7 +787,8 @@ same as [Delete a Chat](#delete-a-chat): wait for `RUN_FINISHED` first, or send
 
 Which chat model a conversation uses — the endpoints behind [`/model`](#model-built-in-setting-command).
 The model list is the OpenAI-compatible endpoint's `GET /models`, asked live on every call with the
-same credentials chat uses; it is never cached.
+caller's own [model access key](#model-access-keys), so it lists exactly the models that key may use;
+it is never cached. A caller with no key is `403` `LLM_KEY_MISSING` on the list and on a selection.
 
 A selection applies to every later turn of the chat that reaches the main chat model — plain
 messages and MCP-prompt commands. Tool commands, A2A agents and the vision, ETL and RAG-task models
@@ -959,6 +1009,69 @@ unaffected.
 
 Not to be confused with [`DELETE /chatgroups/{chatGroupId}/chats/{chatId}`](#remove-a-conversation-from-a-group),
 which unfiles a single conversation and leaves the group standing.
+
+---
+
+## Model Access Keys
+
+Each user's own model-server key (a LiteLLM virtual key, created in LiteLLM's own admin UI). Every
+model call made for the user carries it instead of the shared service key, so spend, budgets and
+model access are the user's. A user without one gets no model call at all — see
+[Streaming Chat API](#streaming-chat-api) and `LLM_KEY_MISSING`. Rules: [Security](security.md#per-user-model-keys).
+
+Every endpoint requires the `llm-key-admin` role. The key is write-only: no response carries it, and
+only its last four characters are kept in the clear, as `keyHint`.
+
+### UserLlmKeySummary
+
+```json
+{
+  "userId": "4f6c…",
+  "username": "sam",
+  "keyHint": "9f2a",
+  "created": "2026-10-26T15:04:05Z",
+  "updated": "2026-10-26T15:04:05Z",
+  "updatedBy": "a1b2…"
+}
+```
+
+`username` is `null` for a user who has not signed in since profiles were recorded. `created` is when
+the user first got a key; `updated` and `updatedBy` say when, and by whom, it was last set.
+
+Failures carry a real status and a coded body, like the model selection endpoints:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `INVALID_LLM_KEY` | `400` | Malformed (under 12 or over 512 characters, or with whitespace or non-ASCII), the shared service key, or refused by the model server. Nothing is stored |
+| `LLM_KEY_VALIDATION_UNAVAILABLE` | `503` | The model server could not be reached to check the key. Nothing is stored |
+| `LLM_KEY_MISSING` | `403` | Returned by the chat endpoints, not these: the caller has no key |
+
+### List Keys
+
+- **Endpoint**: `GET /llm-keys`
+- **Query Parameters**: `page`, `size` (default 50)
+- **Response**: `200 OK`, a page of `UserLlmKeySummary`, most recently changed first
+
+### Get a User's Key
+
+- **Endpoint**: `GET /llm-keys/{userId}`
+- **Response**: `200 OK` with a `UserLlmKeySummary`, or `404` when the user has no key
+
+### Register or Replace a User's Key
+
+- **Endpoint**: `PUT /llm-keys/{userId}`
+- **Request Body**: `{"apiKey": "sk-…"}`
+- **Response**: `200 OK` with the `UserLlmKeySummary`
+
+The key is trimmed and then checked by asking the model server for its model list with it; only a
+key the server accepts is stored. Idempotent: putting the same key again only moves `updated`.
+
+### Remove a User's Key
+
+- **Endpoint**: `DELETE /llm-keys/{userId}`
+- **Response**: `204 No Content`, or `404` when the user had no key
+
+The user loses model access on their next call. Their memories, documents and chats are untouched.
 
 ---
 
@@ -1214,6 +1327,9 @@ sort appended to it is either an unknown property or a perturbation that paging 
 - **Endpoint**: `POST /documents/data/search`
 - **Request Body**: `VectorSearch` containing the query text
 - **Response**: Array of matching document text excerpts ranked by similarity
+
+The query is embedded on the caller's own model access key; a caller with none is `403`
+`LLM_KEY_MISSING`.
 
 ### Process the Ingestion Queue
 
