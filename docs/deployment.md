@@ -23,6 +23,9 @@ The application supports a `prod` profile optimized for production environments 
 
 ### External Dependencies
 - **PostgreSQL 12+** with pgvector extension
+- **`pg_trgm`** (ships with Postgres contrib). Migration `V3_43` creates it; on a database whose Flyway
+  role lacks `CREATE` on the database, run `CREATE EXTENSION IF NOT EXISTS pg_trgm;` as a superuser
+  before upgrading
 - **Six OpenAI-compatible model endpoints** (all external) — chat, ETL, vision, embedding, RAG task
   and tool-call, configured by `CHAT_OPENAI_HOST`, `ETL_OPENAI_HOST`, `VISION_OPENAI_HOST`,
   `EMBEDDING_OPENAI_HOST`, `RAG_TASK_OPENAI_HOST` and `TOOL_CALL_OPENAI_HOST`. Several may point at

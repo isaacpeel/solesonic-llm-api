@@ -1,6 +1,7 @@
 package com.solesonic.api.chat;
 
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatSearchMatch;
 import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.security.ResourceOwnershipService;
 import org.junit.jupiter.api.BeforeEach;
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -19,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -121,6 +124,81 @@ class ChatControllerTest {
                 .andExpect(status().isOk());
 
         verify(chatService, never()).getUngroupedByUserId(any(), any());
+    }
+
+    @Test
+    void listsWithoutSearchingWhenTheQueryIsBlank() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+
+        when(chatService.getByUserId(eq(userId), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(chat), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("q", "   "))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(chatId.toString()))
+                .andExpect(jsonPath("$.content[0].match").doesNotExist());
+
+        verify(chatService, never()).searchByUserId(any(), any(), any());
+        verify(chatService, never()).searchUngroupedByUserId(any(), any(), any());
+    }
+
+    @Test
+    void searchesEveryChatWhenAQueryIsGiven() throws Exception {
+        UUID chatMessageId = UUID.randomUUID();
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setMatch(new ChatSearchMatch(chatMessageId, MessageType.ASSISTANT,
+                ZonedDateTime.parse("2026-10-24T09:14:40-06:00"), "the unifi switch", 4, 5));
+
+        when(chatService.searchByUserId(eq(userId), eq("unifi"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(chat), PageRequest.of(0, 20), 1));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("q", "unifi"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content[0].id").value(chatId.toString()))
+                .andExpect(jsonPath("$.content[0].match.chatMessageId").value(chatMessageId.toString()))
+                .andExpect(jsonPath("$.content[0].match.messageType").value("ASSISTANT"))
+                .andExpect(jsonPath("$.content[0].match.snippet").value("the unifi switch"))
+                .andExpect(jsonPath("$.content[0].match.highlightStart").value(4))
+                .andExpect(jsonPath("$.content[0].match.highlightLength").value(5))
+                .andExpect(jsonPath("$.page.totalElements").value(1));
+
+        verify(chatService, never()).getByUserId(any(), any());
+        verify(chatService, never()).searchUngroupedByUserId(any(), any(), any());
+    }
+
+    @Test
+    void searchesOnlyUngroupedChatsWhenBothAreAskedFor() throws Exception {
+        when(chatService.searchUngroupedByUserId(eq(userId), eq("unifi"), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("q", "unifi").param("ungrouped", "true"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.page.totalElements").value(0));
+
+        verify(chatService, never()).searchByUserId(any(), any(), any());
+        verify(chatService, never()).getUngroupedByUserId(any(), any());
+    }
+
+    @Test
+    void deniesSearchingAnotherUsersChats() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("q", "unifi"))
+                .andExpect(status().isForbidden());
+
+        verify(chatService, never()).searchByUserId(any(), any(), any());
+        verify(chatService, never()).searchUngroupedByUserId(any(), any(), any());
+    }
+
+    @Test
+    void propagatesBadRequestForAnInvalidQuery() throws Exception {
+        when(chatService.searchByUserId(eq(userId), eq("u"), any(Pageable.class)))
+                .thenThrow(new ResponseStatusException(HttpStatus.BAD_REQUEST));
+
+        mockMvc.perform(get("/chats/users/{userId}", userId).param("q", "u"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

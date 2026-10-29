@@ -341,6 +341,22 @@ V3_42 was rewritten in place before release. A local database that applied the e
 must drop its `game`, `game_participant` and `game_invite` tables, the `chat.kind`, `chat_message.sender_user_id`
 and `push_preference.game_*` columns, and the `flyway_schema_history` row for version `3.42` before startup.
 
+### Chat search indexes (V3_43)
+
+Backs the `q` search on `GET /chats/users/{userId}`, whose query is `lower(column) like '%q%'`.
+
+- **`pg_trgm`** is created by the migration itself, unlike `vector`, `hstore` and `uuid-ossp`. It is a
+  *trusted* extension (PG13+), so the database owner can create it without superuser, provided the
+  Flyway role has `CREATE` on the database. `docker/init_schema.*` creates it too.
+- **`chat_message_message_trgm_idx`** and **`chat_name_trgm_idx`**: `gin (lower(...) gin_trgm_ops)`,
+  matching the expression the repository emits. Trigrams rather than full-text search, because a
+  search box needs partial words (`unif` → "unifi"), which `tsvector` does not match.
+- **`chat_message_chat_id_idx`** on `(chat_id, timestamp)`. `chat_message` had no `chat_id` index
+  before, which every `findByChatId` and the search's `exists` need.
+- **`chat_user_timestamp_idx`** on `(user_id, timestamp desc, id desc)`, the search's ordering.
+- No partial index on `message_type`: the query passes the types as a bind parameter, and Postgres
+  cannot use a partial index whose condition depends on one.
+
 ## Vector Storage with pgvector
 
 The project uses the pgvector extension for PostgreSQL to store and query vector embeddings efficiently. This is crucial for the Retrieval Augmented Generation (RAG) functionality.

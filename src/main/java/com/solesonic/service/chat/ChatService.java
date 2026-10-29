@@ -17,6 +17,7 @@ import com.solesonic.service.memory.UserMemoryService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -26,7 +27,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -37,6 +40,15 @@ public class ChatService {
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
     private static final int MAX_NAME_LENGTH = 255;
+
+    private static final int MIN_SEARCH_LENGTH = 2;
+    private static final int MAX_SEARCH_LENGTH = 200;
+
+    /**
+     * {@code SYSTEM} and {@code TOOL} rows hold elicitation JSON, tool output and progress data —
+     * nothing the user saw as conversation text.
+     */
+    static final Set<MessageType> SEARCHABLE_MESSAGE_TYPES = Set.of(MessageType.USER, MessageType.ASSISTANT);
 
     private final ChatRepository chatRepository;
     private final ChatMessageRepository chatMessageRepository;
@@ -105,6 +117,35 @@ public class ChatService {
         Page<Chat> chats = chatRepository.findUngroupedByUserId(userId, pageable);
 
         return withMessages(chats);
+    }
+
+    /**
+     * The user's conversations, grouped or not, whose name or {@code USER}/{@code ASSISTANT} text
+     * contains {@code query}, ignoring case, newest first. Each carries the newest message that
+     * matched as {@link Chat#getMatch()}, or none when only its name did.
+     */
+    public Page<Chat> searchByUserId(UUID userId, String query, Pageable pageable) {
+        String searchQuery = searchQuery(query);
+        log.info("Searching chats by user id {} page {} size {}", userId, pageable.getPageNumber(), pageable.getPageSize());
+        log.debug("Chat search for user id {}: {}", userId, searchQuery);
+        Page<Chat> chats = chatRepository.searchByUserId(userId, likePattern(searchQuery), SEARCHABLE_MESSAGE_TYPES, pageable);
+
+        return withMatches(withMessages(chats), searchQuery);
+    }
+
+    /**
+     * {@link #searchByUserId(UUID, String, Pageable)}, narrowed to the conversations not filed under
+     * any group.
+     */
+    public Page<Chat> searchUngroupedByUserId(UUID userId, String query, Pageable pageable) {
+        String searchQuery = searchQuery(query);
+        log.info("Searching ungrouped chats by user id {} page {} size {}",
+                userId, pageable.getPageNumber(), pageable.getPageSize());
+        log.debug("Ungrouped chat search for user id {}: {}", userId, searchQuery);
+        Page<Chat> chats = chatRepository.searchUngroupedByUserId(
+                userId, likePattern(searchQuery), SEARCHABLE_MESSAGE_TYPES, pageable);
+
+        return withMatches(withMessages(chats), searchQuery);
     }
 
     /**
@@ -359,6 +400,38 @@ public class ChatService {
                         chatId, error.getMessage()))
                 .onErrorComplete()
                 .subscribe();
+    }
+
+    private static String searchQuery(String query) {
+        String searchQuery = StringUtils.trimToEmpty(query);
+
+        if (searchQuery.length() < MIN_SEARCH_LENGTH || searchQuery.length() > MAX_SEARCH_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Search must be between " + MIN_SEARCH_LENGTH + " and " + MAX_SEARCH_LENGTH + " characters");
+        }
+
+        return searchQuery;
+    }
+
+    /**
+     * The repository's {@code like} uses {@code \} as its escape character, so the query's own
+     * wildcards and backslashes match themselves.
+     */
+    private static String likePattern(String searchQuery) {
+        String escaped = searchQuery.toLowerCase(Locale.ROOT)
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+
+        return "%" + escaped + "%";
+    }
+
+    private static Page<Chat> withMatches(Page<Chat> chats, String searchQuery) {
+        for (Chat chat : chats) {
+            chat.setMatch(ChatSearchSnippets.match(chat.getChatMessages(), searchQuery).orElse(null));
+        }
+
+        return chats;
     }
 
     private Page<Chat> withMessages(Page<Chat> chats) {

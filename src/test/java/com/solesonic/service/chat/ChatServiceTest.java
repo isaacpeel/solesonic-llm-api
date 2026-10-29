@@ -1,6 +1,7 @@
 package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
@@ -15,9 +16,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,15 +32,18 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 @ExtendWith(MockitoExtension.class)
 class ChatServiceTest {
     private static final UUID CHAT_ID = UUID.randomUUID();
     private static final UUID USER_ID = UUID.randomUUID();
+    private static final Pageable PAGE = PageRequest.of(0, 20);
 
     @Mock
     private ChatRepository chatRepository;
@@ -162,5 +172,99 @@ class ChatServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
                 .isEqualTo(NOT_FOUND);
+    }
+
+    @Test
+    void searchRejectsAQueryOfOneCharacterOnceTrimmed() {
+        assertThatThrownBy(() -> chatService.searchByUserId(USER_ID, "  a  ", PAGE))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(BAD_REQUEST);
+
+        verify(chatRepository, never()).searchByUserId(any(), any(), any(), any());
+    }
+
+    @Test
+    void searchRejectsAQueryLongerThanTwoHundredCharacters() {
+        assertThatThrownBy(() -> chatService.searchUngroupedByUserId(USER_ID, "a".repeat(201), PAGE))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(BAD_REQUEST);
+
+        verify(chatRepository, never()).searchUngroupedByUserId(any(), any(), any(), any());
+    }
+
+    @Test
+    void searchAcceptsTwoAndTwoHundredCharacters() {
+        when(chatRepository.searchByUserId(eq(USER_ID), any(), any(), eq(PAGE))).thenReturn(Page.empty(PAGE));
+
+        assertThat(chatService.searchByUserId(USER_ID, "ab", PAGE)).isEmpty();
+        assertThat(chatService.searchByUserId(USER_ID, "a".repeat(200), PAGE)).isEmpty();
+    }
+
+    @Test
+    void searchTrimsLowercasesAndEscapesTheLikePattern() {
+        when(chatRepository.searchByUserId(eq(USER_ID), any(), any(), eq(PAGE))).thenReturn(Page.empty(PAGE));
+
+        chatService.searchByUserId(USER_ID, "  50%_OFF\\now  ", PAGE);
+
+        verify(chatRepository).searchByUserId(USER_ID, "%50\\%\\_off\\\\now%", ChatService.SEARCHABLE_MESSAGE_TYPES, PAGE);
+    }
+
+    @Test
+    void searchesOnlyUserAndAssistantMessages() {
+        assertThat(ChatService.SEARCHABLE_MESSAGE_TYPES).containsExactlyInAnyOrder(MessageType.USER, MessageType.ASSISTANT);
+    }
+
+    @Test
+    void searchResultsCarryTheirMessagesAndTheirMatch() {
+        Chat chat = new Chat();
+        chat.setId(CHAT_ID);
+        ChatMessage chatMessage = message("set up the UniFi switch");
+
+        when(chatRepository.searchUngroupedByUserId(USER_ID, "%unifi%", ChatService.SEARCHABLE_MESSAGE_TYPES, PAGE))
+                .thenReturn(new PageImpl<>(List.of(chat), PAGE, 1));
+        when(chatMessageRepository.findByChatId(CHAT_ID)).thenReturn(List.of(chatMessage));
+        when(chatAttachmentService.forChat(CHAT_ID)).thenReturn(List.of());
+        when(generatedImageService.forChat(CHAT_ID)).thenReturn(List.of());
+
+        Chat result = chatService.searchUngroupedByUserId(USER_ID, " unifi ", PAGE).getContent().getFirst();
+
+        assertThat(result.getChatMessages()).containsExactly(chatMessage);
+        assertThat(result.getMatch()).isNotNull();
+        assertThat(result.getMatch().chatMessageId()).isEqualTo(chatMessage.getId());
+        assertThat(result.getMatch().snippet()).isEqualTo("set up the UniFi switch");
+    }
+
+    /**
+     * Only the chat's name matched, so there is no message to point at.
+     */
+    @Test
+    void aChatMatchedOnlyByNameHasNoMatch() {
+        Chat chat = new Chat();
+        chat.setId(CHAT_ID);
+        chat.setName("UniFi notes");
+
+        when(chatRepository.searchByUserId(USER_ID, "%unifi%", ChatService.SEARCHABLE_MESSAGE_TYPES, PAGE))
+                .thenReturn(new PageImpl<>(List.of(chat), PAGE, 1));
+        when(chatMessageRepository.findByChatId(CHAT_ID)).thenReturn(List.of(message("something else")));
+        when(chatAttachmentService.forChat(CHAT_ID)).thenReturn(List.of());
+        when(generatedImageService.forChat(CHAT_ID)).thenReturn(List.of());
+
+        Chat result = chatService.searchByUserId(USER_ID, "unifi", PAGE).getContent().getFirst();
+
+        assertThat(result.getChatMessages()).hasSize(1);
+        assertThat(result.getMatch()).isNull();
+    }
+
+    private static ChatMessage message(String text) {
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setId(UUID.randomUUID());
+        chatMessage.setChatId(CHAT_ID);
+        chatMessage.setMessageType(MessageType.ASSISTANT);
+        chatMessage.setMessage(text);
+        chatMessage.setTimestamp(ZonedDateTime.parse("2026-10-24T09:14:40-06:00"));
+
+        return chatMessage;
     }
 }

@@ -2,6 +2,7 @@ package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.history.Chat;
 import jakarta.persistence.LockModeType;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -9,6 +10,7 @@ import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -87,6 +89,43 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
             order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findUngroupedByUserId(UUID userId, Pageable pageable);
+
+    /**
+     * The user's conversations, grouped or not, whose name or any message of {@code messageTypes}
+     * matches {@code pattern} — an already lowercased and escaped {@code like} pattern.
+     * <p>
+     * Ordered by time rather than by hand-placed position: results are a timeline the client groups
+     * by day as pages arrive. The filter is in the query, never applied afterwards, so the page
+     * metadata counts exactly the rows returned.
+     */
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
+              and (lower(chat.name) like :pattern escape '\\'
+                   or exists (select 1 from ChatMessage chatMessage
+                              where chatMessage.chatId = chat.id
+                                and chatMessage.messageType in :messageTypes
+                                and lower(chatMessage.message) like :pattern escape '\\'))
+            order by chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> searchByUserId(UUID userId, String pattern, Collection<MessageType> messageTypes, Pageable pageable);
+
+    /**
+     * {@link #searchByUserId}, narrowed to the conversations not filed under any group.
+     */
+    @Query("""
+            from Chat chat
+            where chat.userId = :userId and chat.chatGroupId is null
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
+              and (lower(chat.name) like :pattern escape '\\'
+                   or exists (select 1 from ChatMessage chatMessage
+                              where chatMessage.chatId = chat.id
+                                and chatMessage.messageType in :messageTypes
+                                and lower(chatMessage.message) like :pattern escape '\\'))
+            order by chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> searchUngroupedByUserId(UUID userId, String pattern, Collection<MessageType> messageTypes, Pageable pageable);
 
     /**
      * Ungroups every conversation filed under one group, in one statement.

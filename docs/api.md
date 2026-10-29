@@ -635,9 +635,12 @@ These endpoints retrieve existing chat history. They do not create or send messa
   - `size` (int, default `20`, max `100`): Page size
   - `ungrouped` (boolean, default `false`): Return only the conversations that are not filed under a
     [group](#conversation-groups)
+  - `q` (string, optional): [Search](#searching-chat-history) the user's chats. Absent or blank is the
+    plain listing, unchanged
 - **Response**: A page of chat objects — hand-placed conversations first, in the order the user
   arranged them, then everything else newest first (`timestamp` descending, `id` as a tiebreaker).
   See [Move a Chat](#move-a-chat)
+- **Errors**: `400` when `q`, once trimmed, is 1 character or longer than 200
 
 `ungrouped` is opt-in, and omitting it returns every chat the user owns, grouped ones included — what
 every existing client already receives. It exists for a client that renders group sections above this
@@ -677,6 +680,45 @@ but ignored: the ordering is fixed by the repository query, so that pages cannot
 
 For infinite scroll, request `page = 0, 1, 2, …` and stop when `page.number + 1 >= page.totalPages`.
 The ordering is deterministic, so pages never overlap or skip a chat.
+
+#### Searching chat history
+
+With `q`, the page holds only the chats whose `name`, or any `USER`/`ASSISTANT` message, contains
+`q` ignoring case. `SYSTEM` and `TOOL` messages are never searched: they hold elicitation JSON, tool
+output and progress data rather than conversation text.
+
+- **Grouped and ungrouped together.** A search covers every conversation the user owns, so a match
+  inside a collapsed group is still found; each result keeps its `chatGroupId`. `ungrouped=true`
+  still narrows it.
+- **Ordered by time, not by hand-placed position**: `timestamp` descending, `id` as a tiebreaker.
+  Results are a timeline, so a client can group them by day as pages arrive.
+- **Filtered in the query**, so `page.totalElements` and `totalPages` count exactly the rows
+  returned, and no result is `totalElements: 0`.
+- **Same shape.** Each chat is unchanged, `chatMessages` included, plus one `match` field:
+
+```json
+"match": {
+  "chatMessageId": "…",
+  "messageType": "ASSISTANT",
+  "timestamp": "2026-10-24T09:14:40.2-06:00",
+  "snippet": "…set up the unifi POE switch so that the …",
+  "highlightStart": 13,
+  "highlightLength": 5
+}
+```
+
+- `match` is the newest `USER`/`ASSISTANT` message containing `q`, and `null` when only the chat's
+  name matched. It is omitted entirely on a request without `q`.
+- `snippet` is plain text on one line: at most 80 characters, not counting ellipses, starting at
+  most 12 characters before the hit (moved forward to a word boundary when one is in range).
+  Newlines, carriage returns and tabs become spaces one for one. It is prefixed with `…` when the
+  message continues before it and suffixed with `…` when it continues after. Markdown is left as is;
+  render it as text, never as HTML.
+- `highlightStart` and `highlightLength` are **UTF-16 offsets into `snippet`**, counted after the
+  `…` prefix — the same indices a JavaScript string uses. A query longer than the snippet highlights
+  only what fits.
+- In the rare case Postgres matched a character Java does not fold the same way, `match` is `null`
+  rather than pointing at the wrong text. The chat is still in the results.
 
 ### Get a Specific Chat
 

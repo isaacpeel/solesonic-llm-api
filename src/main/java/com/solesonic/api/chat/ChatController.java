@@ -6,6 +6,7 @@ import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.security.ResourceOwnershipService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -48,11 +49,17 @@ public class ChatController {
      *                  group sections above this list would otherwise show every grouped
      *                  conversation twice, and filtering them out client-side leaves the page
      *                  metadata describing more rows than the client will render.
+     * @param query     the {@code q} parameter: when present and not blank, only the chats whose
+     *                  name or {@code USER}/{@code ASSISTANT} text contains it, ignoring case,
+     *                  ordered newest first rather than by hand-placed position, each carrying the
+     *                  {@code match} it was found by. Absent or blank is the plain listing,
+     *                  unchanged. Two to two hundred characters once trimmed, otherwise {@code 400}.
      */
     @GetMapping("/users/{userId}")
     public ResponseEntity<PagedModel<Chat>> getUserChats(
             @PathVariable UUID userId,
             @RequestParam(defaultValue = "false") boolean ungrouped,
+            @RequestParam(name = "q", required = false) String query,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable,
             HttpServletRequest request) {
         if (!resourceOwnershipService.isOwner(userId, request)) {
@@ -64,11 +71,23 @@ public class ChatController {
         log.info("Getting chats by user id {} ungrouped {} page {} size {}",
                 userId, ungrouped, chatPage.getPageNumber(), chatPage.getPageSize());
 
-        Page<Chat> chats = ungrouped
-                ? chatService.getUngroupedByUserId(userId, chatPage)
-                : chatService.getByUserId(userId, chatPage);
+        Page<Chat> chats = StringUtils.isBlank(query)
+                ? list(userId, ungrouped, chatPage)
+                : search(userId, query, ungrouped, chatPage);
 
         return ResponseEntity.ok(new PagedModel<>(chats));
+    }
+
+    private Page<Chat> list(UUID userId, boolean ungrouped, Pageable chatPage) {
+        return ungrouped
+                ? chatService.getUngroupedByUserId(userId, chatPage)
+                : chatService.getByUserId(userId, chatPage);
+    }
+
+    private Page<Chat> search(UUID userId, String query, boolean ungrouped, Pageable chatPage) {
+        return ungrouped
+                ? chatService.searchUngroupedByUserId(userId, query, chatPage)
+                : chatService.searchByUserId(userId, query, chatPage);
     }
 
     @GetMapping("/{chatId}")

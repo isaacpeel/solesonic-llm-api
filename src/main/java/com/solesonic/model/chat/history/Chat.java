@@ -1,5 +1,6 @@
 package com.solesonic.model.chat.history;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import org.hibernate.annotations.JdbcTypeCode;
@@ -67,6 +68,15 @@ public class Chat {
 
     @Transient
     private List<ChatMessage> chatMessages;
+
+    /**
+     * Where a search found this chat. Null outside a search, and when only the name matched; omitted
+     * from the wire when null, so a plain listing is unchanged.
+     */
+    @Transient
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private ChatSearchMatch match;
 
     @Column(columnDefinition = "jsonb")
     @JdbcTypeCode(SqlTypes.JSON)
@@ -142,6 +152,14 @@ public class Chat {
 
     public void setChatMessages(List<ChatMessage> chatMessages) {
         this.chatMessages = chatMessages;
+    }
+
+    public ChatSearchMatch getMatch() {
+        return match;
+    }
+
+    public void setMatch(ChatSearchMatch match) {
+        this.match = match;
     }
 
     public Set<String> getActiveCommands() {

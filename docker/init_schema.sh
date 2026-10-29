@@ -8,6 +8,7 @@ psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-E
     CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
     CREATE EXTENSION IF NOT EXISTS vector;
     CREATE EXTENSION IF NOT EXISTS hstore;
+    CREATE EXTENSION IF NOT EXISTS pg_trgm;
     
     -- Create role with password from environment variable
     CREATE ROLE "$POSTGRES_USER" WITH LOGIN PASSWORD '$DB_PASSWORD';
