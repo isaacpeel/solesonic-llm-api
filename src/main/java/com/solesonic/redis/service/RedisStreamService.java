@@ -142,6 +142,26 @@ public class RedisStreamService {
         return pushPresenceService.track(userId, chatId, stream);
     }
 
+    /**
+     * Reads a stream across every run written to it, for a reader who is not the stream's owner: the
+     * key is built from {@code streamUserId}, and presence is tracked for {@code readerUserId}, so one
+     * participant watching never hides a push meant for another.
+     */
+    public Flux<ServerSentEvent<?>> follow(UUID chatId, UUID streamUserId, UUID readerUserId, String lastEventId) {
+        String streamKey = buildStreamKey(chatId, streamUserId);
+
+        log.info("Following Redis stream {} for chat {}", streamKey, chatId);
+
+        Flux<ServerSentEvent<?>> stream = chatStreamSubscriber.follow(streamKey, lastEventId)
+                .onErrorResume(error -> {
+                    log.error("Redis stream read failed for chat {}", chatId, error);
+
+                    return Flux.just(streamUnavailableEvent());
+                });
+
+        return pushPresenceService.track(readerUserId, chatId, stream);
+    }
+
     private ServerSentEvent<?> streamUnavailableEvent() {
         RunErrorEvent runError = new RunErrorEvent(STREAM_UNAVAILABLE_MESSAGE,
                 TurnErrorCode.STREAM_UNAVAILABLE.wireValue(), null, null);

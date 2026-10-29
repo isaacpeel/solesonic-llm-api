@@ -5,6 +5,7 @@ import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
@@ -60,12 +61,25 @@ public class ChatMessageService {
     }
 
     public ChatMessage save(ChatMessage message) {
+        return save(message, null);
+    }
+
+    /**
+     * @param senderUserId who sent the message, recorded only in a shared chat: a conversation's
+     *                     messages are all its owner's, and a shared chat is the one place several
+     *                     users write to the same transcript
+     */
+    private ChatMessage save(ChatMessage message, UUID senderUserId) {
         UUID chatId = message.getChatId();
 
         log.debug("Saving chat message with id {}", chatId);
 
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new IllegalStateException("Chat not found: " + chatId));
+
+        if (chat.getKind() == ChatKind.SHARED && message.getMessageType() == MessageType.USER) {
+            message.setSenderUserId(senderUserId);
+        }
 
         //Routed through the service, not the repository, so a user's first-ever message
         //self-heals a missing preferences row instead of throwing. The result is unused — which
@@ -98,7 +112,7 @@ public class ChatMessageService {
             chatMessage.setCommands(chatRequest.commands());
         }
 
-        ChatMessage saved = save(chatMessage);
+        ChatMessage saved = save(chatMessage, userId);
 
         //Inside the transaction on purpose: a turn that cannot claim its attachments must not
         //persist a message either.
@@ -195,6 +209,15 @@ public class ChatMessageService {
                 .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
                 .map(ChatMessage::getResponseMetadataCalls)
                 .orElse(null);
+    }
+
+    /**
+     * A shared session's whole transcript, as every participant reads it. The caller has already
+     * checked the reader takes part; shared chats are bounded by their session, so this is not paged.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatMessage> sharedTranscript(UUID chatId) {
+        return chatMessageRepository.findByChatId(chatId);
     }
 
     public List<Message> findByChatId(UUID chatId) {

@@ -2512,6 +2512,103 @@ Every link in it was built from a search result; the model can only cite by numb
 
 ---
 
+## Shared Sessions
+
+Several users work with one A2A agent in one shared chat. Today a session has two participants, the inviter and
+the invitee, and the agent must be one that `SHARED_SESSION_AGENTS` allows. The first use is the Family Feud agent,
+but nothing here knows about games: the agent reports who it is waiting on and what it expects next.
+
+A shared chat can only be reached through `/shared-sessions`. Every `/chats` and `/streaming/chats` endpoint
+answers `404` for one. The caller always comes from the token, and a session or invite the caller doesn't belong
+to is a `404`.
+
+### Endpoints
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/shared-sessions/invites` `{username, agentName, openingMessage?}` | `201 SessionInviteSummary`. The username matches exactly, ignoring case |
+| `GET` | `/shared-sessions/invites?direction=incoming\|outgoing` | Pending invites, newest first |
+| `GET` | `/shared-sessions/invites/{inviteId}` | One invite you sent or received |
+| `POST` | `/shared-sessions/invites/{inviteId}/accept` | `201 SharedSessionSummary`. Creates the session and, if the invite has one, sends its opening message as you |
+| `POST` | `/shared-sessions/invites/{inviteId}/decline` | `204` |
+| `DELETE` | `/shared-sessions/invites/{inviteId}` | `204`. The inviter cancels |
+| `GET` | `/shared-sessions?status=` | A page of `SharedSessionSummary`. Without `status`, sessions that still take messages (`ACTIVE`, `COMPLETED`) |
+| `GET` | `/shared-sessions/{sessionId}` | `SharedSessionSummary` |
+| `GET` | `/shared-sessions/{sessionId}/messages` | The whole transcript; each `USER` row carries `senderUserId` |
+| `POST` | `/shared-sessions/{sessionId}/messages` `{text}` or `{promptAnswer: {elicitationId, action, content}}` | `202 {runId, messageId}`. The run streams on `/stream` |
+| `GET` | `/shared-sessions/{sessionId}/stream` (`Last-Event-ID` or `?lastEventId=`) | SSE that follows every run, whoever started it |
+| `POST` | `/shared-sessions/{sessionId}/cancel` | `202` signalled, `204` nothing running |
+| `DELETE` | `/shared-sessions/{sessionId}` | `204`. You leave, which closes the session for everyone |
+
+`openingMessage` is the text the session starts with. It is sent to the agent as the invitee once they accept. It
+is agent-specific (the Feud screens send `new show` or `new main game`), optional, and limited to
+`SHARED_SESSION_MAX_MESSAGE_CHARACTERS`.
+
+### Wire shapes
+
+```json
+SharedSessionSummary {
+  "id", "chatId", "agentName", "status": "ACTIVE|COMPLETED|CLOSED|EXPIRED",
+  "participants": [{"userId", "seat": 0, "name": "Alex", "username", "left": false}],
+  "turn": {"userIds": ["…"], "next": "answer", "over": false} | null,
+  "prompt": {"elicitationId", "message", "requestedSchema", "meta", "forUserIds": ["…"]} | null,
+  "yourTurn": true, "runActive": false, "created", "updated"
+}
+
+SessionInviteSummary {
+  "id", "inviterUserId", "inviterUsername", "inviterDisplayName",
+  "inviteeUserId", "inviteeUsername", "inviteeDisplayName",
+  "agentName", "openingMessage", "status": "PENDING|ACCEPTED|DECLINED|CANCELLED|EXPIRED", "sessionId",
+  "created", "expires"
+}
+```
+
+- **`turn`:** what the agent's last reply said about who it is waiting on.
+  - `next` is the agent's own word for what it expects (`[a-z_]{1,32}`), such as `answer` or `rematch`.
+  - `turn` is null until a run reports one.
+- **`yourTurn`:** answered for the caller on REST reads, true only while the session is `ACTIVE`. It is null on the
+  stream.
+- **`prompt`:** the question the last run ended on. A run never waits on it: answering is the next message, and
+  only a participant in `forUserIds` may send it.
+- **`COMPLETED`:** the agent reported `over`, and the session still takes messages, so it can start again. `CLOSED`
+  (a participant left) and `EXPIRED` (idle for `SHARED_SESSION_IDLE_DAYS`) take none.
+
+### The stream
+
+- **Every frame of every run:** every participant reads every frame, the sender included. Sending answers `202`
+  rather than streaming, so there is one way frames arrive.
+- **Where reading starts:** without a cursor, at the run in progress if there is one (from its `RUN_STARTED`),
+  otherwise at the end.
+- **Cursors:** a cursor older than the oldest kept frame is `410`. Reload `/messages` and read on with no cursor.
+  An empty or expired stream is not `410`: the stream waits for the next message.
+- **`RUN_STARTED`:** `input.messages[0].name` is the sender's participant `name`.
+- **`CUSTOM session_state`:** carries the `SharedSessionSummary` after every run (just before
+  `RUN_FINISHED`/`RUN_ERROR`) and when a participant leaves.
+- **Questions:** shared sessions never send `TOOL_CALL_*` frames; the question is `session_state.prompt`.
+
+### Shared Session Error Codes
+
+Errors are `{code, message}` with a real status:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `SESSION_NOT_FOUND`, `INVITE_NOT_FOUND` | 404 | Not yours, or doesn't exist |
+| `PARTICIPANT_NOT_FOUND` | 404 | No active user with that username, or it's yours |
+| `INVALID_INVITE`, `INVALID_MESSAGE`, `MESSAGE_TOO_LONG` | 400 | The request itself is wrong. An agent that may not be shared is `INVALID_INVITE` |
+| `INVITE_PENDING` | 409 | An invite is already open between you two |
+| `INVITE_NOT_PENDING` | 409 | Accepted, declined, cancelled or expired |
+| `RUN_IN_PROGRESS` | 409 | The agent is still answering the last message |
+| `NOT_YOUR_TURN` | 409 | The question is for another participant, or has been replaced |
+| `SESSION_CLOSED` | 409 | The session takes no messages |
+| `TOO_MANY_INVITES` | 429 | `SHARED_SESSION_MAX_PENDING_INVITES` reached |
+| `AGENT_UNAVAILABLE` | 503 | The session's agent isn't registered |
+
+Every participant needs a model key: an invite, an accept or a message without one is `403 LLM_KEY_MISSING`.
+
+Push types `SESSION_INVITE` (url `/shared-sessions/invites/{inviteId}`), `SESSION_TURN` and `SESSION_STARTED` (url
+`/shared-sessions/{sessionId}`, tag `session:{sessionId}`) are fixed text. They follow the
+`sessionInvites`/`sessionTurns` preferences, which are optional on `PUT`, and the absent ones stay unchanged.
+
 ## Error Handling
 
 ### Standard HTTP Status Codes

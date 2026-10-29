@@ -27,6 +27,9 @@ public class PushPayloadFactory {
     private static final String ELICITATION_WAITING_BODY = "A tool is waiting for your answer";
     private static final String INTEREST_OFFER_BODY = "I can keep you posted on something you're interested in";
     private static final String INTEREST_UPDATE_BODY = "There's news on one of your interests";
+    private static final String SESSION_INVITE_BODY = "You've been invited to a shared session";
+    private static final String SESSION_TURN_BODY = "It's your turn";
+    private static final String SESSION_STARTED_BODY = "Your shared session has started";
     private static final String TEST_BODY = "Notifications are working";
     private static final String TEST_URL = "/settings/notifications";
     private static final String TEST_TAG = "test";
@@ -60,6 +63,14 @@ public class PushPayloadFactory {
             case PushEvent.InterestUpdated interestUpdated ->
                     payload(PushPayloadType.INTEREST_UPDATE, INTEREST_UPDATE_BODY, chatUrl(interestUpdated.chatId()),
                             "interest:" + interestUpdated.agentId());
+            case PushEvent.SessionInvited sessionInvited ->
+                    payload(PushPayloadType.SESSION_INVITE, SESSION_INVITE_BODY, "/shared-sessions/invites/" + sessionInvited.inviteId(),
+                            "session-invite:" + sessionInvited.inviteId());
+            case PushEvent.SessionTurn sessionTurn ->
+                    payload(PushPayloadType.SESSION_TURN, SESSION_TURN_BODY, sessionUrl(sessionTurn.sessionId()), sessionTag(sessionTurn.sessionId()));
+            case PushEvent.SessionStarted sessionStarted ->
+                    payload(PushPayloadType.SESSION_STARTED, SESSION_STARTED_BODY, sessionUrl(sessionStarted.sessionId()),
+                            sessionTag(sessionStarted.sessionId()));
         };
 
         return jsonMapper.writeValueAsBytes(pushPayload);
@@ -83,5 +94,13 @@ public class PushPayloadFactory {
 
     private static String chatTag(UUID chatId) {
         return "chat:" + chatId;
+    }
+
+    private static String sessionUrl(UUID sessionId) {
+        return "/shared-sessions/" + sessionId;
+    }
+
+    private static String sessionTag(UUID sessionId) {
+        return "session:" + sessionId;
     }
 }

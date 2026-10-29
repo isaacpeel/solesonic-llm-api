@@ -4,6 +4,11 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 ###
+GET {{llm-uri}}/props
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+###
 GET {{llm-uri}}/v1/model/info
 Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}

@@ -1,6 +1,7 @@
 package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.repository.chat.ChatRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,7 +53,9 @@ public class ChatStreamAccessService {
 
         Optional<Chat> chat = chatRepository.findById(chatId);
 
-        if (chat.isEmpty()) {
+        //A shared chat is reached only through /shared-sessions, which sends the sender and the
+        //participants with every message. Through here its owner could send one as nobody in particular.
+        if (chat.isEmpty() || chat.get().getKind() != ChatKind.CONVERSATION) {
             log.info("Denying stream access to unknown chat {}", chatId);
 
             return ChatAccess.NOT_FOUND;

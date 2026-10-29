@@ -316,6 +316,31 @@ Load-bearing details:
   `ChatService.delete` removes a news chat's update row; the forget paths in `UserMemoryService` withdraw
   pending offers whose memories are gone.
 
+### Shared sessions — three tables (V3_42)
+
+- **`chat.kind`** (`CONVERSATION` | `SHARED`, default `CONVERSATION`) separates shared chats from conversations;
+  every chat path filters on it.
+- **`chat_message.sender_user_id`** records who sent a `USER` row in a shared chat, and is null everywhere else.
+- **`shared_session`:** one per shared chat (`chat_id` unique, `on delete cascade` from `chat`), naming its
+  `agent_name`. The jsonb columns hold what the agent last reported:
+  - `turn_state`: user ids, next and over;
+  - `pending_prompt`: the open question, with its A2A task id.
+- **`session_participant`:** the seats.
+  - `seat >= 0` with `unique (session_id, seat)`; the schema sets no ceiling on participants. An invite creates
+    two today.
+  - Seat 0 is the inviter, who owns the chat and its stream key.
+  - `name` is unique per session, ignoring case.
+- **`session_invite`:** names the `agent_name` and an optional `opening_message`. `session_invite_one_pending_idx`
+  allows one pending invite between any two users, whichever sent it.
+- **`push_preference`** gains `session_invites` and `session_turns`, both default true.
+
+The activity checks in memory reflection and the user lifecycle count a `USER` row for
+`coalesce(sender_user_id, chat.user_id)`, so a guest's messages keep the guest active, not the owner.
+
+V3_42 was rewritten in place before release. A local database that applied the earlier `V3_42__create_games`
+must drop its `game`, `game_participant` and `game_invite` tables, the `chat.kind`, `chat_message.sender_user_id`
+and `push_preference.game_*` columns, and the `flyway_schema_history` row for version `3.42` before startup.
+
 ## Vector Storage with pgvector
 
 The project uses the pgvector extension for PostgreSQL to store and query vector embeddings efficiently. This is crucial for the Retrieval Augmented Generation (RAG) functionality.

@@ -37,12 +37,13 @@ public interface ChatMemoryReflectionRepository extends JpaRepository<ChatMemory
             select chat.id, chat.user_id, timestamp with time zone 'epoch', 'PENDING', 0, now()
               from chat
              where chat.user_id is not null
+               and chat.kind = 'CONVERSATION'
                and not exists (select 1 from chat_memory_reflection reflection where reflection.chat_id = chat.id)
                and exists (select 1 from chat_message message where message.chat_id = chat.id)
                and exists (select 1
                              from chat recent
                              join chat_message message on message.chat_id = recent.id
-                            where recent.user_id = chat.user_id
+                            where coalesce(message.sender_user_id, recent.user_id) = chat.user_id
                               and message.message_type = 'USER'
                               and message.timestamp >= :activeSince)
                and not exists (select 1

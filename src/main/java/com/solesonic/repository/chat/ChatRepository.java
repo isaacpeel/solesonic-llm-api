@@ -23,9 +23,11 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     // "nulls last" is what makes an unplaced chat keep its old behaviour: a conversation nobody has
     // arranged sorts by timestamp exactly as it did before ordering existed, and a brand new one
     // still arrives at the top of that section rather than at the bottom of the list.
+    //Every read here asks for CONVERSATION: a shared chat is reached only through /shared-sessions, so
+    //to every path in this repository it does not exist.
     @Query("""
             from Chat chat
-            where chat.userId = :userId
+            where chat.userId = :userId and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
             order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findByUserId(UUID userId, Pageable pageable);
@@ -38,6 +40,7 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.chatGroupId = :chatGroupId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
             order by chat.groupSortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable);
@@ -51,6 +54,7 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.sortOrder is not null
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
             order by chat.sortOrder asc, chat.id asc
             """)
     List<Chat> findPlacedByUserId(UUID userId);
@@ -79,6 +83,7 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.chatGroupId is null
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
             order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
     Page<Chat> findUngroupedByUserId(UUID userId, Pageable pageable);
@@ -111,8 +116,13 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     /**
      * User-scoped for the same reason generated image lookups are: a caller must own the chat it
      * is modifying, and this is what lets a write be rejected at the query rather than trusted from
-     * an id alone.
+     * an id alone. A shared chat is never one: its owner reaches it only through {@code /shared-sessions}.
      */
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId and chat.userId = :userId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
+            """)
     Optional<Chat> findByIdAndUserId(UUID chatId, UUID userId);
 
     /**
@@ -125,6 +135,7 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.id = :chatId and chat.userId = :userId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
             """)
     Optional<Chat> lockByIdAndUserId(UUID chatId, UUID userId);
 

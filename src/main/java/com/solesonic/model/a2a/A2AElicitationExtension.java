@@ -116,17 +116,25 @@ public final class A2AElicitationExtension {
      * one {@link DataPart} carrying only the narrowed content.
      */
     public static Message answer(UUID chatId, String taskId, Map<String, Object> content) {
-        Map<String, Object> response = new LinkedHashMap<>();
-        response.put(ACTION, ACCEPT);
-        response.put(CONTENT, content);
-
         return Message.builder()
                 .role(Message.Role.ROLE_USER)
                 .contextId(chatId.toString())
                 .taskId(taskId)
                 .messageId(UUID.randomUUID().toString())
                 .extensions(List.of(URI))
-                .parts(new DataPart(Map.of(ELICITATION_RESPONSE, response)))
+                .parts(answerPart(content))
                 .build();
+    }
+
+    /**
+     * The one part an accepted answer is sent as, for a caller that builds the rest of the message
+     * itself.
+     */
+    public static DataPart answerPart(Map<String, Object> content) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put(ACTION, ACCEPT);
+        response.put(CONTENT, content);
+
+        return new DataPart(Map.of(ELICITATION_RESPONSE, response));
     }
 }

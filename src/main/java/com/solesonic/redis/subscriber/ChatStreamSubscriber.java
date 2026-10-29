@@ -34,6 +34,19 @@ public class ChatStreamSubscriber {
     }
 
     public Flux<ServerSentEvent<?>> subscribe(String streamKey, String lastEventId) {
+        return withKeepalive(receive(streamKey, lastEventId));
+    }
+
+    /**
+     * {@link #subscribe} that carries on past every terminal frame: a reader of a stream that several
+     * runs write to in turn, such as a shared session every participant watches. It ends only when
+     * the reader goes.
+     */
+    public Flux<ServerSentEvent<?>> follow(String streamKey, String lastEventId) {
+        return keepalive(receive(streamKey, lastEventId));
+    }
+
+    private Flux<ServerSentEvent<?>> receive(String streamKey, String lastEventId) {
         StreamOffset<String> offset = resolveOffset(streamKey, lastEventId);
 
         log.debug("Subscribing to stream {} from offset {}", streamKey, offset);
@@ -46,10 +59,8 @@ public class ChatStreamSubscriber {
         StreamReceiver<String, MapRecord<String, String, String>> receiver =
                 StreamReceiver.create(redisTemplate.getConnectionFactory(), receiverOptions);
 
-        Flux<ServerSentEvent<?>> events = Flux.from(receiver.receive(offset))
+        return Flux.from(receiver.receive(offset))
                 .map(this::toServerSentEvent);
-
-        return withKeepalive(events);
     }
 
     /**
@@ -65,6 +76,13 @@ public class ChatStreamSubscriber {
      * client's resume cursor.
      */
     Flux<ServerSentEvent<?>> withKeepalive(Flux<ServerSentEvent<?>> events) {
+        //takeUntil on the merged flux, so the terminal frame both reaches the client and cancels the
+        //interval. Left on the events flux alone, a finished turn would hold the response open.
+        return keepalive(events)
+                .takeUntil(serverSentEvent -> TerminalEvents.isTerminal(serverSentEvent.event()));
+    }
+
+    private Flux<ServerSentEvent<?>> keepalive(Flux<ServerSentEvent<?>> events) {
         AtomicLong lastFrameNanos = new AtomicLong(System.nanoTime());
 
         Flux<ServerSentEvent<?>> tracked = events
@@ -75,10 +93,7 @@ public class ChatStreamSubscriber {
                 .doOnNext(_ -> lastFrameNanos.set(System.nanoTime()))
                 .map(_ -> ServerSentEvent.builder().comment(KEEPALIVE_COMMENT).build());
 
-        //takeUntil on the merged flux, so the terminal frame both reaches the client and cancels the
-        //interval. Left on the events flux alone, a finished turn would hold the response open.
-        return tracked.mergeWith(keepalives)
-                .takeUntil(serverSentEvent -> TerminalEvents.isTerminal(serverSentEvent.event()));
+        return tracked.mergeWith(keepalives);
     }
 
     private StreamOffset<String> resolveOffset(String streamKey, String lastEventId) {

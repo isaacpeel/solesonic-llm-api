@@ -83,6 +83,24 @@ public class UserProfileRepository {
                 .optional();
     }
 
+    /**
+     * {@link #findUserIdByUsername} narrowed to accounts not known to be removed: someone who can be
+     * invited to something.
+     */
+    public Optional<UUID> findActiveUserIdByUsername(String username) {
+        return jdbcClient.sql("""
+                        select user_id
+                          from user_profile
+                         where lower(username) = lower(:username)
+                           and removed is null
+                         order by updated desc
+                         limit 1
+                        """)
+                .param("username", username)
+                .query((resultSet, _) -> resultSet.getObject("user_id", UUID.class))
+                .optional();
+    }
+
     private static UserProfile profile(ResultSet resultSet) throws SQLException {
         return new UserProfile(resultSet.getObject("user_id", UUID.class),
                 resultSet.getString("username"),

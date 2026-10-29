@@ -25,8 +25,8 @@ import java.util.concurrent.Callable;
 
 /**
  * Pushes an event to every browser a user has subscribed, in a fixed order: enabled, dedupe,
- * preference, presence, send. A reminder skips presence, and so do the interest events, which have no
- * chat anyone could already be reading.
+ * preference, presence, send. A reminder skips presence, and so do the interest events and a
+ * shared-session invite, which have no chat anyone could already be reading.
  * <p>
  * It never fails or delays its caller. {@link #push} subscribes and walks away, and every failure
  * ends in a log line. Logs name the subscription id, the event type and the status, never the
@@ -40,6 +40,7 @@ public class PushNotificationService {
     private static final Duration DEDUPE_WINDOW = Duration.ofHours(1);
     private static final Duration TURN_TIME_TO_LIVE = Duration.ofHours(24);
     private static final Duration INTEREST_UPDATE_TIME_TO_LIVE = Duration.ofHours(24);
+    private static final Duration SESSION_TIME_TO_LIVE = Duration.ofHours(24);
     private static final Duration FIRST_RETRY_DELAY = Duration.ofSeconds(1);
     private static final Duration MAX_RETRY_AFTER = Duration.ofSeconds(60);
     private static final int SEND_CONCURRENCY = 4;
@@ -137,6 +138,8 @@ public class PushNotificationService {
             case PushEvent.ElicitationWaiting _ -> preferences.elicitation();
             case PushEvent.InterestOffered _ -> preferences.interestOffers();
             case PushEvent.InterestUpdated _ -> preferences.interestUpdates();
+            case PushEvent.SessionInvited _ -> preferences.sessionInvites();
+            case PushEvent.SessionTurn _, PushEvent.SessionStarted _ -> preferences.sessionTurns();
         };
     }
 
@@ -151,7 +154,9 @@ public class PushNotificationService {
             case PushEvent.ElicitationWaiting elicitationWaiting -> elicitationWaiting.reminder()
                     ? Mono.just(false)
                     : pushPresenceService.isWatching(userId, elicitationWaiting.chatId());
-            case PushEvent.InterestOffered _, PushEvent.InterestUpdated _ -> Mono.just(false);
+            case PushEvent.InterestOffered _, PushEvent.InterestUpdated _, PushEvent.SessionInvited _ -> Mono.just(false);
+            case PushEvent.SessionTurn sessionTurn -> pushPresenceService.isWatching(userId, sessionTurn.chatId());
+            case PushEvent.SessionStarted sessionStarted -> pushPresenceService.isWatching(userId, sessionStarted.chatId());
         };
     }
 
@@ -170,6 +175,12 @@ public class PushNotificationService {
                     new PushDeliveryOptions(interestSettings.offerTimeToLive(), PushUrgency.NORMAL, topic(interestOffered.offerId()));
             case PushEvent.InterestUpdated interestUpdated ->
                     new PushDeliveryOptions(INTEREST_UPDATE_TIME_TO_LIVE, PushUrgency.NORMAL, topic(interestUpdated.agentId()));
+            case PushEvent.SessionInvited sessionInvited ->
+                    new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.NORMAL, topic(sessionInvited.inviteId()));
+            case PushEvent.SessionTurn sessionTurn ->
+                    new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.HIGH, topic(sessionTurn.sessionId()));
+            case PushEvent.SessionStarted sessionStarted ->
+                    new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.HIGH, topic(sessionStarted.sessionId()));
         };
     }
 

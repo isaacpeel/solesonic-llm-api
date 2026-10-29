@@ -57,6 +57,14 @@ public class Chat {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private Integer groupSortOrder;
 
+    /**
+     * Read-only on the wire: a chat becomes {@code SHARED} only through {@code /shared-sessions}, which
+     * creates it.
+     */
+    @Enumerated(EnumType.STRING)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private ChatKind kind = ChatKind.CONVERSATION;
+
     @Transient
     private List<ChatMessage> chatMessages;
 
@@ -118,6 +126,14 @@ public class Chat {
 
     public void setGroupSortOrder(Integer groupSortOrder) {
         this.groupSortOrder = groupSortOrder;
+    }
+
+    public ChatKind getKind() {
+        return kind;
+    }
+
+    public void setKind(ChatKind kind) {
+        this.kind = kind;
     }
 
     public List<ChatMessage> getChatMessages() {

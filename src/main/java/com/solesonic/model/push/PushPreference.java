@@ -22,6 +22,10 @@ public class PushPreference {
 
     private boolean interestUpdates;
 
+    private boolean sessionInvites;
+
+    private boolean sessionTurns;
+
     private ZonedDateTime updated;
 
     public UUID getUserId() {
@@ -62,6 +66,22 @@ public class PushPreference {
 
     public void setInterestUpdates(boolean interestUpdates) {
         this.interestUpdates = interestUpdates;
+    }
+
+    public boolean isSessionInvites() {
+        return sessionInvites;
+    }
+
+    public void setSessionInvites(boolean sessionInvites) {
+        this.sessionInvites = sessionInvites;
+    }
+
+    public boolean isSessionTurns() {
+        return sessionTurns;
+    }
+
+    public void setSessionTurns(boolean sessionTurns) {
+        this.sessionTurns = sessionTurns;
     }
 
     public ZonedDateTime getUpdated() {

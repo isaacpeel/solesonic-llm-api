@@ -2,6 +2,7 @@ package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.model.image.GeneratedImageSummary;
@@ -235,6 +236,28 @@ public class ChatService {
         log.info("Deleted chat {} and {} message(s) for user {}", chatId, messages, userId);
 
         discardTransientState(chatId, userId);
+    }
+
+    /**
+     * Deletes a shared session's chat once everyone has left it. Not request-scoped: the last
+     * participant to leave is not necessarily the owner, and the session service has already checked
+     * that they were seated. A shared chat has no attachments, generated images, memories or news, so
+     * only its messages, its row and its Redis state go; the session rows follow the chat by
+     * {@code on delete cascade}.
+     */
+    @Transactional
+    public void deleteSharedChat(UUID chatId) {
+        chatRepository.lockById(chatId)
+                .filter(chat -> chat.getKind() == ChatKind.SHARED)
+                .ifPresent(chat -> {
+                    int messages = chatMessageRepository.deleteByChatId(chatId);
+
+                    chatRepository.delete(chat);
+
+                    log.info("Deleted shared chat {} and {} message(s)", chatId, messages);
+
+                    discardTransientState(chatId, chat.getUserId());
+                });
     }
 
     /**

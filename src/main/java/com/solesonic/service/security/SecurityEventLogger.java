@@ -57,7 +57,8 @@ public class SecurityEventLogger {
             "/confluence",
             "/broker",
             "/push",
-            "/sounds");
+            "/sounds",
+            "/shared-sessions");
 
     private static final String ROUTE_KNOWN = "known";
     private static final String ROUTE_UNKNOWN = "unknown";

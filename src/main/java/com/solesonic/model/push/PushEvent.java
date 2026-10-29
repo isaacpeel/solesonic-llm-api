@@ -13,7 +13,10 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         PushEvent.TurnFailed,
         PushEvent.ElicitationWaiting,
         PushEvent.InterestOffered,
-        PushEvent.InterestUpdated {
+        PushEvent.InterestUpdated,
+        PushEvent.SessionInvited,
+        PushEvent.SessionTurn,
+        PushEvent.SessionStarted {
 
     /**
      * What a log line names: the chat for an event about one, the offer for an offer, which has none.
@@ -88,6 +91,53 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         @Override
         public String dedupeKey() {
             return "interest-update:" + updateId;
+        }
+    }
+
+    record SessionInvited(UUID inviteId) implements PushEvent {
+
+        @Override
+        public UUID subjectId() {
+            return inviteId;
+        }
+
+        @Override
+        public String dedupeKey() {
+            return "session-invite:" + inviteId;
+        }
+    }
+
+    /**
+     * The run {@code runId} left a shared session waiting on {@code recipientUserId}. The recipient is
+     * part of the key because one run can leave the session waiting on several participants at once.
+     */
+    record SessionTurn(UUID chatId, UUID sessionId, UUID runId, UUID recipientUserId) implements PushEvent {
+
+        @Override
+        public UUID subjectId() {
+            return sessionId;
+        }
+
+        @Override
+        public String dedupeKey() {
+            return "session-turn:" + runId + ":" + recipientUserId;
+        }
+    }
+
+    /**
+     * The opening run of a shared session finished without waiting on the inviter, who would otherwise
+     * not learn the invite was accepted until it was their turn.
+     */
+    record SessionStarted(UUID chatId, UUID sessionId, UUID runId, UUID recipientUserId) implements PushEvent {
+
+        @Override
+        public UUID subjectId() {
+            return sessionId;
+        }
+
+        @Override
+        public String dedupeKey() {
+            return "session-started:" + runId + ":" + recipientUserId;
         }
     }
 }

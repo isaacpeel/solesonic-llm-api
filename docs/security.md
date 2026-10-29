@@ -566,6 +566,32 @@ Agents such as `/network` are reached through LiteLLM's agent gateway instead of
   the UI through the same Markdown rendering as every other agent's text, and reach the transcript only
   as `ASSISTANT` rows, which memory reflection never accepts as evidence.
 
+## Shared Sessions
+
+- **A shared chat is reached only through `/shared-sessions`.** Every chat query asks for
+  `kind = 'CONVERSATION'`, so to `/chats`, `/streaming/chats`, chat groups, attachments and chat documents, a
+  shared chat doesn't exist. Otherwise its owner could send a message as nobody in particular.
+- **Participation is a `where` clause.** Every `/shared-sessions` read joins `session_participant` in the query, so
+  another user's session is a `404`, never a `403`. Only a participant still seated may send, cancel or leave.
+- **Only allowlisted agents can be shared.** `SHARED_SESSION_AGENTS` names them; an invite for any other agent is
+  refused before anything is written, so a shared session can never reach an agent the deployment did not opt in.
+- **Identity comes from the token, never the text.**
+  - Each message reaches the agent with the sender's name and the participants' names, in metadata (the
+    participants extension, `urn:solesonic:a2a:extension:participants:v1`).
+  - The agent treats the sender as who is speaking, and a typed `Alex:` prefix from Sam is part of Sam's message.
+  - Names are assigned once, server-side, from the profile's display name or username, and cleaned to the
+    agent's own name rules.
+  - A turn or question the agent reports can only name participants: any other name is dropped.
+- **What the other participants see:** your name, your messages, and your username in invites. Names also reach
+  the agent and any model it calls through LiteLLM.
+- **Shared sessions are never reflected into memory.** Reflection seeds only `CONVERSATION` chats, so one
+  participant's words can never become another's memory.
+- **Invites are by exact username.** An unknown name, a removed account and your own name are the same `404`.
+  This lets an authenticated user probe usernames, which is accepted for a household deployment.
+- **Every participant needs a model key.** The A2A call uses the gateway key, but a user without a key gets
+  nothing, here as elsewhere.
+- **Pushes carry fixed text and ids only.** They never name another participant or anything said in the session.
+
 ## Security Monitoring
 
 ### Metrics to Monitor

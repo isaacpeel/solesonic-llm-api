@@ -8,6 +8,8 @@ import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.A2AElicitationExtension;
+import com.solesonic.model.a2a.A2AParticipantMessage;
+import com.solesonic.model.a2a.A2AParticipantsExtension;
 import com.solesonic.model.a2a.A2APrompt;
 import com.solesonic.model.a2a.A2ASound;
 import com.solesonic.model.a2a.A2ASoundExtension;
@@ -62,6 +64,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -114,14 +117,38 @@ public class A2AAgentService {
      */
     public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
         return Flux.defer(() -> agentRegistry.agent(agentName)
-                .map(registeredAgent -> delegate(chatId, registeredAgent, message, userToken))
+                .map(registeredAgent -> delegate(chatId, registeredAgent,
+                        activeTaskId -> firstMessage(chatId, message, activeTaskId), userToken, null))
                 .orElseGet(() -> releaseUnavailableAgent(chatId, agentName)));
     }
 
-    private Flux<String> delegate(UUID chatId, RegisteredAgent registeredAgent, String message, String userToken) {
+    /**
+     * A message in a session several users share. Unlike {@link #delegate(UUID, String, String, String)},
+     * the message names its sender and the participants, every reply's turn is reported to
+     * {@code listener}, and a question the agent ends on is handed to it rather than parked: the
+     * participant it is for may not answer for hours. The session names its agent, so nothing here is
+     * sticky but the A2A task.
+     */
+    public Flux<String> delegateShared(UUID chatId,
+                                       String agentName,
+                                       A2AParticipantMessage participantMessage,
+                                       String userToken,
+                                       A2ASessionTurnListener listener) {
+        return Flux.defer(() -> agentRegistry.agent(agentName)
+                .map(registeredAgent -> delegate(chatId, registeredAgent,
+                        activeTaskId -> sharedMessage(chatId, participantMessage, activeTaskId), userToken,
+                        new SharedMode(participantMessage.participants(), listener)))
+                .orElseGet(() -> Flux.error(new A2AAgentUnavailableException(agentName))));
+    }
+
+    private Flux<String> delegate(UUID chatId,
+                                  RegisteredAgent registeredAgent,
+                                  Function<String, Message> firstMessage,
+                                  String userToken,
+                                  @Nullable SharedMode sharedMode) {
         return a2aStickyAgentService.getActiveTaskId(chatId)
                 .flatMapMany(activeTaskId -> Flux.create(sink -> {
-                    DelegatedTurn turn = turn(chatId, sink);
+                    DelegatedTurn turn = turn(chatId, sink, sharedMode);
                     BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(turn, event);
 
                     JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
@@ -141,7 +168,7 @@ public class A2AAgentService {
                     activeTaskId.ifPresent(s -> log.debug("Continuing A2A task '{}' for chat {}", s, chatId));
 
                     turn.start(outgoing -> client.sendMessage(outgoing, null),
-                            firstMessage(chatId, message, activeTaskId.orElse(null)));
+                            firstMessage.apply(activeTaskId.orElse(null)));
                 }));
     }
 
@@ -156,8 +183,41 @@ public class A2AAgentService {
                 .build();
     }
 
+    /**
+     * Named in {@code solesonic/extensions} as well as {@code extensions}, because LiteLLM's gateway
+     * may drop the latter and the participants extension is how the agent knows who is speaking.
+     */
+    Message sharedMessage(UUID chatId, A2AParticipantMessage participantMessage, @Nullable String activeTaskId) {
+        List<String> extensions = List.of(A2AElicitationExtension.URI, A2ASoundExtension.URI, A2AParticipantsExtension.URI);
+
+        Part<?> part = participantMessage.isAnswer()
+                ? A2AElicitationExtension.answerPart(participantMessage.answerContent())
+                : new TextPart(participantMessage.text());
+
+        return Message.builder()
+                .role(Message.Role.ROLE_USER)
+                .contextId(chatId.toString())
+                .taskId(activeTaskId)
+                .messageId(UUID.randomUUID().toString())
+                .extensions(extensions)
+                .metadata(A2AParticipantsExtension.metadata(participantMessage.senderName(), participantMessage.participants(), extensions))
+                .parts(part)
+                .build();
+    }
+
     DelegatedTurn turn(UUID chatId, FluxSink<String> sink) {
-        return new DelegatedTurn(chatId, sink);
+        return turn(chatId, sink, null);
+    }
+
+    DelegatedTurn turn(UUID chatId, FluxSink<String> sink, @Nullable SharedMode sharedMode) {
+        return new DelegatedTurn(chatId, sink, sharedMode);
+    }
+
+    /**
+     * How a shared session's turn differs from a conversation's: who takes part, and where the turn
+     * and the question it ends on are reported.
+     */
+    record SharedMode(List<String> participants, A2ASessionTurnListener listener) {
     }
 
     ClientCallInterceptor interceptor(A2AAgentSource source, String userToken) {
@@ -296,6 +356,8 @@ public class A2AAgentService {
             return;
         }
 
+        turn.observe(artifact);
+
         boolean append = Boolean.TRUE.equals(artifactEvent.append());
         turn.recordArtifact(artifact.artifactId(), extractText(artifact.parts()), append);
         emitParts(turn, artifact.parts());
@@ -322,6 +384,8 @@ public class A2AAgentService {
                 turn.sound(sound.get());
                 continue;
             }
+
+            turn.observe(artifact);
 
             String text = extractText(artifact.parts());
 
@@ -397,13 +461,27 @@ public class A2AAgentService {
         private final Set<String> cuedSounds = ConcurrentHashMap.newKeySet();
         private final AtomicBoolean textEmitted = new AtomicBoolean();
         private final ExchangeWatchdog watchdog;
+        private final @Nullable SharedMode sharedMode;
         private volatile Consumer<Message> sender = _ -> {
         };
 
-        private DelegatedTurn(UUID chatId, FluxSink<String> sink) {
+        private DelegatedTurn(UUID chatId, FluxSink<String> sink, @Nullable SharedMode sharedMode) {
             this.chatId = chatId;
             this.sink = sink;
+            this.sharedMode = sharedMode;
             this.watchdog = new ExchangeWatchdog(timeout, this::fail);
+        }
+
+        /**
+         * Reports the turn a shared session's reply artifact says. Nothing for a conversation, whose
+         * agent was never told who is taking part.
+         */
+        void observe(Artifact artifact) {
+            if (sharedMode == null) {
+                return;
+            }
+
+            A2AParticipantsExtension.turn(artifact, sharedMode.participants()).ifPresent(sharedMode.listener()::turn);
         }
 
         void start(Consumer<Message> sender, Message message) {
@@ -491,6 +569,14 @@ public class A2AAgentService {
          */
         void awaitAnswer(String taskId, A2APrompt prompt) {
             if (ended.get() || !awaitingAnswer.compareAndSet(false, true)) {
+                return;
+            }
+
+            //A shared session hands the question on and ends the run: its answer is the next message,
+            //sent by whichever participant it is for, whenever they get to it. The task stays sticky.
+            if (sharedMode != null) {
+                sharedMode.listener().prompt(taskId, prompt);
+                finish();
                 return;
             }
 

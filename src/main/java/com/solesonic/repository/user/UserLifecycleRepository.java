@@ -64,7 +64,7 @@ public class UserLifecycleRepository {
                             or not exists (select 1
                                              from chat
                                              join chat_message message on message.chat_id = chat.id
-                                            where chat.user_id = owners.user_id
+                                            where coalesce(message.sender_user_id, chat.user_id) = owners.user_id
                                               and message.message_type = 'USER'
                                               and message.timestamp >= :activeSince)
                         """.formatted(MEMORY_OWNERS))

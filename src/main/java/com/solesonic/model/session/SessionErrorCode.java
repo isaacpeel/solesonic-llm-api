@@ -1,0 +1,17 @@
+package com.solesonic.model.session;
+
+public enum SessionErrorCode {
+    SESSION_NOT_FOUND,
+    INVITE_NOT_FOUND,
+    PARTICIPANT_NOT_FOUND,
+    INVALID_INVITE,
+    INVITE_PENDING,
+    TOO_MANY_INVITES,
+    INVITE_NOT_PENDING,
+    AGENT_UNAVAILABLE,
+    SESSION_CLOSED,
+    RUN_IN_PROGRESS,
+    NOT_YOUR_TURN,
+    INVALID_MESSAGE,
+    MESSAGE_TOO_LONG
+}

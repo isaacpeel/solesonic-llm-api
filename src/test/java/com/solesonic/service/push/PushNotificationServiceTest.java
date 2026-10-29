@@ -76,6 +76,10 @@ class PushNotificationServiceTest {
     private static final UUID UPDATE_ID = UUID.fromString("3d2c1b0a-9f8e-4d7c-6b5a-4f3e2d1c0b9a");
     private static final PushEvent INTEREST_OFFERED = new PushEvent.InterestOffered(OFFER_ID);
     private static final PushEvent INTEREST_UPDATED = new PushEvent.InterestUpdated(CHAT_ID, AGENT_ID, UPDATE_ID);
+    private static final UUID SESSION_ID = UUID.fromString("5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e");
+    private static final UUID INVITE_ID = UUID.fromString("6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
+    private static final PushEvent SESSION_TURN = new PushEvent.SessionTurn(CHAT_ID, SESSION_ID, RUN_ID, USER_ID);
+    private static final PushEvent SESSION_INVITED = new PushEvent.SessionInvited(INVITE_ID);
     private static final PushTarget TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/first"), "p256dh", "auth");
     private static final PushTarget OTHER_TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/second"), "p256dh", "auth");
 
@@ -224,7 +228,7 @@ class PushNotificationServiceTest {
 
     @Test
     void aTurnIsNotSentWhenTurnNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true, true, true, true, true));
 
         deliver(TURN_FINISHED);
         deliver(new PushEvent.TurnFailed(CHAT_ID, UUID.randomUUID()));
@@ -234,7 +238,7 @@ class PushNotificationServiceTest {
 
     @Test
     void anElicitationIsNotSentWhenElicitationNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false, true, true, true, true));
 
         deliver(ELICITATION_WAITING);
         deliver(ELICITATION_REMINDER);
@@ -296,7 +300,7 @@ class PushNotificationServiceTest {
 
     @Test
     void anOfferIsNotSentWhenOfferNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, false, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, false, true, true, true));
 
         deliver(INTEREST_OFFERED);
 
@@ -305,13 +309,74 @@ class PushNotificationServiceTest {
 
     @Test
     void anUpdateIsNotSentWhenUpdateNotificationsAreOffButAnOfferStillIs() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, false));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, false, true, true));
 
         deliver(INTEREST_UPDATED);
         verify(webPushSender, never()).send(any(), any(), any());
 
         deliver(INTEREST_OFFERED);
         verify(webPushSender).send(any(), any(), any());
+    }
+
+    @Test
+    void aSessionTurnIsSentUnlessTheSessionIsWatchedAndReplacesTheSessionsQueuedPush() {
+        deliver(SESSION_TURN);
+
+        ArgumentCaptor<PushDeliveryOptions> options = ArgumentCaptor.forClass(PushDeliveryOptions.class);
+        verify(webPushSender).send(eq(TARGET), any(), options.capture());
+        assertThat(options.getValue()).isEqualTo(new PushDeliveryOptions(Duration.ofHours(24), PushUrgency.HIGH,
+                "5f0c2d1e3b4a49c88d7e6f5a4b3c2d1e"));
+        verify(pushPresenceService).isWatching(USER_ID, CHAT_ID);
+    }
+
+    @Test
+    void aSessionTurnIsNotSentWhileTheSessionIsWatched() {
+        when(pushPresenceService.isWatching(USER_ID, CHAT_ID)).thenReturn(Mono.just(true));
+
+        deliver(SESSION_TURN);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void aSessionInviteIsSentWithoutAskingAboutPresence() {
+        deliver(SESSION_INVITED);
+
+        verify(webPushSender).send(eq(TARGET), any(), any());
+        verify(pushPresenceService, never()).isWatching(any(), any());
+    }
+
+    @Test
+    void sessionPushesFollowTheirOwnPreferences() {
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, false, false));
+
+        deliver(SESSION_INVITED);
+        deliver(SESSION_TURN);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void aSessionTurnIsDedupedByRunAndRecipient() {
+        deliver(SESSION_TURN);
+
+        verify(valueOperations).setIfAbsent("push:sent:session-turn:" + RUN_ID + ":" + USER_ID, "1", Duration.ofHours(1));
+    }
+
+    /**
+     * Fixed text and ids only: nothing about the session, its messages or the other participants.
+     */
+    @Test
+    void aSessionTurnPayloadCarriesNothingFromTheSession() {
+        deliver(SESSION_TURN);
+
+        ArgumentCaptor<byte[]> payload = ArgumentCaptor.forClass(byte[].class);
+        verify(webPushSender).send(any(), payload.capture(), any());
+        assertThat(jsonMapper.readTree(payload.getValue())).isEqualTo(jsonMapper.readTree("""
+                {"version":1,"type":"SESSION_TURN","title":"Izzy","body":"It's your turn",
+                 "url":"/shared-sessions/5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e","tag":"session:5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e",
+                 "timestamp":"2026-10-20T12:00:00Z"}
+                """));
     }
 
     @Test

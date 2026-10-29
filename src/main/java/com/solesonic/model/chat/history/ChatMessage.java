@@ -26,6 +26,13 @@ public class ChatMessage {
 
     private UUID chatId;
 
+    /**
+     * Who sent a {@code USER} message in a shared chat, which several participants share. Null
+     * everywhere else: a conversation's messages are all its owner's.
+     */
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private UUID senderUserId;
+
     private ZonedDateTime timestamp;
 
     @Enumerated(EnumType.STRING)
@@ -101,6 +108,14 @@ public class ChatMessage {
 
     public void setId(UUID id) {
         this.id = id;
+    }
+
+    public UUID getSenderUserId() {
+        return senderUserId;
+    }
+
+    public void setSenderUserId(UUID senderUserId) {
+        this.senderUserId = senderUserId;
     }
 
     public ZonedDateTime getTimestamp() {

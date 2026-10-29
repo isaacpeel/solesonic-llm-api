@@ -66,6 +66,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
 import static com.solesonic.service.chat.events.ElicitationService.ELICITATION;
@@ -200,31 +201,82 @@ public class RedisStreamingChatService {
                                            ChatRequest chatRequest,
                                            Authentication authentication) {
 
-        UUID runId = UUID.randomUUID();
+        TurnPlan turnPlan = conversationPlan(UUID.randomUUID(), chatId, userId, chatRequest, authentication);
 
         return redisStreamService.getLatestOffset(chatId, userId)
-                .flatMap(offset -> Mono
-                        .fromCallable(() -> chatMessageService.saveUserMessage(chatId, userId, chatRequest))
-                        .subscribeOn(Schedulers.boundedElastic())
-                        .map(chatMessage -> new StreamStart(offset, chatMessage)))
-                .flatMap(streamStart -> publish(chatId, userId,
-                        runStarted(chatId, runId, streamStart.chatMessage(), chatRequest))
-                        .thenReturn(streamStart))
-                .flatMapMany(streamStart -> {
-                    publishToRedisStream(chatId, userId, runId, chatRequest, authentication);
-                    return redisStreamService.subscribe(chatId, userId, streamStart.offset());
+                .flatMap(offset -> start(turnPlan).thenReturn(offset))
+                .flatMapMany(offset -> redisStreamService.subscribe(chatId, userId, offset));
+    }
+
+    /**
+     * Starts a run for a reader who is already on the stream, and answers once its
+     * {@code RUN_STARTED} frame is published. The run then goes on by itself, exactly as one started
+     * by {@link #update} does. A run that fails to start never calls its hooks.
+     */
+    public Mono<StartedRun> start(TurnPlan turnPlan) {
+        return Mono.fromCallable(() -> chatMessageService.saveUserMessage(turnPlan.chatId(), turnPlan.senderUserId(), turnPlan.chatRequest()))
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMap(chatMessage -> publish(turnPlan.chatId(), turnPlan.streamUserId(), runStarted(turnPlan, chatMessage))
+                        .thenReturn(chatMessage))
+                .map(chatMessage -> {
+                    runTurn(turnPlan).subscribe();
+
+                    return new StartedRun(turnPlan.runId(), chatMessage.getId());
                 });
     }
 
-    private record StreamStart(String offset, ChatMessage chatMessage) {
+    private TurnPlan conversationPlan(UUID runId,
+                                      UUID chatId,
+                                      UUID userId,
+                                      ChatRequest chatRequest,
+                                      Authentication authentication) {
+        return new TurnPlan(runId, chatId, userId, userId, null, chatRequest,
+                () -> promptService.stream(chatId, userId, chatRequest, authentication),
+                new ConversationHooks(chatId, userId));
     }
 
-    private static RunStartedEvent runStarted(UUID chatId, UUID runId, ChatMessage userMessage, ChatRequest chatRequest) {
-        RunAgentInput input = new RunAgentInput(chatId.toString(), runId.toString(),
-                List.of(new UserMessage(String.valueOf(userMessage.getId()), chatRequest.chatMessage())),
+    private static RunStartedEvent runStarted(TurnPlan turnPlan, ChatMessage userMessage) {
+        String chatId = turnPlan.chatId().toString();
+        String runId = turnPlan.runId().toString();
+
+        RunAgentInput input = new RunAgentInput(chatId, runId,
+                List.of(new UserMessage(String.valueOf(userMessage.getId()), turnPlan.chatRequest().chatMessage(), turnPlan.senderName())),
                 List.of());
 
-        return new RunStartedEvent(chatId.toString(), runId.toString(), null, input, null, null);
+        return new RunStartedEvent(chatId, runId, null, input, null, null);
+    }
+
+    /**
+     * A conversation's run is pushed to its owner when it finishes or fails, and adds nothing ahead of
+     * its terminal frame. A cancelled run is not pushed: the user asked for it, so they were looking.
+     */
+    private final class ConversationHooks implements TurnHooks {
+        private final UUID chatId;
+        private final UUID userId;
+
+        private ConversationHooks(UUID chatId, UUID userId) {
+            this.chatId = chatId;
+            this.userId = userId;
+        }
+
+        @Override
+        public Mono<Void> beforeTerminal(UUID runId, TurnOutcome outcome) {
+            return Mono.empty();
+        }
+
+        @Override
+        public void afterTerminal(UUID runId, TurnOutcome outcome) {
+            switch (outcome) {
+                case COMPLETED -> pushNotificationService.push(userId, new PushEvent.TurnFinished(chatId, runId));
+                case FAILED -> pushNotificationService.push(userId, new PushEvent.TurnFailed(chatId, runId));
+                case CANCELLED -> log.debug("A cancelled run of chat {} is not pushed", chatId);
+            }
+        }
+
+        @Override
+        public void finished(UUID runId) {
+            log.debug("Run {} of chat {} is over", runId, chatId);
+        }
     }
 
     /**
@@ -240,14 +292,6 @@ public class RedisStreamingChatService {
                 .defaultIfEmpty(CancelOutcome.NOTHING_TO_CANCEL);
     }
 
-    private void publishToRedisStream(UUID chatId,
-                                      UUID userId,
-                                      UUID runId,
-                                      ChatRequest chatRequest,
-                                      Authentication authentication) {
-        runTurn(chatId, userId, runId, chatRequest, authentication).subscribe();
-    }
-
     /**
      * The whole turn as one cold {@link Mono}, so a test can drive it to completion. Production subscribes
      * and walks away — a turn is not driven by the HTTP response.
@@ -257,7 +301,13 @@ public class RedisStreamingChatService {
                        UUID runId,
                        ChatRequest chatRequest,
                        Authentication authentication) {
-        trackActiveStream(userId, chatId);
+        return runTurn(conversationPlan(runId, chatId, userId, chatRequest, authentication));
+    }
+
+    Mono<Void> runTurn(TurnPlan turnPlan) {
+        UUID chatId = turnPlan.chatId();
+
+        trackActiveStream(turnPlan.senderUserId(), chatId);
 
         //Marks the start of this turn, so the finished payload can name the images the turn produced.
         //Time rather than message id because the assistant message is written by the chat memory
@@ -275,21 +325,29 @@ public class RedisStreamingChatService {
         Flux<SideChannelMessage> promptEvents = elicitationEvents
                 .filter(message -> ELICITATION.equalsIgnoreCase(message.event()));
 
-        forwardElicitationEvents(chatId, userId, elicitationEvents);
+        forwardElicitationEvents(chatId, turnPlan.streamUserId(), elicitationEvents);
 
-        Turn turn = new Turn(chatId, userId, runId, UUID.randomUUID().toString(), turnStarted);
+        Turn turn = new Turn(chatId, turnPlan.streamUserId(), turnPlan.senderUserId(), turnPlan.runId(),
+                UUID.randomUUID().toString(), turnStarted, turnPlan.hooks());
 
-        return streamTurn(turn, chatRequest, authentication, cancelEvents, promptEvents)
+        return streamTurn(turn, turnPlan.chunks(), cancelEvents, promptEvents)
                 .onErrorResume(error -> handleStreamError(turn, error))
-                .doFinally(_ -> cleanup(chatId, userId));
+                .doFinally(_ -> cleanup(turn));
     }
 
     /**
      * The identifiers one turn's frames carry. {@code messageId} is a wire id for the assistant's
      * text message only: the persisted assistant row is written by the chat memory advisor, which
-     * assigns its own id and never hands it back here.
+     * assigns its own id and never hands it back here. Frames go to {@code streamUserId}'s stream;
+     * {@code senderUserId} is who sent the message.
      */
-    private record Turn(UUID chatId, UUID userId, UUID runId, String messageId, ZonedDateTime started) {
+    private record Turn(UUID chatId,
+                        UUID streamUserId,
+                        UUID senderUserId,
+                        UUID runId,
+                        String messageId,
+                        ZonedDateTime started,
+                        TurnHooks hooks) {
     }
 
     /**
@@ -302,8 +360,7 @@ public class RedisStreamingChatService {
      * the pub/sub thread.
      */
     private Mono<Void> streamTurn(Turn turn,
-                                  ChatRequest chatRequest,
-                                  Authentication authentication,
+                                  Supplier<Flux<String>> chunks,
                                   Flux<SideChannelMessage> cancelEvents,
                                   Flux<SideChannelMessage> promptEvents) {
 
@@ -311,7 +368,7 @@ public class RedisStreamingChatService {
         AtomicBoolean cancelled = new AtomicBoolean();
         AtomicBoolean messageStarted = new AtomicBoolean();
 
-        Flux<String> chunkFlow = Flux.defer(() -> promptService.stream(turn.chatId(), turn.userId(), chatRequest, authentication))
+        Flux<String> chunkFlow = Flux.defer(chunks)
                 .subscribeOn(Schedulers.boundedElastic())
                 .filter(StringUtils::isNotEmpty)
                 .transform(ResponseSanitizer.sanitize())
@@ -352,7 +409,7 @@ public class RedisStreamingChatService {
             return publish(turn, new TextMessageStartEvent(turn.messageId(), Role.ASSISTANT, null, null)).then();
         }
 
-        return redisStreamService.publish(turn.chatId(), turn.userId(), EventType.TEXT_MESSAGE_START.value(),
+        return redisStreamService.publish(turn.chatId(), turn.streamUserId(), EventType.TEXT_MESSAGE_START.value(),
                 new MetadataTextMessageStartEvent(turn.messageId(), Role.ASSISTANT, metadata)).then();
     }
 
@@ -391,20 +448,33 @@ public class RedisStreamingChatService {
 
                     log.debug("Publishing run finished event to Redis for chat id {}", chatId);
 
-                    return publish(turn, runFinished(turn, responseMessage))
-                            .doOnSuccess(_ -> pushOutcome(turn, new PushEvent.TurnFinished(chatId, turn.runId())));
+                    return beforeTerminal(turn, TurnOutcome.COMPLETED)
+                            .then(Mono.defer(() -> publish(turn, runFinished(turn, responseMessage))))
+                            .doOnSuccess(_ -> afterTerminal(turn, TurnOutcome.COMPLETED));
                 })
                 .then();
     }
 
     /**
+     * Never able to fail the turn: the terminal frame goes out whatever happened here.
+     */
+    private Mono<Void> beforeTerminal(Turn turn, TurnOutcome outcome) {
+        return Mono.defer(() -> turn.hooks().beforeTerminal(turn.runId(), outcome))
+                .onErrorResume(error -> {
+                    log.warn("Could not finish run {} of chat {} ahead of its terminal frame: {}",
+                            turn.runId(), turn.chatId(), error.getClass().getSimpleName());
+
+                    return Mono.empty();
+                });
+    }
+
+    /**
      * Only ever once the terminal frame is published, and never able to fail the turn: an exception
      * escaping here would otherwise become the turn's own error and publish a second terminal frame.
-     * A cancelled turn is not pushed: the user asked for it, so they were looking.
      */
-    private void pushOutcome(Turn turn, PushEvent pushEvent) {
+    private void afterTerminal(Turn turn, TurnOutcome outcome) {
         try {
-            pushNotificationService.push(turn.userId(), pushEvent);
+            turn.hooks().afterTerminal(turn.runId(), outcome);
         } catch (RuntimeException runtimeException) {
             log.warn("Could not push the outcome of chat {}: {}", turn.chatId(), runtimeException.getClass().getSimpleName());
         }
@@ -436,7 +506,9 @@ public class RedisStreamingChatService {
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(responseMessage -> publish(turn,
                         new CustomEvent(CANCEL_ACTION, Map.of(MESSAGE, CHAT_CANCELED), null, null))
+                        .then(beforeTerminal(turn, TurnOutcome.CANCELLED))
                         .then(Mono.defer(() -> publish(turn, runFinished(turn, responseMessage)))))
+                .doOnSuccess(_ -> afterTerminal(turn, TurnOutcome.CANCELLED))
                 .then();
     }
 
@@ -447,7 +519,7 @@ public class RedisStreamingChatService {
 
     private Mono<Void> handleStreamError(Turn turn, Throwable error) {
         UUID chatId = turn.chatId();
-        UUID userId = turn.userId();
+        UUID userId = turn.streamUserId();
         Throwable unwrapped = unwrapAsync(error);
 
         if (Exceptions.isCancel(unwrapped) || unwrapped instanceof InterruptedException) {
@@ -467,8 +539,9 @@ public class RedisStreamingChatService {
         return Mono.fromCallable(() -> notificationService.recordFailure(chatId, userMessage, code))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(failure -> publish(chatId, userId, new CustomEvent(FAILURE, failure, null, null)))
+                .then(beforeTerminal(turn, TurnOutcome.FAILED))
                 .then(Mono.defer(() -> publish(chatId, userId, runError)))
-                .doOnSuccess(_ -> pushOutcome(turn, new PushEvent.TurnFailed(chatId, turn.runId())))
+                .doOnSuccess(_ -> afterTerminal(turn, TurnOutcome.FAILED))
                 .then();
     }
 
@@ -601,7 +674,7 @@ public class RedisStreamingChatService {
     }
 
     private Mono<RecordId> publish(Turn turn, Event event) {
-        return publish(turn.chatId(), turn.userId(), event);
+        return publish(turn.chatId(), turn.streamUserId(), event);
     }
 
     private Mono<RecordId> publish(UUID chatId, UUID userId, Event event) {
@@ -628,11 +701,19 @@ public class RedisStreamingChatService {
                 .subscribe();
     }
 
-    private void cleanup(UUID chatId, UUID userId) {
+    private void cleanup(Turn turn) {
+        UUID chatId = turn.chatId();
+
         log.debug("Cleaning up Redis stream for chat id: {}", chatId);
 
         elicitationService.closeChat(chatId);
         pendingMessageMetadata.clear(chatId);
-        untrackActiveStream(userId, chatId);
+        untrackActiveStream(turn.senderUserId(), chatId);
+
+        try {
+            turn.hooks().finished(turn.runId());
+        } catch (RuntimeException runtimeException) {
+            log.warn("A hook failed while cleaning up chat {} after run {}: {}", chatId, turn.runId(), runtimeException.getClass().getSimpleName());
+        }
     }
 }

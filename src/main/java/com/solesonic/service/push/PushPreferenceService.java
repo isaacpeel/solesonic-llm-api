@@ -50,6 +50,8 @@ public class PushPreferenceService {
         pushPreference.setElicitation(pushPreferenceRequest.elicitation());
         pushPreference.setInterestOffers(orCurrent(pushPreferenceRequest.interestOffers(), current.interestOffers()));
         pushPreference.setInterestUpdates(orCurrent(pushPreferenceRequest.interestUpdates(), current.interestUpdates()));
+        pushPreference.setSessionInvites(orCurrent(pushPreferenceRequest.sessionInvites(), current.sessionInvites()));
+        pushPreference.setSessionTurns(orCurrent(pushPreferenceRequest.sessionTurns(), current.sessionTurns()));
         pushPreference.setUpdated(ZonedDateTime.now(clock));
 
         return PushPreferenceSummary.of(pushPreferenceRepository.save(pushPreference));

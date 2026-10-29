@@ -10,6 +10,7 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.agui.community.core.message.Role;
+import com.agui.community.core.message.UserMessage;
 import com.openai.core.http.Headers;
 import com.openai.errors.BadRequestException;
 import com.openai.errors.InternalServerException;
@@ -81,6 +82,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
@@ -917,6 +919,110 @@ class RedisStreamingChatServiceTest {
                 .verifyComplete();
 
         verify(elicitationService, never()).cancelChat(any());
+    }
+
+    /**
+     * A shared session's run: the frames go to the owner's stream while the message is the sender's, and the
+     * route's hooks run around the terminal frame.
+     */
+    private record RecordedHooks(List<String> calls, Mono<Void> beforeTerminal) implements TurnHooks {
+
+        @Override
+        public Mono<Void> beforeTerminal(UUID runId, TurnOutcome outcome) {
+            return Mono.fromRunnable(() -> calls.add("before " + outcome)).then(beforeTerminal);
+        }
+
+        @Override
+        public void afterTerminal(UUID runId, TurnOutcome outcome) {
+            calls.add("after " + outcome);
+        }
+
+        @Override
+        public void finished(UUID runId) {
+            calls.add("finished");
+        }
+    }
+
+    private static final UUID OWNER_ID = UUID.randomUUID();
+
+    private TurnPlan sharedPlan(Flux<String> chunks, RecordedHooks hooks) {
+        return new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
+                () -> chunks, hooks);
+    }
+
+    @Test
+    void aSharedRunWritesToTheOwnersStreamAndTracksItsSender() {
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+                .verifyComplete();
+
+        verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_FINISHED), any());
+        verify(redisStreamService, never()).publish(eq(CHAT_ID), eq(USER_ID), anyString(), any());
+        verify(activeStreamTracker).put(USER_ID, CHAT_ID);
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    @Test
+    void aRoutesHooksRunAroundTheTerminalFrame() {
+        TurnHooks hooks = mock(TurnHooks.class);
+        when(hooks.beforeTerminal(RUN_ID, TurnOutcome.COMPLETED)).thenReturn(Mono.empty());
+        TurnPlan turnPlan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
+                () -> Flux.just("Good answer!"), hooks);
+
+        StepVerifier.create(redisStreamingChatService.runTurn(turnPlan)).verifyComplete();
+
+        //finished runs in doFinally, after the completion the verifier waits on.
+        verify(hooks, timeout(1000)).finished(RUN_ID);
+
+        InOrder order = inOrder(hooks, redisStreamService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(TEXT_MESSAGE_END), any());
+        order.verify(hooks).beforeTerminal(RUN_ID, TurnOutcome.COMPLETED);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_FINISHED), any());
+        order.verify(hooks).afterTerminal(RUN_ID, TurnOutcome.COMPLETED);
+        order.verify(hooks).finished(RUN_ID);
+    }
+
+    @Test
+    void aHookThatFailsNeverFailsTheRun() {
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.error(new IllegalStateException("database down")));
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+    }
+
+    @Test
+    void aFailedRunCallsItsHooksAroundRunError() {
+        List<String> calls = new CopyOnWriteArrayList<>();
+        RecordedHooks hooks = new RecordedHooks(calls, Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.error(new TimeoutException("slow")), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
+        assertThat(calls).containsSubsequence("before FAILED", "after FAILED");
+    }
+
+    @Test
+    void startAnswersOnceRunStartedIsOutWithTheSendersName() {
+        UUID userMessageId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+
+        StepVerifier.create(redisStreamingChatService.start(sharedPlan(Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()))))
+                .expectNext(new StartedRun(RUN_ID, userMessageId))
+                .verifyComplete();
+
+        verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_STARTED), any());
+
+        RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
+        RunAgentInput input = (RunAgentInput) runStarted.input();
+        assertThat(input.messages()).singleElement()
+                .isInstanceOfSatisfying(UserMessage.class, message -> assertThat(message.name()).isEqualTo("Sam"));
     }
 
     /**

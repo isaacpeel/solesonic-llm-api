@@ -451,6 +451,21 @@ applies when it is unset. Both tasks default to off.
 token, so it searches on the application's client credentials; without the role every run fails as an
 `isError` result and the agent is paused after `INTEREST_NEWS_MAX_FAILURES`.
 
+### Shared Session Configuration
+
+All are optional: set one only to change the default shown.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SHARED_SESSION_AGENTS` | `feud` | Comma-separated A2A agent names a session may be opened with. An invite naming any other agent is `400 INVALID_INVITE`; a listed agent that isn't registered is `503 AGENT_UNAVAILABLE`. Startup fails if it names none |
+| `SHARED_SESSION_INVITE_TTL_HOURS` | `24` | How long an invite stays open |
+| `SHARED_SESSION_MAX_PENDING_INVITES` | `5` | Open invites one user may have sent |
+| `SHARED_SESSION_MAX_MESSAGE_CHARACTERS` | `500` | Limit on a message and on an invite's opening message; at most the agent's `A2A_MAX_MESSAGE_CHARACTERS` |
+| `SHARED_SESSION_MAX_NAME_CHARACTERS` | `40` | Participant names are cut to this; at most the agent's own name limit (`FEUD_MAX_NAME_CHARACTERS`) and at most 64 |
+| `SHARED_SESSION_RUN_LOCK_SECONDS` | `600` | One run at a time per session; startup fails unless greater than `solesonic.a2a.timeout-seconds` |
+| `SHARED_SESSION_IDLE_DAYS` | `7` | Sessions with no message this long expire; match the agent's own state lifetime (`FEUD_GAME_TTL_MINUTES`) |
+| `SHARED_SESSION_EXPIRY_CRON` | `0 */10 * * * *` | When invites and idle sessions are expired |
+
 ### MCP (Model Context Protocol) Configuration
 
 | Variable | Description | Example | Required | Notes |

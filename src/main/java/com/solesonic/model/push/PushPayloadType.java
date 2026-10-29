@@ -6,5 +6,8 @@ public enum PushPayloadType {
     ELICITATION_WAITING,
     INTEREST_OFFER,
     INTEREST_UPDATE,
+    SESSION_INVITE,
+    SESSION_TURN,
+    SESSION_STARTED,
     TEST
 }
