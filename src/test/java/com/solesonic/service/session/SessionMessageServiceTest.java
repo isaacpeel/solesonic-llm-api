@@ -132,6 +132,7 @@ class SessionMessageServiceTest {
         return new SessionMessageRequest(text, null);
     }
 
+    @SuppressWarnings("all")
     private void promptFor(UUID... userIds) {
         sharedSession.setPendingPrompt(new SessionPrompt(ELICITATION_ID, "task-1", "Your call",
                 Map.of("type", "object", "properties", Map.of("choice", Map.of("type", "string",
@@ -153,6 +154,53 @@ class SessionMessageServiceTest {
 
         assertThat(sentToTheAgent(turnPlan)).isEqualTo(A2AParticipantMessage.typed("towel", "Sam", List.of("Alex", "Sam")));
         verify(sessionRunLock).recordCursor(eq(SESSION_ID), eq("5-0"), any());
+    }
+
+    @Test
+    void aMessageTheAgentAskedToHideIsWrappedForTheTranscriptButSentToTheAgentAsTyped() {
+        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication());
+
+        TurnPlan turnPlan = startedPlan();
+        assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\ntowel\n[[/hidden]]");
+        assertThat(sentToTheAgent(turnPlan)).isEqualTo(A2AParticipantMessage.typed("towel", "Sam", List.of("Alex", "Sam")));
+    }
+
+    @Test
+    void aMessageFromSomeoneTheTurnDoesNotWaitOnIsNotHidden() {
+        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
+
+        sessionMessageService.send(SESSION_ID, ALEX, typed("towel"), authentication());
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("towel");
+    }
+
+    @Test
+    void aMarkerAParticipantTypedIsStrippedFromTheTranscript() {
+        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"), authentication());
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\nab\n[[/hidden]]");
+    }
+
+    @Test
+    void aMessageThatIsOnlyAMarkerIsRefused() {
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("[[/hidden]]"), authentication()))
+                .isInstanceOfSatisfying(SessionException.class,
+                        sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
+    }
+
+    @Test
+    void anAnswerIsNeverHidden() {
+        sharedSession.setTurnState(new SessionTurn(List.of(ALEX), "choice", false, List.of("Sam")));
+        promptFor(ALEX);
+
+        sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), authentication());
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("Play");
     }
 
     @Test
@@ -238,7 +286,7 @@ class SessionMessageServiceTest {
         sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication());
         TurnPlan turnPlan = startedPlan();
 
-        SharedSessionSummary summary = summary(new SessionTurn(List.of(ALEX), "answer", false));
+        SharedSessionSummary summary = summary(new SessionTurn(List.of(ALEX), "answer", false, List.of()));
         when(sharedSessionService.applyOutcome(eq(SESSION_ID), eq(turnPlan.runId()), eq(TurnOutcome.COMPLETED), any())).thenReturn(summary);
         when(sharedSessionService.publishState(CHAT_ID, ALEX, summary)).thenReturn(Mono.empty());
 
@@ -259,7 +307,7 @@ class SessionMessageServiceTest {
 
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("new show");
 
-        SharedSessionSummary summary = summary(new SessionTurn(List.of(SAM), "answer", false));
+        SharedSessionSummary summary = summary(new SessionTurn(List.of(SAM), "answer", false, List.of()));
         when(sharedSessionService.applyOutcome(any(), any(), any(), any())).thenReturn(summary);
         when(sharedSessionService.publishState(any(), any(), any())).thenReturn(Mono.empty());
 

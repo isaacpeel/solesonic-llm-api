@@ -25,6 +25,7 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.RecordId;
 import reactor.core.publisher.Mono;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Clock;
 import java.util.List;
@@ -109,20 +110,28 @@ class SharedSessionServiceTest {
     @Test
     void theTurnsNamesBecomeTheirParticipantsIds() {
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Sam"), "answer", false));
+        collector.turn(new A2ATurnState(List.of("Sam"), "answer", false, List.of("Alex")));
 
         SharedSessionSummary summary = sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, collector);
 
-        assertThat(summary.turn()).isEqualTo(new SessionTurn(List.of(SAM), "answer", false));
+        assertThat(summary.turn()).isEqualTo(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
         assertThat(summary.prompt()).isNull();
         assertThat(sharedSession.getLastRunId()).isEqualTo(RUN_ID);
         assertThat(sharedSession.getStatus()).isEqualTo(SessionStatus.ACTIVE);
     }
 
     @Test
+    void aTurnSavedBeforeInputCouldBeHiddenHidesNothing() {
+        SessionTurn turn = JsonMapper.builder().build()
+                .readValue("{\"userIds\":[\"" + SAM + "\"],\"next\":\"answer\",\"over\":false}", SessionTurn.class);
+
+        assertThat(turn).isEqualTo(new SessionTurn(List.of(SAM), "answer", false, List.of()));
+    }
+
+    @Test
     void aQuestionIsForTheParticipantsItsFormNames() {
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Alex"), "choice", false));
+        collector.turn(new A2ATurnState(List.of("Alex"), "choice", false, List.of()));
         collector.prompt("task-1", playOrPass(List.of("Alex")));
 
         SharedSessionSummary summary = sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, collector);
@@ -136,7 +145,7 @@ class SharedSessionServiceTest {
     @Test
     void aQuestionThatNamesNobodyIsForWhoeverTheTurnWaitsOn() {
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Sam"), "ready", false));
+        collector.turn(new A2ATurnState(List.of("Sam"), "ready", false, List.of()));
         collector.prompt("task-1", playOrPass(List.of("Kim")));
 
         SharedSessionSummary summary = sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, collector);
@@ -147,7 +156,7 @@ class SharedSessionServiceTest {
     @Test
     void aTurnThatIsOverCompletesTheSession() {
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Alex", "Sam"), "rematch", true));
+        collector.turn(new A2ATurnState(List.of("Alex", "Sam"), "rematch", true, List.of()));
 
         sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, collector);
 
@@ -167,14 +176,14 @@ class SharedSessionServiceTest {
 
     @Test
     void aFailedRunLeavesTheSessionAsItWas() {
-        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false));
+        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of()));
 
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Alex"), "answer", false));
+        collector.turn(new A2ATurnState(List.of("Alex"), "answer", false, List.of()));
 
         sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.FAILED, collector);
 
-        assertThat(sharedSession.getTurnState()).isEqualTo(new SessionTurn(List.of(SAM), "answer", false));
+        assertThat(sharedSession.getTurnState()).isEqualTo(new SessionTurn(List.of(SAM), "answer", false, List.of()));
     }
 
     @Test
@@ -182,7 +191,7 @@ class SharedSessionServiceTest {
         sharedSession.setStatus(SessionStatus.CLOSED);
 
         SessionTurnCollector collector = new SessionTurnCollector();
-        collector.turn(new A2ATurnState(List.of("Alex"), "answer", false));
+        collector.turn(new A2ATurnState(List.of("Alex"), "answer", false, List.of()));
 
         sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, collector);
 
@@ -211,7 +220,7 @@ class SharedSessionServiceTest {
 
     @Test
     void yourTurnIsAnsweredForTheViewerOfAnActiveSession() {
-        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false));
+        sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of()));
 
         assertThat(sharedSessionService.summary(sharedSession, participants, SAM, false).yourTurn()).isTrue();
         assertThat(sharedSessionService.summary(sharedSession, participants, ALEX, false).yourTurn()).isFalse();

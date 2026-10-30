@@ -31,6 +31,7 @@ public final class A2AParticipantsExtension {
     private static final String PARTICIPANTS = "participants";
     private static final String NEXT = "next";
     private static final String OVER = "over";
+    private static final String INPUT_HIDDEN_FROM = "inputHiddenFrom";
     private static final Pattern SAFE_NEXT = Pattern.compile("[a-z_]{1,32}");
 
     private A2AParticipantsExtension() {
@@ -62,7 +63,8 @@ public final class A2AParticipantsExtension {
 
         boolean over = turn.get(OVER) instanceof Boolean reportedOver && reportedOver;
 
-        return Optional.of(new A2ATurnState(known(turn.get(PARTICIPANTS), participants), next, over));
+        return Optional.of(new A2ATurnState(known(turn.get(PARTICIPANTS), participants), next, over,
+                known(turn.get(INPUT_HIDDEN_FROM), participants)));
     }
 
     /**

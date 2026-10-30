@@ -133,6 +133,7 @@ class A2AAgentServiceSharedSessionTest {
                 .build();
     }
 
+    @SuppressWarnings("all")
     private static Task task(String taskId, TaskState state) {
         return Task.builder().id(taskId).contextId("context-1").status(new TaskStatus(state)).build();
     }
@@ -196,7 +197,7 @@ class A2AAgentServiceSharedSessionTest {
                 .expectNext("Sam, your answer?")
                 .verifyComplete();
 
-        assertThat(turns).containsExactly(new A2ATurnState(List.of("Sam"), "answer", false));
+        assertThat(turns).containsExactly(new A2ATurnState(List.of("Sam"), "answer", false, List.of()));
     }
 
     /**
@@ -218,7 +219,7 @@ class A2AAgentServiceSharedSessionTest {
 
         assertThat(promptTasks).containsExactly("task-2");
         assertThat(prompts).singleElement().satisfies(prompt -> assertThat(prompt.message()).isEqualTo("Your call"));
-        assertThat(turns).containsExactly(new A2ATurnState(List.of("Alex"), "choice", false));
+        assertThat(turns).containsExactly(new A2ATurnState(List.of("Alex"), "choice", false, List.of()));
         verify(stickyAgentService).activateTask(CHAT_ID, "task-2");
         verifyNoInteractions(elicitationService);
 

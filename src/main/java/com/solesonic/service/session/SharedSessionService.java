@@ -236,7 +236,8 @@ public class SharedSessionService {
             List<String> names = participants.stream().map(SessionParticipant::getName).toList();
 
             SessionTurn turn = collector.turn()
-                    .map(turnState -> new SessionTurn(userIds(turnState.participants(), userIdsByName), turnState.next(), turnState.over()))
+                    .map(turnState -> new SessionTurn(userIds(turnState.participants(), userIdsByName), turnState.next(), turnState.over(),
+                            turnState.inputHiddenFrom()))
                     .orElse(null);
 
             SessionPrompt prompt = collector.prompt()

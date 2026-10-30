@@ -12,6 +12,7 @@ import com.solesonic.model.session.SessionMessageRequest;
 import com.solesonic.model.session.SessionParticipant;
 import com.solesonic.model.session.SessionPrompt;
 import com.solesonic.model.session.SessionPromptAnswer;
+import com.solesonic.model.session.SessionTurn;
 import com.solesonic.model.session.SharedSession;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.redis.service.RedisStreamService;
@@ -25,6 +26,7 @@ import com.solesonic.service.redis.TurnOutcome;
 import com.solesonic.service.redis.TurnPlan;
 import com.solesonic.util.AuthenticationTokens;
 import com.solesonic.util.ElicitationLabels;
+import com.solesonic.util.HiddenText;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -134,7 +136,19 @@ public class SessionMessageService {
 
             requireLength(text);
 
-            return new Outgoing(text, text, null);
+            String displayText = HiddenText.strip(text).strip();
+
+            if (displayText.isEmpty()) {
+                throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message cannot be empty.");
+            }
+
+            SessionTurn turn = sharedSession.getTurnState();
+
+            if (turn != null && !turn.inputHiddenFrom().isEmpty() && turn.userIds().contains(senderUserId)) {
+                return new Outgoing(HiddenText.wrap(turn.inputHiddenFrom(), displayText), text, null);
+            }
+
+            return new Outgoing(displayText, text, null);
         }
 
         return answer(sharedSession.getPendingPrompt(), senderUserId, sessionMessageRequest.promptAnswer());

@@ -2592,7 +2592,7 @@ is agent-specific (the Feud screens send `new show` or `new main game`), optiona
 SharedSessionSummary {
   "id", "chatId", "agentName", "status": "ACTIVE|COMPLETED|CLOSED|EXPIRED",
   "participants": [{"userId", "seat": 0, "name": "Alex", "username", "left": false}],
-  "turn": {"userIds": ["…"], "next": "answer", "over": false} | null,
+  "turn": {"userIds": ["…"], "next": "answer", "over": false, "inputHiddenFrom": ["Sam"]} | null,
   "prompt": {"elicitationId", "message", "requestedSchema", "meta", "forUserIds": ["…"]} | null,
   "yourTurn": true, "runActive": false, "created", "updated"
 }
@@ -2627,6 +2627,22 @@ SessionInviteSummary {
 - **`CUSTOM session_state`:** carries the `SharedSessionSummary` after every run (just before
   `RUN_FINISHED`/`RUN_ERROR`) and when a participant leaves.
 - **Questions:** shared sessions never send `TOOL_CALL_*` frames; the question is `session_state.prompt`.
+
+### Hidden sections
+
+An agent can hide part of a session's text from some participants. **Clients enforce this, not the API:** every
+participant still receives all of the text, on the stream and from `/messages`.
+
+- **Markers:** `[[hidden:Sam,Jo]]` … `[[/hidden]]`, inline in the text. Names match participant `name`s, ignoring
+  case. A marker with no `[[/hidden]]` hides everything after it.
+- **Agent replies:** markers go through unchanged, both live and in `/messages`.
+- **`turn.inputHiddenFrom`:** the agent reports it in the `inputHiddenFrom` field of its `solesonic/turn` metadata.
+  Unknown names are dropped and the rest are given back in each participant's own spelling. The next typed message
+  from a participant in `turn.userIds` is wrapped in a marker naming those participants. This changes the
+  `RUN_STARTED` input and the stored `USER` row only: the agent still gets the text as typed. Answers to
+  `prompt` and opening messages are never wrapped. A turn saved before this field existed reads as `[]`.
+- **Typed markers are removed.** Any marker a participant types is taken out of the displayed text, so a participant
+  can't hide text from others or close a section early. The agent still gets the raw text.
 
 ### Shared Session Error Codes
 

@@ -23,13 +23,22 @@ class A2AParticipantsExtensionTest {
     @Test
     void aTurnIsReadInTheParticipantsOwnSpelling() {
         assertThat(A2AParticipantsExtension.turn(reply(turn(List.of("SAM", "sam"), "answer", false)), PARTICIPANTS))
-                .contains(new A2ATurnState(List.of("Sam"), "answer", false));
+                .contains(new A2ATurnState(List.of("Sam"), "answer", false, List.of()));
     }
 
     @Test
     void aNameThatIsNotAParticipantIsDropped() {
         assertThat(A2AParticipantsExtension.turn(reply(turn(List.of("Kim", "Alex", 7), "steal", false)), PARTICIPANTS))
-                .contains(new A2ATurnState(List.of("Alex"), "steal", false));
+                .contains(new A2ATurnState(List.of("Alex"), "steal", false, List.of()));
+    }
+
+    @Test
+    void whoTheNextInputIsHiddenFromIsReadAsKnownParticipants() {
+        Map<String, Object> metadata = Map.of(A2AParticipantsExtension.TURN_KEY, Map.of("participants", List.of("Alex"),
+                "next", "answer", "over", false, "inputHiddenFrom", List.of("sam", "Kim")));
+
+        assertThat(A2AParticipantsExtension.turn(reply(metadata), PARTICIPANTS))
+                .contains(new A2ATurnState(List.of("Alex"), "answer", false, List.of("Sam")));
     }
 
     @Test
@@ -41,7 +50,7 @@ class A2AParticipantsExtensionTest {
     @Test
     void overIsTrueOnlyWhenSaidSo() {
         assertThat(A2AParticipantsExtension.turn(reply(turn(List.of(), "rematch", "yes")), PARTICIPANTS))
-                .contains(new A2ATurnState(List.of(), "rematch", false));
+                .contains(new A2ATurnState(List.of(), "rematch", false, List.of()));
     }
 
     @Test
