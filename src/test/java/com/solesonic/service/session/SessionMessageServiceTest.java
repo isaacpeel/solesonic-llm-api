@@ -47,7 +47,6 @@ import static com.solesonic.service.session.SessionFixtures.NOW;
 import static com.solesonic.service.session.SessionFixtures.SAM;
 import static com.solesonic.service.session.SessionFixtures.SESSION_ID;
 import static com.solesonic.service.session.SessionFixtures.SETTINGS;
-import static com.solesonic.service.session.SessionFixtures.authentication;
 import static com.solesonic.service.session.SessionFixtures.participants;
 import static com.solesonic.service.session.SessionFixtures.session;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -111,7 +110,7 @@ class SessionMessageServiceTest {
             TurnPlan turnPlan = invocation.getArgument(0);
             return Mono.just(new StartedRun(turnPlan.runId(), MESSAGE_ID));
         });
-        when(a2aAgentService.delegateShared(any(), anyString(), any(), anyString(), any())).thenReturn(Flux.empty());
+        when(a2aAgentService.delegateShared(any(), anyString(), any(), any())).thenReturn(Flux.empty());
     }
 
     private TurnPlan startedPlan() {
@@ -124,7 +123,7 @@ class SessionMessageServiceTest {
         turnPlan.chunks().get().blockLast();
 
         ArgumentCaptor<A2AParticipantMessage> participantMessage = ArgumentCaptor.forClass(A2AParticipantMessage.class);
-        verify(a2aAgentService).delegateShared(eq(CHAT_ID), eq(AGENT), participantMessage.capture(), eq("user-jwt"), any());
+        verify(a2aAgentService).delegateShared(eq(CHAT_ID), eq(AGENT), participantMessage.capture(), any());
         return participantMessage.getValue();
     }
 
@@ -142,7 +141,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aTypedMessageRunsAsItsSenderOnTheOwnersStream() {
-        SessionMessageAccepted accepted = sessionMessageService.send(SESSION_ID, SAM, typed(" towel "), authentication());
+        SessionMessageAccepted accepted = sessionMessageService.send(SESSION_ID, SAM, typed(" towel "));
 
         TurnPlan turnPlan = startedPlan();
         assertThat(accepted).isEqualTo(new SessionMessageAccepted(turnPlan.runId(), MESSAGE_ID));
@@ -160,7 +159,7 @@ class SessionMessageServiceTest {
     void aMessageTheAgentAskedToHideIsWrappedForTheTranscriptButSentToTheAgentAsTyped() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication());
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
 
         TurnPlan turnPlan = startedPlan();
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\ntowel\n[[/hidden]]");
@@ -171,7 +170,7 @@ class SessionMessageServiceTest {
     void aMessageFromSomeoneTheTurnDoesNotWaitOnIsNotHidden() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, ALEX, typed("towel"), authentication());
+        sessionMessageService.send(SESSION_ID, ALEX, typed("towel"));
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("towel");
     }
@@ -180,14 +179,14 @@ class SessionMessageServiceTest {
     void aMarkerAParticipantTypedIsStrippedFromTheTranscript() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"), authentication());
+        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"));
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\nab\n[[/hidden]]");
     }
 
     @Test
     void aMessageThatIsOnlyAMarkerIsRefused() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("[[/hidden]]"), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("[[/hidden]]")))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
     }
@@ -198,7 +197,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), authentication());
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))));
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("Play");
     }
@@ -207,7 +206,7 @@ class SessionMessageServiceTest {
     void aMessageWhileARunIsInProgressIsRefused() {
         when(sessionRunLock.acquire(eq(SESSION_ID), any(), any())).thenReturn(false);
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.RUN_IN_PROGRESS));
 
@@ -218,21 +217,21 @@ class SessionMessageServiceTest {
     void aMessageInAClosedSessionIsRefused() {
         sharedSession.setStatus(SessionStatus.CLOSED);
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.SESSION_CLOSED));
     }
 
     @Test
     void aMessageOverTheLimitIsRefused() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("x".repeat(21)), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("x".repeat(21))))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.MESSAGE_TOO_LONG));
     }
 
     @Test
     void aMessageIsEitherTextOrAnAnswer() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null)))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
     }
@@ -242,7 +241,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere"))), authentication());
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere"))));
 
         TurnPlan turnPlan = startedPlan();
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("Play");
@@ -254,7 +253,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), authentication()))
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play")))))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
 
@@ -266,7 +265,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play"))), authentication()))
+                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play")))))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
     }
@@ -275,7 +274,7 @@ class SessionMessageServiceTest {
     void aRunThatCannotStartReleasesTheLock() {
         doReturn(Mono.error(new IllegalStateException("redis down"))).when(redisStreamingChatService).start(any());
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication()))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
                 .isInstanceOf(IllegalStateException.class);
 
         verify(sessionRunLock).release(eq(SESSION_ID), any());
@@ -283,7 +282,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aFinishedRunPushesWhoeverTheSessionNowWaitsOnAndReleasesTheLock() {
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication());
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
         TurnPlan turnPlan = startedPlan();
 
         SharedSessionSummary summary = summary(new SessionTurn(List.of(ALEX), "answer", false, List.of()));
@@ -302,7 +301,7 @@ class SessionMessageServiceTest {
 
     @Test
     void theOpeningMessageTellsTheInviterTheSessionStartedWhenItIsNotTheirTurn() {
-        sessionMessageService.openingMessage(sharedSession, SAM, "new show", authentication());
+        sessionMessageService.openingMessage(sharedSession, SAM, "new show");
         TurnPlan turnPlan = startedPlan();
 
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("new show");
@@ -320,7 +319,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aFailedRunIsPushedToItsSenderOnly() {
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), authentication());
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
         TurnPlan turnPlan = startedPlan();
 
         turnPlan.hooks().afterTerminal(turnPlan.runId(), TurnOutcome.FAILED);

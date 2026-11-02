@@ -21,7 +21,6 @@ import com.solesonic.service.user.UserProfileService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -154,7 +153,7 @@ public class SessionInviteService {
     }
 
     @Transactional
-    public SharedSessionSummary accept(UUID inviteId, UUID inviteeUserId, Authentication authentication) {
+    public SharedSessionSummary accept(UUID inviteId, UUID inviteeUserId) {
         SessionInvite sessionInvite = pending(sessionInviteRepository.lockForInvitee(inviteId, inviteeUserId)
                 .orElseThrow(SessionInviteService::inviteNotFound));
 
@@ -173,7 +172,7 @@ public class SessionInviteService {
         String openingMessage = sessionInvite.getOpeningMessage();
 
         if (openingMessage != null) {
-            afterCommit(() -> openingMessage(sharedSession, inviteeUserId, openingMessage, authentication));
+            afterCommit(() -> openingMessage(sharedSession, inviteeUserId, openingMessage));
         }
 
         return sharedSessionService.summary(sharedSession, sharedSessionService.participants(sharedSession.getId()), inviteeUserId,
@@ -184,9 +183,9 @@ public class SessionInviteService {
      * Runs after the accept has committed, so a failure here cannot undo it: the session exists, and a
      * participant can send the first message themselves.
      */
-    private void openingMessage(SharedSession sharedSession, UUID inviteeUserId, String openingMessage, Authentication authentication) {
+    private void openingMessage(SharedSession sharedSession, UUID inviteeUserId, String openingMessage) {
         try {
-            SessionMessageAccepted opened = sessionMessageService.openingMessage(sharedSession, inviteeUserId, openingMessage, authentication);
+            SessionMessageAccepted opened = sessionMessageService.openingMessage(sharedSession, inviteeUserId, openingMessage);
 
             log.debug("Shared session {} opened with run {}", sharedSession.getId(), opened.runId());
         } catch (RuntimeException exception) {

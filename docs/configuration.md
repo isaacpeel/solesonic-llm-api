@@ -291,36 +291,25 @@ yields an empty description rather than a truncated one.
 
 ### Image Generation Configuration
 
-Image generation calls the MCP server's image tools — one per configured ComfyUI workflow, discovered
-from the MCP catalog; nothing here names one. They are backed by a single GPU and have no admission
-control of their own — concurrent calls serialize there while each one holds a request thread on the
-MCP server for up to its full deadline. The ceiling is therefore enforced here. Callers past the
-ceiling wait up to `IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
-
-Both variables are **required**: the application will not start without them.
+Image generation calls LiteLLM's OpenAI image routes on `CHAT_OPENAI_HOST` — `/images/generations`,
+or `/images/edits` when reference images are sent — which LiteLLM serves from the
+`solesonic-image-generation` service. That service is backed by a single GPU and has no admission
+control of its own, so the ceiling is enforced here. Callers past the ceiling wait up to
+`IMAGE_ADMISSION_TIMEOUT` and are then told to retry (`RATE_LIMITED`).
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `IMAGE_MAX_CONCURRENT` | Generations this instance will have in flight at once | `2` | Yes | Counted per instance, not per cluster. Above the number of GPUs behind the MCP server it only lengthens queues |
+| `IMAGE_MAX_CONCURRENT` | Generations this instance will have in flight at once | `2` | Yes | Counted per instance, not per cluster. Above the number of GPUs behind the image service it only lengthens queues |
 | `IMAGE_ADMISSION_TIMEOUT` | How long a caller waits for a free slot before being refused | `30s` | Yes | Spring duration. Long enough to absorb a burst, short enough that a refusal beats a stalled request |
-Fixed in `application.properties` rather than exposed as variables:
+| `IMAGE_GENERATION_MODEL` | LiteLLM model name for text-to-image | `solesonic-image (izzy-bot)` | No | Default shown |
+| `IMAGE_EDIT_MODEL` | LiteLLM model name for generation with reference images | `solesonic-image-edit (izzy-bot)` | No | Default shown |
+| `IMAGE_READ_TIMEOUT` | How long one image call may take | `PT10M` | No | Default `PT10M`, the image service's per-image limit. The image client never retries |
+| `IMAGE_MAX_REFERENCE_IMAGES` | Most reference images one request may carry | `16` | No | Default `16`, the image service's own limit; do not raise it above that |
 
-- `solesonic.mcp.client.max-in-memory-size=16MB` — ceiling on a buffered MCP response. **Load-bearing
-  for image generation**: the tool returns a whole PNG inline as base64, around 2MB, and the WebClient
-  default of 256KB aborts the connection mid-body. That failure is not clean — the JSON-RPC response
-  is never delivered, so the blocking caller parks until its request timeout and the client sees a
-  stream with no terminal frame. It must be set on the `WebClient.Builder` itself;
-  `spring.codec.max-in-memory-size` has no effect, because that builder is created directly and
-  bypasses Boot's codec auto-configuration.
-
-The MCP request timeout (`spring.ai.mcp.client.request-timeout`, 600s) must stay above the image
-server's own 180s generation deadline, or the API abandons requests the server is still working on.
-Independently of it, a generation stream that hears nothing for 200s ends itself with
-`GENERATION_TIMEOUT` rather than leaving the client waiting on the full request timeout.
-
-No separate credential is configured: generation travels on the calling user's own token, exchanged
-for an on-behalf-of token like every other MCP call. The user's JWT must carry the
-`mcp-generate-image` role — see [docs/api.md](api.md#image-generation).
+No separate credential is configured: every image call carries the calling user's own
+[model access key](#per-user-model-keys). **Image access is LiteLLM's per-key model allowlist**: add
+both image models to the virtual key (or team) of each user who should be able to make images. A key
+without them gets `FORBIDDEN`.
 
 Keeping a model resident is not an application concern: there is no keep-alive or pull-on-missing
 option in the OpenAI protocol, and a `llama-server`-style process loads its one model at startup and
@@ -480,7 +469,6 @@ All are optional: set one only to change the default shown.
 
 | Variable | Description | Example | Required | Notes |
 |----------|-------------|---------|----------|--------|
-| `A2A_BASE_URI` | Base URI of the remote A2A agent host | `https://agents.yourdomain.com` | Yes | Maps to `solesonic.a2a.base-uri`; no default, so a missing value fails startup. The request timeout is fixed at `solesonic.a2a.timeout-seconds=300` |
 | `A2A_LITELLM_BASE_URI` | Base URL of the LiteLLM proxy whose agent gateway serves agents such as `/network` | `https://litellm.yourdomain.com` | Yes | Maps to `solesonic.a2a.litellm.base-uri`; no default. The API calls only `{base}/v1/agents`, `{base}/a2a/{agent}/.well-known/agent-card.json` and the card's own interface URL, and refuses any card whose endpoints are not on this scheme, host and port under `{path}/a2a/`. Use `https` unless LiteLLM is on the same host or a private network, since the virtual key travels on every call. An unreachable LiteLLM at startup is tolerated: discovery gives up after 10 seconds per call, and the API starts without its agents and logs a WARN |
 | `A2A_LITELLM_API_KEY` | LiteLLM virtual key, sent as `x-litellm-api-key: Bearer <key>` | `sk-…` | Yes | Maps to `solesonic.a2a.litellm.api-key`; no default. Scope it in LiteLLM to the agents izzybot may call (start with `network`) and treat it like `MCP_CLIENT_SECRET`. The user's token is never sent to LiteLLM |
 
@@ -530,7 +518,6 @@ IMAGE_MAX_CONCURRENT=2
 IMAGE_ADMISSION_TIMEOUT=30s
 
 # A2A (required)
-A2A_BASE_URI=https://agents.yourdomain.com
 A2A_LITELLM_BASE_URI=https://litellm.yourdomain.com
 A2A_LITELLM_API_KEY=sk-your_litellm_virtual_key
 
@@ -607,6 +594,10 @@ VISION_MODEL=qwen2.5vl
 # Image Generation Configuration
 IMAGE_MAX_CONCURRENT=2
 IMAGE_ADMISSION_TIMEOUT=30s
+IMAGE_GENERATION_MODEL=solesonic-image (izzy-bot)
+IMAGE_EDIT_MODEL=solesonic-image-edit (izzy-bot)
+IMAGE_READ_TIMEOUT=PT10M
+IMAGE_MAX_REFERENCE_IMAGES=16
 
 # User Memory Configuration
 MEMORY_MODEL=qwen2.5:32b
@@ -676,7 +667,6 @@ INTEREST_NEWS_ITEM_RETENTION_DAYS=30
 INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES=10
 
 # A2A Configuration
-A2A_BASE_URI=https://agents.yourdomain.com
 A2A_LITELLM_BASE_URI=https://litellm.yourdomain.com
 A2A_LITELLM_API_KEY=sk-your_litellm_virtual_key
 

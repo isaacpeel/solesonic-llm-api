@@ -97,7 +97,6 @@ public class SlashCommandRouter {
      *                    with a message structure, the descriptions themselves for the A2A route,
      *                    which takes a single string
      * @param contextMap  tool context forwarded to any MCP tool called mid-turn
-     * @param authToken   the user's own bearer token, so a remote agent acts as the user
      * @param model       the chat model this turn uses — the chat's selection or the default,
      *                    resolved once by {@code PromptService}
      * @param llmApiKey   the user's own key, which every model call of the turn carries
@@ -108,7 +107,6 @@ public class SlashCommandRouter {
                               String message,
                               AttachmentResolution attachments,
                               Map<String, Object> contextMap,
-                              String authToken,
                               String model,
                               LlmApiKey llmApiKey) {
 
@@ -126,7 +124,7 @@ public class SlashCommandRouter {
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
                 yield a2aStickyAgentService.activate(chatId, agentCommand.command())
-                        .thenMany(delegate(chatId, agentCommand.command(), message, attachments, authToken));
+                        .thenMany(delegate(chatId, agentCommand.command(), message, attachments));
             }
 
             case ModelSlashCommand _ -> throw new IllegalStateException(
@@ -193,11 +191,10 @@ public class SlashCommandRouter {
     private Flux<String> delegate(UUID chatId,
                                   String agentCommand,
                                   String message,
-                                  AttachmentResolution attachments,
-                                  String authToken) {
+                                  AttachmentResolution attachments) {
 
         return a2aAgentService.delegate(chatId, agentCommand,
-                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()), authToken);
+                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()));
     }
 
     /**

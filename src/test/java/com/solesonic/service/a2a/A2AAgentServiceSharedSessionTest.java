@@ -4,7 +4,6 @@ import com.solesonic.config.JacksonConfig;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.a2a.A2AClientProperties;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
-import com.solesonic.mcp.client.TokenExchangeService;
 import com.solesonic.model.a2a.A2AElicitationExtension;
 import com.solesonic.model.a2a.A2AParticipantMessage;
 import com.solesonic.model.a2a.A2AParticipantsExtension;
@@ -12,7 +11,6 @@ import com.solesonic.model.a2a.A2APrompt;
 import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.a2a.A2ATurnState;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -67,12 +65,6 @@ class A2AAgentServiceSharedSessionTest {
     private A2AAgentRegistry agentRegistry;
 
     @Mock
-    private TokenExchangeService tokenExchangeService;
-
-    @Mock
-    private McpFilterService mcpFilterService;
-
-    @Mock
     private NotificationService notificationService;
 
     @Mock
@@ -108,12 +100,11 @@ class A2AAgentServiceSharedSessionTest {
 
     @BeforeEach
     void setUp() {
-        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents",
+        A2AClientProperties properties = new A2AClientProperties(false, 5,
                 new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"),
                 new A2AClientProperties.Sound(DataSize.ofKilobytes(1), Duration.ofDays(7)));
 
-        agentService = new A2AAgentService(agentRegistry, tokenExchangeService, mcpFilterService,
-                notificationService, stickyAgentService, chatMessageService, elicitationService,
+        agentService = new A2AAgentService(agentRegistry, notificationService, stickyAgentService, chatMessageService, elicitationService,
                 new JacksonConfig().jsonMapper(), properties, soundService, new PendingMessageMetadata());
     }
 
@@ -250,7 +241,7 @@ class A2AAgentServiceSharedSessionTest {
     void anUnknownSessionAgentFailsWithoutReleasingAnything() {
         when(agentRegistry.agent("feud")).thenReturn(Optional.empty());
 
-        StepVerifier.create(agentService.delegateShared(CHAT_ID, "feud", A2AParticipantMessage.typed("towel", "Alex", PARTICIPANTS), "user-jwt", listener))
+        StepVerifier.create(agentService.delegateShared(CHAT_ID, "feud", A2AParticipantMessage.typed("towel", "Alex", PARTICIPANTS), listener))
                 .expectError(A2AAgentUnavailableException.class)
                 .verify();
 

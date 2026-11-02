@@ -54,7 +54,7 @@ class LiteLlmAgentDiscoveryTest {
     }
 
     private LiteLlmAgentDiscovery discovery(String gateway) {
-        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents", new A2AClientProperties.Litellm(gateway, API_KEY),
+        A2AClientProperties properties = new A2AClientProperties(false, 5, new A2AClientProperties.Litellm(gateway, API_KEY),
                 new A2AClientProperties.Sound(DataSize.ofMegabytes(5), Duration.ofDays(7)));
 
         WebClient webClient = new LiteLlmA2AWebClientConfig().liteLlmA2AWebClient(properties)

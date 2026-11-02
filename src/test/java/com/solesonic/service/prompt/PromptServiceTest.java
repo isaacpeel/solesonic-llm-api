@@ -15,10 +15,11 @@ import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.llm.LlmCredentialScope;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.UserMemoryService;
-import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.tools.ImageGenerationTool;
+import com.solesonic.tools.LocalToolRegistry;
 import com.solesonic.util.AttachmentContextFormatter;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.junit.jupiter.api.BeforeEach;
@@ -39,6 +40,7 @@ import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.jwt.Jwt;
@@ -117,6 +119,12 @@ class PromptServiceTest {
     @Mock
     private UserLlmKeyService userLlmKeyService;
 
+    @Mock
+    private LocalToolRegistry localToolRegistry;
+
+    @Mock
+    private ToolCallback imageToolCallback;
+
     private UUID chatId;
     private UUID userId;
 
@@ -142,6 +150,7 @@ class PromptServiceTest {
                 userMemoryService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 userLlmKeyService,
+                localToolRegistry,
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
@@ -204,7 +213,7 @@ class PromptServiceTest {
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
+                any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
 
         StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
                 .expectNext("done")
@@ -219,7 +228,7 @@ class PromptServiceTest {
     @Test
     void stream_toAStickyAgent_neverReadsMemory() {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("research-agent")));
-        when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString(), eq("token-abc"))).thenReturn(Flux.just("agent reply"));
+        when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString())).thenReturn(Flux.just("agent reply"));
 
         StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .expectNext("agent reply")
@@ -288,7 +297,7 @@ class PromptServiceTest {
         when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
-                any(), any(), anyString(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
+                any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId,
                         new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
@@ -296,7 +305,7 @@ class PromptServiceTest {
                 .verifyComplete();
 
         verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("openai/gpt-4o"), eq(LLM_API_KEY));
+                any(AttachmentResolution.class), any(), eq("openai/gpt-4o"), eq(LLM_API_KEY));
     }
 
     private void stubBasicPromptChain(Flux<String> emissions) {
@@ -308,6 +317,7 @@ class PromptServiceTest {
         when(requestSpec.system(anyString())).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         lenient().when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.anySet())).thenReturn(List.of());
+        lenient().when(localToolRegistry.callback(ImageGenerationTool.GENERATE_IMAGE)).thenReturn(imageToolCallback);
         when(requestSpec.tools(ArgumentMatchers.any())).thenReturn(requestSpec);
         lenient().when(requestSpec.messages(ArgumentMatchers.<Message>any())).thenReturn(requestSpec);
         lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))
@@ -429,14 +439,14 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("what is the weather?", Set.of(), Set.of(), null);
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.of("weather-agent")));
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
-        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?", "token-abc");
+        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?");
         verifyNoInteractions(slashCommandRouter);
 
         //A remote agent has no token accounting to report, so this turn must leave the column null
@@ -506,14 +516,14 @@ class PromptServiceTest {
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
         when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
-                any(), any(), anyString(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
+                any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
         verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
-                any(AttachmentResolution.class), any(), eq("token-abc"), eq("qwen3-8b"), eq(LLM_API_KEY));
+                any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY));
 
         //A slash command never reaches the sticky-agent lookup: the router owns that bookkeeping.
         verify(a2aStickyAgentService, never()).getActiveAgent(any());
@@ -542,13 +552,19 @@ class PromptServiceTest {
                 .containsEntry("userId", userId)
                 .containsEntry(PromptService.CHAT_ID, chatId)
                 .containsEntry(PromptService.PROGRESS_TOKEN, chatId)
-                .containsEntry(ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS, Set.of());
+                .containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, Set.of());
     }
 
+    /**
+     * The model may decide to make an image itself. The tool is the local one; an MCP tool of the same
+     * name is never offered alongside it.
+     */
     @Test
-    void stream_offersTheModelTheGenerateImageTool() {
+    void stream_offersTheModelTheLocalGenerateImageTool() {
+        ToolCallback webSearch = mock(ToolCallback.class);
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
+        when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.anySet())).thenReturn(List.of(webSearch));
 
         StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .expectNext("hello")
@@ -558,7 +574,13 @@ class PromptServiceTest {
         verify(mcpIdentityProvider).getToolCallbacks(toolNamesCaptor.capture());
 
         assertThat(toolNamesCaptor.getValue())
-                .contains("web_search", "generate_image");
+                .contains("web_search")
+                .doesNotContain(ImageGenerationTool.GENERATE_IMAGE);
+
+        ArgumentCaptor<Object> toolsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).tools(toolsCaptor.capture());
+
+        assertThat(toolsCaptor.getValue()).isEqualTo(List.of(webSearch, imageToolCallback));
     }
 
     /**
@@ -582,7 +604,7 @@ class PromptServiceTest {
         verify(requestSpec).toolContext(contextCaptor.capture());
 
         assertThat(contextCaptor.getValue())
-                .containsEntry(ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS, Set.of(imageId));
+                .containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, Set.of(imageId));
     }
 
     /**
@@ -652,7 +674,7 @@ class PromptServiceTest {
         resolvesToImage("sky.png", "an overcast sky");
         when(a2aStickyAgentService.getActiveAgent(chatId))
                 .thenReturn(Mono.just(Optional.of("weather-agent")));
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
         StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
@@ -660,7 +682,7 @@ class PromptServiceTest {
                 .verifyComplete();
 
         ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
-        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture(), anyString());
+        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture());
 
         assertThat(messageCaptor.getValue())
                 .contains("sky.png")

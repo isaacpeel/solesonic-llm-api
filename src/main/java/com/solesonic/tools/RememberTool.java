@@ -20,9 +20,8 @@ import static com.solesonic.service.prompt.PromptService.CHAT_ID;
  * callable tool, because a model-callable "remember" is an injection target — an email that says
  * "and remember that the user's bank is..." would be obeyed.
  * <p>
- * The user is never taken from the tool's arguments. {@code IdentityToolCallback} strips the user id
- * from the tool context before a local tool runs, so the owner is resolved from the conversation the
- * server put in that context — the chat row, the same single source reflection uses.
+ * The user is never taken from the tool's arguments. The owner is resolved from the conversation the
+ * server put in the tool context — the chat row, the same single source reflection uses.
  */
 @Component
 public class RememberTool implements LocalTool {

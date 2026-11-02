@@ -34,7 +34,6 @@ import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -107,7 +106,7 @@ class ToolCallServiceTest {
 
     private void toolAnswers(ChatResponse chatResponse) {
         when(localToolRegistry.callback("create_invoice")).thenReturn(mock(ToolCallback.class));
-        when(slashCommandService.taskClient(any(), anyBoolean(), eq(LLM_API_KEY))).thenReturn(taskClient);
+        when(slashCommandService.localTaskClient(any(), eq(LLM_API_KEY))).thenReturn(taskClient);
         when(taskClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
         when(requestSpec.user(anyString())).thenReturn(requestSpec);
         when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any()))

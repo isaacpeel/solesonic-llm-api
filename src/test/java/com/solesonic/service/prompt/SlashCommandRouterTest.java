@@ -146,7 +146,7 @@ class SlashCommandRouterTest {
         stubPromptChain(Flux.just("answer"));
 
         StepVerifier.create(slashCommandRouter.route(promptCommand, chatId, userId, "tell me something",
-                        NO_ATTACHMENTS, CONTEXT_MAP, "token-abc", "openai/gpt-4o", LLM_API_KEY))
+                        NO_ATTACHMENTS, CONTEXT_MAP, "openai/gpt-4o", LLM_API_KEY))
                 .expectNext("answer")
                 .verifyComplete();
 
@@ -273,7 +273,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
@@ -355,7 +355,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
@@ -363,7 +363,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).activate(chatId, "weather-agent");
-        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?", "token-abc");
+        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?");
     }
 
     /**
@@ -375,7 +375,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is this?", withImage("sky.png", "an overcast sky")))
@@ -383,7 +383,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
-        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture(), anyString());
+        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture());
 
         assertThat(messageCaptor.getValue())
                 .contains("sky.png")
@@ -414,6 +414,6 @@ class SlashCommandRouterTest {
                                AttachmentResolution attachments) {
 
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
-                attachments, CONTEXT_MAP, "token-abc", "qwen3-8b", LLM_API_KEY);
+                attachments, CONTEXT_MAP, "qwen3-8b", LLM_API_KEY);
     }
 }

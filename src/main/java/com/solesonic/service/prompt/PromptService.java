@@ -11,12 +11,14 @@ import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.llm.LlmCredentialScope;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.tools.LocalToolRegistry;
 import com.solesonic.util.AttachmentContextFormatter;
 import com.solesonic.util.AuthenticationTokens;
 import org.apache.commons.collections4.CollectionUtils;
@@ -27,6 +29,7 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -45,12 +48,9 @@ import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
-import static com.solesonic.service.image.ImageGenerationService.GENERATE_IMAGE_TOOL;
-import static com.solesonic.service.image.ReferenceImageInjector.REFERENCE_ATTACHMENT_IDS;
-import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
-
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
+import static com.solesonic.tools.ImageGenerationTool.GENERATE_IMAGE;
 import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
 
 /**
@@ -72,6 +72,13 @@ public class PromptService {
     public static final String USER_ADDRESS = "userAddress";
     public static final String CURRENT_DATE_TIME = "currentDateTime";
     public static final String USER_MEMORY = "userMemory";
+
+    /**
+     * Tool context key for the image attachment ids named by the current send, which the image tool
+     * sends as reference images. Stripped before an MCP call leaves: the tool context becomes the
+     * request's {@code _meta}.
+     */
+    public static final String REFERENCE_ATTACHMENT_IDS = "referenceAttachmentIds";
     private static final DateTimeFormatter CURRENT_DATE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a (zzz)", Locale.US);
 
@@ -82,8 +89,7 @@ public class PromptService {
             "web_search",
             "web_search_advanced",
             "web_search_news",
-            "web_extract_content",
-            GENERATE_IMAGE_TOOL
+            "web_extract_content"
     );
 
     private final ChatClient chatClient;
@@ -100,6 +106,7 @@ public class PromptService {
     private final UserMemoryService userMemoryService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
     private final UserLlmKeyService userLlmKeyService;
+    private final LocalToolRegistry localToolRegistry;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -125,6 +132,7 @@ public class PromptService {
             UserMemoryService userMemoryService,
             LiteLlmHeaderRegistry liteLlmHeaderRegistry,
             UserLlmKeyService userLlmKeyService,
+            LocalToolRegistry localToolRegistry,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
@@ -141,6 +149,7 @@ public class PromptService {
         this.userMemoryService = userMemoryService;
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.userLlmKeyService = userLlmKeyService;
+        this.localToolRegistry = localToolRegistry;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
     }
@@ -174,7 +183,7 @@ public class PromptService {
         Set<String> commands = chatMessage.commands();
 
         if (CollectionUtils.isEmpty(commands)) {
-            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, authToken, model, llmApiKey);
+            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, model, llmApiKey);
         }
 
         SlashCommand slashCommand = slashCommandService.commands(commands).stream()
@@ -182,7 +191,7 @@ public class PromptService {
                 .orElseThrow(IllegalStateException::new);
 
         return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
-                contextMap, authToken, model, llmApiKey);
+                contextMap, model, llmApiKey);
     }
 
     /**
@@ -214,7 +223,6 @@ public class PromptService {
                                               String message,
                                               AttachmentResolution attachments,
                                               Map<String, Object> contextMap,
-                                              String authToken,
                                               String model,
                                               LlmApiKey llmApiKey) {
         return a2aStickyAgentService
@@ -226,8 +234,7 @@ public class PromptService {
                         //A remote agent takes a single string, so the block is inlined here rather
                         //than carried as a message of its own.
                         return a2aAgentService.delegate(chatId, stickyAgent.get(),
-                                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()),
-                                authToken);
+                                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()));
                     }
 
                     log.info("No command or sticky agent, using default system prompt.");
@@ -297,10 +304,13 @@ public class PromptService {
 
         Prompt defaultSystemPrompt = systempPromptTemplate.create();
 
+        List<ToolCallback> toolCallbacks = new ArrayList<>(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS));
+        toolCallbacks.add(localToolRegistry.callback(GENERATE_IMAGE));
+
         var promptSpec = chatClient.prompt()
                 .system(defaultSystemPrompt.getContents())
                 .user(message)
-                .tools(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS))
+                .tools(toolCallbacks)
                 .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey))
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)

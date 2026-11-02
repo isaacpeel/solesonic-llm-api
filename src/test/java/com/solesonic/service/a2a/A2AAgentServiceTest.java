@@ -2,19 +2,14 @@ package com.solesonic.service.a2a;
 
 import com.solesonic.config.JacksonConfig;
 import com.solesonic.config.a2a.A2AAgentRegistry;
-import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
-import com.solesonic.config.a2a.LiteLlmA2AAuthInterceptor;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
-import com.solesonic.mcp.client.TokenExchangeService;
-import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.A2AElicitationExtension;
 import com.solesonic.model.a2a.A2ASound;
 import com.solesonic.model.a2a.A2ASoundExtension;
 import com.solesonic.model.chat.ElicitationEvent;
 import com.solesonic.model.chat.SoundCue;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -23,8 +18,6 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.a2aproject.sdk.client.MessageEvent;
 import org.a2aproject.sdk.client.TaskEvent;
 import org.a2aproject.sdk.client.TaskUpdateEvent;
-import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallInterceptor;
-import org.a2aproject.sdk.client.transport.spi.interceptors.PayloadAndHeaders;
 import org.a2aproject.sdk.spec.Artifact;
 import org.a2aproject.sdk.spec.DataPart;
 import org.a2aproject.sdk.spec.FilePart;
@@ -91,12 +84,6 @@ class A2AAgentServiceTest {
     private A2AAgentRegistry agentRegistry;
 
     @Mock
-    private TokenExchangeService tokenExchangeService;
-
-    @Mock
-    private McpFilterService mcpFilterService;
-
-    @Mock
     private NotificationService notificationService;
 
     @Mock
@@ -119,12 +106,11 @@ class A2AAgentServiceTest {
 
     @BeforeEach
     void setUp() {
-        A2AClientProperties properties = new A2AClientProperties(false, AGENT_TIMEOUT.toSeconds(), "http://agents",
+        A2AClientProperties properties = new A2AClientProperties(false, AGENT_TIMEOUT.toSeconds(),
                 new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"),
                 new A2AClientProperties.Sound(MAX_SOUND, Duration.ofDays(7)));
 
-        agentService = new A2AAgentService(agentRegistry, tokenExchangeService, mcpFilterService,
-                notificationService, stickyAgentService, chatMessageService, elicitationService, jsonMapper, properties,
+        agentService = new A2AAgentService(agentRegistry, notificationService, stickyAgentService, chatMessageService, elicitationService, jsonMapper, properties,
                 soundService, pendingMessageMetadata);
     }
 
@@ -234,30 +220,6 @@ class A2AAgentServiceTest {
         when(elicitationService.awaitResultAsync(CHAT_ID, ELICITATION_ID)).thenReturn(answer);
     }
 
-    @Test
-    void anAgentHostAgentIsCalledWithTheUsersOnBehalfOfToken() {
-        ClientCallInterceptor interceptor = agentService.interceptor(A2AAgentSource.AGENT_HOST, "user-jwt");
-
-        assertThat(interceptor).isInstanceOf(A2AAuthInterceptor.class);
-    }
-
-    /**
-     * The user's token never goes to LiteLLM: the gateway interceptor neither exchanges it nor forwards it.
-     */
-    @Test
-    void aLiteLlmAgentIsCalledWithTheVirtualKeyAndNeverTheUsersToken() {
-        ClientCallInterceptor interceptor = agentService.interceptor(A2AAgentSource.LITELLM, "user-jwt");
-
-        PayloadAndHeaders payloadAndHeaders = interceptor.intercept("SendMessage", "payload",
-                Map.of("Authorization", "Bearer user-jwt"), null, null);
-
-        assertThat(interceptor).isInstanceOf(LiteLlmA2AAuthInterceptor.class);
-        assertThat(payloadAndHeaders.getHeaders())
-                .doesNotContainKey("Authorization")
-                .containsEntry("x-litellm-api-key", "Bearer sk-izzybot");
-        verifyNoInteractions(tokenExchangeService, mcpFilterService);
-    }
-
     /**
      * The sticky key outlives the registry: a chat attached to an agent that is gone after a restart is
      * released and told why, once, instead of failing every message.
@@ -268,7 +230,7 @@ class A2AAgentServiceTest {
         when(stickyAgentService.deactivate(CHAT_ID)).thenReturn(Mono.empty());
         when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
 
-        StepVerifier.create(agentService.delegate(CHAT_ID, "network", "and yesterday?", "user-jwt"))
+        StepVerifier.create(agentService.delegate(CHAT_ID, "network", "and yesterday?"))
                 .expectErrorSatisfies(error -> assertThat(error)
                         .isInstanceOf(A2AAgentUnavailableException.class)
                         .hasMessage("The network agent is not available right now. Send your message again to continue without it."))
@@ -286,7 +248,7 @@ class A2AAgentServiceTest {
         when(stickyAgentService.deactivate(CHAT_ID)).thenReturn(Mono.error(new IllegalStateException("redis down")));
         when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.fromRunnable(() -> taskReleased.set(true)));
 
-        StepVerifier.create(agentService.delegate(CHAT_ID, "network", "and yesterday?", "user-jwt"))
+        StepVerifier.create(agentService.delegate(CHAT_ID, "network", "and yesterday?"))
                 .expectError(A2AAgentUnavailableException.class)
                 .verify();
 
@@ -295,7 +257,7 @@ class A2AAgentServiceTest {
 
     @Test
     void nothingIsReleasedUntilTheTurnIsSubscribed() {
-        Flux<String> turn = agentService.delegate(CHAT_ID, "network", "and yesterday?", "user-jwt");
+        Flux<String> turn = agentService.delegate(CHAT_ID, "network", "and yesterday?");
 
         assertThat(turn).isNotNull();
         verifyNoInteractions(agentRegistry, stickyAgentService);

@@ -10,7 +10,6 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.image.ImageGenerationService;
 import com.solesonic.service.image.ImageToolCatalog;
-import com.solesonic.util.AuthenticationTokens;
 import com.solesonic.util.logging.Redactor;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -25,7 +24,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -43,11 +41,11 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Text-to-image generation and the images it produces.
+ * Image generation and the images it produces.
  * <p>
- * Generation is offered twice over the same path, chosen by the {@code Accept} header: as SSE,
- * which is the one worth using — a generation takes five to fifteen seconds and the progress frames
- * are what make that wait legible — and as plain JSON for scripts and tests.
+ * Generation is offered twice: as SSE, which answers with a single terminal frame and survives the
+ * client disconnecting mid-generation, and as plain JSON for scripts and tests. Both run on the
+ * caller's own model key; a caller without one is refused with {@code 403} before anything starts.
  */
 @RestController
 @RequestMapping(GeneratedImageController.IMAGES)
@@ -74,15 +72,13 @@ public class GeneratedImageController {
     }
 
     @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<?>> generateStreaming(@RequestBody GenerateImageRequest generateImageRequest,
-                                                      Authentication authentication) {
+    public Flux<ServerSentEvent<?>> generateStreaming(@RequestBody GenerateImageRequest generateImageRequest) {
         log.info("Streaming image generation for user {}", userRequestContext.getUserId());
         logIgnoredTool(generateImageRequest);
 
         return imageGenerationService
                 .stream(generateImageRequest.prompt(),
-                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
-                        AuthenticationTokens.token(authentication))
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId())
                 .map(GeneratedImageController::serverSentEvent);
     }
 
@@ -92,22 +88,20 @@ public class GeneratedImageController {
      * ambiguous mapping rather than picking one.
      */
     @PostMapping(value = "/sync", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<GeneratedImageSummary> generate(@RequestBody GenerateImageRequest generateImageRequest,
-                                                          Authentication authentication) {
+    public ResponseEntity<GeneratedImageSummary> generate(@RequestBody GenerateImageRequest generateImageRequest) {
         log.info("Generating image for user {}", userRequestContext.getUserId());
         logIgnoredTool(generateImageRequest);
 
         GeneratedImageSummary generatedImageSummary = imageGenerationService
                 .generate(generateImageRequest.prompt(),
-                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId(),
-                        AuthenticationTokens.token(authentication));
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId());
 
         return ResponseEntity.created(URI.create(generatedImageSummary.imageUrl())).body(generatedImageSummary);
     }
 
     /**
-     * The single image tool, with the most reference images it accepts. A literal path, so it wins
-     * over {@code /{imageId}}.
+     * The single image generator, with the most reference images it accepts. A literal path, so it
+     * wins over {@code /{imageId}}.
      */
     @GetMapping("/tools")
     public ResponseEntity<List<ImageToolSummary>> tools() {

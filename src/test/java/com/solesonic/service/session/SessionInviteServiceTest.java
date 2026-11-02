@@ -38,7 +38,6 @@ import static com.solesonic.service.session.SessionFixtures.ALEX;
 import static com.solesonic.service.session.SessionFixtures.NOW;
 import static com.solesonic.service.session.SessionFixtures.SAM;
 import static com.solesonic.service.session.SessionFixtures.SETTINGS;
-import static com.solesonic.service.session.SessionFixtures.authentication;
 import static com.solesonic.service.session.SessionFixtures.participants;
 import static com.solesonic.service.session.SessionFixtures.session;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -197,14 +196,14 @@ class SessionInviteServiceTest {
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
         when(sharedSessionService.create(sessionInvite)).thenReturn(sharedSession);
         when(sharedSessionService.participants(sharedSession.getId())).thenReturn(participants());
-        when(sessionMessageService.openingMessage(eq(sharedSession), eq(SAM), eq(OPENING_MESSAGE), any()))
+        when(sessionMessageService.openingMessage(eq(sharedSession), eq(SAM), eq(OPENING_MESSAGE)))
                 .thenReturn(new SessionMessageAccepted(UUID.randomUUID(), UUID.randomUUID()));
 
-        sessionInviteService.accept(INVITE_ID, SAM, authentication());
+        sessionInviteService.accept(INVITE_ID, SAM);
 
         assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.ACCEPTED);
         assertThat(sessionInvite.getSessionId()).isEqualTo(sharedSession.getId());
-        verify(sessionMessageService).openingMessage(eq(sharedSession), eq(SAM), eq(OPENING_MESSAGE), any());
+        verify(sessionMessageService).openingMessage(eq(sharedSession), eq(SAM), eq(OPENING_MESSAGE));
     }
 
     @Test
@@ -216,10 +215,10 @@ class SessionInviteServiceTest {
         when(sharedSessionService.create(sessionInvite)).thenReturn(sharedSession);
         when(sharedSessionService.participants(sharedSession.getId())).thenReturn(participants());
 
-        sessionInviteService.accept(INVITE_ID, SAM, authentication());
+        sessionInviteService.accept(INVITE_ID, SAM);
 
         assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.ACCEPTED);
-        verify(sessionMessageService, never()).openingMessage(any(), any(), any(), any());
+        verify(sessionMessageService, never()).openingMessage(any(), any(), any());
     }
 
     @Test
@@ -230,9 +229,9 @@ class SessionInviteServiceTest {
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
         when(sharedSessionService.create(sessionInvite)).thenReturn(sharedSession);
         when(sharedSessionService.participants(sharedSession.getId())).thenReturn(participants());
-        when(sessionMessageService.openingMessage(any(), any(), any(), any())).thenThrow(new IllegalStateException("redis down"));
+        when(sessionMessageService.openingMessage(any(), any(), any())).thenThrow(new IllegalStateException("redis down"));
 
-        sessionInviteService.accept(INVITE_ID, SAM, authentication());
+        sessionInviteService.accept(INVITE_ID, SAM);
 
         assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.ACCEPTED);
     }
@@ -243,7 +242,7 @@ class SessionInviteServiceTest {
         declined.setStatus(SessionInviteStatus.DECLINED);
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(declined));
 
-        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM, authentication()), SessionErrorCode.INVITE_NOT_PENDING);
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM), SessionErrorCode.INVITE_NOT_PENDING);
         verify(sharedSessionService, never()).create(any());
     }
 
@@ -253,7 +252,7 @@ class SessionInviteServiceTest {
         expired.setExpires(NOW.minusMinutes(1));
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(expired));
 
-        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM, authentication()), SessionErrorCode.INVITE_NOT_PENDING);
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM), SessionErrorCode.INVITE_NOT_PENDING);
         verify(sharedSessionService, never()).create(any());
     }
 
@@ -261,6 +260,6 @@ class SessionInviteServiceTest {
     void someoneElsesInviteIsNotFound() {
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, ALEX)).thenReturn(Optional.empty());
 
-        assertRefused(() -> sessionInviteService.accept(INVITE_ID, ALEX, authentication()), SessionErrorCode.INVITE_NOT_FOUND);
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, ALEX), SessionErrorCode.INVITE_NOT_FOUND);
     }
 }

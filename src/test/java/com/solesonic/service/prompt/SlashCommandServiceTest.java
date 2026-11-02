@@ -4,8 +4,7 @@ import com.solesonic.exception.ChatException;
 import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
-import com.solesonic.service.image.ReferenceImageInjector;
+import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -70,10 +69,6 @@ class SlashCommandServiceTest {
     private JwtDecoder jwtDecoder;
     @Mock
     private JwtAuthenticationConverter jwtAuthenticationConverter;
-    @Mock
-    private GeneratedImageToolInterceptor generatedImageToolInterceptor;
-    @Mock
-    private ReferenceImageInjector referenceImageInjector;
 
     private SlashCommandService slashCommandService;
 
@@ -89,8 +84,6 @@ class SlashCommandServiceTest {
                 localToolRegistry,
                 jwtDecoder,
                 jwtAuthenticationConverter,
-                generatedImageToolInterceptor,
-                referenceImageInjector,
                 3600L,
                 false);
     }
@@ -240,5 +233,31 @@ class SlashCommandServiceTest {
 
         assertThat(slashCommands).extracting(SlashCommand::command).containsExactly("model", "basic-prompt");
         verify(valueOperations).set(CACHE_KEY, "refreshed-json", Duration.ofSeconds(3600));
+    }
+
+    /**
+     * {@code /generate_image} is the local tool; an MCP tool of the same name would shadow it, because
+     * routing takes the first match and MCP tools are listed first.
+     */
+    @Test
+    void refreshSkipsAnMcpToolNamedLikeALocalTool() {
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(mcpSyncClient.listPrompts()).thenReturn(new McpSchema.ListPromptsResult(List.of(), null, null));
+        when(mcpSyncClient.listTools()).thenReturn(new McpSchema.ListToolsResult(List.of(
+                McpSchema.Tool.builder("generate_image", Map.of("type", "object")).description("MCP image").build(),
+                McpSchema.Tool.builder("web_search", Map.of("type", "object")).description("Search").build()), null, null));
+        when(localToolRegistry.contains("generate_image")).thenReturn(true);
+        when(localToolRegistry.asSlashCommands()).thenReturn(List.of(
+                new LocalToolSlashCommand("generate_image", "generate_image", "Local image")));
+        when(jsonMapper.writerFor(ArgumentMatchers.<TypeReference<?>>any())).thenReturn(objectWriter);
+        when(objectWriter.writeValueAsString(any())).thenReturn("refreshed-json");
+        when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        List<SlashCommand> slashCommands = slashCommandService.refreshSlashCommands();
+
+        assertThat(slashCommands).extracting(SlashCommand::command).containsExactly("web_search", "generate_image");
+        assertThat(slashCommands).filteredOn(slashCommand -> "generate_image".equals(slashCommand.command()))
+                .singleElement()
+                .isInstanceOf(LocalToolSlashCommand.class);
     }
 }

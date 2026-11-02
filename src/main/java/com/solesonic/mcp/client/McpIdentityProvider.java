@@ -1,7 +1,5 @@
 package com.solesonic.mcp.client;
 
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
-import com.solesonic.service.image.ReferenceImageInjector;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -34,20 +32,14 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     private final List<ToolCallback> toolCallbacks;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
-    private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
-    private final ReferenceImageInjector referenceImageInjector;
     private final Map<String, Tool> toolsByName;
 
     public McpIdentityProvider(McpSyncClient mcpClient,
                                JwtDecoder jwtDecoder,
-                               JwtAuthenticationConverter jwtAuthenticationConverter,
-                               GeneratedImageToolInterceptor generatedImageToolInterceptor,
-                               ReferenceImageInjector referenceImageInjector) {
+                               JwtAuthenticationConverter jwtAuthenticationConverter) {
         this.mcpClient = mcpClient;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
-        this.generatedImageToolInterceptor = generatedImageToolInterceptor;
-        this.referenceImageInjector = referenceImageInjector;
         this.toolCallbacks = new ArrayList<>();
         this.toolsByName = new LinkedHashMap<>();
         initializeToolCallbacks();
@@ -60,9 +52,7 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             log.debug("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
             for (Map.Entry<Tool, ToolCallback> rawCallback : rawCallbacks.entrySet()) {
-                toolCallbacks.add(new IdentityToolCallback(rawCallback.getValue(), jwtDecoder,
-                        jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector,
-                        GeneratedImageToolInterceptor.isImageTool(rawCallback.getKey())));
+                toolCallbacks.add(new IdentityToolCallback(rawCallback.getValue(), jwtDecoder, jwtAuthenticationConverter));
                 log.debug("Wrapped MCP tool: {}", rawCallback.getKey().name());
             }
         } catch (Exception exception) {

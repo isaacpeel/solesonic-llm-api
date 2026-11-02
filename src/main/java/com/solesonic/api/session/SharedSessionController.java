@@ -20,7 +20,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -97,12 +96,11 @@ public class SharedSessionController {
 
     @PostMapping("/{sessionId}/messages")
     public ResponseEntity<SessionMessageAccepted> send(@PathVariable UUID sessionId,
-                                                       @RequestBody SessionMessageRequest sessionMessageRequest,
-                                                       Authentication authentication) {
+                                                       @RequestBody SessionMessageRequest sessionMessageRequest) {
         log.info("Message in shared session {}", sessionId);
 
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(sessionMessageService.send(sessionId, userRequestContext.getUserId(), sessionMessageRequest, authentication));
+                .body(sessionMessageService.send(sessionId, userRequestContext.getUserId(), sessionMessageRequest));
     }
 
     @GetMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

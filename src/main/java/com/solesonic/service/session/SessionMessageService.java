@@ -24,13 +24,11 @@ import com.solesonic.service.redis.StartedRun;
 import com.solesonic.service.redis.TurnHooks;
 import com.solesonic.service.redis.TurnOutcome;
 import com.solesonic.service.redis.TurnPlan;
-import com.solesonic.util.AuthenticationTokens;
 import com.solesonic.util.ElicitationLabels;
 import com.solesonic.util.HiddenText;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -104,22 +102,22 @@ public class SessionMessageService {
         }
     }
 
-    public SessionMessageAccepted send(UUID sessionId, UUID senderUserId, SessionMessageRequest sessionMessageRequest, Authentication authentication) {
+    public SessionMessageAccepted send(UUID sessionId, UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
         SharedSession sharedSession = sharedSessionService.requireSeated(sessionId, senderUserId);
 
         requireAcceptsMessages(sharedSession);
 
         Outgoing outgoing = outgoing(sharedSession, senderUserId, sessionMessageRequest);
 
-        return run(sharedSession, senderUserId, outgoing, authentication, false);
+        return run(sharedSession, senderUserId, outgoing, false);
     }
 
     /**
      * The message an accepted invite opens the session with, sent as the participant who accepted it,
      * so the session starts where the inviter meant it to.
      */
-    public SessionMessageAccepted openingMessage(SharedSession sharedSession, UUID senderUserId, String openingMessage, Authentication authentication) {
-        return run(sharedSession, senderUserId, new Outgoing(openingMessage, openingMessage, null), authentication, true);
+    public SessionMessageAccepted openingMessage(SharedSession sharedSession, UUID senderUserId, String openingMessage) {
+        return run(sharedSession, senderUserId, new Outgoing(openingMessage, openingMessage, null), true);
     }
 
     private Outgoing outgoing(SharedSession sharedSession, UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
@@ -218,7 +216,7 @@ public class SessionMessageService {
      * Answers once the run's {@code RUN_STARTED} frame is out; the run itself goes on without the
      * caller.
      */
-    private SessionMessageAccepted run(SharedSession sharedSession, UUID senderUserId, Outgoing outgoing, Authentication authentication, boolean opening) {
+    private SessionMessageAccepted run(SharedSession sharedSession, UUID senderUserId, Outgoing outgoing, boolean opening) {
         userLlmKeyService.requireKey(senderUserId);
 
         if (a2aAgentRegistry.agent(sharedSession.getAgentName()).isEmpty()) {
@@ -234,7 +232,6 @@ public class SessionMessageService {
                 .findFirst()
                 .orElseThrow(SharedSessionService::sessionNotFound);
 
-        String userToken = AuthenticationTokens.token(authentication);
         UUID sessionId = sharedSession.getId();
         UUID chatId = sharedSession.getChatId();
         String agentName = sharedSession.getAgentName();
@@ -264,7 +261,7 @@ public class SessionMessageService {
                 senderUserId,
                 sender.getName(),
                 new ChatRequest(outgoing.displayText(), Set.of(), Set.of(), null),
-                () -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, userToken, collector),
+                () -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, collector),
                 new SessionTurnHooks(sessionId, chatId, streamUserId, senderUserId, opening, collector));
 
         log.info("Seat {} wrote in shared session {}: run {}{}", sender.getSeat(), sessionId, runId, opening ? " (the opening message)" : "");

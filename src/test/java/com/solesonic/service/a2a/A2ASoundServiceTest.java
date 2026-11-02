@@ -42,7 +42,7 @@ class A2ASoundServiceTest {
 
     @BeforeEach
     void setUp() {
-        A2AClientProperties properties = new A2AClientProperties(false, 5, "http://agents",
+        A2AClientProperties properties = new A2AClientProperties(false, 5,
                 new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"),
                 new A2AClientProperties.Sound(DataSize.ofMegabytes(5), TTL));
 

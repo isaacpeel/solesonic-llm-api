@@ -14,7 +14,7 @@ class A2AClientPropertiesTest {
 
     @Test
     void neverPrintsTheVirtualKey() {
-        A2AClientProperties properties = new A2AClientProperties(false, 300, "http://agents",
+        A2AClientProperties properties = new A2AClientProperties(false, 300,
                 new A2AClientProperties.Litellm("http://litellm:4000", "sk-izzybot"),
                 new A2AClientProperties.Sound(DataSize.ofMegabytes(5), Duration.ofDays(7)));
 
@@ -26,7 +26,6 @@ class A2AClientPropertiesTest {
     @Test
     void bindsTheSoundLimits() {
         MapConfigurationPropertySource source = new MapConfigurationPropertySource(Map.of(
-                "solesonic.a2a.base-uri", "http://agents",
                 "solesonic.a2a.litellm.base-uri", "http://litellm:4000",
                 "solesonic.a2a.litellm.api-key", "sk-izzybot",
                 "solesonic.a2a.sound.max-bytes", "5MB",

@@ -9,7 +9,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -73,11 +72,11 @@ public class SessionInviteController {
     }
 
     @PostMapping("/{inviteId}/accept")
-    public ResponseEntity<SharedSessionSummary> accept(@PathVariable UUID inviteId, Authentication authentication) {
+    public ResponseEntity<SharedSessionSummary> accept(@PathVariable UUID inviteId) {
         log.info("Accepting shared-session invite {}", inviteId);
 
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(sessionInviteService.accept(inviteId, userRequestContext.getUserId(), authentication));
+                .body(sessionInviteService.accept(inviteId, userRequestContext.getUserId()));
     }
 
     @PostMapping("/{inviteId}/decline")

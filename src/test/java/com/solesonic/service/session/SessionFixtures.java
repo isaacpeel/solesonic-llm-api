@@ -4,9 +4,6 @@ import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.model.session.SessionParticipant;
 import com.solesonic.model.session.SessionStatus;
 import com.solesonic.model.session.SharedSession;
-import org.springframework.security.authentication.TestingAuthenticationToken;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.time.Duration;
 import java.time.ZonedDateTime;
@@ -56,11 +53,5 @@ final class SessionFixtures {
         participant.setName(name);
         participant.setJoined(NOW);
         return participant;
-    }
-
-    static Authentication authentication() {
-        Jwt jwt = Jwt.withTokenValue("user-jwt").header("alg", "none").subject(SAM.toString()).build();
-
-        return new TestingAuthenticationToken(jwt, null);
     }
 }

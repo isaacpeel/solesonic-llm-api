@@ -4,7 +4,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "llama-3.1-8b",
+  "model": "ministral-3-14b",
   "messages": [
     {
       "role": "user",
@@ -19,7 +19,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "auto-model",
+  "model": "ministral-3-14b",
   "stream": true,
   "stream_options": {
     "include_usage": true

@@ -42,7 +42,8 @@ public class ChatConfig {
                 .build();
 
         return chatClientBuilder
-                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor, new ResponseMetadataCaptureAdvisor())
+                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor, new UserMessageMergingAdvisor(),
+                        new ResponseMetadataCaptureAdvisor())
                 .build();
     }
 

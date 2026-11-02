@@ -67,8 +67,7 @@ An A2A agent can ask the same kind of question through the
 reaches it as the same tool call and is answered with the same `ToolMessage`.
 
 - **The API asks for the extension on every A2A message**, in `Message.extensions` (which travels
-  through LiteLLM), and for agent-host agents also in the `A2A-Extensions` header. An agent raises
-  prompts only when it sees it.
+  through LiteLLM). An agent raises prompts only when it sees it.
 - **The agent raises a prompt** with a `TASK_STATE_INPUT_REQUIRED` status whose message holds one
   `DataPart`: `{"elicitation": {"mode": "form", "message", "requestedSchema", "_meta"}}`.
   `A2AElicitationExtension.prompt` accepts only a `form` with a non-blank message and an object schema

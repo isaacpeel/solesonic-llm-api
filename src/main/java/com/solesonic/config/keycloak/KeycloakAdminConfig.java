@@ -39,8 +39,8 @@ public class KeycloakAdminConfig {
     }
 
     /**
-     * Authorizes through the manager directly, as {@code A2AWebClientConfig} does: the sweep runs on a
-     * scheduler thread with no servlet request bound.
+     * Authorizes through the manager directly: the sweep runs on a scheduler thread with no servlet
+     * request bound.
      */
     @Bean(defaultCandidate = false)
     @Qualifier(KEYCLOAK_ADMIN_REST_CLIENT)

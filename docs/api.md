@@ -1749,9 +1749,7 @@ no turn, no message row, no SSE frames and no assistant response.
 ### A2A agent commands (`/network` and others)
 
 Every A2A agent the API discovered at startup is an `agent` command named after its card. Agents come
-from two places: the A2A agent host (`A2A_BASE_URI`) and LiteLLM's agent gateway
-(`A2A_LITELLM_BASE_URI`), which is where `/network` lives. A client cannot tell them apart and does not
-need to.
+from LiteLLM's agent gateway (`A2A_LITELLM_BASE_URI`), which is where `/network` lives.
 
 - Sending an agent command makes that agent the chat's **sticky agent**: every later message in the chat
   goes to it with no command, using the chat id as the A2A `contextId`, until the user sends any other
@@ -2098,21 +2096,24 @@ not included; fetch them from `GET /images/{imageId}`.
 
 ## Image Generation
 
-Text-to-image generation, backed by the `generate_image` MCP tool. The prompt is the whole input
-surface: size (1024x1024), step count, and the seed are fixed by the image server and are not
-caller-tunable.
+Image generation through LiteLLM's OpenAI image routes (`/images/generations`, and `/images/edits`
+when reference images are sent), served by the `solesonic-image-generation` service. The prompt is the
+whole input surface: the image service chooses its workflow from the prompt, and size and the seed are
+not caller-tunable.
 
-The call travels on the caller's own identity, so the user's JWT must carry the
-`mcp-generate-image` role. A token without it comes back as `FORBIDDEN`.
+Every call carries the caller's own [model access key](#model-access-keys). A user with no key is
+refused with `403` `LLM_KEY_MISSING` before anything starts, the same as chat. Which users may make
+images is LiteLLM's per-key model allowlist: a key that is not allowed the image models comes back as
+`FORBIDDEN`.
 
-There are two ways in, and the model never sees an image on either. The tool returns roughly 2MB of
+There are two ways in, and the model never sees an image on either. The service returns the image as
 base64, which the API decodes once, stores, and replaces with a reference; nothing downstream carries
 the bytes.
 
 1. **Explicit** — `POST /images`, below. The model is not involved at all.
-2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
-   itself. The image is intercepted out of the tool result before that result re-enters the model's
-   context, and reaches the client as an [`image` stream event](#image-event-payload) and as
+2. **In a conversation** — the `/generate_image` slash command, or the model calling the
+   `generate_image` tool itself. The tool stores the image and tells the model only its id, and that it
+   cannot see it. The image reaches the client as an [`image` stream event](#image-event-payload) and as
    `message.generatedImages` on [`RUN_FINISHED`](#stream-event-types). It is persisted against the assistant
    turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
 
@@ -2123,21 +2124,17 @@ references are ordinary staged chat attachments (PNG, JPEG or WebP; GIF is not a
 model never handles them in either direction:
 
 - **In a conversation**, nothing extra is sent. Image attachments on the send are passed to the image
-  tool automatically when it is called that turn, by the slash command or by the model. The model is
-  shown the tool's `referenceImages` parameter with only a `description` per image, plus a note
-  telling it to keep `prompt` in the user's own words and describe the images there instead. The API
-  injects each image's bytes server-side, keeps the model's description by position (falling back to
-  the attachment's vision description), and discards anything else the model wrote there. An
-  attachment that is not the caller's, is not an image, or is not a supported type is skipped, and the
-  turn never fails over one. At most three are sent; if no workflow takes that many, the tool's error
-  is relayed to the model so it can explain.
+  tool automatically when it is called that turn, by the slash command or by the model. The tool takes
+  only a `prompt`; the model has no parameter to put image data in. An attachment that is not the
+  caller's, is not an image, or is not a supported type is skipped, and the turn never fails over one.
+  At most `IMAGE_MAX_REFERENCE_IMAGES` (16) are sent; if no workflow takes that many, the model is told
+  so it can explain.
 - **Explicitly**, by listing them on `POST /images` (below). That path is strict: every id must
-  resolve and there may be at most three, or the request is refused before any generation starts.
+  resolve and there may be at most 16, or the request is refused before any generation starts.
 
-Whether references are accepted at all is the MCP tool's own declaration: its `referenceImages`
-schema property, each item `{data, mimeType, description?}`. Which counts are valid is decided per
-workflow by the MCP server. A tool — or an MCP server — that does not declare the property is never
-sent references. The image's `referenceAttachmentIds` records which attachments were used.
+References go to the image service as `image[]` files with the prompt, and nothing else describes
+them. Which counts are valid is decided by the service's workflows, by the number of images. The
+image's `referenceAttachmentIds` records which attachments were used.
 
 ### List Image Tools
 
@@ -2146,15 +2143,13 @@ sent references. The image's `referenceAttachmentIds` records which attachments 
 
 ```json
 [
-  {"name": "generate_image", "title": "generate_image", "description": "Creates an image ...",
-   "referenceImageSlots": 3}
+  {"name": "generate_image", "title": "Generate image", "description": "Generates an image ...",
+   "referenceImageSlots": 16}
 ]
 ```
 
-There is one image tool, `generate_image`, found by name; the MCP server chooses the workflow from
-the request itself. When the MCP server does not offer it the list is empty and every generation fails
-with `NO_IMAGE_TOOLS`. `referenceImageSlots` is the most reference images the tool accepts, `0` when
-it takes none. The list is the MCP catalog as this API saw it at startup.
+Always one entry. The image service chooses the workflow from the request itself.
+`referenceImageSlots` is `IMAGE_MAX_REFERENCE_IMAGES`, the most reference images a request may carry.
 
 ### Generate an Image (streaming)
 
@@ -2162,36 +2157,28 @@ it takes none. The list is the MCP catalog as this API saw it at startup.
 - **Produces**: `text/event-stream`
 - **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
   - `tool` (deprecated): accepted and ignored. `generate_image` is always called.
-  - `referenceAttachmentIds` (optional): at most three staged attachment ids to guide the image, in order —
+  - `referenceAttachmentIds` (optional): at most 16 staged attachment ids to guide the image, in order —
     `{ "prompt": "the same scene as a watercolor", "referenceAttachmentIds": ["3f0c..."] }`. See
     [Reference Images](#reference-images).
+- **Errors before the stream starts**: `403` `LLM_KEY_MISSING` for a caller with no model access key
 
-The stream carries any number of `progress` frames followed by exactly one terminal frame, either
-`complete` or `error`.
+The stream carries exactly one frame, either `complete` or `error`. The image service reports no
+progress, so nothing precedes it.
 
 ```
-event: progress
-data: {"percent":15,"message":"Queued as 4f1c8e2a-..."}
-
-event: progress
-data: {"percent":85,"message":"Generating…"}
-
 event: complete
 data: {"imageId":"7c2f...","chatMessageId":null,"imageUrl":"/izzybot/images/7c2f...","prompt":"a lighthouse ...",
-       "model":"FLUX.1-schnell","seed":8339331079448168597,"width":1024,"height":1024,"steps":4,
+       "model":"solesonic-image (izzy-bot)","seed":null,"width":1024,"height":1024,"steps":null,
        "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z",
        "referenceAttachmentIds":[]}
 ```
 
-`percent` is **approximate**. It is monotonic — it never goes backwards — but between 15 and 85 it
-is derived from an expected duration rather than real per-step progress, so it can sit at 85 for a
-while on a slow run. Show the `message` text; treat the number as a hint. It is `null` on a frame
-that carried no total.
-
 Closing the stream does not cancel the generation. The image is still produced and stored, and can
 be fetched by id afterwards.
 
-Typical latency is 5-15 seconds; the hard deadline is 180 seconds.
+The deadline is absolute: the admission wait plus `IMAGE_READ_TIMEOUT` (10 minutes) plus 30 seconds.
+A stream that reaches it ends with `GENERATION_TIMEOUT`, but a generation still running upstream may
+yet finish and appear in [`GET /images`](#list-my-images).
 
 ### Generate an Image (non-streaming)
 
@@ -2228,8 +2215,9 @@ stays correct behind a proxy that rewrites the host.
 For rendering an image that arrived long before the current page load. `prompt` and `seed` together
 are the provenance record: the prompt is the image's `alt` text, and the seed is what lets someone
 say *this specific image* when reporting a problem. Every field except `imageId`, `imageUrl`,
-`prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
-text block, and an unparsed field costs a null rather than a failed generation.
+`prompt`, `fileSizeBytes`, and `created` may be `null`. The image service returns only a size, so
+`model` is the model requested, `elapsedSeconds` is measured by this API, and `seed` and `steps` are
+`null` on images generated through LiteLLM.
 
 `GeneratedImageSummary` also carries `userId` (the owner) and `name` (a display name the owner has
 set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed), and
@@ -2286,19 +2274,20 @@ image response carries it.
 ### Image Generation Errors
 
 Failures collapse onto a closed set of codes. The message is always user-safe; the underlying detail
-(including the image server's internal prompt id) is logged rather than returned.
+from LiteLLM or the image service is logged rather than returned.
 
 | Code | Status on `/images/sync` | Meaning |
 |---|---|---|
-| `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
-| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, more than three were sent, no image workflow accepts that many, or the image server rejected an image |
-| `REFERENCE_IMAGES_UNSUPPORTED` | `400` | References were requested but the image tool does not declare `referenceImages` |
-| `NO_IMAGE_TOOLS` | `503` | The MCP server does not offer the `generate_image` tool |
-| `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
-| `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
-| `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |
-| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the image server's deadline |
+| `INVALID_PROMPT` | `400` | The prompt was empty or the image service rejected it |
+| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, more than 16 were sent, no image workflow accepts that many, or the image service rejected an image |
+| `FORBIDDEN` | `403` | The caller's model key is not allowed the image models |
+| `RATE_LIMITED` | `429` | Too many generations already in flight, or the caller's key is over its budget or rate limit — retry |
+| `BACKEND_UNAVAILABLE` | `503` | The image service, or ComfyUI behind it, could not be reached |
+| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the deadline |
 | `INTERNAL` | `500` | Anything else |
+
+A caller with no model access key gets `403` with `LLM_KEY_MISSING` (see
+[Model Access Keys](#model-access-keys)) instead, on both endpoints, before any generation starts.
 
 On the streaming endpoint the same payload arrives as the terminal `error` frame, since the response
 status is already committed by the time a generation can fail:

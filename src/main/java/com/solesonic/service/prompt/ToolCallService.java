@@ -5,7 +5,6 @@ import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.chat.ChatMessageService;
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import org.apache.commons.lang3.StringUtils;
@@ -57,10 +56,9 @@ public class ToolCallService {
                                Map<String, Object> contextMap,
                                LlmApiKey llmApiKey) {
 
-        ToolCallback toolCallback = toolCommand.callback(mcpClient);
+        ChatClient taskClient = slashCommandService.taskClient(toolCommand.callback(mcpClient), llmApiKey);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback,
-                GeneratedImageToolInterceptor.isImageTool(toolCommand.tool()), contextMap, llmApiKey);
+        return invoke(chatId, message, toolCommand.name(), taskClient, contextMap);
     }
 
     public Flux<String> streamLocal(UUID chatId,
@@ -70,25 +68,22 @@ public class ToolCallService {
                                     LlmApiKey llmApiKey) {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
+        ChatClient taskClient = slashCommandService.localTaskClient(toolCallback, llmApiKey);
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, false, contextMap, llmApiKey);
+        return invoke(chatId, message, localToolCommand.name(), taskClient, contextMap);
     }
 
     private Flux<String> invoke(UUID chatId,
                                 String message,
                                 String toolName,
-                                ToolCallback toolCallback,
-                                boolean imageTool,
-                                Map<String, Object> contextMap,
-                                LlmApiKey llmApiKey) {
+                                ChatClient taskClient,
+                                Map<String, Object> contextMap) {
 
         log.info("Tool invoke: {}", toolName);
 
         //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
         //chat memory advisor is about to write rather than the previous turn's.
         ZonedDateTime since = ZonedDateTime.now();
-
-        ChatClient taskClient = slashCommandService.taskClient(toolCallback, imageTool, llmApiKey);
 
         SystemPromptTemplate taskSystemPromptTemplate = new SystemPromptTemplate(taskPrompt);
         Prompt prompt = taskSystemPromptTemplate.create(Map.of(TASK_TOOL, toolName));

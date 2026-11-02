@@ -11,7 +11,6 @@ import java.time.Duration;
 public record A2AClientProperties(
         @DefaultValue("false") boolean enabled,
         @DefaultValue("60") long timeoutSeconds,
-        String baseUri,
         Litellm litellm,
         Sound sound
 ) {

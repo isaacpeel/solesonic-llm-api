@@ -8,8 +8,6 @@ import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
-import com.solesonic.service.image.ReferenceImageInjector;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -65,8 +63,6 @@ public class SlashCommandService {
     private final OpenAiChatModel taskChatModel;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
-    private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
-    private final ReferenceImageInjector referenceImageInjector;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -77,8 +73,6 @@ public class SlashCommandService {
                                LocalToolRegistry localToolRegistry,
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
-                               GeneratedImageToolInterceptor generatedImageToolInterceptor,
-                               ReferenceImageInjector referenceImageInjector,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
         this.redisTemplate = redisTemplate;
@@ -90,27 +84,30 @@ public class SlashCommandService {
         this.localToolRegistry = localToolRegistry;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
-        this.generatedImageToolInterceptor = generatedImageToolInterceptor;
-        this.referenceImageInjector = referenceImageInjector;
         this.taskChatModel = taskChatModel;
 
         mcpSyncClient = mcpSyncClients.getFirst();
     }
 
     /**
-     * @param imageTool whether the MCP server tagged the tool as an image tool, which its
-     *                  {@link ToolCallback} cannot say for itself
+     * A task client for an MCP tool, which is wrapped so it travels on the user's identity and nothing
+     * internal reaches the MCP server.
+     *
      * @param llmApiKey the user's own key, which every call through the client carries
      */
-    public ChatClient taskClient(ToolCallback toolCallback, boolean imageTool, LlmApiKey llmApiKey) {
-        log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
+    public ChatClient taskClient(ToolCallback mcpToolCallback, LlmApiKey llmApiKey) {
+        return localTaskClient(new IdentityToolCallback(mcpToolCallback, jwtDecoder, jwtAuthenticationConverter), llmApiKey);
+    }
 
-        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder,
-                jwtAuthenticationConverter, generatedImageToolInterceptor, referenceImageInjector, imageTool);
+    /**
+     * A task client for a tool already wrapped for the turn, as every {@link LocalToolRegistry} callback is.
+     */
+    public ChatClient localTaskClient(ToolCallback toolCallback, LlmApiKey llmApiKey) {
+        log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
         return ChatClient.builder(taskChatModel)
                 .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()))
-                .defaultTools(identityToolCallback)
+                .defaultTools(toolCallback)
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
                         simpleLoggerAdvisor
@@ -253,8 +250,10 @@ public class SlashCommandService {
         try {
             McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
+            //A local tool of the same name wins: routing takes the first match, and MCP tools come first.
             toolCommands = listToolsResult.tools().stream()
                     .filter(tool -> StringUtils.isNotBlank(tool.name()))
+                    .filter(tool -> !localToolRegistry.contains(tool.name()))
                     .<SlashCommand>map(ToolSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();

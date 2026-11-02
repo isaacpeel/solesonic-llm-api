@@ -503,8 +503,8 @@ user's behalf and writes a chat. Each of those is a boundary:
 
 ## Per-User Model Keys
 
-Every model call made for a user — chat, embeddings, vision, document enrichment, RAG tasks, tool-call
-routing, memory reflection, interest discovery and news summaries — carries that user's own
+Every model call made for a user — chat, embeddings, vision, image generation, document enrichment, RAG
+tasks, tool-call routing, memory reflection, interest discovery and news summaries — carries that user's own
 model-server key rather than the shared `OPENAI_API_KEY`, so the model server (LiteLLM) attributes
 spend, budgets and model access to the person. Rules: [API](api.md#model-access-keys).
 
@@ -525,11 +525,18 @@ spend, budgets and model access to the person. Rules: [API](api.md#model-access-
   `UserLlmKeyInterceptor`, on every OpenAI client in the application, refuses any other request that
   would leave on the shared key, so a call site that forgot whose turn it is fails loudly instead of
   quietly spending on it.
+- **Image access is the key's model allowlist.** There is no `mcp-generate-image` role any more: a user
+  may generate images when their virtual key is allowed `solesonic-image (izzy-bot)` and
+  `solesonic-image-edit (izzy-bot)`. The image service itself has no authentication, so only the
+  LiteLLM host should be able to reach it.
+- **The image tool cannot be pointed at someone else's images.** The model calling `generate_image`
+  supplies only a prompt. The user, the chat and the reference attachment ids come from the server-built
+  tool context, and attachments are fetched by a query scoped to that user.
 - **A2A is unchanged.** The LiteLLM agent gateway is still called with `A2A_LITELLM_API_KEY`, below.
 
 ## A2A Agents through LiteLLM
 
-Agents such as `/network` are reached through LiteLLM's agent gateway instead of the A2A agent host.
+Agents such as `/network` are reached through LiteLLM's agent gateway.
 
 - **Every authenticated user can read household network data. This is a stated decision, not an
   oversight.** `/network` has no role gate, and the agent does no per-user authorization, so per-person

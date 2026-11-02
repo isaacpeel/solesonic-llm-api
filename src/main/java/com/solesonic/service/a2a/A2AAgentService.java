@@ -1,12 +1,9 @@
 package com.solesonic.service.a2a;
 
 import com.solesonic.config.a2a.A2AAgentRegistry;
-import com.solesonic.config.a2a.A2AAuthInterceptor;
 import com.solesonic.config.a2a.A2AClientProperties;
 import com.solesonic.config.a2a.LiteLlmA2AAuthInterceptor;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
-import com.solesonic.mcp.client.TokenExchangeService;
-import com.solesonic.model.a2a.A2AAgentSource;
 import com.solesonic.model.a2a.A2AElicitationExtension;
 import com.solesonic.model.a2a.A2AParticipantMessage;
 import com.solesonic.model.a2a.A2AParticipantsExtension;
@@ -17,7 +14,6 @@ import com.solesonic.model.a2a.RegisteredAgent;
 import com.solesonic.model.chat.ElicitationEvent;
 import com.solesonic.model.chat.SoundCue;
 import com.solesonic.model.chat.history.ChatMessage;
-import com.solesonic.model.security.McpFilterService;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -30,7 +26,6 @@ import org.a2aproject.sdk.client.TaskEvent;
 import org.a2aproject.sdk.client.TaskUpdateEvent;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransport;
 import org.a2aproject.sdk.client.transport.jsonrpc.JSONRPCTransportConfigBuilder;
-import org.a2aproject.sdk.client.transport.spi.interceptors.ClientCallInterceptor;
 import org.a2aproject.sdk.spec.AgentCard;
 import org.a2aproject.sdk.spec.Artifact;
 import org.a2aproject.sdk.spec.Message;
@@ -72,8 +67,6 @@ public class A2AAgentService {
     private static final Logger log = LoggerFactory.getLogger(A2AAgentService.class);
 
     private final A2AAgentRegistry agentRegistry;
-    private final TokenExchangeService tokenExchangeService;
-    private final McpFilterService mcpFilterService;
     private final NotificationService notificationService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final ChatMessageService chatMessageService;
@@ -86,8 +79,6 @@ public class A2AAgentService {
     private final long maxSoundBytes;
 
     public A2AAgentService(A2AAgentRegistry agentRegistry,
-                           TokenExchangeService tokenExchangeService,
-                           McpFilterService mcpFilterService,
                            NotificationService notificationService,
                            A2AStickyAgentService a2aStickyAgentService,
                            ChatMessageService chatMessageService,
@@ -97,8 +88,6 @@ public class A2AAgentService {
                            A2ASoundService soundService,
                            PendingMessageMetadata pendingMessageMetadata) {
         this.agentRegistry = agentRegistry;
-        this.tokenExchangeService = tokenExchangeService;
-        this.mcpFilterService = mcpFilterService;
         this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.chatMessageService = chatMessageService;
@@ -112,18 +101,17 @@ public class A2AAgentService {
     }
 
     /**
-     * @param userToken used only for an agent-host agent; a LiteLLM agent is called with the virtual key
-     *                  alone, so the user's token never reaches the gateway.
+     * A LiteLLM agent is called with the virtual key alone, so the user's token never reaches the gateway.
      */
-    public Flux<String> delegate(UUID chatId, String agentName, String message, String userToken) {
+    public Flux<String> delegate(UUID chatId, String agentName, String message) {
         return Flux.defer(() -> agentRegistry.agent(agentName)
                 .map(registeredAgent -> delegate(chatId, registeredAgent,
-                        activeTaskId -> firstMessage(chatId, message, activeTaskId), userToken, null))
+                        activeTaskId -> firstMessage(chatId, message, activeTaskId), null))
                 .orElseGet(() -> releaseUnavailableAgent(chatId, agentName)));
     }
 
     /**
-     * A message in a session several users share. Unlike {@link #delegate(UUID, String, String, String)},
+     * A message in a session several users share. Unlike {@link #delegate(UUID, String, String)},
      * the message names its sender and the participants, every reply's turn is reported to
      * {@code listener}, and a question the agent ends on is handed to it rather than parked: the
      * participant it is for may not answer for hours. The session names its agent, so nothing here is
@@ -132,11 +120,10 @@ public class A2AAgentService {
     public Flux<String> delegateShared(UUID chatId,
                                        String agentName,
                                        A2AParticipantMessage participantMessage,
-                                       String userToken,
                                        A2ASessionTurnListener listener) {
         return Flux.defer(() -> agentRegistry.agent(agentName)
                 .map(registeredAgent -> delegate(chatId, registeredAgent,
-                        activeTaskId -> sharedMessage(chatId, participantMessage, activeTaskId), userToken,
+                        activeTaskId -> sharedMessage(chatId, participantMessage, activeTaskId),
                         new SharedMode(participantMessage.participants(), listener)))
                 .orElseGet(() -> Flux.error(new A2AAgentUnavailableException(agentName))));
     }
@@ -144,7 +131,6 @@ public class A2AAgentService {
     private Flux<String> delegate(UUID chatId,
                                   RegisteredAgent registeredAgent,
                                   Function<String, Message> firstMessage,
-                                  String userToken,
                                   @Nullable SharedMode sharedMode) {
         return a2aStickyAgentService.getActiveTaskId(chatId)
                 .flatMapMany(activeTaskId -> Flux.create(sink -> {
@@ -152,7 +138,7 @@ public class A2AAgentService {
                     BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(turn, event);
 
                     JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
-                            .addInterceptor(interceptor(registeredAgent.source(), userToken));
+                            .addInterceptor(liteLlmAuthInterceptor);
 
                     Client client = Client.builder(registeredAgent.agentCard())
                             .withTransport(JSONRPCTransport.class, jsonrpcTransportConfigBuilder)
@@ -218,13 +204,6 @@ public class A2AAgentService {
      * and the question it ends on are reported.
      */
     record SharedMode(List<String> participants, A2ASessionTurnListener listener) {
-    }
-
-    ClientCallInterceptor interceptor(A2AAgentSource source, String userToken) {
-        return switch (source) {
-            case AGENT_HOST -> new A2AAuthInterceptor(tokenExchangeService, mcpFilterService, userToken);
-            case LITELLM -> liteLlmAuthInterceptor;
-        };
     }
 
     /**
