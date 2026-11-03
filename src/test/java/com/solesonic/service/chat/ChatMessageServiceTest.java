@@ -2,6 +2,7 @@ package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
@@ -498,5 +499,30 @@ class ChatMessageServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
                 .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * An image used only as a reference has no description to replay. Without a line naming it, a
+     * later turn would reach a model with no idea a photo was ever sent.
+     */
+    @Test
+    void findByChatIdNamesAnImageThatWasNeverDescribed() {
+        ChatMessage withImage = chatMessage(MessageType.USER, "make the sky purple");
+        UUID attachmentId = UUID.randomUUID();
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                withImage,
+                chatMessage(MessageType.ASSISTANT, "here it is")));
+        when(chatAttachmentService.undescribedImages(chatId)).thenReturn(List.of(new ChatAttachmentSummary(
+                attachmentId, withImage.getId(), "beach.png", null, "image/png", 10L, false, null, false, null)));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).hasSize(3);
+        assertThat(messages.getFirst()).isInstanceOf(UserMessage.class);
+        assertThat(messages.getFirst().getText())
+                .contains("beach.png")
+                .contains("never described");
+        assertThat(messages.get(1).getText()).isEqualTo("make the sky purple");
     }
 }

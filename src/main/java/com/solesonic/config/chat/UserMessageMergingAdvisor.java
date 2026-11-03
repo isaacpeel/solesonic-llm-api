@@ -31,9 +31,10 @@ public class UserMessageMergingAdvisor implements CallAdvisor, StreamAdvisor {
 
     /**
      * Beneath the retrieval advisor (order 0) and chat memory, which both add or rewrite user
-     * messages, and above the metadata capture, which must stay next to the model.
+     * messages, and above the exchange logging and metadata capture, so what is logged is what
+     * leaves.
      */
-    static final int ORDER = ResponseMetadataCaptureAdvisor.ORDER - 1;
+    static final int ORDER = ModelExchangeLoggingAdvisor.ORDER - 1;
 
     private static final String SEPARATOR = System.lineSeparator() + System.lineSeparator();
 

@@ -60,9 +60,14 @@ public class ImageGenerationTool implements LocalTool {
 
         UUID chatId = context.get(CHAT_ID) instanceof UUID chatIdValue ? chatIdValue : null;
 
+        List<UUID> referenceAttachmentIds = referenceAttachmentIds(context);
+
+        log.info("generate_image called for chat {} with {} reference image(s)", chatId, referenceAttachmentIds.size());
+        log.debug("generate_image prompt for chat {}: {}", chatId, prompt);
+
         try {
             GeneratedImageSummary generatedImageSummary =
-                    imageGenerationService.generateInChat(prompt, referenceAttachmentIds(context), userId, chatId);
+                    imageGenerationService.generateInChat(prompt, referenceAttachmentIds, userId, chatId);
 
             if (chatId != null) {
                 notificationService.emitGeneratedImage(chatId, generatedImageSummary);

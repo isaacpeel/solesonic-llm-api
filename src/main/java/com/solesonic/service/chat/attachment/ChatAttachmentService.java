@@ -340,6 +340,33 @@ public class ChatAttachmentService {
     }
 
     /**
+     * The images among {@code attachmentIds} bound to {@code chatId}, without their bytes: enough to
+     * name them to the model without describing them.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> imageSummaries(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
+
+        return chatAttachmentRepository.findSummariesByChatIdAndIdIn(chatId, attachmentIds)
+                .stream()
+                .filter(summary -> isImage(summary.contentType()))
+                .toList();
+    }
+
+    /**
+     * Every image of the conversation with no stored description, for naming in replayed history.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> undescribedImages(UUID chatId) {
+        return chatAttachmentRepository.findSummariesByChatId(chatId)
+                .stream()
+                .filter(summary -> isImage(summary.contentType()) && !summary.described())
+                .toList();
+    }
+
+    /**
      * Claims the given staged attachments for a chat message. The conditional update is the
      * authoritative check: an id that does not exist, belongs to another user, or is already
      * bound simply will not match, and the short row count fails the whole turn.

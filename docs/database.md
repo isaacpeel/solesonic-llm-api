@@ -129,8 +129,10 @@ the two columns are mutually exclusive; both null means the image has not been a
 find images worth retrying: `select id from public.chat_attachment where vision_failure_reason =
 'VISION_TIMEOUT';`
 
-The event's `NOT_NEEDED` reason, sent when a tool route uses an image without describing it, is
-never stored here: both columns stay null, so the image counts as not yet attempted.
+The event's `NOT_NEEDED` reason, sent when nothing in the turn needed to read the image, is never
+stored here: both columns stay null, so the image counts as not yet attempted. An image used only as
+a reference never gets a description; replayed history names it instead
+(`ChatAttachmentService.undescribedImages`).
 
 The `generated_image` table (V3_7) stores images produced by the `generate_image` MCP tool. Same
 `bytea` shape as `chat_attachment`, and for the same reason. The tool persists nothing and returns

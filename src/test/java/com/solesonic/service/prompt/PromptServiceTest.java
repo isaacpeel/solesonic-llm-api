@@ -64,6 +64,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.DESCRIBE;
+import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.DECIDE;
 import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.REFERENCE_ONLY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -166,7 +167,7 @@ class PromptServiceTest {
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
 
         //Nothing attached in most tests.
-        lenient().when(attachmentContextResolver.resolve(any(), any(), any(), any()))
+        lenient().when(attachmentContextResolver.resolve(any(), any(), any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
@@ -180,6 +181,9 @@ class PromptServiceTest {
         lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
 
         lenient().when(userMemoryService.promptBlock(any(), any(), any())).thenReturn("");
+
+        //No conversation is pinned to a remote agent in most tests.
+        lenient().when(a2aStickyAgentService.getActiveAgent(any())).thenReturn(Mono.just(Optional.empty()));
     }
 
     /**
@@ -361,7 +365,7 @@ class PromptServiceTest {
 
         List<ChatAttachmentDescription> descriptions = List.of(attachmentDescription);
 
-        when(attachmentContextResolver.resolve(any(), any(), any(), any())).thenReturn(
+        when(attachmentContextResolver.resolve(any(), any(), any(), any(), any())).thenReturn(
                 new AttachmentResolution(descriptions, AttachmentContextFormatter.context(descriptions)));
     }
 
@@ -403,7 +407,7 @@ class PromptServiceTest {
     void stream_resolvesAttachmentsOnTheUsersKey() {
         List<Optional<LlmApiKey>> keysSeen = new ArrayList<>();
 
-        when(attachmentContextResolver.resolve(any(), any(), any(), any())).thenAnswer(_ -> {
+        when(attachmentContextResolver.resolve(any(), any(), any(), any(), any())).thenAnswer(_ -> {
             keysSeen.add(LlmCredentialScope.userKey());
             return new AttachmentResolution(List.of(), null);
         });
@@ -595,7 +599,7 @@ class PromptServiceTest {
     void stream_putsTheSendsImageIdsInTheToolContext() {
         UUID imageId = UUID.randomUUID();
         ChatRequest chatRequest = new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null);
-        when(attachmentContextResolver.resolve(any(), any(), any(), any()))
+        when(attachmentContextResolver.resolve(any(), any(), any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null, Set.of(imageId)));
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("done"));
@@ -630,7 +634,7 @@ class PromptServiceTest {
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
-        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(attachmentId), DESCRIBE);
+        verify(attachmentContextResolver).resolve(chatId, userId, "what is this?", Set.of(attachmentId), DECIDE);
         verify(requestSpec).user("what is this?");
 
         ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
@@ -728,7 +732,7 @@ class PromptServiceTest {
                 .expectNext("done")
                 .verifyComplete();
 
-        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), REFERENCE_ONLY);
+        verify(attachmentContextResolver).resolve(chatId, userId, "make it a watercolor", Set.of(imageId), REFERENCE_ONLY);
     }
 
     /**
@@ -751,7 +755,7 @@ class PromptServiceTest {
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), REFERENCE_ONLY);
+        verify(attachmentContextResolver).resolve(chatId, userId, "search for this", Set.of(imageId), REFERENCE_ONLY);
     }
 
     /**
@@ -772,6 +776,47 @@ class PromptServiceTest {
                 .expectNext("forecast")
                 .verifyComplete();
 
-        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), DESCRIBE);
+        verify(attachmentContextResolver).resolve(chatId, userId, "what is this?", Set.of(imageId), DESCRIBE);
+    }
+
+    /**
+     * A pinned conversation goes to a remote agent, which cannot call a local tool, so its images are
+     * still described up front.
+     */
+    @Test
+    void stream_withAStickyAgent_describesImages() {
+        UUID imageId = UUID.randomUUID();
+        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of(), Set.of(imageId), null);
+
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("weather-agent")));
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString())).thenReturn(Flux.just("forecast"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("forecast")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, "what is this?", Set.of(imageId), DESCRIBE);
+    }
+
+    /**
+     * Plain chat hands the decision to the resolver, with the user's own words for the decision model
+     * to read. The chat model is only ever offered generate_image for the images, never a way to look.
+     */
+    @Test
+    void stream_onPlainChat_decidesFromTheUsersWordsAndOffersOnlyGenerateImage() {
+        UUID imageId = UUID.randomUUID();
+        ChatRequest chatRequest = new ChatRequest("create a picture of this person relaxing on a beach", Set.of(), Set.of(imageId), null);
+        stubBasicPromptChain(Flux.just("done"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("done")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, "create a picture of this person relaxing on a beach",
+                Set.of(imageId), DECIDE);
+
+        ArgumentCaptor<Object> toolsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).tools(toolsCaptor.capture());
+        assertThat(toolsCaptor.getValue()).isEqualTo(List.of(imageToolCallback));
     }
 }

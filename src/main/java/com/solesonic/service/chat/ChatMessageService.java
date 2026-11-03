@@ -4,6 +4,7 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
@@ -243,6 +244,13 @@ public class ChatMessageService {
                     .stream()
                     .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
 
+            //An image used only as a reference has no description to replay, so it is named instead:
+            //otherwise a later turn would not know an image was ever sent.
+            Map<UUID, List<ChatAttachmentSummary>> undescribedByMessageId = chatAttachmentService
+                    .undescribedImages(chatId)
+                    .stream()
+                    .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+
             for(ChatMessage chatMessage : chatMessages) {
                 // Every persisted SYSTEM row is a UI-only notification (cancellation, progress,
                 // failure, elicitation prompt) rather than a real conversation turn — the actual
@@ -263,8 +271,9 @@ public class ChatMessageService {
                         // Adjacent to the user message it describes, not merged into it — the same
                         // shape the live turn builds in PromptService, so a replayed turn and the
                         // turn that produced it look identical to the model.
-                        String imageContext = AttachmentContextFormatter.context(
-                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+                        String imageContext = imageContext(
+                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()),
+                                undescribedByMessageId.getOrDefault(chatMessage.getId(), List.of()));
 
                         if (imageContext != null) {
                             messages.add(new UserMessage(imageContext));
@@ -287,5 +296,25 @@ public class ChatMessageService {
         }
 
         return List.of();
+    }
+
+    /**
+     * The described images first, then the ones never described, as one block ahead of the user message.
+     *
+     * @return the block, or null when the message carried no image
+     */
+    private static String imageContext(List<ChatAttachmentDescription> descriptions, List<ChatAttachmentSummary> undescribedImages) {
+        String describedContext = AttachmentContextFormatter.context(descriptions);
+        String undescribedContext = AttachmentContextFormatter.referenceHistoryContext(undescribedImages);
+
+        if (undescribedContext == null) {
+            return describedContext;
+        }
+
+        if (describedContext == null) {
+            return undescribedContext;
+        }
+
+        return describedContext + System.lineSeparator() + undescribedContext;
     }
 }

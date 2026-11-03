@@ -486,6 +486,9 @@ event per attachment (both `CUSTOM`). Guarantees a client can rely on:
   skipped before any work started, and ones the server could not resolve at all. A client never
   has to interpret a missing event.
 - **Always before `RUN_FINISHED`**, so the event lands while the assistant message is still streaming.
+- **Decided before the model runs.** On a plain chat message (no slash command, no agent) a decision
+  model reads the message first. A request to create or edit an image from the attachments sends them
+  to image generation without describing them (`NOT_NEEDED`); anything else describes them as before.
 
 Nothing else in the turn distinguishes a handled attachment from a skipped one: a skipped attachment
 still produces a normal answer, just one written as though nothing were attached.
@@ -499,7 +502,7 @@ When `described` is `false` on an image, `reason` is one of a closed set:
 | `IMAGE_TOO_LARGE` | The image exceeds `solesonic.llm.vision.max-image-bytes` |
 | `IMAGE_UNREADABLE` | The vision model returned nothing usable, or the attachment could not be loaded |
 | `EXCEEDED_IMAGE_LIMIT` | More images were attached to one message than the vision pass describes |
-| `NOT_NEEDED` | Not a failure. The send took a tool route (`/generate_image` or an MCP tool command), which uses the image itself rather than a description, so no vision call was made. Render it as a neutral chip, not an error. It is never persisted, so the image stays undescribed and a later turn can still describe it |
+| `NOT_NEEDED` | Not a failure. Nothing needed to read the image: the send took a tool route (`/generate_image` or an MCP tool command), which uses the image itself, or it was a plain chat message asking to create or edit an image from it, which sends it to image generation as a reference. No vision call was made. Render it as a neutral chip, not an error. It is never persisted, so the image stays undescribed and a later turn can still read it |
 
 `reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
 `SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment

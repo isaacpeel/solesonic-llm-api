@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -61,6 +62,21 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
              order by attachment.created asc
            """)
     List<ChatAttachmentSummary> findSummariesByChatId(UUID chatId);
+
+    @Query("""
+            select new com.solesonic.model.chat.attachment.ChatAttachmentSummary(
+                       attachment.id, attachment.chatMessageId, attachment.fileName,
+                       attachment.description, attachment.contentType, attachment.fileSizeBytes,
+                       case when attachment.visionDescription is not null then true else false end,
+                       attachment.visionFailureReason,
+                       case when attachment.chunkCount is not null then true else false end,
+                       attachment.extractionFailureReason)
+              from ChatAttachment attachment
+             where attachment.chatId = :chatId
+               and attachment.id in :attachmentIds
+             order by attachment.created asc
+           """)
+    List<ChatAttachmentSummary> findSummariesByChatIdAndIdIn(UUID chatId, Collection<UUID> attachmentIds);
 
     @Modifying
     @Query("""

@@ -471,4 +471,42 @@ class ImageDescriptionServiceTest {
 
         verifyNoInteractions(notificationService, visionChatModel, chatAttachmentService);
     }
+
+    /**
+     * {@code view_attachments} describes through the turn's own record, so an image of this turn is
+     * signalled once, by whichever path gets there first.
+     */
+    @Test
+    void describeThroughTheTurnsRecordSignalsAnImageOnlyOnce() {
+        ChatAttachment chatAttachment = attachment("beach.png");
+        Set<UUID> attachmentIds = Set.of(chatAttachment.getId());
+        AttachmentVisionSignals signals = imageDescriptionService.signals(chatId, attachmentIds);
+
+        when(chatAttachmentService.attachments(userId, attachmentIds)).thenReturn(List.of(chatAttachment));
+        when(visionChatModel.call(any(Prompt.class))).thenReturn(chatResponse("a beach at sunset"));
+
+        imageDescriptionService.describe(chatId, userId, attachmentIds, signals);
+        signals.signalRemaining(NOT_NEEDED);
+
+        assertThat(describedEvents(1).get(chatAttachment.getId()).described()).isTrue();
+    }
+
+    /**
+     * An image from an earlier turn had its event on that turn. Describing it now sends none, even
+     * when the describe fails.
+     */
+    @Test
+    void describingAnEarlierTurnsImageSendsNoEvent() {
+        ChatAttachment earlierAttachment = attachment("earlier.png");
+        Set<UUID> attachmentIds = Set.of(earlierAttachment.getId());
+        AttachmentVisionSignals signals = imageDescriptionService.signals(chatId, Set.of());
+
+        when(chatAttachmentService.attachments(userId, attachmentIds)).thenReturn(List.of(earlierAttachment));
+        when(visionChatModel.call(any(Prompt.class))).thenThrow(new ResourceAccessException("down", new ConnectException()));
+
+        List<?> descriptions = imageDescriptionService.describe(chatId, userId, attachmentIds, signals);
+
+        assertThat(descriptions).isEmpty();
+        verify(notificationService, never()).emitAttachment(any(), any());
+    }
 }

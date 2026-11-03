@@ -525,6 +525,11 @@ spend, budgets and model access to the person. Rules: [API](api.md#model-access-
   `UserLlmKeyInterceptor`, on every OpenAI client in the application, refuses any other request that
   would leave on the shared key, so a call site that forgot whose turn it is fails loudly instead of
   quietly spending on it.
+- **The image generation decision runs on the user's key.** On plain chat with attached images,
+  `ImageGenerationRequestClassifier` asks the decision model whether the message asks for an image to
+  be generated. It is a blocking call made inside the turn's `LlmCredentialScope`, so it carries the
+  user's key like the vision call it decides on. The user's words go to it as their own message beneath
+  a fixed instruction; a crafted message can at most flip the yes/no, and anything unclear is no.
 - **Image access is the key's model allowlist.** There is no `mcp-generate-image` role any more: a user
   may generate images when their virtual key is allowed `solesonic-image (izzy-bot)` and
   `solesonic-image-edit (izzy-bot)`. The image service itself has no authentication, so only the

@@ -184,12 +184,19 @@ public class PromptService {
 
         //Ahead of the attachment work: the route decides whether images are described at all.
         SlashCommand slashCommand = CollectionUtils.isEmpty(commands) ? null : slashCommand(commands);
-        ImageHandling imageHandling = imageHandling(slashCommand);
+        Optional<String> stickyAgent = slashCommand == null ? stickyAgent(chatId) : Optional.empty();
+        ImageHandling imageHandling = imageHandling(slashCommand, stickyAgent.isPresent());
 
-        //Vision and document indexing are blocking calls made on this thread, which is what lets the
-        //scope carry the key to them.
+        //The image decision, vision and document indexing are blocking calls made on this thread, which
+        //is what lets the scope carry the key to them.
         AttachmentResolution attachments = LlmCredentialScope.asUser(llmApiKey,
-                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds(), imageHandling));
+                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.chatMessage(),
+                        chatMessage.attachmentIds(), imageHandling));
+
+        log.info("Chat {} routed to {} with image handling {}: {} image(s), {} described, attachment context {} characters",
+                chatId, route(slashCommand, stickyAgent.isPresent()), imageHandling, attachments.imageIds().size(),
+                attachments.imageDescriptions().size(),
+                attachments.attachmentContext() == null ? 0 : attachments.attachmentContext().length());
 
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
@@ -198,12 +205,24 @@ public class PromptService {
                 PROGRESS_TOKEN, chatId,
                 REFERENCE_ATTACHMENT_IDS, attachments.imageIds());
 
-        if (slashCommand == null) {
-            return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, model, llmApiKey);
+        if (slashCommand != null) {
+            return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
+                    contextMap, model, llmApiKey);
         }
 
-        return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
-                contextMap, model, llmApiKey);
+        if (stickyAgent.isPresent()) {
+            log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
+
+            //A remote agent takes a single string, so the block is inlined here rather than carried as a
+            //message of its own.
+            return a2aAgentService.delegate(chatId, stickyAgent.get(),
+                    AttachmentContextFormatter.prepend(chatMessage.chatMessage(), attachments.imageDescriptions()));
+        }
+
+        log.info("No command or sticky agent, using default system prompt.");
+
+        return streamDefaultSystemPrompt(chatId, userId, chatMessage.chatMessage(),
+                attachments.attachmentContext(), contextMap, model, llmApiKey);
     }
 
     private SlashCommand slashCommand(Set<String> commands) {
@@ -212,12 +231,33 @@ public class PromptService {
                 .orElseThrow(IllegalStateException::new);
     }
 
+    private static String route(SlashCommand slashCommand, boolean stickyAgentActive) {
+        if (slashCommand != null) {
+            return slashCommand.getClass().getSimpleName() + " " + slashCommand.name();
+        }
+
+        return stickyAgentActive ? "sticky agent" : "default prompt";
+    }
+
     /**
-     * Tool routes send the images themselves and are given no image prose.
+     * Read before the attachment work, because a pinned conversation goes to a remote agent, which
+     * takes a single string and so needs every image described.
      */
-    private static ImageHandling imageHandling(SlashCommand slashCommand) {
+    private Optional<String> stickyAgent(UUID chatId) {
+        return a2aStickyAgentService.getActiveAgent(chatId)
+                .blockOptional()
+                .flatMap(activeAgent -> activeAgent);
+    }
+
+    /**
+     * Tool routes send the images themselves and are given no image prose. On plain chat the decision
+     * model reads the user's words and decides: described when answering needs what the images show,
+     * references only when they are inputs for creating or editing an image. Remote agents and MCP
+     * prompts always get every image described.
+     */
+    private static ImageHandling imageHandling(SlashCommand slashCommand, boolean stickyAgentActive) {
         if (slashCommand == null) {
-            return ImageHandling.DESCRIBE;
+            return stickyAgentActive ? ImageHandling.DESCRIBE : ImageHandling.DECIDE;
         }
 
         return switch (slashCommand) {
@@ -241,38 +281,6 @@ public class PromptService {
                 })
                 .blockOptional()
                 .orElse(defaultChatModel);
-    }
-
-    /**
-     * The default route: a conversation already pinned to a remote agent keeps going there, and
-     * everything else reaches the LLM.
-     * <p>
-     * The sticky check is a Redis read, so the branch is taken inside the stream rather than before
-     * it.
-     */
-    private Flux<String> streamWithoutCommand(UUID chatId,
-                                              UUID userId,
-                                              String message,
-                                              AttachmentResolution attachments,
-                                              Map<String, Object> contextMap,
-                                              String model,
-                                              LlmApiKey llmApiKey) {
-        return a2aStickyAgentService
-                .getActiveAgent(chatId)
-                .flatMapMany(stickyAgent -> {
-                    if (stickyAgent.isPresent()) {
-                        log.info("Routing to sticky A2A agent '{}' for chat {}", stickyAgent.get(), chatId);
-
-                        //A remote agent takes a single string, so the block is inlined here rather
-                        //than carried as a message of its own.
-                        return a2aAgentService.delegate(chatId, stickyAgent.get(),
-                                AttachmentContextFormatter.prepend(message, attachments.imageDescriptions()));
-                    }
-
-                    log.info("No command or sticky agent, using default system prompt.");
-
-                    return streamDefaultSystemPrompt(chatId, userId, message, attachments.attachmentContext(), contextMap, model, llmApiKey);
-                });
     }
 
     /**
