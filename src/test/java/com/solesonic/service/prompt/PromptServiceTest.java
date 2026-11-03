@@ -6,6 +6,8 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.model.prompt.AgentSlashCommand;
+import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
@@ -61,6 +63,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.DESCRIBE;
+import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.REFERENCE_ONLY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
@@ -162,7 +166,7 @@ class PromptServiceTest {
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
 
         //Nothing attached in most tests.
-        lenient().when(attachmentContextResolver.resolve(any(), any(), any()))
+        lenient().when(attachmentContextResolver.resolve(any(), any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
@@ -357,7 +361,7 @@ class PromptServiceTest {
 
         List<ChatAttachmentDescription> descriptions = List.of(attachmentDescription);
 
-        when(attachmentContextResolver.resolve(any(), any(), any())).thenReturn(
+        when(attachmentContextResolver.resolve(any(), any(), any(), any())).thenReturn(
                 new AttachmentResolution(descriptions, AttachmentContextFormatter.context(descriptions)));
     }
 
@@ -399,7 +403,7 @@ class PromptServiceTest {
     void stream_resolvesAttachmentsOnTheUsersKey() {
         List<Optional<LlmApiKey>> keysSeen = new ArrayList<>();
 
-        when(attachmentContextResolver.resolve(any(), any(), any())).thenAnswer(_ -> {
+        when(attachmentContextResolver.resolve(any(), any(), any(), any())).thenAnswer(_ -> {
             keysSeen.add(LlmCredentialScope.userKey());
             return new AttachmentResolution(List.of(), null);
         });
@@ -591,7 +595,7 @@ class PromptServiceTest {
     void stream_putsTheSendsImageIdsInTheToolContext() {
         UUID imageId = UUID.randomUUID();
         ChatRequest chatRequest = new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null);
-        when(attachmentContextResolver.resolve(any(), any(), any()))
+        when(attachmentContextResolver.resolve(any(), any(), any(), any()))
                 .thenReturn(new AttachmentResolution(List.of(), null, Set.of(imageId)));
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("done"));
@@ -626,7 +630,7 @@ class PromptServiceTest {
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
-        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(attachmentId));
+        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(attachmentId), DESCRIBE);
         verify(requestSpec).user("what is this?");
 
         ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
@@ -700,5 +704,74 @@ class PromptServiceTest {
 
         assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(attachmentContextResolver);
+    }
+
+    /**
+     * {@code /generate_image} sends the attached images themselves as references, so describing them
+     * first would be a vision call nobody reads.
+     */
+    @Test
+    void stream_withALocalToolCommand_resolvesImagesAsReferencesOnly() {
+        UUID imageId = UUID.randomUUID();
+        LocalToolSlashCommand generateImage = new LocalToolSlashCommand(
+                ImageGenerationTool.GENERATE_IMAGE, ImageGenerationTool.GENERATE_IMAGE, "Generates an image");
+        ChatRequest chatRequest = new ChatRequest("make it a watercolor",
+                Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(imageId), null);
+
+        when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
+        when(slashCommandRouter.route(eq(generateImage), eq(chatId), eq(userId), anyString(),
+                any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("done")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), REFERENCE_ONLY);
+    }
+
+    /**
+     * Tool routes get no image prose by design, so an MCP tool command never pays for it either.
+     */
+    @Test
+    void stream_withAnMcpToolCommand_resolvesImagesAsReferencesOnly() {
+        UUID imageId = UUID.randomUUID();
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        when(mcpTool.name()).thenReturn("search");
+        when(mcpTool.description()).thenReturn("Search tool");
+        ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
+        ChatRequest chatRequest = new ChatRequest("search for this", Set.of("search"), Set.of(imageId), null);
+
+        when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
+                any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("tool-result")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), REFERENCE_ONLY);
+    }
+
+    /**
+     * A remote agent takes a single string, so the only way it learns what an image shows is the
+     * description inlined into that string.
+     */
+    @Test
+    void stream_withAnAgentCommand_describesImages() {
+        UUID imageId = UUID.randomUUID();
+        AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
+        ChatRequest chatRequest = new ChatRequest("what is this?", Set.of("weather-agent"), Set.of(imageId), null);
+
+        when(slashCommandService.commands(Set.of("weather-agent"))).thenReturn(List.of(agentCommand));
+        when(slashCommandRouter.route(eq(agentCommand), eq(chatId), eq(userId), anyString(),
+                any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("forecast"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+                .expectNext("forecast")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, Set.of(imageId), DESCRIBE);
     }
 }

@@ -43,6 +43,7 @@ import static com.solesonic.config.openai.VisionOpenAiConfig.VISION_CHAT_MODEL;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.NOT_NEEDED;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_TIMEOUT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNAVAILABLE;
 
@@ -153,6 +154,23 @@ public class ImageDescriptionService {
 
                 signal(chatId, unsignalled, attachmentId, IMAGE_UNREADABLE);
             }
+        }
+    }
+
+    /**
+     * Closes every id with a {@link VisionFailureReason#NOT_NEEDED} event, for a route that sends the
+     * images themselves and never reads a description. Reads no row, calls no model and records
+     * nothing, so the image is still undescribed for any later turn that does need it.
+     */
+    public void notNeeded(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return;
+        }
+
+        Set<UUID> unsignalled = new LinkedHashSet<>(attachmentIds);
+
+        for (UUID attachmentId : attachmentIds) {
+            signal(chatId, unsignalled, attachmentId, NOT_NEEDED);
         }
     }
 

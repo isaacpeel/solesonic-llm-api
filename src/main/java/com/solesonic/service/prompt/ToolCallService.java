@@ -24,7 +24,7 @@ import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
+import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 @Service
 public class ToolCallService {

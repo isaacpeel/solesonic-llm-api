@@ -19,8 +19,8 @@ import java.util.UUID;
  * The two passes are split before either runs, because each guarantees exactly one {@code attachment}
  * SSE event per id it is handed: the sets have to be disjoint and cover every requested id, or a
  * client waits forever for an event that never comes. Images are described by the vision model and
- * reach the model as prose; documents are indexed and reach it through retrieval, so only their
- * names are rendered here.
+ * reach the model as prose, unless the route only sends them on as references; documents are
+ * indexed and reach it through retrieval, so only their names are rendered here.
  * <p>
  * Blocking, and called from {@code PromptService} on a {@code boundedElastic} thread. Deliberately
  * not {@code @Transactional}: the calls below run for seconds and must not hold a pooled connection.
@@ -38,6 +38,11 @@ public class AttachmentContextResolver {
         this.chatAttachmentService = chatAttachmentService;
         this.imageDescriptionService = imageDescriptionService;
         this.chatDocumentIngestionService = chatDocumentIngestionService;
+    }
+
+    public enum ImageHandling {
+        DESCRIBE,
+        REFERENCE_ONLY
     }
 
     /**
@@ -64,18 +69,30 @@ public class AttachmentContextResolver {
         }
     }
 
-    public AttachmentResolution resolve(UUID chatId, UUID userId, Set<UUID> attachmentIds) {
+    public AttachmentResolution resolve(UUID chatId, UUID userId, Set<UUID> attachmentIds, ImageHandling imageHandling) {
         ChatAttachmentService.AttachmentPartition partition = chatAttachmentService
                 .partition(userId, attachmentIds);
 
-        List<ChatAttachmentDescription> imageDescriptions = imageDescriptionService
-                .describe(chatId, userId, partition.imageIds());
+        List<ChatAttachmentDescription> imageDescriptions = describeImages(chatId, userId, partition.imageIds(), imageHandling);
 
         List<String> indexedDocuments = chatDocumentIngestionService
                 .ingest(chatId, userId, partition.documentIds());
 
         return new AttachmentResolution(imageDescriptions,
                 attachmentContext(imageDescriptions, indexedDocuments), partition.imageIds());
+    }
+
+    private List<ChatAttachmentDescription> describeImages(UUID chatId,
+                                                           UUID userId,
+                                                           Set<UUID> imageIds,
+                                                           ImageHandling imageHandling) {
+        if (imageHandling == ImageHandling.REFERENCE_ONLY) {
+            imageDescriptionService.notNeeded(chatId, imageIds);
+
+            return List.of();
+        }
+
+        return imageDescriptionService.describe(chatId, userId, imageIds);
     }
 
     /**

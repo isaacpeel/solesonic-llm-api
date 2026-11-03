@@ -40,7 +40,7 @@ import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlu
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.service.prompt.PromptService.AGENT_NAME;
 import static com.solesonic.service.prompt.PromptService.USER_MESSAGE;
-import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
+import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 /**
  * Dispatches a resolved slash command to the one of four routes that handles it.

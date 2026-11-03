@@ -499,6 +499,7 @@ When `described` is `false` on an image, `reason` is one of a closed set:
 | `IMAGE_TOO_LARGE` | The image exceeds `solesonic.llm.vision.max-image-bytes` |
 | `IMAGE_UNREADABLE` | The vision model returned nothing usable, or the attachment could not be loaded |
 | `EXCEEDED_IMAGE_LIMIT` | More images were attached to one message than the vision pass describes |
+| `NOT_NEEDED` | Not a failure. The send took a tool route (`/generate_image` or an MCP tool command), which uses the image itself rather than a description, so no vision call was made. Render it as a neutral chip, not an error. It is never persisted, so the image stays undescribed and a later turn can still describe it |
 
 `reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
 `SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment

@@ -15,9 +15,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
+import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.DESCRIBE;
+import static com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling.REFERENCE_ONLY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -61,7 +64,7 @@ class AttachmentContextResolverTest {
     void resolve_withNoAttachments_rendersNoContext() {
         partitionInto(Set.of(), Set.of());
 
-        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of());
+        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of(), DESCRIBE);
 
         assertThat(resolution.imageDescriptions()).isEmpty();
         assertThat(resolution.attachmentContext()).isNull();
@@ -79,11 +82,38 @@ class AttachmentContextResolverTest {
 
         partitionInto(Set.of(imageId), Set.of(documentId));
 
-        attachmentContextResolver.resolve(chatId, userId, Set.of(imageId, documentId));
+        attachmentContextResolver.resolve(chatId, userId, Set.of(imageId, documentId), DESCRIBE);
 
         verify(chatAttachmentService).partition(userId, Set.of(imageId, documentId));
         verify(imageDescriptionService).describe(chatId, userId, Set.of(imageId));
+        verify(imageDescriptionService, never()).notNeeded(any(), any());
         verify(chatDocumentIngestionService).ingest(chatId, userId, Set.of(documentId));
+    }
+
+    /**
+     * A tool route sends the images themselves, so describing them would be a vision call nobody
+     * reads. The ids still come back for the image tool, every image is still signalled, and
+     * documents are indexed as before.
+     */
+    @Test
+    void resolve_referenceOnly_keepsTheImageIdsWithoutDescribingThem() {
+        UUID imageId = UUID.randomUUID();
+        UUID documentId = UUID.randomUUID();
+
+        partitionInto(Set.of(imageId), Set.of(documentId));
+
+        when(chatDocumentIngestionService.ingest(chatId, userId, Set.of(documentId)))
+                .thenReturn(List.of("quarterly-report.pdf"));
+
+        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId,
+                Set.of(imageId, documentId), REFERENCE_ONLY);
+
+        verify(imageDescriptionService, never()).describe(any(), any(), any());
+        verify(imageDescriptionService).notNeeded(chatId, Set.of(imageId));
+
+        assertThat(resolution.imageIds()).containsExactly(imageId);
+        assertThat(resolution.imageDescriptions()).isEmpty();
+        assertThat(resolution.attachmentContext()).contains("quarterly-report.pdf");
     }
 
     @Test
@@ -94,7 +124,7 @@ class AttachmentContextResolverTest {
         when(imageDescriptionService.describe(chatId, userId, Set.of(imageId)))
                 .thenReturn(List.of(screenshotDescription()));
 
-        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of(imageId));
+        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of(imageId), DESCRIBE);
 
         assertThat(resolution.imageDescriptions()).hasSize(1);
         assertThat(resolution.attachmentContext())
@@ -114,7 +144,7 @@ class AttachmentContextResolverTest {
         when(chatDocumentIngestionService.ingest(chatId, userId, Set.of(documentId)))
                 .thenReturn(List.of("quarterly-report.pdf"));
 
-        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of(documentId));
+        AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId, Set.of(documentId), DESCRIBE);
 
         assertThat(resolution.imageDescriptions()).isEmpty();
         assertThat(resolution.attachmentContext()).contains("quarterly-report.pdf");
@@ -137,7 +167,7 @@ class AttachmentContextResolverTest {
                 .thenReturn(List.of("quarterly-report.pdf"));
 
         AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId,
-                Set.of(imageId, documentId));
+                Set.of(imageId, documentId), DESCRIBE);
 
         assertThat(resolution.attachmentContext())
                 .containsSubsequence("quarterly-report.pdf", "screenshot.png");
@@ -155,7 +185,7 @@ class AttachmentContextResolverTest {
         partitionInto(Set.of(imageId), Set.of(documentId));
 
         AttachmentResolution resolution = attachmentContextResolver.resolve(chatId, userId,
-                Set.of(imageId, documentId));
+                Set.of(imageId, documentId), DESCRIBE);
 
         assertThat(resolution.attachmentContext()).isNull();
     }

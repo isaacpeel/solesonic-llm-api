@@ -35,6 +35,7 @@ import java.util.stream.Collectors;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.NOT_NEEDED;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_TIMEOUT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNAVAILABLE;
 import static com.solesonic.service.vision.ImageDescriptionService.MAX_IMAGES_PER_MESSAGE;
@@ -441,5 +442,33 @@ class ImageDescriptionServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(describedEvents(1).get(attachmentId).reason()).isEqualTo(IMAGE_UNREADABLE);
+    }
+
+    /**
+     * A route that sends the image itself still owes the client one event per id, but reads nothing,
+     * calls no model and records no failure, so a later turn can still describe the image.
+     */
+    @Test
+    void notNeededSignalsEachIdWithoutReadingOrDescribingIt() {
+        UUID firstAttachmentId = UUID.randomUUID();
+        UUID secondAttachmentId = UUID.randomUUID();
+
+        imageDescriptionService.notNeeded(chatId, Set.of(firstAttachmentId, secondAttachmentId));
+
+        Map<UUID, ChatAttachmentEvent> events = describedEvents(2);
+
+        assertThat(events.values()).allSatisfy(chatAttachmentEvent -> {
+            assertThat(chatAttachmentEvent.described()).isFalse();
+            assertThat(chatAttachmentEvent.reason()).isEqualTo(NOT_NEEDED);
+        });
+
+        verifyNoInteractions(visionChatModel, chatAttachmentService);
+    }
+
+    @Test
+    void notNeededWithNoIdsEmitsNothing() {
+        imageDescriptionService.notNeeded(chatId, Set.of());
+
+        verifyNoInteractions(notificationService, visionChatModel, chatAttachmentService);
     }
 }

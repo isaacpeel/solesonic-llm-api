@@ -5,7 +5,12 @@ import com.solesonic.model.address.Address;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ResponseMetadataCapture;
 import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.model.prompt.AgentSlashCommand;
+import com.solesonic.model.prompt.LocalToolSlashCommand;
+import com.solesonic.model.prompt.ModelSlashCommand;
+import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
@@ -16,6 +21,7 @@ import com.solesonic.service.llm.LlmCredentialScope;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
+import com.solesonic.service.prompt.AttachmentContextResolver.ImageHandling;
 import com.solesonic.service.rag.VectorStoreService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.LocalToolRegistry;
@@ -42,7 +48,13 @@ import java.time.Duration;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
@@ -51,7 +63,7 @@ import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.tools.ImageGenerationTool.GENERATE_IMAGE;
-import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
+import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 /**
  * Where every incoming chat message is routed.
@@ -168,10 +180,16 @@ public class PromptService {
 
         String model = chatModel(chatId);
 
+        Set<String> commands = chatMessage.commands();
+
+        //Ahead of the attachment work: the route decides whether images are described at all.
+        SlashCommand slashCommand = CollectionUtils.isEmpty(commands) ? null : slashCommand(commands);
+        ImageHandling imageHandling = imageHandling(slashCommand);
+
         //Vision and document indexing are blocking calls made on this thread, which is what lets the
         //scope carry the key to them.
         AttachmentResolution attachments = LlmCredentialScope.asUser(llmApiKey,
-                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds()));
+                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.attachmentIds(), imageHandling));
 
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
@@ -180,18 +198,32 @@ public class PromptService {
                 PROGRESS_TOKEN, chatId,
                 REFERENCE_ATTACHMENT_IDS, attachments.imageIds());
 
-        Set<String> commands = chatMessage.commands();
-
-        if (CollectionUtils.isEmpty(commands)) {
+        if (slashCommand == null) {
             return streamWithoutCommand(chatId, userId, chatMessage.chatMessage(), attachments, contextMap, model, llmApiKey);
         }
 
-        SlashCommand slashCommand = slashCommandService.commands(commands).stream()
-                .findFirst()
-                .orElseThrow(IllegalStateException::new);
-
         return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
                 contextMap, model, llmApiKey);
+    }
+
+    private SlashCommand slashCommand(Set<String> commands) {
+        return slashCommandService.commands(commands).stream()
+                .findFirst()
+                .orElseThrow(IllegalStateException::new);
+    }
+
+    /**
+     * Tool routes send the images themselves and are given no image prose.
+     */
+    private static ImageHandling imageHandling(SlashCommand slashCommand) {
+        if (slashCommand == null) {
+            return ImageHandling.DESCRIBE;
+        }
+
+        return switch (slashCommand) {
+            case ToolSlashCommand _, LocalToolSlashCommand _ -> ImageHandling.REFERENCE_ONLY;
+            case PromptSlashCommand _, AgentSlashCommand _, ModelSlashCommand _ -> ImageHandling.DESCRIBE;
+        };
     }
 
     /**
@@ -322,7 +354,7 @@ public class PromptService {
         if (StringUtils.isNotEmpty(attachmentContext)) {
             promptSpec = promptSpec.messages(new UserMessage(attachmentContext));
         }
- 
+
         return capturingContentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture, chatMessageService,
                 liteLlmHeaderRegistry, chatId, since, correlationId);
     }
