@@ -205,6 +205,13 @@
             <scope>test</scope>
         </dependency>
 
+        <!-- @DataJpaTest, for repository tests against a Testcontainers Postgres. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-data-jpa-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-compress</artifactId>

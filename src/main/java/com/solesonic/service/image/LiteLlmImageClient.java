@@ -49,7 +49,9 @@ import static com.solesonic.model.image.ImageGenerationErrorCode.RATE_LIMITED;
  * Generates images through LiteLLM's OpenAI image routes. The only class that knows the SDK's image
  * types.
  * <p>
- * Every call carries the user's own key as a per-request header. Failures leave as one
+ * Every call carries the user's own key as a per-request header, and names the user in OpenAI's
+ * {@code user} field, which LiteLLM passes through to the image service so it can file the image in
+ * that user's archive directory. Failures leave as one
  * {@link ImageGenerationErrorCode}; the upstream detail can name hosts and internal behaviour, so it
  * is logged and never returned.
  */
@@ -90,11 +92,15 @@ public class LiteLlmImageClient {
         this.editModel = editModel;
     }
 
-    public GeneratedImageBytes generate(String prompt, LlmApiKey llmApiKey) {
+    /**
+     * @param user the username, or the user id when there is none
+     */
+    public GeneratedImageBytes generate(String prompt, LlmApiKey llmApiKey, String user) {
         ImageGenerateParams imageGenerateParams = ImageGenerateParams.builder()
                 .model(generationModel)
                 .prompt(prompt)
                 .n(1L)
+                .user(user)
                 .putAdditionalHeader(HttpHeaders.AUTHORIZATION, llmApiKey.bearer())
                 .build();
 
@@ -105,8 +111,10 @@ public class LiteLlmImageClient {
      * Each reference goes as one {@code image[]} file, in order. The service detects each file's type
      * from its bytes, so the one content type and file name the SDK puts on every part only have to be
      * plausible; the first attachment's are used.
+     *
+     * @param user the username, or the user id when there is none
      */
-    public GeneratedImageBytes edit(String prompt, List<ChatAttachment> references, LlmApiKey llmApiKey) {
+    public GeneratedImageBytes edit(String prompt, List<ChatAttachment> references, LlmApiKey llmApiKey, String user) {
         List<InputStream> imageStreams = references.stream()
                 .<InputStream>map(attachment -> new ByteArrayInputStream(attachment.getFileData()))
                 .toList();
@@ -124,6 +132,7 @@ public class LiteLlmImageClient {
                 .model(editModel)
                 .prompt(prompt)
                 .n(1L)
+                .user(user)
                 .putAdditionalHeader(HttpHeaders.AUTHORIZATION, llmApiKey.bearer())
                 .build();
 

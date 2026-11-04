@@ -42,6 +42,7 @@ class LiteLlmImageClientTest {
     private static final String GENERATION_MODEL = "solesonic-image (izzy-bot)";
     private static final String EDIT_MODEL = "solesonic-image-edit (izzy-bot)";
     private static final LlmApiKey LLM_API_KEY = new LlmApiKey("user-key-0001");
+    private static final String USER = "jdoe";
 
     private static final byte[] PNG_BYTES = {(byte) 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
     private static final byte[] JPEG_BYTES = {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF, (byte) 0xE0};
@@ -94,7 +95,7 @@ class LiteLlmImageClientTest {
 
     @Test
     void generate_postsJsonToGenerationsWithTheUsersKeyAndDecodesTheImage() {
-        GeneratedImageBytes generatedImageBytes = liteLlmImageClient.generate("a lighthouse in a storm", LLM_API_KEY);
+        GeneratedImageBytes generatedImageBytes = liteLlmImageClient.generate("a lighthouse in a storm", LLM_API_KEY, USER);
 
         assertThat(requestedPath.get()).isEqualTo("/v1/images/generations");
         assertThat(authorization.get()).isEqualTo("Bearer user-key-0001");
@@ -102,7 +103,8 @@ class LiteLlmImageClientTest {
         assertThat(requestBody.get())
                 .contains("\"model\":\"" + GENERATION_MODEL + "\"")
                 .contains("\"prompt\":\"a lighthouse in a storm\"")
-                .contains("\"n\":1");
+                .contains("\"n\":1")
+                .contains("\"user\":\"jdoe\"");
 
         assertThat(generatedImageBytes.imageData()).isEqualTo(PNG_BYTES);
         assertThat(generatedImageBytes.contentType()).isEqualTo("image/png");
@@ -114,7 +116,7 @@ class LiteLlmImageClientTest {
     @Test
     void edit_postsOneMultipartFilePerReferenceAsImageArray() {
         GeneratedImageBytes generatedImageBytes = liteLlmImageClient.edit("same person, on a beach",
-                List.of(attachment("image/png", PNG_BYTES)), LLM_API_KEY);
+                List.of(attachment("image/png", PNG_BYTES)), LLM_API_KEY, USER);
 
         assertThat(requestedPath.get()).isEqualTo("/v1/images/edits");
         assertThat(authorization.get()).isEqualTo("Bearer user-key-0001");
@@ -125,14 +127,16 @@ class LiteLlmImageClientTest {
                 .contains("name=\"model\"")
                 .contains(EDIT_MODEL)
                 .contains("name=\"prompt\"")
-                .contains("same person, on a beach");
+                .contains("same person, on a beach")
+                .contains("name=\"user\"")
+                .contains("jdoe");
         assertThat(generatedImageBytes.model()).isEqualTo(EDIT_MODEL);
     }
 
     @Test
     void edit_withTwoReferencesSendsBothFilesInOrder() {
         liteLlmImageClient.edit("p", List.of(attachment("image/png", PNG_BYTES), attachment("image/jpeg", JPEG_BYTES)),
-                LLM_API_KEY);
+                LLM_API_KEY, USER);
 
         String body = requestBody.get();
 
@@ -159,7 +163,7 @@ class LiteLlmImageClientTest {
         responseStatus.set(status);
         responseBody.set(body);
 
-        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY))
+        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(expected));
     }
@@ -173,7 +177,7 @@ class LiteLlmImageClientTest {
         responseBody.set("""
                 {"error":{"message":"litellm.APIError: {'error': {'code': 'generation_timeout'}}","type":null,"param":null,"code":"500"}}""");
 
-        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY))
+        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(GENERATION_TIMEOUT));
     }
@@ -185,7 +189,7 @@ class LiteLlmImageClientTest {
                 {"error":{"message":"No usable ComfyUI workflow","type":"server_error","param":null,"code":"no_workflow"}}""");
 
         assertThatThrownBy(() -> liteLlmImageClient.edit("p",
-                List.of(attachment("image/png", PNG_BYTES), attachment("image/png", PNG_BYTES)), LLM_API_KEY))
+                List.of(attachment("image/png", PNG_BYTES), attachment("image/png", PNG_BYTES)), LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException -> {
                     assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE);
                     assertThat(imageGenerationException.getMessage()).contains("No image style accepts");
@@ -202,7 +206,7 @@ class LiteLlmImageClientTest {
                 {"error":{"message":"litellm.BadRequestError: no_workflow","type":null,"param":null,"code":"400"}}""");
 
         assertThatThrownBy(() -> liteLlmImageClient.edit("p",
-                List.of(attachment("image/png", PNG_BYTES), attachment("image/png", PNG_BYTES)), LLM_API_KEY))
+                List.of(attachment("image/png", PNG_BYTES), attachment("image/png", PNG_BYTES)), LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException -> {
                     assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE);
                     assertThat(imageGenerationException.getMessage()).contains("No image style accepts");
@@ -214,7 +218,7 @@ class LiteLlmImageClientTest {
         responseStatus.set(413);
         responseBody.set("{\"error\":{\"message\":\"Request Entity Too Large\",\"type\":null,\"param\":null,\"code\":\"413\"}}");
 
-        assertThatThrownBy(() -> liteLlmImageClient.edit("p", List.of(attachment("image/png", PNG_BYTES)), LLM_API_KEY))
+        assertThatThrownBy(() -> liteLlmImageClient.edit("p", List.of(attachment("image/png", PNG_BYTES)), LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(INVALID_REFERENCE_IMAGE));
     }
@@ -228,7 +232,7 @@ class LiteLlmImageClientTest {
         responseBody.set("""
                 {"error":{"message":"comfyui at 10.0.0.7:8188 exploded","type":"server_error","param":null,"code":"generation_failed"}}""");
 
-        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY))
+        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getMessage()).doesNotContain("10.0.0.7"));
     }
@@ -237,7 +241,7 @@ class LiteLlmImageClientTest {
     void generate_aResponseWithoutAnImageIsTheBackendsFailure() {
         responseBody.set("{\"created\":1761000000,\"data\":[]}");
 
-        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY))
+        assertThatThrownBy(() -> liteLlmImageClient.generate("p", LLM_API_KEY, USER))
                 .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                         assertThat(imageGenerationException.getErrorCode()).isEqualTo(BACKEND_UNAVAILABLE));
     }
@@ -246,7 +250,7 @@ class LiteLlmImageClientTest {
     void generate_withoutASizeStillReturnsTheImage() {
         responseBody.set("{\"created\":1761000000,\"data\":[{\"b64_json\":\"" + Base64.getEncoder().encodeToString(PNG_BYTES) + "\"}]}");
 
-        GeneratedImageBytes generatedImageBytes = liteLlmImageClient.generate("p", LLM_API_KEY);
+        GeneratedImageBytes generatedImageBytes = liteLlmImageClient.generate("p", LLM_API_KEY, USER);
 
         assertThat(generatedImageBytes.imageData()).isEqualTo(PNG_BYTES);
         assertThat(generatedImageBytes.width()).isNull();
@@ -266,7 +270,7 @@ class LiteLlmImageClientTest {
         try {
             LiteLlmImageClient unreachable = new LiteLlmImageClient(unreachableClient, GENERATION_MODEL, EDIT_MODEL);
 
-            assertThatThrownBy(() -> unreachable.generate("p", LLM_API_KEY))
+            assertThatThrownBy(() -> unreachable.generate("p", LLM_API_KEY, USER))
                     .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                             assertThat(imageGenerationException.getErrorCode()).isEqualTo(BACKEND_UNAVAILABLE));
         } finally {
@@ -284,7 +288,7 @@ class LiteLlmImageClientTest {
         try {
             LiteLlmImageClient impatient = new LiteLlmImageClient(impatientClient, GENERATION_MODEL, EDIT_MODEL);
 
-            assertThatThrownBy(() -> impatient.generate("p", LLM_API_KEY))
+            assertThatThrownBy(() -> impatient.generate("p", LLM_API_KEY, USER))
                     .isInstanceOfSatisfying(ImageGenerationException.class, imageGenerationException ->
                             assertThat(imageGenerationException.getErrorCode()).isEqualTo(GENERATION_TIMEOUT));
         } finally {

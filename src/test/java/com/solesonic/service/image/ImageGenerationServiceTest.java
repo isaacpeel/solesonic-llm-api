@@ -10,6 +10,7 @@ import com.solesonic.model.image.ImageGenerationMetadata;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.llm.UserLlmKeyService;
+import com.solesonic.service.user.UserProfileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,6 +24,7 @@ import reactor.test.StepVerifier;
 import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -65,6 +67,9 @@ class ImageGenerationServiceTest {
     @Mock
     private UserLlmKeyService userLlmKeyService;
 
+    @Mock
+    private UserProfileService userProfileService;
+
     private ImageGenerationService imageGenerationService;
     private UUID userId;
 
@@ -75,8 +80,8 @@ class ImageGenerationServiceTest {
         userId = UUID.randomUUID();
 
         when(userLlmKeyService.requireKey(userId)).thenReturn(LLM_API_KEY);
-        when(liteLlmImageClient.generate(anyString(), any())).thenReturn(bytes("solesonic-image (izzy-bot)"));
-        when(liteLlmImageClient.edit(anyString(), anyList(), any())).thenReturn(bytes("solesonic-image-edit (izzy-bot)"));
+        when(liteLlmImageClient.generate(anyString(), any(), any())).thenReturn(bytes("solesonic-image (izzy-bot)"));
+        when(liteLlmImageClient.edit(anyString(), anyList(), any(), any())).thenReturn(bytes("solesonic-image-edit (izzy-bot)"));
         when(generatedImageService.store(any(), any(), any(), any(), any(), any(), any())).thenReturn(summary());
     }
 
@@ -84,10 +89,28 @@ class ImageGenerationServiceTest {
     void generate_withoutReferencesCallsGenerationsOnTheUsersKey() {
         imageGenerationService.generate("  a lighthouse  ", List.of(), userId);
 
-        verify(liteLlmImageClient).generate("a lighthouse", LLM_API_KEY);
-        verify(liteLlmImageClient, never()).edit(anyString(), anyList(), any());
+        verify(liteLlmImageClient).generate("a lighthouse", LLM_API_KEY, userId.toString());
+        verify(liteLlmImageClient, never()).edit(anyString(), anyList(), any(), any());
         verify(generatedImageService).store(eq(userId), isNull(), eq("a lighthouse"), eq(PNG_BYTES), eq("image/png"),
                 any(), eq(List.of()));
+    }
+
+    @Test
+    void generate_namesTheUserByUsernameForTheImageArchive() {
+        when(userProfileService.username(userId)).thenReturn(Optional.of("jdoe"));
+
+        imageGenerationService.generate("a lighthouse", List.of(), userId);
+
+        verify(liteLlmImageClient).generate("a lighthouse", LLM_API_KEY, "jdoe");
+    }
+
+    @Test
+    void generate_namesTheUserByIdWhenThereIsNoUsername() {
+        when(userProfileService.username(userId)).thenReturn(Optional.of(" "));
+
+        imageGenerationService.generate("a lighthouse", List.of(), userId);
+
+        verify(liteLlmImageClient).generate("a lighthouse", LLM_API_KEY, userId.toString());
     }
 
     @Test
@@ -98,7 +121,7 @@ class ImageGenerationServiceTest {
 
         imageGenerationService.generate("put us on a beach", List.of(first.getId(), second.getId()), userId);
 
-        verify(liteLlmImageClient).edit("put us on a beach", List.of(first, second), LLM_API_KEY);
+        verify(liteLlmImageClient).edit("put us on a beach", List.of(first, second), LLM_API_KEY, userId.toString());
         verify(generatedImageService).store(eq(userId), isNull(), eq("put us on a beach"), any(), any(), any(),
                 eq(List.of(first.getId(), second.getId())));
     }
@@ -173,7 +196,7 @@ class ImageGenerationServiceTest {
 
         imageGenerationService.generate("p", sixteen.stream().map(ChatAttachment::getId).toList(), userId);
 
-        verify(liteLlmImageClient).edit("p", sixteen, LLM_API_KEY);
+        verify(liteLlmImageClient).edit("p", sixteen, LLM_API_KEY, userId.toString());
     }
 
     @Test
@@ -182,7 +205,7 @@ class ImageGenerationServiceTest {
         CountDownLatch inFlight = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
 
-        when(liteLlmImageClient.generate(eq("first"), any())).thenAnswer(_ -> {
+        when(liteLlmImageClient.generate(eq("first"), any(), any())).thenAnswer(_ -> {
             inFlight.countDown();
             assertThat(release.await(5, TimeUnit.SECONDS)).isTrue();
 
@@ -205,7 +228,7 @@ class ImageGenerationServiceTest {
 
     @Test
     void generate_releasesItsSlotWhenTheCallFails() {
-        when(liteLlmImageClient.generate(eq("fails"), any()))
+        when(liteLlmImageClient.generate(eq("fails"), any(), any()))
                 .thenThrow(new ImageGenerationException(INVALID_PROMPT, "no"));
 
         assertThatThrownBy(() -> imageGenerationService.generate("fails", List.of(), userId))
@@ -213,7 +236,7 @@ class ImageGenerationServiceTest {
 
         imageGenerationService.generate("succeeds", List.of(), userId);
 
-        verify(liteLlmImageClient).generate("succeeds", LLM_API_KEY);
+        verify(liteLlmImageClient).generate("succeeds", LLM_API_KEY, userId.toString());
     }
 
     /**
@@ -227,7 +250,7 @@ class ImageGenerationServiceTest {
 
         imageGenerationService.generateInChat("p", List.of(UUID.randomUUID(), usable.getId()), userId, chatId);
 
-        verify(liteLlmImageClient).edit("p", List.of(usable), LLM_API_KEY);
+        verify(liteLlmImageClient).edit("p", List.of(usable), LLM_API_KEY, userId.toString());
         verify(generatedImageService).store(eq(userId), eq(chatId), eq("p"), any(), any(), any(), eq(List.of(usable.getId())));
     }
 
@@ -237,7 +260,7 @@ class ImageGenerationServiceTest {
 
         imageGenerationService.generateInChat("p", List.of(UUID.randomUUID()), userId, UUID.randomUUID());
 
-        verify(liteLlmImageClient).generate("p", LLM_API_KEY);
+        verify(liteLlmImageClient).generate("p", LLM_API_KEY, userId.toString());
     }
 
     @Test
@@ -248,7 +271,7 @@ class ImageGenerationServiceTest {
         imageGenerationService.generateInChat("p", seventeen.stream().map(ChatAttachment::getId).toList(), userId,
                 UUID.randomUUID());
 
-        verify(liteLlmImageClient).edit("p", seventeen.subList(0, MAX_REFERENCE_IMAGES), LLM_API_KEY);
+        verify(liteLlmImageClient).edit("p", seventeen.subList(0, MAX_REFERENCE_IMAGES), LLM_API_KEY, userId.toString());
     }
 
     /**
@@ -276,7 +299,7 @@ class ImageGenerationServiceTest {
 
     @Test
     void stream_reportsAFailureAsAnErrorFrame() {
-        when(liteLlmImageClient.generate(anyString(), any())).thenThrow(new ImageGenerationException(RATE_LIMITED, "busy"));
+        when(liteLlmImageClient.generate(anyString(), any(), any())).thenThrow(new ImageGenerationException(RATE_LIMITED, "busy"));
 
         StepVerifier.create(imageGenerationService.stream("p", List.of(), userId))
                 .assertNext(event -> assertThat(event).isInstanceOfSatisfying(ImageGenerationFailure.class, failure ->
@@ -293,7 +316,7 @@ class ImageGenerationServiceTest {
         ImageGenerationService impatient = service(1, Duration.ofMillis(10), Duration.ofMillis(10));
         CountDownLatch release = new CountDownLatch(1);
 
-        when(liteLlmImageClient.generate(anyString(), any())).thenAnswer(_ -> {
+        when(liteLlmImageClient.generate(anyString(), any(), any())).thenAnswer(_ -> {
             assertThat(release.await(5, TimeUnit.SECONDS)).isTrue();
 
             return bytes("m");
@@ -313,7 +336,7 @@ class ImageGenerationServiceTest {
 
     private ImageGenerationService service(int maxConcurrent, Duration admissionTimeout, Duration readTimeout) {
         return new ImageGenerationService(liteLlmImageClient, generatedImageService,
-                new ReferenceImageResolver(chatAttachmentService), userLlmKeyService,
+                new ReferenceImageResolver(chatAttachmentService), userLlmKeyService, userProfileService,
                 maxConcurrent, admissionTimeout, readTimeout, MAX_REFERENCE_IMAGES);
     }
 

@@ -60,8 +60,23 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
      * already narrowed to this exact conversation by its filter, which is a much stronger relevance
      * signal than "somewhere in the global corpus," so it can tolerate a looser bar than USER or
      * GLOBAL, where the threshold is doing real precision work over a much larger pool.
+     * <p>
+     * {@code floorTopK} is the conversation tier's floor: when its normal search finds nothing, it is
+     * searched once more with no threshold for up to this many chunks (within the remaining budget).
+     * A vague follow-up such as "summarize this" rarely clears any threshold against the document it
+     * is about. Zero turns it off, which is every tier's default.
      */
-    public record ScopedTier(DocumentPrincipal principal, Filter.Expression filterExpression, Double similarityThreshold) {
+    public record ScopedTier(DocumentPrincipal principal,
+                             Filter.Expression filterExpression,
+                             Double similarityThreshold,
+                             int floorTopK) {
+
+        /**
+         * A tier with no floor.
+         */
+        public ScopedTier(DocumentPrincipal principal, Filter.Expression filterExpression, Double similarityThreshold) {
+            this(principal, filterExpression, similarityThreshold, 0);
+        }
     }
 
     public ScopedDocumentRetriever(VectorStore vectorStore,
@@ -91,15 +106,17 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
                 break;
             }
 
-            List<Document> tierDocuments = VectorStoreDocumentRetriever.builder()
-                    .vectorStore(vectorStore)
-                    .similarityThreshold(scopedTier.similarityThreshold())
-                    .topK(remaining)
-                    .filterExpression(scopedTier.filterExpression())
-                    .build()
-                    .retrieve(query);
+            List<Document> tierDocuments = search(query, scopedTier, scopedTier.similarityThreshold(), remaining);
 
             log.info("Retrieved {} document(s) for {}", tierDocuments.size(), scopedTier.principal().key());
+
+            if (tierDocuments.isEmpty() && scopedTier.floorTopK() > 0) {
+                // The filter is unchanged, so this can only ever surface this tier's own chunks.
+                tierDocuments = search(query, scopedTier, 0.0, Math.min(scopedTier.floorTopK(), remaining));
+
+                log.info("Floor retrieved {} document(s) for {} below its similarity threshold",
+                        tierDocuments.size(), scopedTier.principal().key());
+            }
 
             for (Document tierDocument : tierDocuments) {
                 if (seen.add(tierDocument.getId())) {
@@ -109,5 +126,15 @@ public class ScopedDocumentRetriever implements DocumentRetriever {
         }
 
         return retrieved;
+    }
+
+    private List<Document> search(Query query, ScopedTier scopedTier, double similarityThreshold, int topK) {
+        return VectorStoreDocumentRetriever.builder()
+                .vectorStore(vectorStore)
+                .similarityThreshold(similarityThreshold)
+                .topK(topK)
+                .filterExpression(scopedTier.filterExpression())
+                .build()
+                .retrieve(query);
     }
 }

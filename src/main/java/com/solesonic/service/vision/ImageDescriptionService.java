@@ -180,11 +180,22 @@ public class ImageDescriptionService {
      * Closes every id with a {@link VisionFailureReason#NOT_NEEDED} event, for a route that sends the
      * images themselves and never reads a description. Reads no row, calls no model and records
      * nothing, so the image is still undescribed for any later turn that does need it.
+     * <p>
+     * Emits one progress frame first, because a client that sent images waits for a progress frame
+     * to know they were taken up; without it the turn looks as if no image was read.
      */
     public void notNeeded(UUID chatId, Set<UUID> attachmentIds) {
         if (CollectionUtils.isEmpty(attachmentIds)) {
             return;
         }
+
+        int imageCount = attachmentIds.size();
+
+        notificationService.emitProgress(chatId, new NotificationEventMessage(
+                chatId.toString(),
+                "Using " + imageCount + " attached " + (imageCount == 1 ? "image" : "images") + " as a reference",
+                null,
+                null));
 
         signals(chatId, attachmentIds).signalRemaining(NOT_NEEDED);
     }

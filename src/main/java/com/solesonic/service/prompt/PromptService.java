@@ -15,6 +15,7 @@ import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.etl.ChatDocumentHealer;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.llm.LlmCredentialScope;
@@ -119,6 +120,7 @@ public class PromptService {
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
     private final UserLlmKeyService userLlmKeyService;
     private final LocalToolRegistry localToolRegistry;
+    private final ChatDocumentHealer chatDocumentHealer;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -145,6 +147,7 @@ public class PromptService {
             LiteLlmHeaderRegistry liteLlmHeaderRegistry,
             UserLlmKeyService userLlmKeyService,
             LocalToolRegistry localToolRegistry,
+            ChatDocumentHealer chatDocumentHealer,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
@@ -162,6 +165,7 @@ public class PromptService {
         this.liteLlmHeaderRegistry = liteLlmHeaderRegistry;
         this.userLlmKeyService = userLlmKeyService;
         this.localToolRegistry = localToolRegistry;
+        this.chatDocumentHealer = chatDocumentHealer;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
     }
@@ -198,6 +202,12 @@ public class PromptService {
                 attachments.imageDescriptions().size(),
                 attachments.attachmentContext() == null ? 0 : attachments.attachmentContext().length());
 
+        //After the send path has indexed this turn's documents, so the background run never contends
+        //with it for their lease. Only the routes that retrieve: the others would not use the result.
+        if (retrieves(slashCommand, stickyAgent.isPresent())) {
+            chatDocumentHealer.schedule(chatId, userId, chatMessage.attachmentIds());
+        }
+
         Map<String, Object> contextMap = Map.of(
                 USER_TOKEN, authToken,
                 USER_ID, userId,
@@ -229,6 +239,18 @@ public class PromptService {
         return slashCommandService.commands(commands).stream()
                 .findFirst()
                 .orElseThrow(IllegalStateException::new);
+    }
+
+    /**
+     * The routes that build the retrieval advisor: the default prompt and MCP prompt commands. Tool,
+     * agent and sticky-agent routes do not retrieve (see {@code VectorStoreService}).
+     */
+    private static boolean retrieves(SlashCommand slashCommand, boolean stickyAgentActive) {
+        if (slashCommand == null) {
+            return !stickyAgentActive;
+        }
+
+        return slashCommand instanceof PromptSlashCommand;
     }
 
     private static String route(SlashCommand slashCommand, boolean stickyAgentActive) {

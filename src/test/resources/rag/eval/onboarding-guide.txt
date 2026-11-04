@@ -1,0 +1,7 @@
+Laptop setup. New engineers receive a laptop on their first morning; disk encryption must be enabled before the device joins the corporate network.
+
+Access requests. Repository access is requested through the identity portal and approved by the team lead; production database access requires a second approval from the security team.
+
+Code review. Every change needs one approving review before merge, and changes touching billing need two reviewers including someone from the payments team.
+
+On-call rotation. Engineers join the on-call rotation after their sixth week, shadowing an experienced engineer for one full rotation before taking pages alone.

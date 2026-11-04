@@ -704,7 +704,8 @@ class RedisStreamingChatServiceTest {
         runTurn();
 
         verify(activeStreamTracker).put(USER_ID, CHAT_ID);
-        verify(activeStreamTracker).remove(USER_ID, CHAT_ID);
+        // Untracking runs in the stream's cleanup, which can finish just after runTurn returns.
+        verify(activeStreamTracker, timeout(1000)).remove(USER_ID, CHAT_ID);
     }
 
     @Test

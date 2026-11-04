@@ -9,6 +9,7 @@ import com.solesonic.model.image.ImageGenerationFailure;
 import com.solesonic.model.image.ImageGenerationMetadata;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.llm.UserLlmKeyService;
+import com.solesonic.service.user.UserProfileService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +59,7 @@ public class ImageGenerationService {
     private final GeneratedImageService generatedImageService;
     private final ReferenceImageResolver referenceImageResolver;
     private final UserLlmKeyService userLlmKeyService;
+    private final UserProfileService userProfileService;
     private final Semaphore inFlightGenerations;
     private final Duration admissionTimeout;
     private final Duration streamDeadline;
@@ -67,6 +69,7 @@ public class ImageGenerationService {
                                   GeneratedImageService generatedImageService,
                                   ReferenceImageResolver referenceImageResolver,
                                   UserLlmKeyService userLlmKeyService,
+                                  UserProfileService userProfileService,
                                   @Value("${solesonic.llm.image.max-concurrent}") int maxConcurrent,
                                   @Value("${solesonic.llm.image.admission-timeout}") Duration admissionTimeout,
                                   @Value("${solesonic.llm.image.read-timeout}") Duration readTimeout,
@@ -75,6 +78,7 @@ public class ImageGenerationService {
         this.generatedImageService = generatedImageService;
         this.referenceImageResolver = referenceImageResolver;
         this.userLlmKeyService = userLlmKeyService;
+        this.userProfileService = userProfileService;
         this.inFlightGenerations = new Semaphore(maxConcurrent, true);
         this.admissionTimeout = admissionTimeout;
         this.streamDeadline = admissionTimeout.plus(readTimeout).plus(DEADLINE_MARGIN);
@@ -164,9 +168,11 @@ public class ImageGenerationService {
 
             log.info("Generating an image for user {} with {} reference image(s)", userId, references.size());
 
+            String archiveUser = archiveUser(userId);
+
             GeneratedImageBytes generatedImageBytes = references.isEmpty()
-                    ? liteLlmImageClient.generate(prompt, llmApiKey)
-                    : liteLlmImageClient.edit(prompt, references, llmApiKey);
+                    ? liteLlmImageClient.generate(prompt, llmApiKey, archiveUser)
+                    : liteLlmImageClient.edit(prompt, references, llmApiKey, archiveUser);
 
             double elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000.0;
 
@@ -253,5 +259,15 @@ public class ImageGenerationService {
 
             throw new ImageGenerationException(RATE_LIMITED, RATE_LIMITED.userMessage());
         }
+    }
+
+    /**
+     * Who the image service files the image under in its audit archive: the username recorded from
+     * the user's token, or the user id when no profile or username has been recorded.
+     */
+    private String archiveUser(UUID userId) {
+        return userProfileService.username(userId)
+                .filter(username -> !username.isBlank())
+                .orElse(userId.toString());
     }
 }

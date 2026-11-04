@@ -1,0 +1,5 @@
+Version 4.2 adds a parametric equalizer with five bands and a bypass switch.
+
+Version 4.2 fixes a firmware crash when the input gain knob was turned during startup.
+
+Version 4.2 changes the default standby timeout from fifteen minutes to forty five minutes.

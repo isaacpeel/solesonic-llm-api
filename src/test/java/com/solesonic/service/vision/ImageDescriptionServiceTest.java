@@ -44,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -463,6 +464,18 @@ class ImageDescriptionServiceTest {
         });
 
         verifyNoInteractions(visionChatModel, chatAttachmentService);
+    }
+
+    /**
+     * The client clears its "reading" placeholder only on a progress frame, so a skipped describe
+     * still sends one.
+     */
+    @Test
+    void notNeededEmitsOneProgressFrame() {
+        imageDescriptionService.notNeeded(chatId, Set.of(UUID.randomUUID()));
+
+        verify(notificationService).emitProgress(eq(chatId), argThat((NotificationEventMessage notificationEventMessage) ->
+                notificationEventMessage.message().equals("Using 1 attached image as a reference")));
     }
 
     @Test

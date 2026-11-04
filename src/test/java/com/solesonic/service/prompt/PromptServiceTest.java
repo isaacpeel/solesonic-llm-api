@@ -12,6 +12,7 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.etl.ChatDocumentHealer;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.llm.LlmCredentialScope;
@@ -130,6 +131,9 @@ class PromptServiceTest {
     @Mock
     private ToolCallback imageToolCallback;
 
+    @Mock
+    private ChatDocumentHealer chatDocumentHealer;
+
     private UUID chatId;
     private UUID userId;
 
@@ -156,6 +160,7 @@ class PromptServiceTest {
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 userLlmKeyService,
                 localToolRegistry,
+                chatDocumentHealer,
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
@@ -207,6 +212,57 @@ class PromptServiceTest {
 
         assertThat(system.getValue()).contains("- Don't use bullet lists");
         assertThat(user.getValue()).isEqualTo("hello");
+    }
+
+    /**
+     * The default route retrieves, so it schedules a background heal of the chat's documents —
+     * excluding the ids this send just handled.
+     */
+    @Test
+    void stream_onTheDefaultRoute_schedulesHealingExcludingThisSendsAttachments() {
+        UUID documentId = UUID.randomUUID();
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(promptService.stream(chatId, userId,
+                        new ChatRequest("hello", Set.of(), Set.of(documentId), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        verify(chatDocumentHealer).schedule(chatId, userId, Set.of(documentId));
+    }
+
+    /**
+     * Tool routes do not retrieve, so healing for them would spend embedding calls nobody uses.
+     */
+    @Test
+    void stream_withAToolCommand_doesNotScheduleHealing() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        lenient().when(mcpTool.name()).thenReturn("search");
+        lenient().when(mcpTool.description()).thenReturn("Search tool");
+        ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
+
+        when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+                any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+                .expectNext("done")
+                .verifyComplete();
+
+        verifyNoInteractions(chatDocumentHealer);
+    }
+
+    @Test
+    void stream_toAStickyAgent_doesNotScheduleHealing() {
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("research-agent")));
+        when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString())).thenReturn(Flux.just("agent reply"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("agent reply")
+                .verifyComplete();
+
+        verifyNoInteractions(chatDocumentHealer);
     }
 
     /**

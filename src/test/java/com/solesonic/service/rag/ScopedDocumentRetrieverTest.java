@@ -86,6 +86,96 @@ class ScopedDocumentRetrieverTest {
         return String.valueOf(((Filter.Value) right).value());
     }
 
+    private ScopedDocumentRetriever retrieverWithChatFloor(int floorTopK, int topK) {
+        ScopedDocumentRetriever.ScopedTier chatTier = new ScopedDocumentRetriever.ScopedTier(CHAT_PRINCIPAL,
+                filterExpressionBuilder.eq("entitlements", CHAT_PRINCIPAL.key()).build(),
+                CHAT_THRESHOLD, floorTopK);
+
+        return new ScopedDocumentRetriever(vectorStore, topK,
+                List.of(chatTier, tier(USER_PRINCIPAL, USER_THRESHOLD), tier(GLOBAL_PRINCIPAL, GLOBAL_THRESHOLD)),
+                LLM_API_KEY);
+    }
+
+    private static Document chunk(String id) {
+        return Document.builder().id(id).text("chunk " + id).build();
+    }
+
+    /**
+     * A vague follow-up ("summarize this") rarely clears the threshold against the document it is
+     * about. When the chat tier finds nothing, the floor searches it once more with no threshold —
+     * still filtered to this chat — so the model at least sees the conversation's own document.
+     */
+    @Test
+    void chatFloorSearchesAgainWithoutAThresholdWhenTheChatTierIsEmpty() {
+        when(vectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of())                                       // chat, normal
+                .thenReturn(List.of(chunk("c1"), chunk("c2"), chunk("c3")))  // chat, floor
+                .thenReturn(List.of())                                       // user
+                .thenReturn(List.of());                                      // global
+
+        List<Document> retrieved = retrieverWithChatFloor(3, TOP_K).retrieve(query);
+
+        assertThat(retrieved).extracting(Document::getId).containsExactly("c1", "c2", "c3");
+
+        List<SearchRequest> searches = capturedSearches();
+
+        assertThat(searches).hasSize(4);
+        assertThat(entitlementOf(searches.get(1))).isEqualTo(CHAT_PRINCIPAL.key());
+        assertThat(searches.get(1).getSimilarityThreshold()).isZero();
+        assertThat(searches.get(1).getTopK()).isEqualTo(3);
+        assertThat(searches.get(2).getTopK()).isEqualTo(TOP_K - 3);
+    }
+
+    @Test
+    void chatFloorDoesNotFireWhenTheChatTierFoundSomething() {
+        when(vectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of(chunk("c1")))
+                .thenReturn(List.of());
+
+        retrieverWithChatFloor(3, TOP_K).retrieve(query);
+
+        assertThat(capturedSearches()).hasSize(3);
+    }
+
+    @Test
+    void chatFloorIsOffAtZero() {
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
+
+        retrieverWithChatFloor(0, TOP_K).retrieve(query);
+
+        assertThat(capturedSearches()).hasSize(3);
+    }
+
+    /**
+     * The floor spends from the same budget as everything else and never exceeds what remains.
+     */
+    @Test
+    void chatFloorNeverExceedsTheBudget() {
+        when(vectorStore.similaritySearch(any(SearchRequest.class)))
+                .thenReturn(List.of())
+                .thenReturn(List.of(chunk("c1"), chunk("c2")));
+
+        List<Document> retrieved = retrieverWithChatFloor(10, 2).retrieve(query);
+
+        assertThat(retrieved).hasSize(2);
+        assertThat(capturedSearches().get(1).getTopK()).isEqualTo(2);
+    }
+
+    /**
+     * The floor relaxes the threshold, never the filter: it can only surface this chat's own chunks.
+     */
+    @Test
+    void chatFloorKeepsTheChatFilter() {
+        when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
+
+        retrieverWithChatFloor(3, TOP_K).retrieve(query);
+
+        List<SearchRequest> searches = capturedSearches();
+
+        assertThat(entitlementOf(searches.get(0))).isEqualTo(CHAT_PRINCIPAL.key());
+        assertThat(entitlementOf(searches.get(1))).isEqualTo(CHAT_PRINCIPAL.key());
+    }
+
     /**
      * The order the tiers are searched in is the order their results are handed downstream, which is
      * half of what precedence means here.

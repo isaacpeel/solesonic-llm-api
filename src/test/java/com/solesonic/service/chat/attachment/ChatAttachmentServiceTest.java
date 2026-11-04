@@ -1,6 +1,7 @@
 package com.solesonic.service.chat.attachment;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
+import com.solesonic.model.chat.attachment.ChatAttachmentIndexState;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
@@ -17,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -247,6 +249,56 @@ class ChatAttachmentServiceTest {
         verify(ingestedDocumentService).deleteByChatAttachmentId(secondAttachmentId);
         verify(vectorStoreService).deleteByChatAttachmentId(secondAttachmentId);
         verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
+    }
+
+    /**
+     * The index lifecycle never shields an attachment from teardown: a detached one and one a worker
+     * is indexing right now are swept exactly like any other. (A heal that loses this race cleans up
+     * after itself — see {@code ChatDocumentIngestionServiceTest}.)
+     */
+    @Test
+    void deleteSweepsDetachedAndMidHealAttachmentsLikeAnyOther() {
+        ChatAttachment detached = attachment("application/pdf");
+        detached.setIndexDetached(true);
+        detached.setChunkCount(4);
+
+        ChatAttachment leased = attachment("application/pdf");
+        leased.setIndexClaimedAt(ZonedDateTime.now());
+
+        for (ChatAttachment document : List.of(detached, leased)) {
+            when(chatAttachmentRepository.findByIdAndUserId(document.getId(), userId))
+                    .thenReturn(Optional.of(document));
+
+            chatAttachmentService.delete(document.getId());
+
+            verify(ingestedDocumentService).deleteByChatAttachmentId(document.getId());
+            verify(vectorStoreService).deleteByChatAttachmentId(document.getId());
+            verify(chatAttachmentRepository).delete(document);
+        }
+    }
+
+    @Test
+    void documentIndexStatesLeavesImagesOut() {
+        UUID chatId = UUID.randomUUID();
+        ChatAttachmentIndexState image = new ChatAttachmentIndexState(UUID.randomUUID(), userId, chatId,
+                "image/png", 10, null, null, false, null, null);
+        ChatAttachmentIndexState document = new ChatAttachmentIndexState(UUID.randomUUID(), userId, chatId,
+                "application/pdf", 10, 3, null, false, null, null);
+
+        when(chatAttachmentRepository.findIndexStatesByChatId(chatId)).thenReturn(List.of(image, document));
+
+        assertThat(chatAttachmentService.documentIndexStates(chatId)).containsExactly(document);
+    }
+
+    @Test
+    void claimIndexingReportsWhetherThisCallerWon() {
+        UUID attachmentId = UUID.randomUUID();
+        ZonedDateTime now = ZonedDateTime.now();
+
+        when(chatAttachmentRepository.claimIndexingNeverAttempted(attachmentId, now, now.minusMinutes(15))).thenReturn(1, 0);
+
+        assertThat(chatAttachmentService.claimIndexing(attachmentId, now, now.minusMinutes(15), null)).isTrue();
+        assertThat(chatAttachmentService.claimIndexing(attachmentId, now, now.minusMinutes(15), null)).isFalse();
     }
 
     @Test

@@ -1,12 +1,13 @@
 package com.solesonic.model.rag;
 
 /**
- * How widely a chunk in the vector store may be retrieved.
+ * How widely a document may be retrieved, as a label for clients.
  * <p>
- * Stored as the {@code scope} key of the pgvector {@code metadata} column and filtered on at query
- * time, so a chunk's reach is a property of the chunk itself rather than of which table it landed
- * in. Serialized by name: the filter expressions in {@link com.solesonic.service.rag.ScopedDocumentRetriever}
- * compare against these constants literally, so renaming one is a data migration.
+ * No longer stored anywhere. Chunks used to carry it as a {@code scope} metadata key, which
+ * {@code V3_27} replaced with the {@code entitlements} array ({@link PrincipalType} is the storage
+ * and filtering vocabulary now). It survives only as {@code IngestedDocumentSummary.scope}, derived
+ * from a document's retrieve grants, so API responses keep their shape. Serialized by name in those
+ * responses, so renaming a constant is an API change.
  */
 public enum RetrievalScope {
     /**

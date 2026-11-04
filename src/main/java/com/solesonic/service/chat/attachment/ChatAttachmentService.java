@@ -2,6 +2,7 @@ package com.solesonic.service.chat.attachment;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentIndexState;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.attachment.ExtractionFailureReason;
 import com.solesonic.model.chat.attachment.VisionFailureReason;
@@ -26,6 +27,7 @@ import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -328,6 +330,88 @@ public class ChatAttachmentService {
 
             chatAttachmentRepository.save(chatAttachment);
         });
+    }
+
+    /**
+     * The index lifecycle of one attachment, without its bytes — read fresh, because the entity a
+     * caller loaded at the start of a turn may already be stale.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ChatAttachmentIndexState> indexState(UUID attachmentId) {
+        return chatAttachmentRepository.findIndexState(attachmentId);
+    }
+
+    /**
+     * The index lifecycle of every document attachment of one conversation, images excluded.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentIndexState> documentIndexStates(UUID chatId) {
+        return chatAttachmentRepository.findIndexStatesByChatId(chatId).stream()
+                .filter(state -> !isImage(state.contentType()))
+                .toList();
+    }
+
+    /**
+     * Every document attachment, in any conversation, that claims to be indexed and has not left its
+     * conversation.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentIndexState> documentsClaimingIndexed() {
+        return chatAttachmentRepository.findClaimingIndexed().stream()
+                .filter(state -> !isImage(state.contentType()))
+                .toList();
+    }
+
+    /**
+     * The whole row, bytes included, for an attachment about to be indexed.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ChatAttachment> forIndexing(UUID attachmentId) {
+        return chatAttachmentRepository.findById(attachmentId);
+    }
+
+    /**
+     * Takes the indexing lease in its own short transaction, so it is visible to every other worker
+     * the moment this returns.
+     *
+     * @param now                 the lease token; release and the final writes match on it
+     * @param staleBefore         a lease taken before this is treated as abandoned and may be taken over
+     * @param observedAttemptedAt the {@code indexAttemptedAt} the caller's decision was based on
+     * @return whether this caller now holds the lease
+     */
+    @Transactional
+    public boolean claimIndexing(UUID attachmentId,
+                                 ZonedDateTime now,
+                                 ZonedDateTime staleBefore,
+                                 ZonedDateTime observedAttemptedAt) {
+        int claimed = observedAttemptedAt == null
+                ? chatAttachmentRepository.claimIndexingNeverAttempted(attachmentId, now, staleBefore)
+                : chatAttachmentRepository.claimIndexing(attachmentId, now, staleBefore, observedAttemptedAt);
+
+        return claimed == 1;
+    }
+
+    /**
+     * Releases the lease if it is still {@code claimedAt}'s; a no-op for a lease already taken over.
+     */
+    @Transactional
+    public void releaseIndexing(UUID attachmentId, ZonedDateTime claimedAt) {
+        chatAttachmentRepository.releaseIndexing(attachmentId, claimedAt);
+    }
+
+    /**
+     * @return false when the lease was taken over meanwhile, in which case nothing was written
+     */
+    @Transactional
+    public boolean saveChunkCountUnderLease(UUID attachmentId, int chunkCount, ZonedDateTime claimedAt) {
+        return chatAttachmentRepository.saveChunkCountUnderLease(attachmentId, chunkCount, claimedAt) == 1;
+    }
+
+    @Transactional
+    public void saveExtractionFailureUnderLease(UUID attachmentId,
+                                                ExtractionFailureReason extractionFailureReason,
+                                                ZonedDateTime claimedAt) {
+        chatAttachmentRepository.saveExtractionFailureUnderLease(attachmentId, extractionFailureReason, claimedAt);
     }
 
     /**

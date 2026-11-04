@@ -8,14 +8,22 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import org.hibernate.annotations.DynamicUpdate;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import java.time.ZonedDateTime;
 import java.util.UUID;
 
+/**
+ * {@link DynamicUpdate} because the index lifecycle columns are written by conditional updates
+ * ({@code ChatAttachmentRepository.claimIndexing}, {@code markIndexDetached}) that race the
+ * load-then-save writes of {@code ChatAttachmentService}. A full-row update would write back the
+ * stale {@code indexDetached} it loaded and silently undo a promotion's tombstone.
+ */
 @SuppressWarnings("unused")
 @Entity
+@DynamicUpdate
 public class ChatAttachment {
     @Id
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
@@ -65,6 +73,28 @@ public class ChatAttachment {
      */
     @Enumerated(EnumType.STRING)
     private ExtractionFailureReason extractionFailureReason;
+
+    /**
+     * The document left the conversation on purpose — promoted into a library, or removed from the
+     * chat while its message was kept — or is legacy state too ambiguous to re-index safely. Such an
+     * attachment still reports its old {@link #chunkCount} but is never re-indexed, because doing so
+     * would duplicate a promoted document or resurrect a removed one. Set only by
+     * {@code IngestedDocumentService.promote} and {@code deleteChatDocument}, and by {@code V3_44}.
+     */
+    private boolean indexDetached;
+
+    /**
+     * A lease: non-null and newer than the stale cutoff means a worker is indexing this attachment
+     * right now, so no other worker may. Taken and released by conditional updates in
+     * {@code ChatAttachmentRepository}, never by loading and saving the entity.
+     */
+    private ZonedDateTime indexClaimedAt;
+
+    /**
+     * When a worker last claimed this attachment. Kept after the lease is released; the healer's
+     * retry cooldown is measured from it.
+     */
+    private ZonedDateTime indexAttemptedAt;
 
     @JdbcTypeCode(SqlTypes.VARBINARY)
     private byte[] fileData;
@@ -159,6 +189,30 @@ public class ChatAttachment {
 
     public void setExtractionFailureReason(ExtractionFailureReason extractionFailureReason) {
         this.extractionFailureReason = extractionFailureReason;
+    }
+
+    public boolean isIndexDetached() {
+        return indexDetached;
+    }
+
+    public void setIndexDetached(boolean indexDetached) {
+        this.indexDetached = indexDetached;
+    }
+
+    public ZonedDateTime getIndexClaimedAt() {
+        return indexClaimedAt;
+    }
+
+    public void setIndexClaimedAt(ZonedDateTime indexClaimedAt) {
+        this.indexClaimedAt = indexClaimedAt;
+    }
+
+    public ZonedDateTime getIndexAttemptedAt() {
+        return indexAttemptedAt;
+    }
+
+    public void setIndexAttemptedAt(ZonedDateTime indexAttemptedAt) {
+        this.indexAttemptedAt = indexAttemptedAt;
     }
 
     public String getContentType() {

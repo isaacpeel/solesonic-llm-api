@@ -459,6 +459,137 @@ class IngestedDocumentServiceTest {
         verify(ingestedDocumentRepository).delete(ingestedDocument);
     }
 
+    /**
+     * Promotion strips {@code CHAT_ATTACHMENT_ID}, after which nothing links the attachment to its
+     * document; only the tombstone stops a later heal from indexing it into the chat a second time.
+     */
+    @Test
+    void promotingTombstonesTheAttachmentItCameFrom() {
+        UUID chatAttachmentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = chatDocument();
+        ingestedDocument.getMetadata().put(IngestedDocument.CHAT_ATTACHMENT_ID, chatAttachmentId.toString());
+
+        when(ingestedDocumentRepository.findManageableBy(documentId, PrincipalType.USER, userId.toString()))
+                .thenReturn(Optional.of(ingestedDocument));
+        when(statusHistoryRepository.findByDocumentId(documentId))
+                .thenReturn(List.of(DocumentStatus.COMPLETED));
+        when(ingestedDocumentContentRepository.existsByIngestedDocumentId(documentId)).thenReturn(true);
+        when(documentEntitlementService.retrievalKeys(documentId)).thenReturn(List.of("user:" + userId));
+        grantedRetrieveTo(DocumentPrincipal.user(userId));
+
+        ingestedDocumentService.promoteToUser(documentId, userId);
+
+        verify(chatAttachmentRepository).markIndexDetached(chatAttachmentId);
+    }
+
+    @Test
+    void promotingToTheSharedCorpusTombstonesTheAttachmentToo() {
+        UUID chatAttachmentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = chatDocument();
+        ingestedDocument.getMetadata().put(IngestedDocument.CHAT_ATTACHMENT_ID, chatAttachmentId.toString());
+
+        when(ingestedDocumentRepository.findManageableBy(documentId, PrincipalType.USER, userId.toString()))
+                .thenReturn(Optional.of(ingestedDocument));
+        when(statusHistoryRepository.findByDocumentId(documentId))
+                .thenReturn(List.of(DocumentStatus.COMPLETED));
+        when(ingestedDocumentRepository.findGlobalByFileName("notes.pdf")).thenReturn(Optional.empty());
+        when(ingestedDocumentContentRepository.existsByIngestedDocumentId(documentId)).thenReturn(true);
+        when(documentEntitlementService.retrievalKeys(documentId)).thenReturn(List.of("global"));
+        grantedRetrieveTo(DocumentPrincipal.global());
+
+        ingestedDocumentService.promoteToGlobal(documentId, userId);
+
+        verify(chatAttachmentRepository).markIndexDetached(chatAttachmentId);
+    }
+
+    /**
+     * A user-scoped document that never came from an attachment has nothing to tombstone.
+     */
+    @Test
+    void promotingADocumentWithNoAttachmentTombstonesNothing() {
+        IngestedDocument ingestedDocument = document();
+
+        when(ingestedDocumentRepository.findManageableBy(documentId, PrincipalType.USER, userId.toString()))
+                .thenReturn(Optional.of(ingestedDocument));
+        when(statusHistoryRepository.findByDocumentId(documentId))
+                .thenReturn(List.of(DocumentStatus.COMPLETED));
+        when(ingestedDocumentRepository.findGlobalByFileName("notes.pdf")).thenReturn(Optional.empty());
+        when(ingestedDocumentContentRepository.existsByIngestedDocumentId(documentId)).thenReturn(true);
+        when(documentEntitlementService.retrievalKeys(documentId)).thenReturn(List.of("global"));
+        grantedRetrieveTo(DocumentPrincipal.global());
+
+        ingestedDocumentService.promoteToGlobal(documentId, userId);
+
+        verify(chatAttachmentRepository, never()).markIndexDetached(any());
+    }
+
+    /**
+     * Removing a document from a conversation keeps the attachment row (its message is history), so
+     * the tombstone is what stops a heal from resurrecting the document the user just removed.
+     */
+    @Test
+    void removingAChatDocumentTombstonesItsAttachment() {
+        UUID chatAttachmentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = chatDocument();
+        ingestedDocument.getMetadata().put(IngestedDocument.CHAT_ATTACHMENT_ID, chatAttachmentId.toString());
+
+        when(ingestedDocumentRepository.findManageableBy(documentId, PrincipalType.USER, userId.toString()))
+                .thenReturn(Optional.of(ingestedDocument));
+        when(vectorStoreService.findByIngestedDocumentId(documentId)).thenReturn(List.of());
+
+        ingestedDocumentService.deleteChatDocument(documentId, userId);
+
+        verify(chatAttachmentRepository).markIndexDetached(chatAttachmentId);
+        verify(ingestedDocumentRepository).delete(ingestedDocument);
+    }
+
+    /**
+     * The shared teardown is also the healer's own pre-clean. Tombstoning there would detach the very
+     * attachment being re-indexed, so it must never mark anything.
+     */
+    @Test
+    void attachmentTeardownDoesNotTombstone() {
+        UUID chatAttachmentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = chatDocument();
+        ingestedDocument.getMetadata().put(IngestedDocument.CHAT_ATTACHMENT_ID, chatAttachmentId.toString());
+
+        when(ingestedDocumentRepository.findByChatAttachmentId(chatAttachmentId.toString()))
+                .thenReturn(List.of(ingestedDocument));
+        when(ingestedDocumentRepository.findByChatId(chatId.toString()))
+                .thenReturn(List.of(ingestedDocument));
+        when(vectorStoreService.findByIngestedDocumentId(documentId)).thenReturn(List.of());
+
+        ingestedDocumentService.deleteByChatAttachmentId(chatAttachmentId);
+        ingestedDocumentService.deleteByChatId(chatId);
+
+        verify(chatAttachmentRepository, never()).markIndexDetached(any());
+    }
+
+    /**
+     * The health check needs each row's latest status, which is not a column.
+     */
+    @Test
+    void findingAnAttachmentsRowsCarriesTheirLatestStatus() {
+        UUID chatAttachmentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = chatDocument();
+
+        when(ingestedDocumentRepository.findByChatAttachmentId(chatAttachmentId.toString()))
+                .thenReturn(List.of(ingestedDocument));
+        when(statusHistoryRepository.findByDocumentId(documentId))
+                .thenReturn(List.of(DocumentStatus.QUEUED, DocumentStatus.COMPLETED));
+
+        List<IngestedDocument> rows = ingestedDocumentService.findByChatAttachmentId(chatAttachmentId);
+
+        assertThat(rows).singleElement()
+                .extracting(IngestedDocument::getDocumentStatus)
+                .isEqualTo(DocumentStatus.QUEUED);
+    }
+
     @Test
     void renamingDoesNotReEmbed() {
         IngestedDocument ingestedDocument = document();
