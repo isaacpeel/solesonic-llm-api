@@ -19,6 +19,9 @@ public class SessionInvite {
 
     private UUID inviteeUserId;
 
+    /**
+     * Null for an invite into a conversation session.
+     */
     private String agentName;
 
     private String openingMessage;

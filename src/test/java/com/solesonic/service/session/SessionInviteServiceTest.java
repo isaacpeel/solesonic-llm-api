@@ -37,7 +37,9 @@ import static com.solesonic.service.session.SessionFixtures.AGENT;
 import static com.solesonic.service.session.SessionFixtures.ALEX;
 import static com.solesonic.service.session.SessionFixtures.NOW;
 import static com.solesonic.service.session.SessionFixtures.SAM;
+import static com.solesonic.service.session.SessionFixtures.SESSION_ID;
 import static com.solesonic.service.session.SessionFixtures.SETTINGS;
+import static com.solesonic.service.session.SessionFixtures.conversationSession;
 import static com.solesonic.service.session.SessionFixtures.participants;
 import static com.solesonic.service.session.SessionFixtures.session;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -79,12 +81,15 @@ class SessionInviteServiceTest {
     @Mock
     private PushNotificationService pushNotificationService;
 
+    @Mock
+    private com.solesonic.service.security.SecurityEventLogger securityEventLogger;
+
     private SessionInviteService sessionInviteService;
 
     @BeforeEach
     void setUp() {
         sessionInviteService = new SessionInviteService(sessionInviteRepository, userProfileRepository, userProfileService,
-                userLlmKeyService, a2aAgentRegistry, sharedSessionService, sessionMessageService, pushNotificationService, SETTINGS,
+                userLlmKeyService, a2aAgentRegistry, sharedSessionService, sessionMessageService, pushNotificationService, securityEventLogger, SETTINGS,
                 Clock.fixed(NOW.toInstant(), NOW.getZone()));
 
         when(userProfileRepository.findActiveUserIdByUsername("sam")).thenReturn(Optional.of(SAM));
@@ -261,5 +266,122 @@ class SessionInviteServiceTest {
         when(sessionInviteRepository.lockForInvitee(INVITE_ID, ALEX)).thenReturn(Optional.empty());
 
         assertRefused(() -> sessionInviteService.accept(INVITE_ID, ALEX), SessionErrorCode.INVITE_NOT_FOUND);
+    }
+
+    private static SessionInvite conversationInvite() {
+        SessionInvite sessionInvite = pendingInvite(null);
+        sessionInvite.setAgentName(null);
+        sessionInvite.setSessionId(SESSION_ID);
+        return sessionInvite;
+    }
+
+    @Test
+    void acceptingAnInviteIntoASessionJoinsItAndNeverStartsOne() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        SharedSession sharedSession = conversationSession(SessionStatus.ACTIVE);
+
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+        when(sharedSessionService.join(SESSION_ID, SAM)).thenReturn(sharedSession);
+        when(sharedSessionService.participants(SESSION_ID)).thenReturn(participants());
+
+        sessionInviteService.accept(INVITE_ID, SAM);
+
+        assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.ACCEPTED);
+        assertThat(sessionInvite.getSessionId()).isEqualTo(SESSION_ID);
+        assertThat(sessionInvite.getDecided()).isEqualTo(NOW);
+        verify(sharedSessionService, never()).create(any());
+        verify(sessionMessageService, never()).openingMessage(any(), any(), any());
+        verify(securityEventLogger).audit(com.solesonic.model.security.SecurityEvent.SESSION_JOINED, SAM, SESSION_ID, 1);
+    }
+
+    /**
+     * Leave and the idle sweep lock the session and then update its invites, so accepting must also take
+     * the session first, or the two wait on each other for good.
+     */
+    @Test
+    void acceptingAnInviteIntoASessionLocksTheSessionBeforeTheInvite() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+        when(sharedSessionService.join(SESSION_ID, SAM)).thenReturn(conversationSession(SessionStatus.ACTIVE));
+        when(sharedSessionService.participants(SESSION_ID)).thenReturn(participants());
+
+        sessionInviteService.accept(INVITE_ID, SAM);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(sharedSessionService, sessionInviteRepository);
+        order.verify(sessionInviteRepository).findSessionIdForInvitee(INVITE_ID, SAM);
+        order.verify(sharedSessionService).lockSession(SESSION_ID);
+        order.verify(sessionInviteRepository).lockForInvitee(INVITE_ID, SAM);
+        order.verify(sharedSessionService).join(SESSION_ID, SAM);
+    }
+
+    @Test
+    void anInviteDecidedWhileTheSessionWasBeingLockedIsRefusedOnTheRecheck() {
+        SessionInvite sessionInvite = conversationInvite();
+        sessionInvite.setStatus(SessionInviteStatus.CANCELLED);
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM), SessionErrorCode.INVITE_NOT_PENDING);
+        verify(sharedSessionService, never()).join(any(), any());
+    }
+
+    @Test
+    void joiningNeverAsksForAnAgent() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        when(a2aAgentRegistry.agent(any())).thenReturn(Optional.empty());
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+        when(sharedSessionService.join(SESSION_ID, SAM)).thenReturn(conversationSession(SessionStatus.ACTIVE));
+        when(sharedSessionService.participants(SESSION_ID)).thenReturn(participants());
+
+        sessionInviteService.accept(INVITE_ID, SAM);
+
+        assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.ACCEPTED);
+        verify(a2aAgentRegistry, never()).agent(any());
+    }
+
+    @Test
+    void anInviteIntoASessionThatIsOverIsRefusedAndStaysPending() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+        when(sharedSessionService.join(SESSION_ID, SAM)).thenThrow(new SessionException(SessionErrorCode.SESSION_CLOSED, "This session is over."));
+
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM), SessionErrorCode.SESSION_CLOSED);
+
+        assertThat(sessionInvite.getStatus()).isEqualTo(SessionInviteStatus.PENDING);
+    }
+
+    @Test
+    void anExpiredInviteIntoASessionCannotBeAcceptedEither() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findSessionIdForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(SESSION_ID));
+        sessionInvite.setExpires(NOW.minusMinutes(1));
+        when(sessionInviteRepository.lockForInvitee(INVITE_ID, SAM)).thenReturn(Optional.of(sessionInvite));
+
+        assertRefused(() -> sessionInviteService.accept(INVITE_ID, SAM), SessionErrorCode.INVITE_NOT_PENDING);
+        verify(sharedSessionService, never()).join(any(), any());
+    }
+
+    @Test
+    void aSessionInvitesSummaryCarriesTheChatsName() {
+        SessionInvite sessionInvite = conversationInvite();
+        when(sessionInviteRepository.findByInviteeUserIdAndStatusOrderByCreatedDesc(SAM, SessionInviteStatus.PENDING))
+                .thenReturn(java.util.List.of(sessionInvite, pendingInvite(null)));
+        when(sharedSessionService.sessionNames(java.util.Set.of(SESSION_ID))).thenReturn(Map.of(SESSION_ID, "Trip plans"));
+
+        java.util.List<com.solesonic.model.session.SessionInviteSummary> summaries = sessionInviteService.incoming(SAM);
+
+        assertThat(summaries.get(0).sessionName()).isEqualTo("Trip plans");
+        assertThat(summaries.get(0).mode()).isEqualTo(com.solesonic.model.session.SessionMode.CONVERSATION);
+        assertThat(summaries.get(1).sessionName()).isNull();
+        assertThat(summaries.get(1).mode()).isEqualTo(com.solesonic.model.session.SessionMode.AGENT);
+    }
+
+    @Test
+    void theLegacyInviteStillNeedsAnAgentName() {
+        assertRefused(() -> sessionInviteService.invite(ALEX, new SessionInviteRequest("sam", null, null)), SessionErrorCode.INVALID_INVITE);
     }
 }

@@ -4,12 +4,14 @@ import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.exception.session.SessionException;
 import com.solesonic.model.push.PushEvent;
+import com.solesonic.model.security.SecurityEvent;
 import com.solesonic.model.session.SessionErrorCode;
 import com.solesonic.model.session.SessionInvite;
 import com.solesonic.model.session.SessionInviteRequest;
 import com.solesonic.model.session.SessionInviteStatus;
 import com.solesonic.model.session.SessionInviteSummary;
 import com.solesonic.model.session.SessionMessageAccepted;
+import com.solesonic.model.session.SessionMode;
 import com.solesonic.model.session.SharedSession;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.model.user.UserProfile;
@@ -17,20 +19,21 @@ import com.solesonic.repository.session.SessionInviteRepository;
 import com.solesonic.repository.user.UserProfileRepository;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.push.PushNotificationService;
+import com.solesonic.service.security.SecurityEventLogger;
 import com.solesonic.service.user.UserProfileService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Clock;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -56,6 +59,7 @@ public class SessionInviteService {
     private final SharedSessionService sharedSessionService;
     private final SessionMessageService sessionMessageService;
     private final PushNotificationService pushNotificationService;
+    private final SecurityEventLogger securityEventLogger;
     private final SharedSessionSettings sharedSessionSettings;
     private final Clock clock;
 
@@ -67,6 +71,7 @@ public class SessionInviteService {
                                 SharedSessionService sharedSessionService,
                                 SessionMessageService sessionMessageService,
                                 PushNotificationService pushNotificationService,
+                                SecurityEventLogger securityEventLogger,
                                 SharedSessionSettings sharedSessionSettings,
                                 Clock clock) {
         this.sessionInviteRepository = sessionInviteRepository;
@@ -77,6 +82,7 @@ public class SessionInviteService {
         this.sharedSessionService = sharedSessionService;
         this.sessionMessageService = sessionMessageService;
         this.pushNotificationService = pushNotificationService;
+        this.securityEventLogger = securityEventLogger;
         this.sharedSessionSettings = sharedSessionSettings;
         this.clock = clock;
     }
@@ -130,7 +136,7 @@ public class SessionInviteService {
         log.info("Shared-session invite {} sent", sessionInvite.getId());
 
         UUID inviteId = sessionInvite.getId();
-        afterCommit(() -> pushNotificationService.push(inviteeUserId, new PushEvent.SessionInvited(inviteId)));
+        AfterCommit.run(() -> pushNotificationService.push(inviteeUserId, new PushEvent.SessionInvited(inviteId)));
 
         return summaries(List.of(sessionInvite)).getFirst();
     }
@@ -152,10 +158,23 @@ public class SessionInviteService {
                 .orElseThrow(SessionInviteService::inviteNotFound);
     }
 
+    /**
+     * An invite into an existing session adds a seat to it; any other invite starts the session, with
+     * the agent it names. Which one is decided by the invite alone, before anything about an agent is
+     * looked at.
+     */
     @Transactional
     public SharedSessionSummary accept(UUID inviteId, UUID inviteeUserId) {
+        // Session before invite, as leave and the idle sweep take them. The invite is only peeked at
+        // here (a scalar, nothing loaded), then locked and checked again once the session is held.
+        sessionInviteRepository.findSessionIdForInvitee(inviteId, inviteeUserId).ifPresent(sharedSessionService::lockSession);
+
         SessionInvite sessionInvite = pending(sessionInviteRepository.lockForInvitee(inviteId, inviteeUserId)
                 .orElseThrow(SessionInviteService::inviteNotFound));
+
+        if (sessionInvite.getSessionId() != null) {
+            return join(sessionInvite, inviteeUserId);
+        }
 
         userLlmKeyService.requireKey(inviteeUserId);
         requireAgent(sessionInvite.getAgentName());
@@ -172,11 +191,25 @@ public class SessionInviteService {
         String openingMessage = sessionInvite.getOpeningMessage();
 
         if (openingMessage != null) {
-            afterCommit(() -> openingMessage(sharedSession, inviteeUserId, openingMessage));
+            AfterCommit.run(() -> openingMessage(sharedSession, inviteeUserId, openingMessage));
         }
 
         return sharedSessionService.summary(sharedSession, sharedSessionService.participants(sharedSession.getId()), inviteeUserId,
                 openingMessage != null);
+    }
+
+    private SharedSessionSummary join(SessionInvite sessionInvite, UUID inviteeUserId) {
+        SharedSession sharedSession = sharedSessionService.join(sessionInvite.getSessionId(), inviteeUserId);
+
+        sessionInvite.setStatus(SessionInviteStatus.ACCEPTED);
+        sessionInvite.setDecided(ZonedDateTime.now(clock));
+        sessionInviteRepository.save(sessionInvite);
+
+        securityEventLogger.audit(SecurityEvent.SESSION_JOINED, inviteeUserId, sharedSession.getId(), 1);
+
+        log.info("Accepted an invite, joining shared session {}", sharedSession.getId());
+
+        return sharedSessionService.summary(sharedSession, sharedSessionService.participants(sharedSession.getId()), inviteeUserId, false);
     }
 
     /**
@@ -244,7 +277,17 @@ public class SessionInviteService {
         }
     }
 
-    private List<SessionInviteSummary> summaries(List<SessionInvite> sessionInvites) {
+    /**
+     * The invites as their parties see them: names resolved in one query, and for an invite into a
+     * session the session's chat name in another.
+     */
+    @Transactional(readOnly = true)
+    public List<SessionInviteSummary> summaries(List<SessionInvite> sessionInvites) {
+        Map<UUID, String> sessionNames = sharedSessionService.sessionNames(sessionInvites.stream()
+                .map(SessionInvite::getSessionId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet()));
+
         Map<UUID, UserProfile> profiles = userProfileService.profiles(sessionInvites.stream()
                 .flatMap(sessionInvite -> Stream.of(sessionInvite.getInviterUserId(), sessionInvite.getInviteeUserId()))
                 .toList());
@@ -261,6 +304,9 @@ public class SessionInviteService {
                             sessionInvite.getInviteeUserId(),
                             invitee == null ? null : invitee.username(),
                             invitee == null ? null : invitee.displayName(),
+                            // The check constraint ties agent_name to the mode, so it tells them apart.
+                            sessionInvite.getAgentName() == null ? SessionMode.CONVERSATION : SessionMode.AGENT,
+                            sessionInvite.getSessionId() == null ? null : sessionNames.get(sessionInvite.getSessionId()),
                             sessionInvite.getAgentName(),
                             sessionInvite.getOpeningMessage(),
                             sessionInvite.getStatus(),
@@ -269,20 +315,6 @@ public class SessionInviteService {
                             sessionInvite.getExpires());
                 })
                 .toList();
-    }
-
-    private static void afterCommit(Runnable work) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            work.run();
-            return;
-        }
-
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-                work.run();
-            }
-        });
     }
 
     private static SessionException inviteNotFound() {

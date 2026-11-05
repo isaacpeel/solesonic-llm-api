@@ -31,6 +31,7 @@ import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.TurnErrorCode;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationErrorCode;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.redis.service.RedisStreamService;
@@ -64,6 +65,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -962,6 +964,48 @@ class RedisStreamingChatServiceTest {
         verify(redisStreamService, never()).publish(eq(CHAT_ID), eq(USER_ID), anyString(), any());
         verify(activeStreamTracker).put(USER_ID, CHAT_ID);
         verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    /**
+     * A shared conversation run goes through the same engine as a private chat, so its frames are the
+     * same ones: the start frame with the route's metadata, the images and model accounting on the
+     * finished message, and tool side-channel frames forwarded, all on the owner's stream.
+     */
+    @Test
+    void aSharedRunEmitsTheSameFramesAsAPrivateChat() {
+        GeneratedImageSummary image = new GeneratedImageSummary(UUID.randomUUID(), USER_ID, null, "/images/x", null, "a lighthouse",
+                "solesonic-image (izzy-bot)", null, 1024, 1024, null, 2.0, 8, ZonedDateTime.now(), List.of());
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
+
+        when(generatedImageService.forChatSince(eq(CHAT_ID), any())).thenReturn(List.of(image));
+        when(chatMessageService.responseMetadata(eq(CHAT_ID), any())).thenReturn(responseMetadata);
+        when(chatMessageService.responseMetadataCalls(eq(CHAT_ID), any())).thenReturn(calls);
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1"));
+
+        Sinks.Many<SideChannelMessage> sideChannel = Sinks.many().replay().all();
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(sideChannel.asFlux());
+        sideChannel.tryEmitNext(new SideChannelMessage("image", JSON_MAPPER.valueToTree(image)));
+
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Look: ", "a lighthouse"), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).contains(CUSTOM, TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END);
+        assertThat(publishedTypes()).last().isEqualTo(RUN_FINISHED);
+        assertThat(((CustomEvent) eventsOfType(CUSTOM).getFirst().payload()).name()).isEqualTo("image");
+        assertThat(JSON_MAPPER.valueToTree(eventsOfType(TEXT_MESSAGE_START).getFirst().payload()).has("metadata")).isTrue();
+
+        ChatMessage responseMessage = finishedMessage();
+        assertThat(responseMessage.getMessage()).isEqualTo("Look: a lighthouse");
+        assertThat(responseMessage.getGeneratedImages()).containsExactly(image);
+        assertThat(responseMessage.getResponseMetadata()).isEqualTo(responseMetadata);
+        assertThat(responseMessage.getResponseMetadataCalls()).isEqualTo(calls);
+
+        verify(redisStreamService, never()).publish(eq(CHAT_ID), eq(USER_ID), anyString(), any());
     }
 
     @Test

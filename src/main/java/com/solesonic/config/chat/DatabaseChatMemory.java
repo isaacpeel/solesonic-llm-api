@@ -1,6 +1,10 @@
 package com.solesonic.config.chat;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.session.SessionMode;
+import com.solesonic.model.session.SessionParticipant;
+import com.solesonic.repository.session.SessionParticipantRepository;
+import com.solesonic.repository.session.SharedSessionRepository;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.chat.ChatMessageService;
 import org.jspecify.annotations.NonNull;
@@ -13,7 +17,10 @@ import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Component
 public class DatabaseChatMemory implements ChatMemory {
@@ -21,10 +28,17 @@ public class DatabaseChatMemory implements ChatMemory {
     private final ChatMessageService chatMessageService;
     private final GeneratedImageService generatedImageService;
 
+    private final SharedSessionRepository sharedSessionRepository;
+    private final SessionParticipantRepository sessionParticipantRepository;
+
     public DatabaseChatMemory(ChatMessageService chatMessageService,
-                              GeneratedImageService generatedImageService) {
+                              GeneratedImageService generatedImageService,
+                              SharedSessionRepository sharedSessionRepository,
+                              SessionParticipantRepository sessionParticipantRepository) {
         this.chatMessageService = chatMessageService;
         this.generatedImageService = generatedImageService;
+        this.sharedSessionRepository = sharedSessionRepository;
+        this.sessionParticipantRepository = sessionParticipantRepository;
     }
 
     private String sanitize(String text) {
@@ -97,10 +111,26 @@ public class DatabaseChatMemory implements ChatMemory {
     @NullMarked
     public List<Message> get(String conversationId) {
         log.debug("Getting messages from history.");
-        List<Message> messages = chatMessageService.findByChatId(UUID.fromString(conversationId));
+        UUID chatId = UUID.fromString(conversationId);
+
+        List<Message> messages = sharedConversationNames(chatId)
+                .map(participantNames -> chatMessageService.findByChatId(chatId, participantNames))
+                .orElseGet(() -> chatMessageService.findByChatId(chatId));
 
         log.debug("Messages Found: {}", messages.size());
         return messages;
+    }
+
+    /**
+     * Who said what, for a shared conversation: every participant's name by user id, including people
+     * who have left, because their messages are still in the history. Empty for any other chat. A
+     * conversation session is always a shared chat; an agent session's history is not attributed
+     * because the agent does not read it.
+     */
+    private Optional<Map<UUID, String>> sharedConversationNames(UUID chatId) {
+        return sharedSessionRepository.findByChatIdAndMode(chatId, SessionMode.CONVERSATION)
+                .map(sharedSession -> sessionParticipantRepository.findBySessionIdOrderBySeatAsc(sharedSession.getId()).stream()
+                        .collect(Collectors.toMap(SessionParticipant::getUserId, SessionParticipant::getName, (first, _) -> first)));
     }
 
     @Override

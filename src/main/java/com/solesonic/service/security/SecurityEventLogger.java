@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.UUID;
 
 /**
  * The only place the security log's grammar exists.
@@ -78,6 +79,19 @@ public class SecurityEventLogger {
                 status,
                 reason.key(),
                 routeClassification(request));
+    }
+
+    /**
+     * An access change inside the application, for the audit trail rather than a jail: who changed who
+     * can read a shared conversation. Only ids and a count are written, all of which the application
+     * generated or resolved itself, so nothing a client sent reaches the line.
+     *
+     * @param actorUserId  who made the change
+     * @param sessionId    the shared session it concerns
+     * @param affectedUsers how many other users were given access (or, for a join, one)
+     */
+    public void audit(SecurityEvent securityEvent, UUID actorUserId, UUID sessionId, int affectedUsers) {
+        securityLog.info("SECURITY event={} actor={} session={} users={}", securityEvent.key(), actorUserId, sessionId, affectedUsers);
     }
 
     private static String routeClassification(HttpServletRequest request) {

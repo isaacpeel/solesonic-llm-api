@@ -62,4 +62,43 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
              where chatMessage.chatId = :chatId
            """)
     int deleteByChatId(UUID chatId);
+
+    /**
+     * Copies the most recent {@code limit} {@code USER} and {@code ASSISTANT} messages of one chat into
+     * another, in one statement, keeping their timestamps and inserting them oldest first (ties on the
+     * timestamp broken by id, so a copy is the same every time). The window starts at its first
+     * {@code USER} message: an {@code ASSISTANT} reply at its head answers a question the window cut
+     * off, and a window with no {@code USER} message at all copies nothing. Only the text and what
+     * the model server reported about each turn are copied: attachments, generated images,
+     * elicitation, progress and commands stay behind. {@code USER} rows are attributed to
+     * {@code senderUserId}.
+     * <p>
+     * Native, because the alternative is a {@code save} per row, and a save reloads the chat.
+     *
+     * @return the number of rows written
+     */
+    @Modifying
+    @Query(nativeQuery = true, value = """
+            insert into chat_message (id, chat_id, sender_user_id, timestamp, message_type, message,
+                                      response_metadata, response_metadata_calls)
+            select gen_random_uuid(), :targetChatId,
+                   case when recent.message_type = 'USER' then cast(:senderUserId as uuid) end,
+                   recent.timestamp, recent.message_type, recent.message,
+                   recent.response_metadata, recent.response_metadata_calls
+              from (select limited.timestamp, limited.message_type, limited.message,
+                           limited.response_metadata, limited.response_metadata_calls, limited.rn
+                      from (select ranked.timestamp, ranked.message_type, ranked.message,
+                                   ranked.response_metadata, ranked.response_metadata_calls, ranked.rn,
+                                   max(case when ranked.message_type = 'USER' then ranked.rn end) over () as first_user_rn
+                              from (select source.timestamp, source.message_type, source.message,
+                                           source.response_metadata, source.response_metadata_calls,
+                                           row_number() over (order by source.timestamp desc, source.id desc) as rn
+                                      from chat_message source
+                                     where source.chat_id = :sourceChatId
+                                       and source.message_type in ('USER', 'ASSISTANT')) ranked
+                             where ranked.rn <= :limit) limited
+                     where limited.rn <= limited.first_user_rn) recent
+             order by recent.rn desc
+            """)
+    int forkRecent(UUID sourceChatId, UUID targetChatId, UUID senderUserId, int limit);
 }

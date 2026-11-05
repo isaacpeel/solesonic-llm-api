@@ -8,6 +8,7 @@ import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
@@ -22,6 +23,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.data.domain.Limit;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,12 +33,16 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service()
 public class ChatMessageService {
     private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
+
+    private static final String UNKNOWN_SENDER = "Someone";
     private final ChatMessageRepository chatMessageRepository;
     private final ChatRepository chatRepository;
     private final UserPreferencesService userPreferencesService;
@@ -218,10 +224,53 @@ public class ChatMessageService {
      */
     @Transactional(readOnly = true)
     public List<ChatMessage> sharedTranscript(UUID chatId) {
-        return chatMessageRepository.findByChatId(chatId);
+        List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
+
+        //References, never bytes: a conversation's reply can carry an image, and a reload must show it
+        //as the live frame did. One query for the chat, not one per message.
+        Map<UUID, List<GeneratedImageSummary>> generatedImagesByMessageId = generatedImageService.forChat(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(GeneratedImageSummary::chatMessageId));
+
+        for (ChatMessage chatMessage : chatMessages) {
+            chatMessage.setGeneratedImages(generatedImagesByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+
+            //The token and timing summary is what a reader sees; the proxy's call id and the model
+            //server's address are the sender's deployment, not the room's business.
+            if (chatMessage.getResponseMetadataCalls() != null) {
+                chatMessage.setResponseMetadataCalls(chatMessage.getResponseMetadataCalls().stream()
+                        .map(call -> call.withLiteLlm(null))
+                        .toList());
+            }
+        }
+
+        return chatMessages;
+    }
+
+    /**
+     * Who sent the latest user message of a chat: in a shared conversation, the sender of the run in
+     * progress.
+     */
+    @Transactional(readOnly = true)
+    public Optional<UUID> lastUserSender(UUID chatId) {
+        return chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(chatId, MessageType.USER, Limit.of(1)).stream()
+                .map(ChatMessage::getSenderUserId)
+                .filter(Objects::nonNull)
+                .findFirst();
     }
 
     public List<Message> findByChatId(UUID chatId) {
+        return findByChatId(chatId, null);
+    }
+
+    /**
+     * {@link #findByChatId(UUID)} for a shared conversation, where each user message reaches the model
+     * as {@code "<name>: <text>"}. The name comes from {@code participantNames} by the message's sender,
+     * or is "Someone" for a sender not in it. The prefix is for the model only: no stored row has it.
+     *
+     * @param participantNames names by user id, or null for a chat whose messages are not attributed
+     */
+    public List<Message> findByChatId(UUID chatId, Map<UUID, String> participantNames) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 
         // The in-flight user message is persisted before the stream starts, and the chat memory
@@ -279,7 +328,9 @@ public class ChatMessageService {
                             messages.add(new UserMessage(imageContext));
                         }
 
-                        message = new UserMessage(messageText);
+                        message = new UserMessage(participantNames == null
+                                ? messageText
+                                : senderName(participantNames, chatMessage.getSenderUserId()) + ": " + messageText);
                     }
                     case ASSISTANT -> {
                         assert messageText != null;
@@ -296,6 +347,12 @@ public class ChatMessageService {
         }
 
         return List.of();
+    }
+
+    private static String senderName(Map<UUID, String> participantNames, UUID senderUserId) {
+        String name = senderUserId == null ? null : participantNames.get(senderUserId);
+
+        return name == null ? UNKNOWN_SENDER : name;
     }
 
     /**

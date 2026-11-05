@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -37,6 +38,8 @@ public class PushNotificationService {
     private static final Logger log = LoggerFactory.getLogger(PushNotificationService.class);
 
     private static final String SENT_KEY_PREFIX = "push:sent:";
+    private static final String SHARED_CHAT_THROTTLE_KEY_PREFIX = "push:throttle:shared-chat:";
+    private static final Duration SHARED_CHAT_THROTTLE = Duration.ofSeconds(60);
     private static final Duration DEDUPE_WINDOW = Duration.ofHours(1);
     private static final Duration TURN_TIME_TO_LIVE = Duration.ofHours(24);
     private static final Duration INTEREST_UPDATE_TIME_TO_LIVE = Duration.ofHours(24);
@@ -111,15 +114,45 @@ public class PushNotificationService {
                     .filter(Boolean::booleanValue)
                     .flatMap(_ -> watched(userId, pushEvent))
                     .filter(watching -> !watching)
-                    .flatMapMany(_ -> blocking(() -> pushSubscriptionService.subscriptions(userId))
-                            .flatMapIterable(subscriptions -> subscriptions))
+                    .flatMap(_ -> blocking(() -> pushSubscriptionService.subscriptions(userId)))
+                    .filter(subscriptions -> !subscriptions.isEmpty())
+                    //Last, so a user with nowhere to send it does not use up the window.
+                    .flatMap(subscriptions -> throttle(userId, pushEvent).filter(Boolean::booleanValue).map(_ -> subscriptions))
+                    .flatMapMany(Flux::fromIterable)
                     .flatMap(pushSubscription -> deliverTo(userId, pushSubscription, eventType(pushEvent), payload, options),
                             SEND_CONCURRENCY)
                     .then();
         });
     }
 
+    /**
+     * A conversation message is pushed to each participant at most once per {@link #SHARED_CHAT_THROTTLE}
+     * per session, however many replies land in it. Taken last, so a push that is not wanted, not
+     * needed or has nowhere to go does not use up the window. A throttle that cannot be read lets the push through.
+     */
+    private Mono<Boolean> throttle(UUID userId, PushEvent pushEvent) {
+        if (!(pushEvent instanceof PushEvent.SharedChatMessage sharedChatMessage)) {
+            return Mono.just(true);
+        }
+
+        String key = SHARED_CHAT_THROTTLE_KEY_PREFIX + sharedChatMessage.sessionId() + ":" + userId;
+
+        return Mono.defer(() -> redisTemplate.opsForValue().setIfAbsent(key, "1", SHARED_CHAT_THROTTLE))
+                .defaultIfEmpty(true)
+                .onErrorResume(error -> {
+                    log.warn("Could not throttle push {} for {}, sending anyway: {}",
+                            eventType(pushEvent), pushEvent.subjectId(), error.getClass().getSimpleName());
+
+                    return Mono.just(true);
+                });
+    }
+
     private Mono<Boolean> firstTime(PushEvent pushEvent) {
+        //One run is pushed to several recipients under one key, so it is throttled per recipient instead.
+        if (pushEvent instanceof PushEvent.SharedChatMessage) {
+            return Mono.just(true);
+        }
+
         return Mono.defer(() -> redisTemplate.opsForValue().setIfAbsent(SENT_KEY_PREFIX + pushEvent.dedupeKey(), "1", DEDUPE_WINDOW))
                 .defaultIfEmpty(true)
                 .onErrorResume(error -> {
@@ -139,7 +172,7 @@ public class PushNotificationService {
             case PushEvent.InterestOffered _ -> preferences.interestOffers();
             case PushEvent.InterestUpdated _ -> preferences.interestUpdates();
             case PushEvent.SessionInvited _ -> preferences.sessionInvites();
-            case PushEvent.SessionTurn _, PushEvent.SessionStarted _ -> preferences.sessionTurns();
+            case PushEvent.SessionTurn _, PushEvent.SessionStarted _, PushEvent.SharedChatMessage _ -> preferences.sessionTurns();
         };
     }
 
@@ -157,6 +190,7 @@ public class PushNotificationService {
             case PushEvent.InterestOffered _, PushEvent.InterestUpdated _, PushEvent.SessionInvited _ -> Mono.just(false);
             case PushEvent.SessionTurn sessionTurn -> pushPresenceService.isWatching(userId, sessionTurn.chatId());
             case PushEvent.SessionStarted sessionStarted -> pushPresenceService.isWatching(userId, sessionStarted.chatId());
+            case PushEvent.SharedChatMessage sharedChatMessage -> pushPresenceService.isWatching(userId, sharedChatMessage.chatId());
         };
     }
 
@@ -181,6 +215,8 @@ public class PushNotificationService {
                     new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.HIGH, topic(sessionTurn.sessionId()));
             case PushEvent.SessionStarted sessionStarted ->
                     new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.HIGH, topic(sessionStarted.sessionId()));
+            case PushEvent.SharedChatMessage sharedChatMessage ->
+                    new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.NORMAL, topic(sharedChatMessage.sessionId()));
         };
     }
 

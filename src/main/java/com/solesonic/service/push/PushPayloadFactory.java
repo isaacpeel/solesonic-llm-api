@@ -30,6 +30,7 @@ public class PushPayloadFactory {
     private static final String SESSION_INVITE_BODY = "You've been invited to a shared session";
     private static final String SESSION_TURN_BODY = "It's your turn";
     private static final String SESSION_STARTED_BODY = "Your shared session has started";
+    private static final String SHARED_CHAT_MESSAGE_BODY = "New message in a shared chat";
     private static final String TEST_BODY = "Notifications are working";
     private static final String TEST_URL = "/settings/notifications";
     private static final String TEST_TAG = "test";
@@ -71,6 +72,9 @@ public class PushPayloadFactory {
             case PushEvent.SessionStarted sessionStarted ->
                     payload(PushPayloadType.SESSION_STARTED, SESSION_STARTED_BODY, sessionUrl(sessionStarted.sessionId()),
                             sessionTag(sessionStarted.sessionId()));
+            case PushEvent.SharedChatMessage sharedChatMessage -> new PushPayload(VERSION, PushPayloadType.SHARED_CHAT_MESSAGE, botName,
+                    SHARED_CHAT_MESSAGE_BODY, sessionUrl(sharedChatMessage.sessionId()), sessionTag(sharedChatMessage.sessionId()),
+                    DateTimeFormatter.ISO_INSTANT.format(clock.instant()), List.of(), sharedChatMessage.sessionId(), sharedChatMessage.chatId());
         };
 
         return jsonMapper.writeValueAsBytes(pushPayload);

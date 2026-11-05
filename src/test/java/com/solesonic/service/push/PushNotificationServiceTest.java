@@ -46,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
@@ -79,6 +80,8 @@ class PushNotificationServiceTest {
     private static final UUID SESSION_ID = UUID.fromString("5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e");
     private static final UUID INVITE_ID = UUID.fromString("6a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d");
     private static final PushEvent SESSION_TURN = new PushEvent.SessionTurn(CHAT_ID, SESSION_ID, RUN_ID, USER_ID);
+    private static final PushEvent SHARED_CHAT_MESSAGE = new PushEvent.SharedChatMessage(CHAT_ID, SESSION_ID, RUN_ID);
+    private static final String SHARED_CHAT_THROTTLE_KEY = "push:throttle:shared-chat:" + SESSION_ID + ":" + USER_ID;
     private static final PushEvent SESSION_INVITED = new PushEvent.SessionInvited(INVITE_ID);
     private static final PushTarget TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/first"), "p256dh", "auth");
     private static final PushTarget OTHER_TARGET = new PushTarget(URI.create("https://fcm.googleapis.com/fcm/send/second"), "p256dh", "auth");
@@ -375,6 +378,97 @@ class PushNotificationServiceTest {
         assertThat(jsonMapper.readTree(payload.getValue())).isEqualTo(jsonMapper.readTree("""
                 {"version":1,"type":"SESSION_TURN","title":"Izzy","body":"It's your turn",
                  "url":"/shared-sessions/5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e","tag":"session:5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e",
+                 "timestamp":"2026-10-20T12:00:00Z"}
+                """));
+    }
+
+    @Test
+    void aSharedChatMessageIsSentUnlessTheChatIsWatchedAndReplacesTheSessionsQueuedPush() {
+        deliver(SHARED_CHAT_MESSAGE);
+
+        ArgumentCaptor<PushDeliveryOptions> options = ArgumentCaptor.forClass(PushDeliveryOptions.class);
+        verify(webPushSender).send(eq(TARGET), any(), options.capture());
+        assertThat(options.getValue()).isEqualTo(new PushDeliveryOptions(Duration.ofHours(24), PushUrgency.NORMAL,
+                "5f0c2d1e3b4a49c88d7e6f5a4b3c2d1e"));
+        verify(pushPresenceService).isWatching(USER_ID, CHAT_ID);
+    }
+
+    @Test
+    void aSharedChatMessageIsNotSentWhileTheChatIsWatched() {
+        when(pushPresenceService.isWatching(USER_ID, CHAT_ID)).thenReturn(Mono.just(true));
+
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void aSharedChatMessageFollowsTheSessionTurnsPreference() {
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, true, false));
+
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+        verify(valueOperations, never()).setIfAbsent(eq(SHARED_CHAT_THROTTLE_KEY), anyString(), any(Duration.class));
+    }
+
+    @Test
+    void aSharedChatMessageIsThrottledToOnePerUserPerSessionPerMinute() {
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(valueOperations).setIfAbsent(SHARED_CHAT_THROTTLE_KEY, "1", Duration.ofSeconds(60));
+        verify(webPushSender).send(eq(TARGET), any(), any());
+    }
+
+    @Test
+    void aUserWithNoSubscriptionDoesNotUseUpTheThrottleWindow() {
+        when(pushSubscriptionService.subscriptions(USER_ID)).thenReturn(List.of());
+
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(valueOperations, never()).setIfAbsent(eq(SHARED_CHAT_THROTTLE_KEY), anyString(), any(Duration.class));
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void aSharedChatMessageInsideTheThrottleWindowIsDropped() {
+        when(valueOperations.setIfAbsent(SHARED_CHAT_THROTTLE_KEY, "1", Duration.ofSeconds(60))).thenReturn(Mono.just(false));
+
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(webPushSender, never()).send(any(), any(), any());
+    }
+
+    @Test
+    void aSharedChatMessageIsStillSentWhenTheThrottleCannotBeRead() {
+        when(valueOperations.setIfAbsent(SHARED_CHAT_THROTTLE_KEY, "1", Duration.ofSeconds(60)))
+                .thenReturn(Mono.error(new RedisConnectionFailureException("down")));
+
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(webPushSender).send(eq(TARGET), any(), any());
+    }
+
+    @Test
+    void twoRecipientsOfTheSameRunAreNotDedupedAgainstEachOther() {
+        deliver(SHARED_CHAT_MESSAGE);
+
+        verify(valueOperations, never()).setIfAbsent(startsWith("push:sent:"), anyString(), any(Duration.class));
+    }
+
+    /**
+     * The service worker opens {@code url}; the ids let it route without parsing the path.
+     */
+    @Test
+    void aSharedChatMessagePayloadCarriesTheUrlAndIdsAndNothingFromTheMessage() {
+        deliver(SHARED_CHAT_MESSAGE);
+
+        ArgumentCaptor<byte[]> payload = ArgumentCaptor.forClass(byte[].class);
+        verify(webPushSender).send(any(), payload.capture(), any());
+        assertThat(jsonMapper.readTree(payload.getValue())).isEqualTo(jsonMapper.readTree("""
+                {"version":1,"type":"shared_chat_message","title":"Izzy","body":"New message in a shared chat",
+                 "url":"/shared-sessions/5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e","tag":"session:5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e",
+                 "sessionId":"5f0c2d1e-3b4a-49c8-8d7e-6f5a4b3c2d1e","chatId":"0f8fad5b-d9cb-469f-a165-70867728950e",
                  "timestamp":"2026-10-20T12:00:00Z"}
                 """));
     }

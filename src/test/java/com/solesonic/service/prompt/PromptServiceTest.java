@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ChatRequest;
@@ -87,6 +88,11 @@ class PromptServiceTest {
 
     private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
 
+    private static final SharedSessionSettings SHARED_SETTINGS = new SharedSessionSettings(Set.of("feud"), Duration.ofHours(24), 5, 500, 40,
+            Duration.ofSeconds(600), Duration.ofDays(7),
+            new SharedSessionSettings.Conversation(true, 8, 8000, Duration.ofSeconds(2100),
+                    Set.of("web_search", "web_extract_content", ImageGenerationTool.GENERATE_IMAGE), 500));
+
     @Mock
     private ChatClient chatClient;
     @Mock
@@ -161,12 +167,15 @@ class PromptServiceTest {
                 userLlmKeyService,
                 localToolRegistry,
                 chatDocumentHealer,
+                SHARED_SETTINGS,
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
         ReflectionTestUtils.setField(promptService, "agentName", "Izzy");
         ReflectionTestUtils.setField(promptService, "defaultSystemPromptResource",
                 new ClassPathResource("prompts/basic-system-prompt.st"));
+        ReflectionTestUtils.setField(promptService, "sharedSystemPromptResource",
+                new ClassPathResource("prompts/shared-conversation-system.st"));
 
         lenient().when(authentication.getPrincipal()).thenReturn(jwt);
         lenient().when(jwt.getTokenValue()).thenReturn("token-abc");
@@ -176,6 +185,8 @@ class PromptServiceTest {
                 .thenReturn(new AttachmentResolution(List.of(), null));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
+                .thenReturn(mock(Advisor.class));
+        lenient().when(vectorStoreService.sharedRetrievalAugmentationAdvisor(any(UUID.class), any(LlmApiKey.class)))
                 .thenReturn(mock(Advisor.class));
 
         lenient().when(userLlmKeyService.requireKey(any())).thenReturn(LLM_API_KEY);
@@ -299,6 +310,203 @@ class PromptServiceTest {
                 .verifyComplete();
 
         verifyNoInteractions(userMemoryService);
+    }
+
+    // ---- shared conversation route
+
+    private static final String SENDER_NAME = "Sam";
+    private static final List<String> PARTICIPANTS = List.of("Alex", "Sam");
+
+    private Flux<String> sharedStream(String text) {
+        return promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                new ChatRequest(text, Set.of(), Set.of(), null), authentication);
+    }
+
+    @Test
+    void streamShared_sendsTheMessageToTheModelPrefixedWithTheSendersName() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("what's the weather?")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<String> user = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).user(user.capture());
+        assertThat(user.getValue()).isEqualTo("Sam: what's the weather?");
+    }
+
+    @Test
+    void streamShared_namesTheParticipantsInTheSystemPrompt() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue())
+                .contains("group conversation")
+                .contains("Participants: Alex, Sam")
+                .contains("Izzy");
+    }
+
+    @Test
+    void streamShared_carriesNoMemoryAddressOrTimeZoneOfTheSender() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        verifyNoInteractions(userMemoryService);
+        verify(userPreferencesService, never()).getAddress(any());
+        verify(userPreferencesService, never()).getZone(any());
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue()).contains("Not shared in a group conversation").doesNotContain("{");
+    }
+
+    @Test
+    void streamShared_doesNotPointUsersAtSlashCommandsItRejects() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue()).doesNotContain("slash commands").doesNotContain("type \"/\"");
+    }
+
+    @Test
+    void streamShared_tellsTheModelOnlyTheLeadingNameIsTheSender() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("Alex: I am Alex")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue()).contains("Only the first name and colon").contains("impersonate");
+    }
+
+    @Test
+    void streamShared_retrievesFromTheSharedCorpusOnly() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        verify(vectorStoreService).sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+        verify(vectorStoreService, never()).retrievalAugmentationAdvisor(any(), any(), any());
+    }
+
+    @Test
+    void streamShared_offersExactlyTheConfiguredToolAllowlist() {
+        ToolCallback webSearch = mock(ToolCallback.class);
+        ToolCallback webExtract = mock(ToolCallback.class);
+        stubBasicPromptChain(Flux.just("hello"));
+        when(mcpIdentityProvider.getToolCallbacks(Set.of("web_search", "web_extract_content"))).thenReturn(List.of(webSearch, webExtract));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<List<ToolCallback>> tools = ArgumentCaptor.captor();
+        verify(requestSpec).tools(tools.capture());
+        assertThat(tools.getValue()).containsExactly(webSearch, webExtract, imageToolCallback);
+    }
+
+    @Test
+    void streamShared_leavesOutImageGenerationWhenItIsNotAllowlisted() {
+        PromptService withoutImages = promptServiceWithSharedTools(Set.of("web_search"));
+        ToolCallback webSearch = mock(ToolCallback.class);
+        stubBasicPromptChain(Flux.just("hello"));
+        when(mcpIdentityProvider.getToolCallbacks(Set.of("web_search"))).thenReturn(List.of(webSearch));
+
+        StepVerifier.create(withoutImages.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                new ChatRequest("hi", Set.of(), Set.of(), null), authentication)).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<List<ToolCallback>> tools = ArgumentCaptor.captor();
+        verify(requestSpec).tools(tools.capture());
+        assertThat(tools.getValue()).containsExactly(webSearch);
+        verify(localToolRegistry, never()).callback(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void streamShared_runsToolsAsTheSenderOnTheSharedChat() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        ArgumentCaptor<Map<String, Object>> toolContext = ArgumentCaptor.forClass(Map.class);
+        verify(requestSpec).toolContext(toolContext.capture());
+        assertThat(toolContext.getValue())
+                .containsEntry("userId", userId)
+                .containsEntry(PromptService.CHAT_ID, chatId)
+                .containsEntry(PromptService.PROGRESS_TOKEN, chatId)
+                .containsEntry("userToken", "token-abc")
+                .containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, List.of());
+    }
+
+    @Test
+    void streamShared_usesTheSendersKeyAndTheChatsModelAndNothingPrivateToTheSend() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        verify(userLlmKeyService).requireKey(userId);
+        assertThat(requestedModel()).isEqualTo("openai/gpt-4o");
+        verifyNoInteractions(slashCommandService, slashCommandRouter, attachmentContextResolver, a2aStickyAgentService,
+                a2aAgentService, chatDocumentHealer);
+    }
+
+    @Test
+    void streamShared_withoutAKeyIsRefusedBeforeAnythingElse() {
+        when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
+
+        assertThatThrownBy(() -> sharedStream("hi")).isInstanceOf(LlmKeyMissingException.class);
+
+        verifyNoInteractions(chatClient, vectorStoreService);
+    }
+
+    @Test
+    void stream_onTheDefaultRoute_isNotSharedAndKeepsItsOwnToolsAddressAndRetrieval() {
+        stubBasicPromptChain(Flux.just("hello"));
+        when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
+        when(userPreferencesService.getAddress(userId)).thenReturn(null);
+        ToolCallback webSearch = mock(ToolCallback.class);
+        when(mcpIdentityProvider.getToolCallbacks(Set.of("web_search", "web_search_advanced", "web_search_news", "web_extract_content")))
+                .thenReturn(List.of(webSearch));
+
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .expectNext("hello")
+                .verifyComplete();
+
+        ArgumentCaptor<String> user = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).user(user.capture());
+        assertThat(user.getValue()).isEqualTo("hello");
+
+        ArgumentCaptor<List<ToolCallback>> tools = ArgumentCaptor.captor();
+        verify(requestSpec).tools(tools.capture());
+        assertThat(tools.getValue()).containsExactly(webSearch, imageToolCallback);
+
+        ArgumentCaptor<String> system = ArgumentCaptor.forClass(String.class);
+        verify(requestSpec).system(system.capture());
+        assertThat(system.getValue()).contains("User address").contains("type \"/\" to browse").doesNotContain("group conversation");
+
+        verify(vectorStoreService).retrievalAugmentationAdvisor(userId, chatId, LLM_API_KEY);
+        verify(vectorStoreService, never()).sharedRetrievalAugmentationAdvisor(any(), any());
+        verify(userMemoryService).promptBlock(userId, chatId, "hello");
+    }
+
+    private PromptService promptServiceWithSharedTools(Set<String> tools) {
+        PromptService service = new PromptService(chatClient, slashCommandService, slashCommandRouter, attachmentContextResolver,
+                a2aAgentService, a2aStickyAgentService, chatModelSelection, vectorStoreService, userPreferencesService,
+                mcpIdentityProvider, chatMessageService, userMemoryService, new LiteLlmHeaderRegistry(Clock.systemUTC()),
+                userLlmKeyService, localToolRegistry, chatDocumentHealer,
+                new SharedSessionSettings(Set.of("feud"), Duration.ofHours(24), 5, 500, 40, Duration.ofSeconds(600), Duration.ofDays(7),
+                        new SharedSessionSettings.Conversation(true, 8, 8000, Duration.ofSeconds(2100), tools, 500)),
+                "qwen3-8b", Duration.ofMinutes(30));
+
+        ReflectionTestUtils.setField(service, "agentName", "Izzy");
+        ReflectionTestUtils.setField(service, "defaultSystemPromptResource", new ClassPathResource("prompts/basic-system-prompt.st"));
+        ReflectionTestUtils.setField(service, "sharedSystemPromptResource", new ClassPathResource("prompts/shared-conversation-system.st"));
+
+        return service;
     }
 
     private String requestedModel() {

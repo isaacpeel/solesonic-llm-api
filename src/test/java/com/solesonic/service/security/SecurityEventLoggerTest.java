@@ -58,6 +58,17 @@ class SecurityEventLoggerTest {
     }
 
     @Test
+    void writesAnAccessChangeAsIdsAndACountOnly() {
+        java.util.UUID actor = java.util.UUID.fromString("10000000-0000-0000-0000-00000000000a");
+        java.util.UUID session = java.util.UUID.fromString("10000000-0000-0000-0000-000000000001");
+
+        securityEventLogger.audit(com.solesonic.model.security.SecurityEvent.SESSION_SHARED, actor, session, 3);
+
+        assertEquals("SECURITY event=session.shared actor=10000000-0000-0000-0000-00000000000a session=10000000-0000-0000-0000-000000000001 users=3",
+                onlyLine());
+    }
+
+    @Test
     void classifiesAPathTheApplicationDoesNotServeAsUnknown() {
         securityEventLogger.log(AUTHENTICATION_FAILURE, request("GET", "/actuator/env"), SC_UNAUTHORIZED, SecurityEventReason.MISSING_TOKEN);
 

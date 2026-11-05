@@ -9,6 +9,7 @@ import com.solesonic.model.push.PushEvent;
 import com.solesonic.model.session.SessionErrorCode;
 import com.solesonic.model.session.SessionMessageAccepted;
 import com.solesonic.model.session.SessionMessageRequest;
+import com.solesonic.model.session.SessionMode;
 import com.solesonic.model.session.SessionParticipant;
 import com.solesonic.model.session.SessionPrompt;
 import com.solesonic.model.session.SessionPromptAnswer;
@@ -18,6 +19,7 @@ import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.llm.UserLlmKeyService;
+import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.redis.StartedRun;
@@ -29,7 +31,9 @@ import com.solesonic.util.HiddenText;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.security.core.Authentication;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -40,9 +44,12 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 /**
- * Sends a message in a shared session: one short run that never parks. Whichever participant the
+ * Sends a message in a shared session: one short run that never parks. In a conversation the run is the
+ * chat model answering the sender, through {@code PromptService.streamShared}; the rest of this applies
+ * to an agent session. Whichever participant the
  * session waits on, the message reaches the agent with its sender and the participants, so the agent,
  * not the text, decides who may act. A typed message is never checked against the turn here, because
  * an agent may accept some messages from anyone; an answer to the session's open question is, since
@@ -66,6 +73,7 @@ public class SessionMessageService {
     private final RedisStreamService redisStreamService;
     private final A2AAgentService a2aAgentService;
     private final A2AAgentRegistry a2aAgentRegistry;
+    private final PromptService promptService;
     private final UserLlmKeyService userLlmKeyService;
     private final PushNotificationService pushNotificationService;
     private final SharedSessionSettings sharedSessionSettings;
@@ -76,6 +84,7 @@ public class SessionMessageService {
                                  RedisStreamService redisStreamService,
                                  A2AAgentService a2aAgentService,
                                  A2AAgentRegistry a2aAgentRegistry,
+                                 PromptService promptService,
                                  UserLlmKeyService userLlmKeyService,
                                  PushNotificationService pushNotificationService,
                                  SharedSessionSettings sharedSessionSettings) {
@@ -85,6 +94,7 @@ public class SessionMessageService {
         this.redisStreamService = redisStreamService;
         this.a2aAgentService = a2aAgentService;
         this.a2aAgentRegistry = a2aAgentRegistry;
+        this.promptService = promptService;
         this.userLlmKeyService = userLlmKeyService;
         this.pushNotificationService = pushNotificationService;
         this.sharedSessionSettings = sharedSessionSettings;
@@ -102,14 +112,21 @@ public class SessionMessageService {
         }
     }
 
-    public SessionMessageAccepted send(UUID sessionId, UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
+    /**
+     * @param authentication the sender's, which a conversation run needs for the tools it calls as
+     *                       them; an agent run does not use it
+     */
+    public SessionMessageAccepted send(UUID sessionId, UUID senderUserId, SessionMessageRequest sessionMessageRequest,
+                                       Authentication authentication) {
         SharedSession sharedSession = sharedSessionService.requireSeated(sessionId, senderUserId);
 
         requireAcceptsMessages(sharedSession);
 
-        Outgoing outgoing = outgoing(sharedSession, senderUserId, sessionMessageRequest);
+        Outgoing outgoing = sharedSession.getMode() == SessionMode.CONVERSATION
+                ? conversationOutgoing(sessionMessageRequest)
+                : outgoing(sharedSession, senderUserId, sessionMessageRequest);
 
-        return run(sharedSession, senderUserId, outgoing, false);
+        return run(sharedSession, senderUserId, outgoing, false, authentication);
     }
 
     /**
@@ -117,7 +134,35 @@ public class SessionMessageService {
      * so the session starts where the inviter meant it to.
      */
     public SessionMessageAccepted openingMessage(SharedSession sharedSession, UUID senderUserId, String openingMessage) {
-        return run(sharedSession, senderUserId, new Outgoing(openingMessage, openingMessage, null), true);
+        return run(sharedSession, senderUserId, new Outgoing(openingMessage, openingMessage, null), true, null);
+    }
+
+    /**
+     * A conversation takes text only, within its own length limit, and no slash command: commands
+     * change what the sender's own chat does, and here the chat is everyone's.
+     */
+    private Outgoing conversationOutgoing(SessionMessageRequest sessionMessageRequest) {
+        if (sessionMessageRequest == null || sessionMessageRequest.promptAnswer() != null || sessionMessageRequest.text() == null) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message in this chat is text.");
+        }
+
+        String text = HiddenText.strip(sessionMessageRequest.text().strip()).strip();
+
+        if (text.isEmpty()) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message cannot be empty.");
+        }
+
+        if (text.startsWith("/")) {
+            throw new SessionException(SessionErrorCode.COMMAND_NOT_ALLOWED, "Commands are not available in a shared chat.");
+        }
+
+        int limit = sharedSessionSettings.conversation().maxMessageCharacters();
+
+        if (text.codePointCount(0, text.length()) > limit) {
+            throw new SessionException(SessionErrorCode.MESSAGE_TOO_LONG, "Messages are limited to " + limit + " characters.");
+        }
+
+        return new Outgoing(text, text, null);
     }
 
     private Outgoing outgoing(SharedSession sharedSession, UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
@@ -216,16 +261,27 @@ public class SessionMessageService {
      * Answers once the run's {@code RUN_STARTED} frame is out; the run itself goes on without the
      * caller.
      */
-    private SessionMessageAccepted run(SharedSession sharedSession, UUID senderUserId, Outgoing outgoing, boolean opening) {
+    private SessionMessageAccepted run(SharedSession sharedSession, UUID senderUserId, Outgoing outgoing, boolean opening,
+                                       Authentication authentication) {
         userLlmKeyService.requireKey(senderUserId);
 
-        if (a2aAgentRegistry.agent(sharedSession.getAgentName()).isEmpty()) {
+        boolean conversation = sharedSession.getMode() == SessionMode.CONVERSATION;
+
+        if (!conversation && a2aAgentRegistry.agent(sharedSession.getAgentName()).isEmpty()) {
             throw new SessionException(SessionErrorCode.AGENT_UNAVAILABLE, "The agent is not available right now. Try again later.");
         }
+
+        Duration runLock = sharedSessionSettings.runLock(sharedSession.getMode());
 
         List<SessionParticipant> participants = sharedSessionService.participants(sharedSession.getId());
         UUID streamUserId = SharedSessionService.streamOwner(participants);
         List<String> names = participants.stream().map(SessionParticipant::getName).toList();
+
+        //The model is told who is in the room, not who was; someone who left still names their old messages.
+        List<String> seatedNames = participants.stream()
+                .filter(participant -> !participant.hasLeft())
+                .map(SessionParticipant::getName)
+                .toList();
 
         SessionParticipant sender = participants.stream()
                 .filter(participant -> participant.getUserId().equals(senderUserId))
@@ -237,7 +293,7 @@ public class SessionMessageService {
         String agentName = sharedSession.getAgentName();
         UUID runId = UUID.randomUUID();
 
-        if (!sessionRunLock.acquire(sessionId, runId, sharedSessionSettings.runLock())) {
+        if (!sessionRunLock.acquire(sessionId, runId, runLock)) {
             throw new SessionException(SessionErrorCode.RUN_IN_PROGRESS, "The agent is still answering the last message.");
         }
 
@@ -245,7 +301,7 @@ public class SessionMessageService {
             String cursor = redisStreamService.getLatestOffset(chatId, streamUserId).block(LOOKUP_TIMEOUT);
 
             if (cursor != null) {
-                sessionRunLock.recordCursor(sessionId, cursor, sharedSessionSettings.runLock());
+                sessionRunLock.recordCursor(sessionId, cursor, runLock);
             }
         } catch (RuntimeException exception) {
             sessionRunLock.release(sessionId, runId);
@@ -253,16 +309,27 @@ public class SessionMessageService {
         }
 
         SessionTurnCollector collector = new SessionTurnCollector();
-        A2AParticipantMessage participantMessage = outgoing.message(sender.getName(), names);
+        ChatRequest chatRequest = new ChatRequest(outgoing.displayText(), Set.of(), Set.of(), null);
+        String senderName = sender.getName();
+
+        Supplier<Flux<String>> chunks;
+
+        if (conversation) {
+            chunks = () -> promptService.streamShared(chatId, senderUserId, senderName, seatedNames, chatRequest, authentication);
+        } else {
+            A2AParticipantMessage participantMessage = outgoing.message(senderName, names);
+
+            chunks = () -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, collector);
+        }
 
         TurnPlan turnPlan = new TurnPlan(runId,
                 chatId,
                 streamUserId,
                 senderUserId,
-                sender.getName(),
-                new ChatRequest(outgoing.displayText(), Set.of(), Set.of(), null),
-                () -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, collector),
-                new SessionTurnHooks(sessionId, chatId, streamUserId, senderUserId, opening, collector));
+                senderName,
+                chatRequest,
+                chunks,
+                new SessionTurnHooks(sessionId, chatId, streamUserId, senderUserId, opening, conversation, collector));
 
         log.info("Seat {} wrote in shared session {}: run {}{}", sender.getSeat(), sessionId, runId, opening ? " (the opening message)" : "");
 
@@ -291,6 +358,7 @@ public class SessionMessageService {
         private final UUID streamUserId;
         private final UUID senderUserId;
         private final boolean opening;
+        private final boolean conversation;
         private final SessionTurnCollector collector;
         private final AtomicReference<SharedSessionSummary> applied = new AtomicReference<>();
 
@@ -299,12 +367,14 @@ public class SessionMessageService {
                                  UUID streamUserId,
                                  UUID senderUserId,
                                  boolean opening,
+                                 boolean conversation,
                                  SessionTurnCollector collector) {
             this.sessionId = sessionId;
             this.chatId = chatId;
             this.streamUserId = streamUserId;
             this.senderUserId = senderUserId;
             this.opening = opening;
+            this.conversation = conversation;
             this.collector = collector;
         }
 
@@ -323,6 +393,14 @@ public class SessionMessageService {
                 return;
             }
 
+            if (conversation) {
+                if (outcome == TurnOutcome.COMPLETED) {
+                    pushSharedChatMessage(runId);
+                }
+
+                return;
+            }
+
             SharedSessionSummary sharedSessionSummary = applied.get();
 
             if (outcome != TurnOutcome.COMPLETED || sharedSessionSummary == null || sharedSessionSummary.turn() == null
@@ -338,6 +416,20 @@ public class SessionMessageService {
 
             if (opening && !waitingOn.contains(streamUserId)) {
                 pushNotificationService.push(streamUserId, new PushEvent.SessionStarted(chatId, sessionId, runId, streamUserId));
+            }
+        }
+
+        /**
+         * Everyone still seated except the sender, read now: people join and leave while a run goes on.
+         * The push service applies the {@code session_turns} preference, presence and the throttle.
+         */
+        private void pushSharedChatMessage(UUID runId) {
+            for (SessionParticipant participant : sharedSessionService.participants(sessionId)) {
+                if (participant.hasLeft() || participant.getUserId().equals(senderUserId)) {
+                    continue;
+                }
+
+                pushNotificationService.push(participant.getUserId(), new PushEvent.SharedChatMessage(chatId, sessionId, runId));
             }
         }
 

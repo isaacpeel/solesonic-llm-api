@@ -65,4 +65,30 @@ class ParticipantNamesTest {
 
         assertThat(ParticipantNames.clean(name, MAX)).isEqualTo(name).isEqualTo("Mary Ann");
     }
+
+    @Test
+    void aNewcomerKeepsTheirDisplayNameWhenNoOneHasIt() {
+        assertThat(ParticipantNames.nameNewcomer(candidate("Kim", "kim"), 2, List.of("Alex", "Sam"), MAX)).isEqualTo("Kim");
+    }
+
+    @Test
+    void aNewcomerWhoseNameIsTakenIgnoringCaseGetsTheirUsernameInitial() {
+        assertThat(ParticipantNames.nameNewcomer(candidate("sam", "kim"), 2, List.of("Alex", "Sam"), MAX)).isEqualTo("sam K.");
+    }
+
+    @Test
+    void aNewcomerWhoseInitialFormIsAlsoTakenGetsASeatNumber() {
+        assertThat(ParticipantNames.nameNewcomer(candidate("Sam", "kim"), 2, List.of("Alex", "Sam", "Sam K."), MAX)).isEqualTo("Sam 3");
+    }
+
+    @Test
+    void aNewcomerNeverGetsANameAnyExistingRowHolds() {
+        assertThat(ParticipantNames.nameNewcomer(candidate("Sam", null), 2, List.of("Sam", "Sam 3", "Sam 4"), MAX))
+                .isNotIn("Sam", "Sam 3", "Sam 4");
+    }
+
+    @Test
+    void aNewcomerWithNoNameAtAllIsNumberedBySeat() {
+        assertThat(ParticipantNames.nameNewcomer(candidate(null, null), 2, List.of("Alex", "Sam"), MAX)).isEqualTo("Participant 3");
+    }
 }

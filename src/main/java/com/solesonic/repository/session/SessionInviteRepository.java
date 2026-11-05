@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -63,4 +64,55 @@ public interface SessionInviteRepository extends JpaRepository<SessionInvite, UU
               and invite.expires < :now
             """)
     int expire(ZonedDateTime now);
+
+    /**
+     * The scalar only, so nothing is loaded into the persistence context: {@code accept} reads the
+     * session an invite points at, locks that session, and only then locks and loads the invite.
+     */
+    @Query("select invite.sessionId from SessionInvite invite where invite.id = :inviteId and invite.inviteeUserId = :inviteeUserId")
+    Optional<UUID> findSessionIdForInvitee(UUID inviteId, UUID inviteeUserId);
+
+    /**
+     * Past-due invites of one inviter, expired so they stop counting toward caps and stop occupying the
+     * per-session unique index.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update SessionInvite invite
+            set invite.status = com.solesonic.model.session.SessionInviteStatus.EXPIRED, invite.decided = :now
+            where invite.status = com.solesonic.model.session.SessionInviteStatus.PENDING
+              and invite.inviterUserId = :inviterUserId
+              and invite.expires < :now
+            """)
+    int expireDueFor(UUID inviterUserId, ZonedDateTime now);
+
+    List<SessionInvite> findBySessionIdAndStatus(UUID sessionId, SessionInviteStatus status);
+
+    List<SessionInvite> findBySessionIdInAndStatus(Collection<UUID> sessionIds, SessionInviteStatus status);
+
+    /**
+     * An invite into a session that is over can never be accepted, so none is left waiting.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update SessionInvite invite
+            set invite.status = com.solesonic.model.session.SessionInviteStatus.CANCELLED, invite.decided = :now
+            where invite.status = com.solesonic.model.session.SessionInviteStatus.PENDING
+              and invite.sessionId = :sessionId
+            """)
+    int cancelPendingForSession(UUID sessionId, ZonedDateTime now);
+
+    /**
+     * {@link #cancelPendingForSession} for every session that is closed or expired.
+     */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            update SessionInvite invite
+            set invite.status = com.solesonic.model.session.SessionInviteStatus.CANCELLED, invite.decided = :now
+            where invite.status = com.solesonic.model.session.SessionInviteStatus.PENDING
+              and invite.sessionId in (select sharedSession.id from SharedSession sharedSession
+                                       where sharedSession.status in (com.solesonic.model.session.SessionStatus.CLOSED,
+                                                                      com.solesonic.model.session.SessionStatus.EXPIRED))
+            """)
+    int cancelPendingForOverSessions(ZonedDateTime now);
 }

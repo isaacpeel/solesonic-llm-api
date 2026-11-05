@@ -25,9 +25,10 @@ public class SessionExceptionHandler {
     @ExceptionHandler(SessionException.class)
     public ResponseEntity<SessionErrorResponse> handleSession(SessionException sessionException) {
         HttpStatus status = switch (sessionException.getErrorCode()) {
-            case SESSION_NOT_FOUND, INVITE_NOT_FOUND, PARTICIPANT_NOT_FOUND -> HttpStatus.NOT_FOUND;
-            case INVALID_INVITE, INVALID_MESSAGE, MESSAGE_TOO_LONG -> HttpStatus.BAD_REQUEST;
-            case INVITE_PENDING, INVITE_NOT_PENDING, SESSION_CLOSED, RUN_IN_PROGRESS, NOT_YOUR_TURN -> HttpStatus.CONFLICT;
+            case SESSION_NOT_FOUND, INVITE_NOT_FOUND, PARTICIPANT_NOT_FOUND, NOT_SESSION_OWNER -> HttpStatus.NOT_FOUND;
+            case INVALID_INVITE, INVALID_MESSAGE, MESSAGE_TOO_LONG, COMMAND_NOT_ALLOWED -> HttpStatus.BAD_REQUEST;
+            case INVITE_PENDING, INVITE_NOT_PENDING, SESSION_CLOSED, RUN_IN_PROGRESS, NOT_YOUR_TURN,
+                 TOO_MANY_PARTICIPANTS, CHAT_STREAMING, SESSION_LIMIT_REACHED -> HttpStatus.CONFLICT;
             case TOO_MANY_INVITES -> HttpStatus.TOO_MANY_REQUESTS;
             case AGENT_UNAVAILABLE -> HttpStatus.SERVICE_UNAVAILABLE;
         };
@@ -36,6 +37,6 @@ public class SessionExceptionHandler {
 
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
-                .body(new SessionErrorResponse(sessionException.getErrorCode(), sessionException.getMessage()));
+                .body(new SessionErrorResponse(sessionException.getErrorCode(), sessionException.getMessage(), sessionException.getUsernames()));
     }
 }

@@ -1,5 +1,6 @@
 package com.solesonic.repository.user;
 
+import com.solesonic.model.user.UserDirectoryEntry;
 import com.solesonic.model.user.UserProfile;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -99,6 +100,47 @@ public class UserProfileRepository {
                 .param("username", username)
                 .query((resultSet, _) -> resultSet.getObject("user_id", UUID.class))
                 .optional();
+    }
+
+    /**
+     * Active accounts for the user directory, never the caller: those whose username starts with the
+     * query or whose display name contains it, case-insensitively, by username. An empty query matches
+     * everyone. A username is returned once, for the holder seen most recently. {@code %}, {@code _}
+     * and {@code \} in the query are literals, not wildcards. Never selects the email.
+     */
+    public List<UserDirectoryEntry> searchActive(String query, UUID excludeUserId, int limit) {
+        String text = query == null ? "" : query;
+
+        return jdbcClient.sql("""
+                        select user_id, username, display_name
+                          from (select distinct on (lower(username)) user_id, username, display_name
+                                  from user_profile
+                                 where removed is null
+                                   and username is not null
+                                   and user_id <> :excludeUserId
+                                   and (:query = ''
+                                        or lower(username) like lower(:pattern) || '%' escape '\\'
+                                        or lower(display_name) like '%' || lower(:pattern) || '%' escape '\\')
+                                 order by lower(username), updated desc) matches
+                         order by lower(username)
+                         limit :limit
+                        """)
+                .param("excludeUserId", excludeUserId)
+                .param("query", text)
+                .param("pattern", escapeLike(text))
+                .param("limit", limit)
+                .query((resultSet, _) -> new UserDirectoryEntry(resultSet.getObject("user_id", UUID.class),
+                        resultSet.getString("username"),
+                        resultSet.getString("display_name")))
+                .list();
+    }
+
+    /**
+     * Makes {@code text} match itself literally inside a {@code like} pattern that uses {@code \} as
+     * its escape character.
+     */
+    public static String escapeLike(String text) {
+        return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
     }
 
     private static UserProfile profile(ResultSet resultSet) throws SQLException {

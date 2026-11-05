@@ -1,22 +1,42 @@
 package com.solesonic.config.session;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
  * Fails startup on shared-session configuration that would misbehave quietly rather than loudly. The
  * run lock has to outlast the longest A2A call a message can make: a lock that lapsed mid-run would let
- * a second message start a run on the same stream.
+ * a second message start a run on the same stream. The same goes for a conversation's run lock and the
+ * chat model's timeout.
  */
 @Configuration
 public class SharedSessionConfig {
+    private static final Logger log = LoggerFactory.getLogger(SharedSessionConfig.class);
+
     static final int MAX_NAME_CHARACTERS = 64;
+
+    /**
+     * What a shared conversation is meant to call: the default prompt's web-search tools and image generation.
+     */
+    private static final Set<String> EXPECTED_TOOLS = Set.of("web_search", "web_search_advanced", "web_search_news",
+            "web_extract_content", "generate_image");
+
+    /**
+     * The configured tools that are not expected ones, for the startup warning.
+     */
+    static Set<String> unexpectedTools(Set<String> tools) {
+        return tools.stream().filter(tool -> !EXPECTED_TOOLS.contains(tool)).collect(Collectors.toCollection(LinkedHashSet::new));
+    }
 
     @Bean
     public SharedSessionSettings sharedSessionSettings(@Value("${solesonic.shared-session.agents}") String agents,
@@ -26,7 +46,16 @@ public class SharedSessionConfig {
                                                        @Value("${solesonic.shared-session.max-name-characters}") int maxNameCharacters,
                                                        @Value("${solesonic.shared-session.run-lock-seconds}") long runLockSeconds,
                                                        @Value("${solesonic.shared-session.idle-days}") long idleDays,
-                                                       @Value("${solesonic.a2a.timeout-seconds}") long a2aTimeoutSeconds) {
+                                                       @Value("${solesonic.a2a.timeout-seconds}") long a2aTimeoutSeconds,
+                                                       @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout,
+                                                       @Value("${solesonic.shared-session.conversation.enabled}") boolean conversationEnabled,
+                                                       @Value("${solesonic.shared-session.conversation.max-participants}") int conversationMaxParticipants,
+                                                       @Value("${solesonic.shared-session.conversation.max-message-characters}") int conversationMaxMessageCharacters,
+                                                       @Value("${solesonic.shared-session.conversation.run-lock-seconds}") long conversationRunLockSeconds,
+                                                       @Value("${solesonic.shared-session.conversation.tools}") String conversationTools,
+                                                       @Value("${solesonic.shared-session.conversation.fork-max-messages}") int conversationForkMaxMessages,
+                                                       @Value("${solesonic.shared-session.conversation.idle-days}") long conversationIdleDays,
+                                                       @Value("${solesonic.shared-session.conversation.max-active-sessions}") int conversationMaxActiveSessions) {
 
         Set<String> agentNames = Arrays.stream(agents.split(","))
                 .map(String::strip)
@@ -51,12 +80,50 @@ public class SharedSessionConfig {
                     + a2aTimeoutSeconds + "), or a message could outlive its lock");
         }
 
+        if (conversationMaxParticipants < 2 || conversationMaxMessageCharacters < 1 || conversationForkMaxMessages < 1) {
+            throw new IllegalStateException("SHARED_CONVERSATION_MAX_PARTICIPANTS must be at least 2, and "
+                    + "SHARED_CONVERSATION_MAX_MESSAGE_CHARACTERS and SHARED_CONVERSATION_FORK_MAX_MESSAGES at least 1");
+        }
+
+        if (conversationIdleDays < 1) {
+            throw new IllegalStateException("SHARED_CONVERSATION_IDLE_DAYS must be at least 1");
+        }
+
+        if (conversationMaxActiveSessions < 1) {
+            throw new IllegalStateException("SHARED_CONVERSATION_MAX_ACTIVE_SESSIONS must be at least 1");
+        }
+
+        if (conversationRunLockSeconds <= chatTimeout.toSeconds()) {
+            throw new IllegalStateException("SHARED_CONVERSATION_RUN_LOCK_SECONDS must be greater than spring.ai.openai.chat.timeout ("
+                    + chatTimeout.toSeconds() + "s), or a conversation run could outlive its lock");
+        }
+
+        Set<String> tools = Arrays.stream(conversationTools.split(","))
+                .map(String::strip)
+                .filter(tool -> !tool.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        for (String tool : unexpectedTools(tools)) {
+            log.warn("SHARED_CONVERSATION_TOOLS lists '{}', which is not a web-search tool or generate_image. Tools run as the "
+                    + "sender, so a personal tool would expose the sender's data to the whole group.", tool);
+        }
+
+        SharedSessionSettings.Conversation conversation = new SharedSessionSettings.Conversation(conversationEnabled,
+                conversationMaxParticipants,
+                conversationMaxMessageCharacters,
+                Duration.ofSeconds(conversationRunLockSeconds),
+                Collections.unmodifiableSet(tools),
+                conversationForkMaxMessages,
+                Duration.ofDays(conversationIdleDays),
+                conversationMaxActiveSessions);
+
         return new SharedSessionSettings(agentNames,
                 Duration.ofHours(inviteTtlHours),
                 maxPendingInvites,
                 maxMessageCharacters,
                 maxNameCharacters,
                 Duration.ofSeconds(runLockSeconds),
-                Duration.ofDays(idleDays));
+                Duration.ofDays(idleDays),
+                conversation);
     }
 }

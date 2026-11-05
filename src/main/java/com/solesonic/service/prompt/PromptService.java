@@ -1,5 +1,6 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.address.Address;
 import com.solesonic.model.chat.ChatRequest;
@@ -33,6 +34,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
@@ -47,6 +49,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -56,6 +59,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
@@ -92,6 +96,11 @@ public class PromptService {
      * request's {@code _meta}.
      */
     public static final String REFERENCE_ATTACHMENT_IDS = "referenceAttachmentIds";
+    /**
+     * Left out of a shared conversation's prompt, which rejects slash commands.
+     */
+    private static final String SLASH_COMMAND_HINT = "If a request needs a capability you don't have in plain chat, tell the user they "
+            + "can type \"/\" to browse available slash commands, tools, and agents.";
     private static final DateTimeFormatter CURRENT_DATE_TIME_FORMATTER =
             DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a (zzz)", Locale.US);
 
@@ -121,12 +130,16 @@ public class PromptService {
     private final UserLlmKeyService userLlmKeyService;
     private final LocalToolRegistry localToolRegistry;
     private final ChatDocumentHealer chatDocumentHealer;
+    private final SharedSessionSettings sharedSessionSettings;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
 
     @Value("classpath:prompts/basic-system-prompt.st")
     Resource defaultSystemPromptResource;
+
+    @Value("classpath:prompts/shared-conversation-system.st")
+    Resource sharedSystemPromptResource;
 
     private final String defaultChatModel;
     private final Duration chatTimeout;
@@ -148,6 +161,7 @@ public class PromptService {
             UserLlmKeyService userLlmKeyService,
             LocalToolRegistry localToolRegistry,
             ChatDocumentHealer chatDocumentHealer,
+            SharedSessionSettings sharedSessionSettings,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
         this.chatClient = chatClient;
@@ -166,8 +180,48 @@ public class PromptService {
         this.userLlmKeyService = userLlmKeyService;
         this.localToolRegistry = localToolRegistry;
         this.chatDocumentHealer = chatDocumentHealer;
+        this.sharedSessionSettings = sharedSessionSettings;
         this.defaultChatModel = defaultChatModel;
         this.chatTimeout = chatTimeout;
+    }
+
+    /**
+     * One message of a shared conversation, answered as {@code senderUserId}: their model key and
+     * their token, with nothing of theirs that the other participants must not see. The shared session
+     * calls this for every message.
+     * <p>
+     * It is the default prompt route with the private parts taken out ({@link SharedPromptOptions}):
+     * no memory, no address or time zone, retrieval from the global corpus alone, and only the tools
+     * the session's allowlist names. There are no slash commands, no sticky agent and no attachments,
+     * so none of those collaborators is involved.
+     *
+     * @param senderName       the sender's name in the session, which prefixes their message for the model
+     * @param participantNames the names of everyone currently seated, for the system prompt
+     */
+    public Flux<String> streamShared(UUID chatId,
+                                     UUID senderUserId,
+                                     String senderName,
+                                     List<String> participantNames,
+                                     ChatRequest chatRequest,
+                                     Authentication authentication) {
+        log.info("Streaming shared prompt for chat id {}", chatId);
+
+        String authToken = AuthenticationTokens.token(authentication);
+
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(senderUserId);
+
+        String model = chatModel(chatId);
+
+        //Tools act as the sender, so generated images and tool progress belong to the sender and the shared chat.
+        Map<String, Object> contextMap = Map.of(
+                USER_TOKEN, authToken,
+                USER_ID, senderUserId,
+                CHAT_ID, chatId,
+                PROGRESS_TOKEN, chatId,
+                REFERENCE_ATTACHMENT_IDS, List.of());
+
+        return streamDefaultSystemPrompt(chatId, senderUserId, senderName + ": " + chatRequest.chatMessage(), null,
+                contextMap, model, llmApiKey, SharedPromptOptions.of(participantNames));
     }
 
     public Flux<String> stream(UUID chatId,
@@ -232,7 +286,7 @@ public class PromptService {
         log.info("No command or sticky agent, using default system prompt.");
 
         return streamDefaultSystemPrompt(chatId, userId, chatMessage.chatMessage(),
-                attachments.attachmentContext(), contextMap, model, llmApiKey);
+                attachments.attachmentContext(), contextMap, model, llmApiKey, null);
     }
 
     private SlashCommand slashCommand(Set<String> commands) {
@@ -322,6 +376,8 @@ public class PromptService {
      * @param contextMap   tool context forwarded to any MCP tool the model calls mid-turn
      * @param model        the chat model name requested via {@code OpenAiChatOptions}
      * @param llmApiKey    the user's own key, which every model call of the turn carries
+     * @param shared       null for a private chat; for a shared conversation, what is left out of the
+     *                     prompt and who is in the room
      */
     private Flux<String> streamDefaultSystemPrompt(UUID chatId,
                                                    UUID userId,
@@ -329,7 +385,8 @@ public class PromptService {
                                                    String attachmentContext,
                                                    Map<String, Object> contextMap,
                                                    String model,
-                                                   LlmApiKey llmApiKey) {
+                                                   LlmApiKey llmApiKey,
+                                                   SharedPromptOptions shared) {
 
         //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
         //chat memory advisor is about to write rather than the previous turn's.
@@ -341,39 +398,19 @@ public class PromptService {
 
         ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
 
-        Address address = userPreferencesService.getAddress(userId);
+        Prompt defaultSystemPrompt = shared == null ? privateSystemPrompt(userId, chatId, message) : sharedSystemPrompt(shared);
 
-        String templateAddress = Optional.ofNullable(address)
-                .map(Object::toString)
-                .orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
+        List<ToolCallback> toolCallbacks = shared == null ? privateToolCallbacks() : sharedToolCallbacks();
 
-        ZoneId zone = userPreferencesService.getZone(userId);
-        String templateDateTime = ZonedDateTime.now(zone).format(CURRENT_DATE_TIME_FORMATTER);
-
-        //Only this route carries memory. Tool routes keep their no-prose rule so it cannot leak into
-        //tool arguments, and A2A agents are external.
-        Map<String, Object> systemPromptContext = Map.of(
-                AGENT_NAME, agentName,
-                USER_ADDRESS, templateAddress,
-                CURRENT_DATE_TIME, templateDateTime,
-                USER_MEMORY, userMemoryService.promptBlock(userId, chatId, message)
-        );
-
-        PromptTemplate systempPromptTemplate = PromptTemplate.builder()
-                .resource(defaultSystemPromptResource)
-                .variables(systemPromptContext)
-                .build();
-
-        Prompt defaultSystemPrompt = systempPromptTemplate.create();
-
-        List<ToolCallback> toolCallbacks = new ArrayList<>(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS));
-        toolCallbacks.add(localToolRegistry.callback(GENERATE_IMAGE));
+        Advisor retrievalAdvisor = shared == null
+                ? vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey)
+                : vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, llmApiKey);
 
         var promptSpec = chatClient.prompt()
                 .system(defaultSystemPrompt.getContents())
                 .user(message)
                 .tools(toolCallbacks)
-                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey))
+                .advisors(retrievalAdvisor)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture)
@@ -387,5 +424,94 @@ public class PromptService {
 
         return capturingContentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture, chatMessageService,
                 liteLlmHeaderRegistry, chatId, since, correlationId);
+    }
+
+    private Prompt privateSystemPrompt(UUID userId, UUID chatId, String message) {
+        Address address = userPreferencesService.getAddress(userId);
+
+        String templateAddress = Optional.ofNullable(address)
+                .map(Object::toString)
+                .orElse(AddressService.TEMPLATE_ADDRESS_NOT_FOUND);
+
+        ZoneId zone = userPreferencesService.getZone(userId);
+        String templateDateTime = ZonedDateTime.now(zone).format(CURRENT_DATE_TIME_FORMATTER);
+
+        //Only this route carries memory. Tool routes keep their no-prose rule so it cannot leak into
+        //tool arguments, and A2A agents are external.
+        return systemPrompt(templateAddress, templateDateTime, userMemoryService.promptBlock(userId, chatId, message), SLASH_COMMAND_HINT);
+    }
+
+    /**
+     * The default prompt without the sender's address, time zone or memory, which the whole room would
+     * read in the reply, followed by the group-conversation addendum.
+     */
+    private Prompt sharedSystemPrompt(SharedPromptOptions shared) {
+        Prompt base = systemPrompt(SharedPromptOptions.ADDRESS_WITHHELD,
+                ZonedDateTime.now(ZoneOffset.UTC).format(CURRENT_DATE_TIME_FORMATTER), "", "");
+
+        Prompt addendum = PromptTemplate.builder()
+                .resource(sharedSystemPromptResource)
+                .variables(Map.of("names", String.join(", ", shared.participantNames())))
+                .build()
+                .create();
+
+        return new Prompt(base.getContents() + System.lineSeparator() + System.lineSeparator() + addendum.getContents());
+    }
+
+    private Prompt systemPrompt(String address, String dateTime, String memory, String slashCommandHint) {
+        Map<String, Object> systemPromptContext = Map.of(
+                AGENT_NAME, agentName,
+                USER_ADDRESS, address,
+                CURRENT_DATE_TIME, dateTime,
+                USER_MEMORY, memory,
+                "slashCommandHint", slashCommandHint
+        );
+
+        return PromptTemplate.builder()
+                .resource(defaultSystemPromptResource)
+                .variables(systemPromptContext)
+                .build()
+                .create();
+    }
+
+    private List<ToolCallback> privateToolCallbacks() {
+        List<ToolCallback> toolCallbacks = new ArrayList<>(mcpIdentityProvider.getToolCallbacks(DEFAULT_PROMPT_TOOLS));
+        toolCallbacks.add(localToolRegistry.callback(GENERATE_IMAGE));
+
+        return toolCallbacks;
+    }
+
+    /**
+     * Exactly the session's allowlist: the MCP tools it names, and {@code generate_image}, a local
+     * tool, when it is listed.
+     */
+    private List<ToolCallback> sharedToolCallbacks() {
+        Set<String> allowed = sharedSessionSettings.conversation().tools();
+
+        Set<String> mcpTools = allowed.stream()
+                .filter(tool -> !GENERATE_IMAGE.equals(tool))
+                .collect(Collectors.toUnmodifiableSet());
+
+        List<ToolCallback> toolCallbacks = new ArrayList<>(mcpIdentityProvider.getToolCallbacks(mcpTools));
+
+        if (allowed.contains(GENERATE_IMAGE)) {
+            toolCallbacks.add(localToolRegistry.callback(GENERATE_IMAGE));
+        }
+
+        return toolCallbacks;
+    }
+
+    /**
+     * What a shared conversation's prompt differs by from a private one. Its presence is the switch:
+     * the private route passes null.
+     *
+     * @param participantNames everyone currently seated, named to the model
+     */
+    record SharedPromptOptions(List<String> participantNames) {
+        static final String ADDRESS_WITHHELD = "Not shared in a group conversation.";
+
+        static SharedPromptOptions of(List<String> participantNames) {
+            return new SharedPromptOptions(participantNames == null ? List.of() : List.copyOf(participantNames));
+        }
     }
 }

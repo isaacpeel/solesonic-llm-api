@@ -121,7 +121,8 @@ public class GeneratedImageService {
     public GeneratedImage get(UUID imageId) {
         UUID userId = userRequestContext.getUserId();
 
-        return generatedImageRepository.findByIdAndUserId(imageId, userId)
+        //Readable by its owner, or by anyone still seated in the shared conversation it was made in.
+        return generatedImageRepository.findReadableByIdAndUserId(imageId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Generated image not found: " + imageId));
     }

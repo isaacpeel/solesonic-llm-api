@@ -7,6 +7,7 @@ import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
@@ -27,6 +28,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -88,6 +90,80 @@ class ChatMessageServiceTest {
 
     private ChatAttachmentDescription description(UUID chatMessageId, String visionDescription) {
         return new ChatAttachmentDescription(chatMessageId, "screenshot.png", null, visionDescription);
+    }
+
+    private ChatMessage sentBy(UUID senderUserId, String text) {
+        ChatMessage chatMessage = chatMessage(MessageType.USER, text);
+        chatMessage.setSenderUserId(senderUserId);
+
+        return chatMessage;
+    }
+
+    @Test
+    void sharedHistoryNamesTheSenderOfEachUserMessageAndLeavesAssistantMessagesAlone() {
+        UUID alex = UUID.randomUUID();
+        UUID sam = UUID.randomUUID();
+        UUID unknown = UUID.randomUUID();
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(alex, "hello"),
+                chatMessage(MessageType.ASSISTANT, "hi Alex"),
+                sentBy(sam, "and me?"),
+                chatMessage(MessageType.ASSISTANT, "hi Sam"),
+                sentBy(unknown, "who am I"),
+                chatMessage(MessageType.ASSISTANT, "someone"),
+                sentBy(null, "no sender"),
+                chatMessage(MessageType.ASSISTANT, "ok"),
+                sentBy(alex, "in flight")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+
+        assertThat(messages).extracting(Message::getText).containsExactly(
+                "Alex: hello", "hi Alex", "Sam: and me?", "hi Sam", "Someone: who am I", "someone", "Someone: no sender", "ok");
+    }
+
+    @Test
+    void aSharedTranscriptCarriesTheImagesGeneratedInItsReplies() {
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "here it is");
+        GeneratedImageSummary image = new GeneratedImageSummary(UUID.randomUUID(), UUID.randomUUID(), reply.getId(), "/images/x", null,
+                "a lighthouse", "model", null, 1024, 1024, null, 2.0, 8, ZonedDateTime.now(), List.of());
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(chatMessage(MessageType.USER, "draw"), reply));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of(image));
+
+        List<ChatMessage> transcript = chatMessageService.sharedTranscript(chatId);
+
+        assertThat(transcript.getLast().getGeneratedImages()).containsExactly(image);
+        assertThat(transcript.getFirst().getGeneratedImages()).isEmpty();
+    }
+
+    @Test
+    void aSharedTranscriptKeepsTheTokenAndTimingSummaryButNotTheLiteLlmInternals() {
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "here it is");
+        com.solesonic.model.chat.LiteLlmCallMetadata liteLlm = new com.solesonic.model.chat.LiteLlmCallMetadata(
+                "call-1", "gpt", "http://10.0.0.5:8585/v1", 0, 0, 120.0, 3.0);
+        reply.setResponseMetadataCalls(List.of(new com.solesonic.model.chat.ModelCallMetadata("qwen", "chatcmpl-1", null, "stop", 10, 20, 30,
+                41.5, 1.0, 2.0, 3.0, null, null, null, null, null, null, null, null, liteLlm)));
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(reply));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        com.solesonic.model.chat.ModelCallMetadata call = chatMessageService.sharedTranscript(chatId).getFirst()
+                .getResponseMetadataCalls().getFirst();
+
+        assertThat(call.liteLlm()).isNull();
+        assertThat(call.totalTokens()).isEqualTo(30);
+        assertThat(call.tokensPerSecond()).isEqualTo(41.5);
+        assertThat(call.predictedMillis()).isEqualTo(2.0);
+    }
+
+    @Test
+    void historyWithoutNamesIsUnattributed() {
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(UUID.randomUUID(), "hello"),
+                chatMessage(MessageType.ASSISTANT, "hi")));
+
+        assertThat(chatMessageService.findByChatId(chatId)).extracting(Message::getText).containsExactly("hello", "hi");
     }
 
     @Test

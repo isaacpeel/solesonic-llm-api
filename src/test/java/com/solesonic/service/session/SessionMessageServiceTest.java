@@ -11,6 +11,7 @@ import com.solesonic.model.session.SessionMessageAccepted;
 import com.solesonic.model.session.SessionMessageRequest;
 import com.solesonic.model.session.SessionPrompt;
 import com.solesonic.model.session.SessionPromptAnswer;
+import com.solesonic.model.session.SessionMode;
 import com.solesonic.model.session.SessionStatus;
 import com.solesonic.model.session.SessionTurn;
 import com.solesonic.model.session.SharedSession;
@@ -18,6 +19,7 @@ import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.llm.UserLlmKeyService;
+import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.redis.StartedRun;
@@ -32,6 +34,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.security.core.Authentication;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -46,7 +49,10 @@ import static com.solesonic.service.session.SessionFixtures.CHAT_ID;
 import static com.solesonic.service.session.SessionFixtures.NOW;
 import static com.solesonic.service.session.SessionFixtures.SAM;
 import static com.solesonic.service.session.SessionFixtures.SESSION_ID;
-import static com.solesonic.service.session.SessionFixtures.SETTINGS;
+import static com.solesonic.service.session.SessionFixtures.CONVERSATION_SETTINGS;
+import static com.solesonic.service.session.SessionFixtures.KIM;
+import static com.solesonic.service.session.SessionFixtures.conversationSession;
+import static com.solesonic.service.session.SessionFixtures.participant;
 import static com.solesonic.service.session.SessionFixtures.participants;
 import static com.solesonic.service.session.SessionFixtures.session;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,6 +71,7 @@ import static org.mockito.Mockito.when;
 class SessionMessageServiceTest {
     private static final UUID MESSAGE_ID = UUID.randomUUID();
     private static final UUID ELICITATION_ID = UUID.randomUUID();
+    private static final Authentication NO_AUTHENTICATION = null;
 
     @Mock
     private SharedSessionService sharedSessionService;
@@ -85,6 +92,9 @@ class SessionMessageServiceTest {
     private A2AAgentRegistry a2aAgentRegistry;
 
     @Mock
+    private PromptService promptService;
+
+    @Mock
     private UserLlmKeyService userLlmKeyService;
 
     @Mock
@@ -96,7 +106,8 @@ class SessionMessageServiceTest {
     @BeforeEach
     void setUp() {
         sessionMessageService = new SessionMessageService(sharedSessionService, sessionRunLock, redisStreamingChatService,
-                redisStreamService, a2aAgentService, a2aAgentRegistry, userLlmKeyService, pushNotificationService, SETTINGS);
+                redisStreamService, a2aAgentService, a2aAgentRegistry, promptService, userLlmKeyService, pushNotificationService,
+                CONVERSATION_SETTINGS);
 
         sharedSession = session(SessionStatus.ACTIVE);
 
@@ -141,7 +152,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aTypedMessageRunsAsItsSenderOnTheOwnersStream() {
-        SessionMessageAccepted accepted = sessionMessageService.send(SESSION_ID, SAM, typed(" towel "));
+        SessionMessageAccepted accepted = sessionMessageService.send(SESSION_ID, SAM, typed(" towel "), NO_AUTHENTICATION);
 
         TurnPlan turnPlan = startedPlan();
         assertThat(accepted).isEqualTo(new SessionMessageAccepted(turnPlan.runId(), MESSAGE_ID));
@@ -159,7 +170,7 @@ class SessionMessageServiceTest {
     void aMessageTheAgentAskedToHideIsWrappedForTheTranscriptButSentToTheAgentAsTyped() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION);
 
         TurnPlan turnPlan = startedPlan();
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\ntowel\n[[/hidden]]");
@@ -170,7 +181,7 @@ class SessionMessageServiceTest {
     void aMessageFromSomeoneTheTurnDoesNotWaitOnIsNotHidden() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, ALEX, typed("towel"));
+        sessionMessageService.send(SESSION_ID, ALEX, typed("towel"), NO_AUTHENTICATION);
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("towel");
     }
@@ -179,14 +190,14 @@ class SessionMessageServiceTest {
     void aMarkerAParticipantTypedIsStrippedFromTheTranscript() {
         sharedSession.setTurnState(new SessionTurn(List.of(SAM), "answer", false, List.of("Alex")));
 
-        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"));
+        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"), NO_AUTHENTICATION);
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("[[hidden:Alex]]\nab\n[[/hidden]]");
     }
 
     @Test
     void aMessageThatIsOnlyAMarkerIsRefused() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("[[/hidden]]")))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("[[/hidden]]"), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
     }
@@ -197,7 +208,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))));
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), NO_AUTHENTICATION);
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("Play");
     }
@@ -206,7 +217,7 @@ class SessionMessageServiceTest {
     void aMessageWhileARunIsInProgressIsRefused() {
         when(sessionRunLock.acquire(eq(SESSION_ID), any(), any())).thenReturn(false);
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.RUN_IN_PROGRESS));
 
@@ -217,21 +228,21 @@ class SessionMessageServiceTest {
     void aMessageInAClosedSessionIsRefused() {
         sharedSession.setStatus(SessionStatus.CLOSED);
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.SESSION_CLOSED));
     }
 
     @Test
     void aMessageOverTheLimitIsRefused() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("x".repeat(21))))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("x".repeat(21)), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.MESSAGE_TOO_LONG));
     }
 
     @Test
     void aMessageIsEitherTextOrAnAnswer() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null)))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
     }
@@ -241,7 +252,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere"))));
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere"))), NO_AUTHENTICATION);
 
         TurnPlan turnPlan = startedPlan();
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("Play");
@@ -253,7 +264,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play")))))
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
 
@@ -265,7 +276,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play")))))
+                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play"))), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
     }
@@ -274,7 +285,7 @@ class SessionMessageServiceTest {
     void aRunThatCannotStartReleasesTheLock() {
         doReturn(Mono.error(new IllegalStateException("redis down"))).when(redisStreamingChatService).start(any());
 
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel")))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION))
                 .isInstanceOf(IllegalStateException.class);
 
         verify(sessionRunLock).release(eq(SESSION_ID), any());
@@ -282,7 +293,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aFinishedRunPushesWhoeverTheSessionNowWaitsOnAndReleasesTheLock() {
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION);
         TurnPlan turnPlan = startedPlan();
 
         SharedSessionSummary summary = summary(new SessionTurn(List.of(ALEX), "answer", false, List.of()));
@@ -319,7 +330,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aFailedRunIsPushedToItsSenderOnly() {
-        sessionMessageService.send(SESSION_ID, SAM, typed("towel"));
+        sessionMessageService.send(SESSION_ID, SAM, typed("towel"), NO_AUTHENTICATION);
         TurnPlan turnPlan = startedPlan();
 
         turnPlan.hooks().afterTerminal(turnPlan.runId(), TurnOutcome.FAILED);
@@ -328,8 +339,224 @@ class SessionMessageServiceTest {
         verify(pushNotificationService, never()).push(eq(ALEX), any());
     }
 
+    // ---- conversation mode
+
+    private void aConversation() {
+        sharedSession = conversationSession(SessionStatus.ACTIVE);
+        List<com.solesonic.model.session.SessionParticipant> seated =
+                List.of(participant(ALEX, 0, "Alex"), participant(SAM, 1, "Sam"), participant(KIM, 2, "Kim"));
+        when(sharedSessionService.requireSeated(SESSION_ID, SAM)).thenReturn(sharedSession);
+        when(sharedSessionService.requireSeated(SESSION_ID, ALEX)).thenReturn(sharedSession);
+        when(sharedSessionService.participants(SESSION_ID)).thenReturn(seated);
+        when(promptService.streamShared(any(), any(), any(), any(), any(), any())).thenReturn(Flux.just("hi"));
+    }
+
+    private void assertRefused(SessionMessageRequest request, SessionErrorCode errorCode) {
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, request, NO_AUTHENTICATION))
+                .isInstanceOfSatisfying(SessionException.class,
+                        sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(errorCode));
+        verify(sessionRunLock, never()).acquire(any(), any(), any());
+        verify(redisStreamingChatService, never()).start(any());
+    }
+
+    @Test
+    void aConversationMessageRunsAsItsSenderOnTheOwnersStreamThroughTheSharedRoute() {
+        aConversation();
+        Authentication authentication = mock(Authentication.class);
+
+        SessionMessageAccepted accepted = sessionMessageService.send(SESSION_ID, SAM, typed(" hello all "), authentication);
+
+        TurnPlan turnPlan = startedPlan();
+        assertThat(accepted).isEqualTo(new SessionMessageAccepted(turnPlan.runId(), MESSAGE_ID));
+        assertThat(turnPlan.chatId()).isEqualTo(CHAT_ID);
+        assertThat(turnPlan.streamUserId()).isEqualTo(ALEX);
+        assertThat(turnPlan.senderUserId()).isEqualTo(SAM);
+        assertThat(turnPlan.senderName()).isEqualTo("Sam");
+        assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("hello all");
+
+        turnPlan.chunks().get().blockLast();
+
+        ArgumentCaptor<com.solesonic.model.chat.ChatRequest> chatRequest = ArgumentCaptor.forClass(com.solesonic.model.chat.ChatRequest.class);
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam", "Kim")), chatRequest.capture(), eq(authentication));
+        assertThat(chatRequest.getValue().chatMessage()).isEqualTo("hello all");
+        assertThat(chatRequest.getValue().commands()).isEmpty();
+        assertThat(chatRequest.getValue().attachmentIds()).isEmpty();
+        verify(a2aAgentService, never()).delegateShared(any(), any(), any(), any());
+        verify(a2aAgentRegistry, never()).agent(any());
+        verify(userLlmKeyService).requireKey(SAM);
+    }
+
+    @Test
+    void theConversationRunLockUsesTheConversationDuration() {
+        aConversation();
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+
+        verify(sessionRunLock).acquire(eq(SESSION_ID), any(), eq(CONVERSATION_SETTINGS.conversation().runLock()));
+        verify(sessionRunLock).recordCursor(eq(SESSION_ID), eq("5-0"), eq(CONVERSATION_SETTINGS.conversation().runLock()));
+    }
+
+    @Test
+    void aSlashCommandIsNotAllowedInAConversation() {
+        aConversation();
+
+        assertRefused(typed("/model other"), SessionErrorCode.COMMAND_NOT_ALLOWED);
+        assertRefused(typed("  /web"), SessionErrorCode.COMMAND_NOT_ALLOWED);
+    }
+
+    @Test
+    void aSlashInTheMiddleOfAMessageIsFine() {
+        aConversation();
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("and/or"), NO_AUTHENTICATION);
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("and/or");
+    }
+
+    @Test
+    void aConversationRefusesAnAnswerToAQuestion() {
+        aConversation();
+
+        assertRefused(new SessionMessageRequest(null, new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))),
+                SessionErrorCode.INVALID_MESSAGE);
+    }
+
+    @Test
+    void aConversationMessageIsLimitedToTheConversationLength() {
+        aConversation();
+
+        assertRefused(typed("x".repeat(51)), SessionErrorCode.MESSAGE_TOO_LONG);
+    }
+
+    @Test
+    void aConversationMessageAtTheLimitIsAccepted() {
+        aConversation();
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("x".repeat(50)), NO_AUTHENTICATION);
+
+        assertThat(startedPlan().chatRequest().chatMessage()).hasSize(50);
+    }
+
+    @Test
+    void anEmptyConversationMessageIsRefused() {
+        aConversation();
+
+        assertRefused(typed("   "), SessionErrorCode.INVALID_MESSAGE);
+        assertRefused(new SessionMessageRequest(null, null), SessionErrorCode.INVALID_MESSAGE);
+        assertRefused(null, SessionErrorCode.INVALID_MESSAGE);
+    }
+
+    @Test
+    void hiddenMarkersAreStrippedFromAConversationMessage() {
+        aConversation();
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("a[[/hidden]]b"), NO_AUTHENTICATION);
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("ab");
+    }
+
+    @Test
+    void aMessageInAClosedConversationIsRefused() {
+        aConversation();
+        sharedSession.setStatus(SessionStatus.CLOSED);
+
+        assertRefused(typed("hello"), SessionErrorCode.SESSION_CLOSED);
+    }
+
+    @Test
+    void aConversationMessageWhileARunIsInProgressIsRefused() {
+        aConversation();
+        when(sessionRunLock.acquire(eq(SESSION_ID), any(), any())).thenReturn(false);
+
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION))
+                .isInstanceOfSatisfying(SessionException.class,
+                        sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.RUN_IN_PROGRESS));
+        verify(redisStreamingChatService, never()).start(any());
+    }
+
+    private TurnPlan startedConversationPlan() {
+        aConversation();
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+        return startedPlan();
+    }
+
+    private void finish(TurnPlan turnPlan, TurnOutcome outcome) {
+        SharedSessionSummary summary = new SharedSessionSummary(SESSION_ID, CHAT_ID, SessionMode.CONVERSATION, "Chat", ALEX, null,
+                SessionStatus.ACTIVE, List.of(), List.of(), null, null, null, false, NOW, NOW);
+        when(sharedSessionService.applyOutcome(eq(SESSION_ID), eq(turnPlan.runId()), eq(outcome), any())).thenReturn(summary);
+        when(sharedSessionService.publishState(CHAT_ID, ALEX, summary)).thenReturn(Mono.empty());
+
+        turnPlan.hooks().beforeTerminal(turnPlan.runId(), outcome).block();
+        turnPlan.hooks().afterTerminal(turnPlan.runId(), outcome);
+        turnPlan.hooks().finished(turnPlan.runId());
+
+        verify(sharedSessionService).publishState(CHAT_ID, ALEX, summary);
+        verify(sessionRunLock).release(SESSION_ID, turnPlan.runId());
+    }
+
+    @Test
+    void aCompletedConversationRunPushesEveryOtherSeatedParticipantButNotTheSender() {
+        TurnPlan turnPlan = startedConversationPlan();
+
+        finish(turnPlan, TurnOutcome.COMPLETED);
+
+        PushEvent.SharedChatMessage event = new PushEvent.SharedChatMessage(CHAT_ID, SESSION_ID, turnPlan.runId());
+        verify(pushNotificationService).push(ALEX, event);
+        verify(pushNotificationService).push(KIM, event);
+        verify(pushNotificationService, never()).push(eq(SAM), any());
+    }
+
+    @Test
+    void aCompletedConversationRunDoesNotPushSomeoneWhoHasLeft() {
+        TurnPlan turnPlan = startedConversationPlan();
+        com.solesonic.model.session.SessionParticipant kim = participant(KIM, 2, "Kim");
+        kim.setLeftAt(NOW);
+        when(sharedSessionService.participants(SESSION_ID))
+                .thenReturn(List.of(participant(ALEX, 0, "Alex"), participant(SAM, 1, "Sam"), kim));
+
+        finish(turnPlan, TurnOutcome.COMPLETED);
+
+        verify(pushNotificationService).push(eq(ALEX), any(PushEvent.SharedChatMessage.class));
+        verify(pushNotificationService, never()).push(eq(KIM), any());
+        verify(pushNotificationService, never()).push(eq(SAM), any());
+    }
+
+    @Test
+    void aCancelledConversationRunPushesNobody() {
+        TurnPlan turnPlan = startedConversationPlan();
+
+        finish(turnPlan, TurnOutcome.CANCELLED);
+
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    @Test
+    void aConversationIsNamedToTheModelByTheParticipantsStillSeated() {
+        aConversation();
+        com.solesonic.model.session.SessionParticipant kim = participant(KIM, 2, "Kim");
+        kim.setLeftAt(NOW);
+        when(sharedSessionService.participants(SESSION_ID))
+                .thenReturn(List.of(participant(ALEX, 0, "Alex"), participant(SAM, 1, "Sam"), kim));
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+        startedPlan().chunks().get().blockLast();
+
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam")), any(), any());
+    }
+
+    @Test
+    void aFailedConversationRunIsPushedToItsSender() {
+        aConversation();
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+        TurnPlan turnPlan = startedPlan();
+
+        turnPlan.hooks().afterTerminal(turnPlan.runId(), TurnOutcome.FAILED);
+
+        verify(pushNotificationService).push(SAM, new PushEvent.TurnFailed(CHAT_ID, turnPlan.runId()));
+    }
+
     private static SharedSessionSummary summary(SessionTurn turn) {
-        return new SharedSessionSummary(SESSION_ID, CHAT_ID, AGENT, SessionStatus.ACTIVE, List.of(),
+        return new SharedSessionSummary(SESSION_ID, CHAT_ID, SessionMode.AGENT, null, ALEX, AGENT, SessionStatus.ACTIVE, List.of(), List.of(),
                 turn, null, null, false, NOW, NOW);
     }
 }

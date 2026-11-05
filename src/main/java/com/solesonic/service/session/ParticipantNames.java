@@ -43,6 +43,22 @@ public final class ParticipantNames {
     }
 
     /**
+     * The name of one person joining a session that already has names, kept or left: the same rules as
+     * {@link #assign}, applied against {@code takenNames}, which must hold the name of every participant
+     * row of the session, because the unique index on {@code lower(name)} covers those who left as well.
+     */
+    public static String nameNewcomer(Candidate candidate, int seat, List<String> takenNames, int maxCharacters) {
+        String name = firstNamed(maxCharacters, candidate.displayName(), candidate.username(), FALLBACK + (seat + 1));
+        String unique = unique(name, candidate, seat, takenNames, maxCharacters);
+
+        for (int attempt = 1; !isFree(unique, takenNames); attempt++) {
+            unique = withSuffix(name, " " + (seat + 1 + attempt), maxCharacters);
+        }
+
+        return unique;
+    }
+
+    /**
      * The agent's own cleaning, rule for rule: characters outside the name set are removed, runs of
      * spaces become one, and the result is cut to {@code maxCharacters} and trimmed.
      */

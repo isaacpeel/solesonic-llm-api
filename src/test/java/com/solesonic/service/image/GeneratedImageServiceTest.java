@@ -13,6 +13,8 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
@@ -21,6 +23,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -73,6 +78,43 @@ class GeneratedImageServiceTest {
         generatedImageService.deleteForChatMessage(chatMessageId);
 
         verify(generatedImageRepository).deleteByChatMessageId(chatMessageId);
+    }
+
+    @Test
+    void anImageIsReadThroughTheReadableLookupSoASeatedParticipantOfItsConversationCanFetchIt() {
+        UUID imageId = UUID.randomUUID();
+        GeneratedImage generatedImage = new GeneratedImage();
+
+        when(userRequestContext.getUserId()).thenReturn(OWNER_ID);
+        when(generatedImageRepository.findReadableByIdAndUserId(imageId, OWNER_ID)).thenReturn(Optional.of(generatedImage));
+
+        assertThat(generatedImageService.get(imageId)).isSameAs(generatedImage);
+        verify(generatedImageRepository, never()).findByIdAndUserId(any(), any());
+    }
+
+    @Test
+    void anImageTheCallerMayNotReadIsNotFound() {
+        UUID imageId = UUID.randomUUID();
+
+        when(userRequestContext.getUserId()).thenReturn(OWNER_ID);
+        when(generatedImageRepository.findReadableByIdAndUserId(imageId, OWNER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> generatedImageService.get(imageId))
+                .isInstanceOfSatisfying(ResponseStatusException.class,
+                        exception -> assertThat(exception.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
+    }
+
+    @Test
+    void renamingAndDeletingStayWithTheOwnerAlone() {
+        UUID imageId = UUID.randomUUID();
+
+        when(generatedImageRepository.findByIdAndUserId(imageId, OTHER_OWNER_ID)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> generatedImageService.renameForUser(imageId, OTHER_OWNER_ID, "x"))
+                .isInstanceOf(ResponseStatusException.class);
+        assertThatThrownBy(() -> generatedImageService.deleteForUser(imageId, OTHER_OWNER_ID))
+                .isInstanceOf(ResponseStatusException.class);
+        verify(generatedImageRepository, never()).findReadableByIdAndUserId(any(), any());
     }
 
     @Test

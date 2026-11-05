@@ -25,7 +25,18 @@ public class SharedSession {
 
     private UUID chatId;
 
+    @Enumerated(EnumType.STRING)
+    private SessionMode mode = SessionMode.AGENT;
+
+    /**
+     * Null in conversation mode.
+     */
     private String agentName;
+
+    /**
+     * The private chat a conversation session was forked from. Informational: the chat may be gone.
+     */
+    private UUID sourceChatId;
 
     @Enumerated(EnumType.STRING)
     private SessionStatus status;
@@ -58,6 +69,22 @@ public class SharedSession {
 
     public void setChatId(UUID chatId) {
         this.chatId = chatId;
+    }
+
+    public SessionMode getMode() {
+        return mode;
+    }
+
+    public void setMode(SessionMode mode) {
+        this.mode = mode;
+    }
+
+    public UUID getSourceChatId() {
+        return sourceChatId;
+    }
+
+    public void setSourceChatId(UUID sourceChatId) {
+        this.sourceChatId = sourceChatId;
     }
 
     public String getAgentName() {

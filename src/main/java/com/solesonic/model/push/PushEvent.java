@@ -16,7 +16,8 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         PushEvent.InterestUpdated,
         PushEvent.SessionInvited,
         PushEvent.SessionTurn,
-        PushEvent.SessionStarted {
+        PushEvent.SessionStarted,
+        PushEvent.SharedChatMessage {
 
     /**
      * What a log line names: the chat for an event about one, the offer for an offer, which has none.
@@ -138,6 +139,24 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         @Override
         public String dedupeKey() {
             return "session-started:" + runId + ":" + recipientUserId;
+        }
+    }
+
+    /**
+     * A shared conversation's run {@code runId} finished with a reply. The event names no recipient: the
+     * same run is pushed to every other participant, so it cannot be deduped by run alone, and
+     * {@code PushNotificationService} throttles it per recipient and session instead.
+     */
+    record SharedChatMessage(UUID chatId, UUID sessionId, UUID runId) implements PushEvent {
+
+        @Override
+        public UUID subjectId() {
+            return sessionId;
+        }
+
+        @Override
+        public String dedupeKey() {
+            return "shared-chat:" + runId;
         }
     }
 }

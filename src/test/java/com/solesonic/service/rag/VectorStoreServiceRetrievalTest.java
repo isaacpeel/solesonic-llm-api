@@ -35,6 +35,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import static com.solesonic.model.rag.RetrievalMetadata.ENTITLEMENTS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -148,6 +149,43 @@ class VectorStoreServiceRetrievalTest {
 
     private String lastUserTextSeenByModel() {
         return seenByChatModel.getLast().getUserMessage().getText();
+    }
+
+    /**
+     * A shared conversation is read by people other than the sender, so it reaches into neither the
+     * sender's own documents nor a chat's: the global corpus alone.
+     */
+    @Test
+    void theSharedAdvisorSearchesOnlyTheGlobalTier() {
+        configure(true, 3);
+
+        Advisor advisor = vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+
+        ChatModel chatModel = new ChatModel() {
+            @Override
+            public ChatResponse call(Prompt prompt) {
+                seenByChatModel.add(prompt);
+                return new ChatResponse(List.of(new Generation(new AssistantMessage("ok"))));
+            }
+        };
+
+        ChatClient.builder(chatModel).build().prompt()
+                .user("What is our holiday policy?")
+                .advisors(advisor)
+                .call()
+                .content();
+
+        List<SearchRequest> searches = searches();
+
+        assertThat(searches).hasSize(1);
+        assertThat(searches.getFirst().getFilterExpression().toString())
+                .contains(ENTITLEMENTS)
+                .contains("global")
+                .doesNotContain(userId.toString())
+                .doesNotContain(chatId.toString());
+        assertThat(searches.getFirst().getSimilarityThreshold()).isEqualTo(0.75);
+        verify(userPreferencesService, never()).get(any());
+        verify(ingestedDocumentRepository, never()).findAllChatDocumentsManagedBy(any(), any(), any(), any());
     }
 
     @Test

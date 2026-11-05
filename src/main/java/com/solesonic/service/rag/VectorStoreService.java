@@ -146,12 +146,38 @@ public class VectorStoreService {
 
         LlmDocumentReranker documentReranker = new LlmDocumentReranker(taskClientBuilder(llmApiKey).build(), RERANK_TOP_N);
 
-        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K,
-                tiers(userId, chatId, userPreferences, hasChatDocuments ? chatFloorTopK : 0), llmApiKey);
+        return advisor(llmApiKey, tiers(userId, chatId, userPreferences, hasChatDocuments ? chatFloorTopK : 0),
+                historyAwareQueryCompressor, chatDocumentNames);
+    }
+
+    /**
+     * The advisor for a shared conversation, which every participant reads: the global corpus tier
+     * only. Not the sender's own tier, and not a conversation tier either, because a shared chat has
+     * no attachments of its own. With no conversation documents there is no manifest and no
+     * compression, and the threshold is the configured default, not any one participant's preference.
+     */
+    public Advisor sharedRetrievalAugmentationAdvisor(UUID chatId, LlmApiKey llmApiKey) {
+        HistoryAwareQueryCompressor historyAwareQueryCompressor = new HistoryAwareQueryCompressor(
+                queryCompressionEnabled,
+                false,
+                () -> CompressionQueryTransformer.builder()
+                        .chatClientBuilder(taskClientBuilder(llmApiKey))
+                        .build());
+
+        log.debug("Retrieving at global scope only for shared chat {}", chatId);
+
+        return advisor(llmApiKey, List.of(tier(DocumentPrincipal.global(), defaultGlobalSimilarityThreshold)),
+                historyAwareQueryCompressor, List.of());
+    }
+
+    private Advisor advisor(LlmApiKey llmApiKey,
+                            List<ScopedDocumentRetriever.ScopedTier> tiers,
+                            HistoryAwareQueryCompressor historyAwareQueryCompressor,
+                            List<String> chatDocumentNames) {
+        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K, tiers, llmApiKey);
 
         return RetrievalAugmentationAdvisor.builder()
                 .queryTransformers(historyAwareQueryCompressor, new TruncatingQueryTransformer(maxQueryChars))
-//                .queryExpander(multiQueryExpander)
                 .documentRetriever(scopedDocumentRetriever)
                 .documentPostProcessors(new RetrievalLoggingPostProcessor())
                 .queryAugmenter(new ChatDocumentQueryAugmenter(chatDocumentNames))

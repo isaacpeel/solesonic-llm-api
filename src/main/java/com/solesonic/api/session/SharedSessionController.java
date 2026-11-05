@@ -1,14 +1,18 @@
 package com.solesonic.api.session;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.session.SessionInviteSummary;
+import com.solesonic.model.session.SessionInvitesRequest;
 import com.solesonic.model.session.SessionMessageAccepted;
 import com.solesonic.model.session.SessionMessageRequest;
 import com.solesonic.model.session.SessionStatus;
+import com.solesonic.model.session.SharedConversationRequest;
 import com.solesonic.model.session.SharedSession;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.session.SessionMessageService;
+import com.solesonic.service.session.SharedConversationService;
 import com.solesonic.service.session.SessionStreamService;
 import com.solesonic.service.session.SharedSessionService;
 import org.apache.commons.lang3.StringUtils;
@@ -20,6 +24,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,7 +45,8 @@ import java.util.UUID;
 import static com.solesonic.api.chat.StreamingChatController.LAST_EVENT_ID;
 
 /**
- * A session several users share with one A2A agent, as any participant reaches it. Every endpoint
+ * A session several users share with one A2A agent, or a conversation shared by the owner of a chat,
+ * as any participant reaches it. Every endpoint
  * checks the caller takes part, or took part, inside the query, so another user's session is a
  * {@code 404}; only a participant still seated may send, cancel or leave.
  * <p>
@@ -56,17 +62,20 @@ public class SharedSessionController {
     private static final Duration CANCEL_TIMEOUT = Duration.ofSeconds(5);
 
     private final SharedSessionService sharedSessionService;
+    private final SharedConversationService sharedConversationService;
     private final SessionMessageService sessionMessageService;
     private final SessionStreamService sessionStreamService;
     private final RedisStreamingChatService redisStreamingChatService;
     private final UserRequestContext userRequestContext;
 
     public SharedSessionController(SharedSessionService sharedSessionService,
+                                   SharedConversationService sharedConversationService,
                                    SessionMessageService sessionMessageService,
                                    SessionStreamService sessionStreamService,
                                    RedisStreamingChatService redisStreamingChatService,
                                    UserRequestContext userRequestContext) {
         this.sharedSessionService = sharedSessionService;
+        this.sharedConversationService = sharedConversationService;
         this.sessionMessageService = sessionMessageService;
         this.sessionStreamService = sessionStreamService;
         this.redisStreamingChatService = redisStreamingChatService;
@@ -84,6 +93,29 @@ public class SharedSessionController {
         return ResponseEntity.ok(sharedSessionService.list(userRequestContext.getUserId(), statuses, pageable));
     }
 
+    /**
+     * Shares a chat: forks it into a new shared conversation and invites the named users to it.
+     */
+    @PostMapping
+    public ResponseEntity<SharedSessionSummary> create(@RequestBody SharedConversationRequest sharedConversationRequest) {
+        log.info("Sharing a chat");
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(sharedConversationService.create(userRequestContext.getUserId(), sharedConversationRequest));
+    }
+
+    /**
+     * The owner of a conversation adds people to it; for anyone else it is a {@code 404}.
+     */
+    @PostMapping("/{sessionId}/invites")
+    public ResponseEntity<List<SessionInviteSummary>> invite(@PathVariable UUID sessionId,
+                                                             @RequestBody SessionInvitesRequest sessionInvitesRequest) {
+        log.info("Inviting people to shared session {}", sessionId);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(sharedConversationService.invite(sessionId, userRequestContext.getUserId(), sessionInvitesRequest));
+    }
+
     @GetMapping("/{sessionId}")
     public ResponseEntity<SharedSessionSummary> get(@PathVariable UUID sessionId) {
         return ResponseEntity.ok(sharedSessionService.summary(sessionId, userRequestContext.getUserId()));
@@ -96,11 +128,12 @@ public class SharedSessionController {
 
     @PostMapping("/{sessionId}/messages")
     public ResponseEntity<SessionMessageAccepted> send(@PathVariable UUID sessionId,
-                                                       @RequestBody SessionMessageRequest sessionMessageRequest) {
+                                                       @RequestBody SessionMessageRequest sessionMessageRequest,
+                                                       Authentication authentication) {
         log.info("Message in shared session {}", sessionId);
 
         return ResponseEntity.status(HttpStatus.ACCEPTED)
-                .body(sessionMessageService.send(sessionId, userRequestContext.getUserId(), sessionMessageRequest));
+                .body(sessionMessageService.send(sessionId, userRequestContext.getUserId(), sessionMessageRequest, authentication));
     }
 
     @GetMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -113,11 +146,12 @@ public class SharedSessionController {
     }
 
     /**
-     * The same signal a chat's stop sends. Any seated participant may stop a run: they all watch it.
+     * The same signal a chat's stop sends. In an agent session any seated participant may stop a run:
+     * they all watch it. In a conversation only the sender of the run, or the owner, may.
      */
     @PostMapping("/{sessionId}/cancel")
     public ResponseEntity<Void> cancel(@PathVariable UUID sessionId) {
-        SharedSession sharedSession = sharedSessionService.requireSeated(sessionId, userRequestContext.getUserId());
+        SharedSession sharedSession = sharedSessionService.requireMayCancel(sessionId, userRequestContext.getUserId());
         UUID streamUserId = SharedSessionService.streamOwner(sharedSessionService.participants(sessionId));
 
         log.info("Cancelling the run in shared session {}", sessionId);

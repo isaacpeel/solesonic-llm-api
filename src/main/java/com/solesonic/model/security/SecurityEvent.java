@@ -61,7 +61,15 @@ public enum SecurityEvent {
     /**
      * Over the per-IP request budget. Emitted once a rate limiter exists.
      */
-    RATE_LIMIT_EXCEEDED("ratelimit.exceeded");
+    RATE_LIMIT_EXCEEDED("ratelimit.exceeded"),
+
+    /**
+     * Access changes in shared conversations. These are audit lines, not denials: they carry ids
+     * rather than a request, and no jail matches them.
+     */
+    SESSION_SHARED("session.shared"),
+    SESSION_INVITED("session.invited"),
+    SESSION_JOINED("session.joined");
 
     private final String key;
 
