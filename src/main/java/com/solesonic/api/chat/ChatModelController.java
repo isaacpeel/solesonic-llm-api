@@ -6,6 +6,8 @@ import com.solesonic.model.chat.model.ChatModelState;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.ChatModelService;
 import com.solesonic.service.chat.ChatService;
+import com.solesonic.model.chat.history.ChatKind;
+import com.solesonic.service.session.SharedSessionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
@@ -21,7 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.UUID;
 
 /**
- * The model a conversation uses, chosen through plain REST: {@code /model} is a setting command the
+ * The model a conversation uses (for a shared chat, any seated participant may choose it), chosen through plain REST: {@code /model} is a setting command the
  * client applies itself, never a chat turn.
  * <p>
  * {@code GET /chats/models} shares its first segment with {@code GET /chats/{chatId}}; Spring ranks a
@@ -36,10 +38,13 @@ public class ChatModelController {
     private final ChatModelService chatModelService;
     private final ChatService chatService;
     private final UserRequestContext userRequestContext;
+    private final SharedSessionService sharedSessionService;
 
     public ChatModelController(ChatModelService chatModelService,
                                ChatService chatService,
-                               UserRequestContext userRequestContext) {
+                               UserRequestContext userRequestContext,
+                               SharedSessionService sharedSessionService) {
+        this.sharedSessionService = sharedSessionService;
         this.chatModelService = chatModelService;
         this.chatService = chatService;
         this.userRequestContext = userRequestContext;
@@ -59,7 +64,7 @@ public class ChatModelController {
 
         log.info("Listing chat models for chat {}", chatId);
 
-        chatService.requireOwned(chatId);
+        chatService.requireModelAccess(chatId);
 
         return ResponseEntity.ok(chatModelService.options(userRequestContext.getUserId(), chatId));
     }
@@ -71,9 +76,13 @@ public class ChatModelController {
     public ResponseEntity<ChatModelState> select(@PathVariable UUID chatId, @RequestBody ChatModelRequest chatModelRequest) {
         log.info("Selecting a model for chat {}", chatId);
 
-        chatService.requireOwned(chatId);
+        ChatKind kind = chatService.requireModelAccess(chatId).getKind();
 
-        return ResponseEntity.ok(chatModelService.select(userRequestContext.getUserId(), chatId, chatModelRequest.model()));
+        ChatModelState state = chatModelService.select(userRequestContext.getUserId(), chatId, chatModelRequest.model());
+
+        announce(chatId, kind);
+
+        return ResponseEntity.ok(state);
     }
 
     /**
@@ -84,9 +93,21 @@ public class ChatModelController {
     public ResponseEntity<Void> reset(@PathVariable UUID chatId) {
         log.info("Resetting the model for chat {}", chatId);
 
-        chatService.requireOwned(chatId);
+        ChatKind kind = chatService.requireModelAccess(chatId).getKind();
         chatModelService.reset(chatId);
 
+        announce(chatId, kind);
+
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * A model change in a shared chat applies to everyone's next message, so everyone seated is told the new
+     * state. A private chat has nobody to tell.
+     */
+    private void announce(UUID chatId, ChatKind kind) {
+        if (kind == ChatKind.SHARED) {
+            sharedSessionService.publishStateForChat(chatId);
+        }
     }
 }

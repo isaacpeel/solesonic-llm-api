@@ -416,4 +416,89 @@ class SlashCommandRouterTest {
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
                 attachments, CONTEXT_MAP, "qwen3-8b", LLM_API_KEY);
     }
+
+    // ---- shared conversation
+
+    private static final java.util.Set<String> SHARED_TOOLS = java.util.Set.of("search", "web_search");
+
+    private Flux<String> routeShared(SlashCommand slashCommand) {
+        return slashCommandRouter.routeShared(slashCommand, chatId, userId, "tell me something", NO_ATTACHMENTS, CONTEXT_MAP,
+                "openai/gpt-4o", LLM_API_KEY, SHARED_TOOLS);
+    }
+
+    @Test
+    void routeShared_aToolCommandRunsLikeAPrivateOneWhenItsToolIsAllowlisted() {
+        ToolSlashCommand toolCommand = toolSlashCommand();
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        when(toolCallService.stream(chatId, "tell me something", toolCommand, CONTEXT_MAP, LLM_API_KEY)).thenReturn(Flux.just("found"));
+
+        StepVerifier.create(routeShared(toolCommand)).expectNext("found").verifyComplete();
+    }
+
+    @Test
+    void routeShared_aToolCommandOutsideTheAllowlistIsNeverRun() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        when(mcpTool.name()).thenReturn("gmail_send");
+        when(mcpTool.description()).thenReturn("Send mail");
+
+        assertThatThrownBy(() -> routeShared(new ToolSlashCommand(mcpTool)).blockLast()).isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(toolCallService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_aLocalToolCommandOutsideTheAllowlistIsNeverRun() {
+        assertThatThrownBy(() -> routeShared(new LocalToolSlashCommand("generate_image", "generate_image", "Draw")).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(toolCallService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_anAgentCommandIsNeverRunOrPinned() {
+        assertThatThrownBy(() -> routeShared(new AgentSlashCommand("feud", "feud", "Family feud")).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aAgentService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_theModelCommandIsNeverRouted() {
+        assertThatThrownBy(() -> routeShared(new ModelSlashCommand()).blockLast()).isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aStickyAgentService, chatClient, toolCallService);
+    }
+
+    /**
+     * A listed prompt runs for the whole room, so it retrieves from the conversation and the global corpus
+     * only and may call only the allowlisted tools, never the sender's library or every tool the server has.
+     */
+    @Test
+    void routeShared_aPromptCommandRetrievesSharedAndOffersOnlyTheAllowlistedTools() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER,
+                new McpSchema.TextContent(null, "tell me something", null));
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class)))
+                .thenReturn(new McpSchema.GetPromptResult(null, List.of(userMessage), null));
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        ToolCallback allowed = mock(ToolCallback.class);
+        when(mcpIdentityProvider.getToolCallbacks(SHARED_TOOLS)).thenReturn(List.of(allowed));
+        when(vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY)).thenReturn(mock(Advisor.class));
+        when(chatClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
+        when(requestSpec.tools(any())).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any())).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);
+        when(requestSpec.toolContext(any())).thenReturn(requestSpec);
+        when(requestSpec.options(any())).thenReturn(requestSpec);
+        when(requestSpec.stream()).thenReturn(streamResponseSpec);
+        when(streamResponseSpec.chatResponse()).thenReturn(
+                Flux.just(new ChatResponse(List.of(new Generation(new AssistantMessage("answer"))))));
+
+        StepVerifier.create(routeShared(promptCommand)).expectNext("answer").verifyComplete();
+
+        verify(vectorStoreService).sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+        verify(vectorStoreService, org.mockito.Mockito.never()).retrievalAugmentationAdvisor(any(), any(), any());
+        verify(mcpIdentityProvider, org.mockito.Mockito.never()).getToolCallbacks();
+        verify(requestSpec).tools((Object[]) new ToolCallback[]{allowed});
+    }
 }

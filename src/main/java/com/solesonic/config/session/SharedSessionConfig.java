@@ -55,7 +55,8 @@ public class SharedSessionConfig {
                                                        @Value("${solesonic.shared-session.conversation.tools}") String conversationTools,
                                                        @Value("${solesonic.shared-session.conversation.fork-max-messages}") int conversationForkMaxMessages,
                                                        @Value("${solesonic.shared-session.conversation.idle-days}") long conversationIdleDays,
-                                                       @Value("${solesonic.shared-session.conversation.max-active-sessions}") int conversationMaxActiveSessions) {
+                                                       @Value("${solesonic.shared-session.conversation.max-active-sessions}") int conversationMaxActiveSessions,
+                                                       @Value("${solesonic.shared-session.conversation.commands}") String conversationCommands) {
 
         Set<String> agentNames = Arrays.stream(agents.split(","))
                 .map(String::strip)
@@ -108,6 +109,27 @@ public class SharedSessionConfig {
                     + "sender, so a personal tool would expose the sender's data to the whole group.", tool);
         }
 
+        Set<String> commands = Arrays.stream(conversationCommands.split(","))
+                .map(String::strip)
+                .filter(command -> !command.isEmpty())
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        //Only the names that are always tools can be told apart here; the catalogue decides the rest at startup
+        //(SharedCommandPolicy), and every send is checked again.
+        Set<String> commandsWithoutTool = commands.stream()
+                .filter(EXPECTED_TOOLS::contains)
+                .filter(command -> !tools.contains(command))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        //A setting that is wrong is not worth a failed boot of the whole API: say so loudly and run without
+        //the commands that could never have worked.
+        if (!commandsWithoutTool.isEmpty()) {
+            log.error("SHARED_CONVERSATION_COMMANDS lists {}, whose tool is not in SHARED_CONVERSATION_TOOLS. A tool command only "
+                    + "runs when its tool is allowlisted too, so these commands are dropped from the allowlist", commandsWithoutTool);
+
+            commands.removeAll(commandsWithoutTool);
+        }
+
         SharedSessionSettings.Conversation conversation = new SharedSessionSettings.Conversation(conversationEnabled,
                 conversationMaxParticipants,
                 conversationMaxMessageCharacters,
@@ -115,7 +137,8 @@ public class SharedSessionConfig {
                 Collections.unmodifiableSet(tools),
                 conversationForkMaxMessages,
                 Duration.ofDays(conversationIdleDays),
-                conversationMaxActiveSessions);
+                conversationMaxActiveSessions,
+                Collections.unmodifiableSet(commands));
 
         return new SharedSessionSettings(agentNames,
                 Duration.ofHours(inviteTtlHours),

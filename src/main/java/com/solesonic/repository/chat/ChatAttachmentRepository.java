@@ -21,6 +21,41 @@ public interface ChatAttachmentRepository extends JpaRepository<ChatAttachment, 
     Optional<ChatAttachment> findByIdAndUserId(UUID attachmentId, UUID userId);
 
     /**
+     * {@link #findByIdAndUserId} for reading: also the attachments of a shared conversation, to a
+     * participant still seated in the CONVERSATION session that owns the attachment's chat. A file one
+     * participant sent is part of what the whole room reads. Someone who left, an agent session, a
+     * private chat and a staged attachment (no chat yet) all stay the uploader's alone. Deleting and
+     * sending never use this.
+     */
+    @Query("""
+            from ChatAttachment attachment
+            where attachment.id = :attachmentId
+              and (attachment.userId = :userId
+                   or exists (select 1 from SharedSession sharedSession, SessionParticipant participant
+                              where sharedSession.chatId = attachment.chatId
+                                and sharedSession.mode = com.solesonic.model.session.SessionMode.CONVERSATION
+                                and sharedSession.status in (com.solesonic.model.session.SessionStatus.ACTIVE,
+                                                             com.solesonic.model.session.SessionStatus.COMPLETED)
+                                and participant.sessionId = sharedSession.id
+                                and participant.userId = :userId
+                                and participant.leftAt is null))
+            """)
+    Optional<ChatAttachment> findReadableByIdAndUserId(UUID attachmentId, UUID userId);
+
+    /**
+     * How many of {@code attachmentIds} are the user's own and still staged: uploaded, and not yet sent
+     * with any message. A send is valid only when this equals the number of ids it names.
+     */
+    @Query("""
+            select count(attachment)
+              from ChatAttachment attachment
+             where attachment.id in :attachmentIds
+               and attachment.userId = :userId
+               and attachment.chatMessageId is null
+           """)
+    long countStagedByIdInAndUserId(Set<UUID> attachmentIds, UUID userId);
+
+    /**
      * Loads whole rows — image bytes included — for the attachments named by one send. User-scoped
      * for the same reason {@link #findByIdAndUserId} is, and ordered so that image numbering in the
      * prompt is stable across turns; {@code attachmentIds} arrives as an unordered set.

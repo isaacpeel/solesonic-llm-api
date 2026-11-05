@@ -18,6 +18,7 @@ import com.solesonic.model.session.SharedSession;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.service.a2a.A2AAgentService;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
@@ -41,6 +42,7 @@ import reactor.core.publisher.Mono;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static com.solesonic.service.session.SessionFixtures.AGENT;
@@ -100,6 +102,15 @@ class SessionMessageServiceTest {
     @Mock
     private PushNotificationService pushNotificationService;
 
+    @Mock
+    private ChatAttachmentService chatAttachmentService;
+
+    @Mock
+    private SharedCommandPolicy sharedCommandPolicy;
+
+    @Mock
+    private com.solesonic.service.chat.ChatModelService chatModelService;
+
     private SessionMessageService sessionMessageService;
     private SharedSession sharedSession;
 
@@ -107,7 +118,7 @@ class SessionMessageServiceTest {
     void setUp() {
         sessionMessageService = new SessionMessageService(sharedSessionService, sessionRunLock, redisStreamingChatService,
                 redisStreamService, a2aAgentService, a2aAgentRegistry, promptService, userLlmKeyService, pushNotificationService,
-                CONVERSATION_SETTINGS);
+                CONVERSATION_SETTINGS, chatAttachmentService, sharedCommandPolicy, chatModelService);
 
         sharedSession = session(SessionStatus.ACTIVE);
 
@@ -139,7 +150,7 @@ class SessionMessageServiceTest {
     }
 
     private static SessionMessageRequest typed(String text) {
-        return new SessionMessageRequest(text, null);
+        return new SessionMessageRequest(text, null, null, null);
     }
 
     @SuppressWarnings("all")
@@ -208,7 +219,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), NO_AUTHENTICATION);
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play")), null, null), NO_AUTHENTICATION);
 
         assertThat(startedPlan().chatRequest().chatMessage()).isEqualTo("Play");
     }
@@ -242,7 +253,7 @@ class SessionMessageServiceTest {
 
     @Test
     void aMessageIsEitherTextOrAnAnswer() {
-        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null), NO_AUTHENTICATION))
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null, null, null, null), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.INVALID_MESSAGE));
     }
@@ -252,7 +263,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere"))), NO_AUTHENTICATION);
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play", "chatId", "elsewhere")), null, null), NO_AUTHENTICATION);
 
         TurnPlan turnPlan = startedPlan();
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("Play");
@@ -264,7 +275,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, new SessionMessageRequest(null,
-                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))), NO_AUTHENTICATION))
+                new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play")), null, null), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
 
@@ -276,7 +287,7 @@ class SessionMessageServiceTest {
         promptFor(ALEX);
 
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, ALEX, new SessionMessageRequest(null,
-                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play"))), NO_AUTHENTICATION))
+                new SessionPromptAnswer(UUID.randomUUID(), "accept", Map.of("choice", "play")), null, null), NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
                         sessionException -> assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.NOT_YOUR_TURN));
     }
@@ -351,6 +362,38 @@ class SessionMessageServiceTest {
         when(promptService.streamShared(any(), any(), any(), any(), any(), any())).thenReturn(Flux.just("hi"));
     }
 
+    @Test
+    void aModelTheSendersKeyCannotUseIsRefusedBeforeAnyRunStartsNamingTheModel() {
+        aConversation();
+        when(chatModelService.unusableSelectedModel(SAM, CHAT_ID)).thenReturn(Optional.of("openai/gpt-4o"));
+
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION))
+                .isInstanceOfSatisfying(SessionException.class, sessionException -> {
+                    assertThat(sessionException.getErrorCode()).isEqualTo(SessionErrorCode.MODEL_NOT_AVAILABLE);
+                    assertThat(sessionException.getMessage()).contains("openai/gpt-4o").contains("Pick another model");
+                });
+
+        verify(sessionRunLock, never()).acquire(any(), any(), any());
+        verify(redisStreamingChatService, never()).start(any());
+    }
+
+    @Test
+    void aSendOnAModelTheKeyCanUseGoesAhead() {
+        aConversation();
+        when(chatModelService.unusableSelectedModel(SAM, CHAT_ID)).thenReturn(Optional.empty());
+
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+
+        verify(redisStreamingChatService).start(any());
+    }
+
+    @Test
+    void anAgentSessionNeverChecksTheModel() {
+        sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
+
+        verify(chatModelService, never()).unusableSelectedModel(any(), any());
+    }
+
     private void assertRefused(SessionMessageRequest request, SessionErrorCode errorCode) {
         assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, request, NO_AUTHENTICATION))
                 .isInstanceOfSatisfying(SessionException.class,
@@ -397,11 +440,126 @@ class SessionMessageServiceTest {
     }
 
     @Test
-    void aSlashCommandIsNotAllowedInAConversation() {
+    void textThatStartsWithASlashIsJustTextWhenNoCommandIsNamed() {
         aConversation();
 
-        assertRefused(typed("/model other"), SessionErrorCode.COMMAND_NOT_ALLOWED);
-        assertRefused(typed("  /web"), SessionErrorCode.COMMAND_NOT_ALLOWED);
+        sessionMessageService.send(SESSION_ID, SAM, typed("/model other"), NO_AUTHENTICATION);
+
+        TurnPlan turnPlan = startedPlan();
+        assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("/model other");
+        assertThat(turnPlan.chatRequest().commands()).isEmpty();
+    }
+
+    private static SessionMessageRequest sending(String text, Set<UUID> attachmentIds, Set<String> commands) {
+        return new SessionMessageRequest(text, null, attachmentIds, commands);
+    }
+
+    @Test
+    void theSendersOwnStagedAttachmentsRideTheRunAndTheTextMayBeEmpty() {
+        aConversation();
+        UUID image = UUID.randomUUID();
+        UUID document = UUID.randomUUID();
+        Set<UUID> ids = Set.of(image, document);
+        when(chatAttachmentService.allStagedFor(SAM, ids)).thenReturn(true);
+
+        sessionMessageService.send(SESSION_ID, SAM, sending("   ", ids, null), NO_AUTHENTICATION);
+
+        TurnPlan turnPlan = startedPlan();
+        assertThat(turnPlan.senderUserId()).isEqualTo(SAM);
+        assertThat(turnPlan.chatRequest().chatMessage()).isEmpty();
+        assertThat(turnPlan.chatRequest().attachmentIds()).containsExactlyInAnyOrder(image, document);
+
+        turnPlan.chunks().get().blockLast();
+        ArgumentCaptor<com.solesonic.model.chat.ChatRequest> chatRequest = ArgumentCaptor.forClass(com.solesonic.model.chat.ChatRequest.class);
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), any(), chatRequest.capture(), any());
+        assertThat(chatRequest.getValue().attachmentIds()).containsExactlyInAnyOrder(image, document);
+    }
+
+    @Test
+    void attachmentsThatAreNotAllTheSendersStagedOnesAreRefused() {
+        aConversation();
+        Set<UUID> ids = Set.of(UUID.randomUUID());
+        when(chatAttachmentService.allStagedFor(SAM, ids)).thenReturn(false);
+
+        assertRefused(sending("look", ids, null), SessionErrorCode.INVALID_MESSAGE);
+    }
+
+    @Test
+    void moreAttachmentsThanAMessageMayCarryAreRefusedBeforeTheyAreChecked() {
+        aConversation();
+        Set<UUID> ids = Set.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+
+        assertRefused(sending("look", ids, null), SessionErrorCode.INVALID_MESSAGE);
+        verify(chatAttachmentService, never()).allStagedFor(any(), any());
+    }
+
+    @Test
+    void fourAttachmentsAreAccepted() {
+        aConversation();
+        Set<UUID> ids = Set.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+        when(chatAttachmentService.allStagedFor(SAM, ids)).thenReturn(true);
+
+        sessionMessageService.send(SESSION_ID, SAM, sending("look", ids, null), NO_AUTHENTICATION);
+
+        assertThat(startedPlan().chatRequest().attachmentIds()).hasSize(4);
+    }
+
+    @Test
+    void anAllowedCommandRidesTheRunAndTheTextMayBeEmpty() {
+        aConversation();
+        when(sharedCommandPolicy.require(Set.of("web_search"))).thenReturn(Set.of("web_search"));
+
+        sessionMessageService.send(SESSION_ID, SAM, sending("", null, Set.of("web_search")), NO_AUTHENTICATION);
+
+        TurnPlan turnPlan = startedPlan();
+        assertThat(turnPlan.chatRequest().chatMessage()).isEmpty();
+        assertThat(turnPlan.chatRequest().commands()).containsExactly("web_search");
+    }
+
+    @Test
+    void aRefusedCommandRefusesTheMessageAndNamesTheCommandWithoutStartingARun() {
+        aConversation();
+        when(sharedCommandPolicy.require(Set.of("feud")))
+                .thenThrow(new SessionException(SessionErrorCode.COMMAND_NOT_ALLOWED, "The command /feud is not available in a shared chat."));
+
+        assertThatThrownBy(() -> sessionMessageService.send(SESSION_ID, SAM, sending("hi", null, Set.of("feud")), NO_AUTHENTICATION))
+                .isInstanceOfSatisfying(SessionException.class, exception -> {
+                    assertThat(exception.getErrorCode()).isEqualTo(SessionErrorCode.COMMAND_NOT_ALLOWED);
+                    assertThat(exception.getMessage()).contains("/feud");
+                });
+        verify(redisStreamingChatService, never()).start(any());
+    }
+
+    @Test
+    void theModelCommandIsAppliedThroughTheModelPickerNeverSentAsAMessage() {
+        aConversation();
+        when(sharedCommandPolicy.require(Set.of("model"))).thenReturn(Set.of("model"));
+
+        assertRefused(sending("gpt", null, Set.of("model")), SessionErrorCode.INVALID_MESSAGE);
+    }
+
+    @Test
+    void aMessageWithNeitherTextNorAttachmentsNorCommandsIsStillEmpty() {
+        aConversation();
+
+        assertRefused(sending("  ", Set.of(), Set.of()), SessionErrorCode.INVALID_MESSAGE);
+    }
+
+    @Test
+    void aMessageWithOnlyAHiddenMarkerAndAnAttachmentIsAcceptedAsAttachmentsOnly() {
+        aConversation();
+        Set<UUID> ids = Set.of(UUID.randomUUID());
+        when(chatAttachmentService.allStagedFor(SAM, ids)).thenReturn(true);
+
+        sessionMessageService.send(SESSION_ID, SAM, sending("[[/hidden]]", ids, null), NO_AUTHENTICATION);
+
+        assertThat(startedPlan().chatRequest().chatMessage()).isEmpty();
+    }
+
+    @Test
+    void anAgentSessionTakesNeitherAttachmentsNorCommands() {
+        assertRefused(sending("hi", Set.of(UUID.randomUUID()), null), SessionErrorCode.INVALID_MESSAGE);
+        assertRefused(sending("hi", null, Set.of("web_search")), SessionErrorCode.INVALID_MESSAGE);
     }
 
     @Test
@@ -417,7 +575,7 @@ class SessionMessageServiceTest {
     void aConversationRefusesAnAnswerToAQuestion() {
         aConversation();
 
-        assertRefused(new SessionMessageRequest(null, new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play"))),
+        assertRefused(new SessionMessageRequest(null, new SessionPromptAnswer(ELICITATION_ID, "accept", Map.of("choice", "play")), null, null),
                 SessionErrorCode.INVALID_MESSAGE);
     }
 
@@ -442,7 +600,7 @@ class SessionMessageServiceTest {
         aConversation();
 
         assertRefused(typed("   "), SessionErrorCode.INVALID_MESSAGE);
-        assertRefused(new SessionMessageRequest(null, null), SessionErrorCode.INVALID_MESSAGE);
+        assertRefused(new SessionMessageRequest(null, null, null, null), SessionErrorCode.INVALID_MESSAGE);
         assertRefused(null, SessionErrorCode.INVALID_MESSAGE);
     }
 
@@ -482,7 +640,7 @@ class SessionMessageServiceTest {
 
     private void finish(TurnPlan turnPlan, TurnOutcome outcome) {
         SharedSessionSummary summary = new SharedSessionSummary(SESSION_ID, CHAT_ID, SessionMode.CONVERSATION, "Chat", ALEX, null,
-                SessionStatus.ACTIVE, List.of(), List.of(), null, null, null, false, NOW, NOW);
+                SessionStatus.ACTIVE, null, List.of(), List.of(), null, null, null, false, NOW, NOW);
         when(sharedSessionService.applyOutcome(eq(SESSION_ID), eq(turnPlan.runId()), eq(outcome), any())).thenReturn(summary);
         when(sharedSessionService.publishState(CHAT_ID, ALEX, summary)).thenReturn(Mono.empty());
 
@@ -556,7 +714,7 @@ class SessionMessageServiceTest {
     }
 
     private static SharedSessionSummary summary(SessionTurn turn) {
-        return new SharedSessionSummary(SESSION_ID, CHAT_ID, SessionMode.AGENT, null, ALEX, AGENT, SessionStatus.ACTIVE, List.of(), List.of(),
+        return new SharedSessionSummary(SESSION_ID, CHAT_ID, SessionMode.AGENT, null, ALEX, AGENT, SessionStatus.ACTIVE, null, List.of(), List.of(),
                 turn, null, null, false, NOW, NOW);
     }
 }

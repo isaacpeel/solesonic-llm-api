@@ -15,6 +15,7 @@ import com.solesonic.model.chat.model.ChatModelState;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.chat.ChatModelService;
 import com.solesonic.service.chat.ChatService;
+import com.solesonic.service.session.SharedSessionService;
 import com.solesonic.service.security.ResourceOwnershipService;
 import com.solesonic.service.security.SecurityEventLogger;
 import org.junit.jupiter.api.BeforeEach;
@@ -60,6 +61,9 @@ class ChatModelControllerTest {
     private ChatService chatService;
 
     @Mock
+    private SharedSessionService sharedSessionService;
+
+    @Mock
     private ResourceOwnershipService resourceOwnershipService;
 
     @Mock
@@ -76,12 +80,15 @@ class ChatModelControllerTest {
     void setUp() {
         chatId = UUID.randomUUID();
 
+        // A private conversation unless a test says otherwise.
+        org.mockito.Mockito.lenient().when(chatService.requireModelAccess(any())).thenReturn(new Chat());
+
         UserRequestContext userRequestContext = new UserRequestContext();
         userRequestContext.setUserId(USER_ID);
 
         mockMvc = MockMvcBuilders
-                .standaloneSetup(new ChatModelController(chatModelService, chatService, userRequestContext),
-                        new ChatController(chatService, resourceOwnershipService))
+                .standaloneSetup(new ChatModelController(chatModelService, chatService, userRequestContext, sharedSessionService),
+                        new ChatController(chatService, resourceOwnershipService, sharedSessionService))
                 .setControllerAdvice(new ChatModelExceptionHandler(), new AttachmentExceptionHandler(),
                         new LlmKeyExceptionHandler(), new GeneralExceptionHandler(exceptionService, securityEventLogger))
                 .build();
@@ -113,7 +120,7 @@ class ChatModelControllerTest {
                 .andExpect(jsonPath("$.selectedModel").doesNotExist());
 
         verify(chatService, never()).get(any());
-        verify(chatService, never()).requireOwned(any());
+        verify(chatService, never()).requireModelAccess(any());
     }
 
     @Test
@@ -140,12 +147,12 @@ class ChatModelControllerTest {
                 .andExpect(jsonPath("$.selectedModel").value("openai/gpt-4o"))
                 .andExpect(jsonPath("$.activeAgent").value("jira"));
 
-        verify(chatService).requireOwned(chatId);
+        verify(chatService).requireModelAccess(chatId);
     }
 
     @Test
     void refusesToListModelsForAnotherUsersChat() throws Exception {
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireOwned(chatId);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
 
         mockMvc.perform(get("/chats/models").param("chatId", chatId.toString()))
                 .andExpect(status().isNotFound());
@@ -176,7 +183,7 @@ class ChatModelControllerTest {
                 .andExpect(jsonPath("$.defaultModel").value(DEFAULT_MODEL))
                 .andExpect(jsonPath("$.models").doesNotExist());
 
-        verify(chatService).requireOwned(chatId);
+        verify(chatService).requireModelAccess(chatId);
     }
 
     @Test
@@ -205,7 +212,7 @@ class ChatModelControllerTest {
 
     @Test
     void refusesToSelectAModelForAnotherUsersChat() throws Exception {
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireOwned(chatId);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
 
         mockMvc.perform(put("/chats/{chatId}/model", chatId)
                         .contentType(MediaType.APPLICATION_JSON)
@@ -228,8 +235,34 @@ class ChatModelControllerTest {
     }
 
     @Test
+    void aModelChangeInASharedChatIsAnnouncedToEveryoneSeated() throws Exception {
+        Chat shared = new Chat();
+        shared.setKind(com.solesonic.model.chat.history.ChatKind.SHARED);
+        when(chatService.requireModelAccess(chatId)).thenReturn(shared);
+        when(chatModelService.select(USER_ID, chatId, "openai/gpt-4o"))
+                .thenReturn(new ChatModelState(DEFAULT_MODEL, "openai/gpt-4o", null));
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"openai/gpt-4o\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(sharedSessionService, times(2)).publishStateForChat(chatId);
+    }
+
+    @Test
+    void aModelChangeInAPrivateChatAnnouncesNothing() throws Exception {
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(sharedSessionService, never()).publishStateForChat(any());
+    }
+
+    @Test
     void refusesToResetAnotherUsersChat() throws Exception {
-        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireOwned(chatId);
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
 
         mockMvc.perform(delete("/chats/{chatId}/model", chatId))
                 .andExpect(status().isNotFound());

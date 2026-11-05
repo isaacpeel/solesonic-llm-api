@@ -211,6 +211,7 @@ public class SlashCommandService {
     }
 
     @EventListener(ApplicationReadyEvent.class)
+    @org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
     public void warmupCatalogOnStartup() {
         if (!warmupOnStartup) {
             return;

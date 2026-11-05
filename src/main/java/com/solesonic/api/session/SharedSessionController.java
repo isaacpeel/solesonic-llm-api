@@ -1,10 +1,13 @@
 package com.solesonic.api.session;
 
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.model.prompt.SlashCommandCatalogResponse;
 import com.solesonic.model.session.SessionInviteSummary;
 import com.solesonic.model.session.SessionInvitesRequest;
 import com.solesonic.model.session.SessionMessageAccepted;
 import com.solesonic.model.session.SessionMessageRequest;
+import com.solesonic.model.session.SessionMode;
 import com.solesonic.model.session.SessionStatus;
 import com.solesonic.model.session.SharedConversationRequest;
 import com.solesonic.model.session.SharedSession;
@@ -12,6 +15,7 @@ import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.redis.RedisStreamingChatService;
 import com.solesonic.service.session.SessionMessageService;
+import com.solesonic.service.session.SharedCommandPolicy;
 import com.solesonic.service.session.SharedConversationService;
 import com.solesonic.service.session.SessionStreamService;
 import com.solesonic.service.session.SharedSessionService;
@@ -66,6 +70,7 @@ public class SharedSessionController {
     private final SessionMessageService sessionMessageService;
     private final SessionStreamService sessionStreamService;
     private final RedisStreamingChatService redisStreamingChatService;
+    private final SharedCommandPolicy sharedCommandPolicy;
     private final UserRequestContext userRequestContext;
 
     public SharedSessionController(SharedSessionService sharedSessionService,
@@ -73,12 +78,14 @@ public class SharedSessionController {
                                    SessionMessageService sessionMessageService,
                                    SessionStreamService sessionStreamService,
                                    RedisStreamingChatService redisStreamingChatService,
+                                   SharedCommandPolicy sharedCommandPolicy,
                                    UserRequestContext userRequestContext) {
         this.sharedSessionService = sharedSessionService;
         this.sharedConversationService = sharedConversationService;
         this.sessionMessageService = sessionMessageService;
         this.sessionStreamService = sessionStreamService;
         this.redisStreamingChatService = redisStreamingChatService;
+        this.sharedCommandPolicy = sharedCommandPolicy;
         this.userRequestContext = userRequestContext;
     }
 
@@ -134,6 +141,25 @@ public class SharedSessionController {
 
         return ResponseEntity.status(HttpStatus.ACCEPTED)
                 .body(sessionMessageService.send(sessionId, userRequestContext.getUserId(), sessionMessageRequest, authentication));
+    }
+
+    /**
+     * The slash commands this conversation's composer may offer: the usual catalogue
+     * ({@code GET /slash/commands}), in the same shape, narrowed to what a message in it may run. Only
+     * someone still seated may ask. An agent session runs no commands.
+     *
+     * @param command the usual type-ahead search
+     */
+    @GetMapping("/{sessionId}/commands")
+    public ResponseEntity<SlashCommandCatalogResponse> commands(@PathVariable UUID sessionId,
+                                                                @RequestParam(name = "command", required = false) String command) {
+        SharedSession sharedSession = sharedSessionService.requireSeated(sessionId, userRequestContext.getUserId());
+
+        List<SlashCommand> slashCommands = sharedSession.getMode() == SessionMode.CONVERSATION
+                ? sharedCommandPolicy.catalogue(command)
+                : List.of();
+
+        return ResponseEntity.ok(new SlashCommandCatalogResponse(slashCommands));
     }
 
     @GetMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

@@ -151,16 +151,21 @@ class VectorStoreServiceRetrievalTest {
         return seenByChatModel.getLast().getUserMessage().getText();
     }
 
-    /**
-     * A shared conversation is read by people other than the sender, so it reaches into neither the
-     * sender's own documents nor a chat's: the global corpus alone.
-     */
-    @Test
-    void theSharedAdvisorSearchesOnlyTheGlobalTier() {
-        configure(true, 3);
+    private void sharedChatHasDocuments(String... fileNames) {
+        List<IngestedDocument> documents = new ArrayList<>();
 
-        Advisor advisor = vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+        for (String fileName : fileNames) {
+            IngestedDocument ingestedDocument = new IngestedDocument();
+            ingestedDocument.setId(UUID.randomUUID());
+            ingestedDocument.setFileName(fileName);
+            documents.add(ingestedDocument);
+        }
 
+        when(ingestedDocumentRepository.findAllChatDocuments(eq(chatId.toString()), eq(DocumentStatus.COMPLETED),
+                any(Pageable.class))).thenReturn(new PageImpl<>(documents));
+    }
+
+    private String askShared(String message) {
         ChatModel chatModel = new ChatModel() {
             @Override
             public ChatResponse call(Prompt prompt) {
@@ -169,23 +174,96 @@ class VectorStoreServiceRetrievalTest {
             }
         };
 
-        ChatClient.builder(chatModel).build().prompt()
-                .user("What is our holiday policy?")
+        Advisor advisor = vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+
+        return ChatClient.builder(chatModel).build().prompt()
+                .user(message)
                 .advisors(advisor)
                 .call()
                 .content();
+    }
+
+    /**
+     * A shared conversation is read by people other than the sender, so it reaches into none of their
+     * personal documents: the conversation's own, which every participant added to, then the global corpus.
+     */
+    @Test
+    void theSharedAdvisorSearchesExactlyTheChatAndGlobalTiers() {
+        configure(false, 0);
+        sharedChatHasDocuments();
+
+        askShared("What is our holiday policy?");
 
         List<SearchRequest> searches = searches();
 
-        assertThat(searches).hasSize(1);
-        assertThat(searches.getFirst().getFilterExpression().toString())
+        assertThat(searches).hasSize(2);
+        assertThat(searches.get(0).getFilterExpression().toString())
+                .contains(ENTITLEMENTS)
+                .contains("chat")
+                .contains(chatId.toString())
+                .doesNotContain(userId.toString());
+        assertThat(searches.get(0).getSimilarityThreshold()).isEqualTo(0.5);
+        assertThat(searches.get(1).getFilterExpression().toString())
                 .contains(ENTITLEMENTS)
                 .contains("global")
-                .doesNotContain(userId.toString())
-                .doesNotContain(chatId.toString());
-        assertThat(searches.getFirst().getSimilarityThreshold()).isEqualTo(0.75);
+                .doesNotContain(chatId.toString())
+                .doesNotContain(userId.toString());
+        assertThat(searches.get(1).getSimilarityThreshold()).isEqualTo(0.75);
         verify(userPreferencesService, never()).get(any());
         verify(ingestedDocumentRepository, never()).findAllChatDocumentsManagedBy(any(), any(), any(), any());
+    }
+
+    @Test
+    void theSharedManifestListsEveryParticipantsDocuments() {
+        configure(false, 0);
+        sharedChatHasDocuments("alice-notes.pdf", "bob-warranty.pdf");
+
+        askShared("Does it cover labor?");
+
+        assertThat(lastUserTextSeenByModel())
+                .startsWith("Does it cover labor?")
+                .contains("\"alice-notes.pdf\"")
+                .contains("\"bob-warranty.pdf\"")
+                .contains("No passage from them matched");
+    }
+
+    @Test
+    void aSharedChatWithoutDocumentsHasNoManifestAndNoFloor() {
+        configure(true, 3);
+        sharedChatHasDocuments();
+
+        askShared("What is our holiday policy?");
+
+        assertThat(searches()).hasSize(2);
+        assertThat(lastUserTextSeenByModel()).isEqualTo("What is our holiday policy?");
+        verify(taskChatModel, never()).call(any(Prompt.class));
+    }
+
+    @Test
+    void aSharedChatWithDocumentsGetsTheFloorOnItsChatTierWhenConfigured() {
+        configure(false, 3);
+        sharedChatHasDocuments("warranty.pdf");
+
+        askShared("Summarize this");
+
+        List<SearchRequest> searches = searches();
+
+        assertThat(searches).hasSize(3);
+        assertThat(searches.get(1).getSimilarityThreshold()).isZero();
+        assertThat(searches.get(1).getTopK()).isEqualTo(3);
+        assertThat(searches.get(1).getFilterExpression().toString()).contains(chatId.toString());
+    }
+
+    @Test
+    void aFailedSharedManifestLookupCostsTheTurnNothing() {
+        configure(false, 0);
+        when(ingestedDocumentRepository.findAllChatDocuments(any(), any(), any(Pageable.class)))
+                .thenThrow(new IllegalStateException("db down"));
+
+        askShared("hello");
+
+        assertThat(searches()).hasSize(2);
+        assertThat(lastUserTextSeenByModel()).isEqualTo("hello");
     }
 
     @Test

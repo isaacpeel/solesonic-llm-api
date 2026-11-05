@@ -49,6 +49,9 @@ class ChatControllerTest {
     @Mock
     private ResourceOwnershipService resourceOwnershipService;
 
+    @Mock
+    private com.solesonic.service.session.SharedSessionService sharedSessionService;
+
     @InjectMocks
     private ChatController chatController;
 
@@ -219,6 +222,39 @@ class ChatControllerTest {
 
         mockMvc.perform(get("/chats/{chatId}", chatId))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void renamingASharedChatTellsEveryoneSeated() throws Exception {
+        Chat renamed = new Chat();
+        renamed.setId(chatId);
+        renamed.setName("Trip planning");
+        renamed.setKind(com.solesonic.model.chat.history.ChatKind.SHARED);
+
+        when(chatService.rename(chatId, "Trip planning")).thenReturn(renamed);
+
+        mockMvc.perform(put("/chats/{chatId}/name", chatId)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Trip planning\"}"))
+                .andExpect(status().isOk());
+
+        verify(sharedSessionService).publishStateForChat(chatId);
+    }
+
+    @Test
+    void renamingAPrivateChatTellsNobody() throws Exception {
+        Chat renamed = new Chat();
+        renamed.setId(chatId);
+        renamed.setName("Trip planning");
+
+        when(chatService.rename(chatId, "Trip planning")).thenReturn(renamed);
+
+        mockMvc.perform(put("/chats/{chatId}/name", chatId)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"Trip planning\"}"))
+                .andExpect(status().isOk());
+
+        verify(sharedSessionService, never()).publishStateForChat(any());
     }
 
     @Test

@@ -137,6 +137,70 @@ class ChatMessageServiceTest {
         assertThat(transcript.getFirst().getGeneratedImages()).isEmpty();
     }
 
+    private static ChatAttachmentSummary attachmentOf(UUID chatMessageId, String fileName, String contentType) {
+        return new ChatAttachmentSummary(UUID.randomUUID(), chatMessageId, fileName, null, contentType, 12L, false, null, false, null);
+    }
+
+    @Test
+    void aSharedTranscriptCarriesEveryParticipantsAttachmentsOnTheirMessages() {
+        ChatMessage fromAlex = chatMessage(MessageType.USER, "see this");
+        ChatMessage fromSam = chatMessage(MessageType.USER, "and this");
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "ok");
+        ChatAttachmentSummary alexsImage = attachmentOf(fromAlex.getId(), "alex.png", "image/png");
+        ChatAttachmentSummary samsPdf = attachmentOf(fromSam.getId(), "sam.pdf", "application/pdf");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(fromAlex, reply, fromSam));
+        when(chatAttachmentService.forChat(chatId)).thenReturn(List.of(alexsImage, samsPdf));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        List<ChatMessage> transcript = chatMessageService.sharedTranscript(chatId);
+
+        assertThat(transcript.get(0).getAttachments()).containsExactly(alexsImage);
+        assertThat(transcript.get(1).getAttachments()).isEmpty();
+        assertThat(transcript.get(2).getAttachments()).containsExactly(samsPdf);
+    }
+
+    @Test
+    void aSharedTranscriptWithoutAttachmentsHasEmptyListsNotNulls() {
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(chatMessage(MessageType.USER, "hi")));
+        when(chatAttachmentService.forChat(chatId)).thenReturn(List.of());
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        assertThat(chatMessageService.sharedTranscript(chatId).getFirst().getAttachments()).isEmpty();
+    }
+
+    @Test
+    void sharedHistoryKeepsEachSendersImageDescriptionsAheadOfTheirNamedMessage() {
+        UUID alex = UUID.randomUUID();
+        UUID sam = UUID.randomUUID();
+        ChatMessage fromAlex = sentBy(alex, "what is this?");
+        ChatMessage fromSam = sentBy(sam, "and this?");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                fromAlex, chatMessage(MessageType.ASSISTANT, "a login screen"), fromSam,
+                chatMessage(MessageType.ASSISTANT, "a chart"), sentBy(alex, "in flight")));
+        when(chatAttachmentService.descriptions(chatId)).thenReturn(List.of(
+                description(fromAlex.getId(), "a login screen"), description(fromSam.getId(), "a bar chart")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+
+        assertThat(messages).extracting(Message::getText).hasSize(6);
+        assertThat(messages.get(0).getText()).contains("a login screen");
+        assertThat(messages.get(1).getText()).isEqualTo("Alex: what is this?");
+        assertThat(messages.get(3).getText()).contains("a bar chart");
+        assertThat(messages.get(4).getText()).isEqualTo("Sam: and this?");
+    }
+
+    @Test
+    void sharedHistoryNamesAMessageSentWithoutText() {
+        UUID alex = UUID.randomUUID();
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(alex, ""), chatMessage(MessageType.ASSISTANT, "nice picture"), sentBy(alex, "in flight")));
+
+        assertThat(chatMessageService.findByChatId(chatId, Map.of(alex, "Alex"))).extracting(Message::getText)
+                .containsExactly("Alex: (sent without any text)", "nice picture");
+    }
+
     @Test
     void aSharedTranscriptKeepsTheTokenAndTimingSummaryButNotTheLiteLlmInternals() {
         ChatMessage reply = chatMessage(MessageType.ASSISTANT, "here it is");

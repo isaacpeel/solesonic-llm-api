@@ -16,6 +16,7 @@ import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
+import com.solesonic.util.SharedMessageText;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,6 +33,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -226,6 +228,12 @@ public class ChatMessageService {
     public List<ChatMessage> sharedTranscript(UUID chatId) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 
+        //Every participant's attachments, as the private transcript carries its owner's: the room reads
+        //the files anyone sent. References, never bytes. One query for the chat, not one per message.
+        Map<UUID, List<ChatAttachmentSummary>> attachmentsByMessageId = chatAttachmentService.forChat(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+
         //References, never bytes: a conversation's reply can carry an image, and a reload must show it
         //as the live frame did. One query for the chat, not one per message.
         Map<UUID, List<GeneratedImageSummary>> generatedImagesByMessageId = generatedImageService.forChat(chatId)
@@ -233,18 +241,40 @@ public class ChatMessageService {
                 .collect(Collectors.groupingBy(GeneratedImageSummary::chatMessageId));
 
         for (ChatMessage chatMessage : chatMessages) {
+            chatMessage.setAttachments(attachmentsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
             chatMessage.setGeneratedImages(generatedImagesByMessageId.getOrDefault(chatMessage.getId(), List.of()));
 
-            //The token and timing summary is what a reader sees; the proxy's call id and the model
-            //server's address are the sender's deployment, not the room's business.
-            if (chatMessage.getResponseMetadataCalls() != null) {
-                chatMessage.setResponseMetadataCalls(chatMessage.getResponseMetadataCalls().stream()
-                        .map(call -> call.withLiteLlm(null))
-                        .toList());
-            }
+            redactForRoom(chatMessage);
         }
 
         return chatMessages;
+    }
+
+    /**
+     * What a shared chat's readers may see of a message's accounting: the token and timing summary, but not
+     * the proxy's call id or the model server's address, which are the sender's deployment and not the
+     * room's business. Every path that hands a shared chat's messages to a reader goes through here: the
+     * transcript, and the history list and search.
+     */
+    public static void redactForRoom(ChatMessage chatMessage) {
+        if (chatMessage.getResponseMetadataCalls() != null) {
+            chatMessage.setResponseMetadataCalls(chatMessage.getResponseMetadataCalls().stream()
+                    .map(call -> call.withLiteLlm(null))
+                    .toList());
+        }
+    }
+
+    /**
+     * The summaries of the attachments one message was sent with, for the live echo of a shared run. Read
+     * after {@link #saveUserMessage}, which has bound them, so they are the rows the transcript will show.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> attachmentSummaries(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
+
+        return chatAttachmentService.forChatAndIds(chatId, attachmentIds);
     }
 
     /**
@@ -330,7 +360,7 @@ public class ChatMessageService {
 
                         message = new UserMessage(participantNames == null
                                 ? messageText
-                                : senderName(participantNames, chatMessage.getSenderUserId()) + ": " + messageText);
+                                : SharedMessageText.forModel(senderName(participantNames, chatMessage.getSenderUserId()), messageText));
                     }
                     case ASSISTANT -> {
                         assert messageText != null;

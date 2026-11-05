@@ -5,6 +5,7 @@ import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.exception.session.SessionException;
 import com.solesonic.model.a2a.A2AParticipantMessage;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.model.session.SessionErrorCode;
 import com.solesonic.model.session.SessionMessageAccepted;
@@ -18,6 +19,8 @@ import com.solesonic.model.session.SharedSession;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.service.a2a.A2AAgentService;
+import com.solesonic.service.chat.ChatModelService;
+import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
@@ -28,6 +31,7 @@ import com.solesonic.service.redis.TurnOutcome;
 import com.solesonic.service.redis.TurnPlan;
 import com.solesonic.util.ElicitationLabels;
 import com.solesonic.util.HiddenText;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +45,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
@@ -67,6 +72,11 @@ public class SessionMessageService {
     private static final String ACCEPT = "accept";
     private static final String PROPERTIES = "properties";
 
+    /**
+     * What the private chat's composer allows, so a shared one carries no more than it.
+     */
+    static final int MAX_ATTACHMENTS_PER_MESSAGE = 4;
+
     private final SharedSessionService sharedSessionService;
     private final SessionRunLock sessionRunLock;
     private final RedisStreamingChatService redisStreamingChatService;
@@ -77,6 +87,9 @@ public class SessionMessageService {
     private final UserLlmKeyService userLlmKeyService;
     private final PushNotificationService pushNotificationService;
     private final SharedSessionSettings sharedSessionSettings;
+    private final ChatAttachmentService chatAttachmentService;
+    private final SharedCommandPolicy sharedCommandPolicy;
+    private final ChatModelService chatModelService;
 
     public SessionMessageService(SharedSessionService sharedSessionService,
                                  SessionRunLock sessionRunLock,
@@ -87,7 +100,11 @@ public class SessionMessageService {
                                  PromptService promptService,
                                  UserLlmKeyService userLlmKeyService,
                                  PushNotificationService pushNotificationService,
-                                 SharedSessionSettings sharedSessionSettings) {
+                                 SharedSessionSettings sharedSessionSettings,
+                                 ChatAttachmentService chatAttachmentService,
+                                 SharedCommandPolicy sharedCommandPolicy,
+                                 ChatModelService chatModelService) {
+        this.chatModelService = chatModelService;
         this.sharedSessionService = sharedSessionService;
         this.sessionRunLock = sessionRunLock;
         this.redisStreamingChatService = redisStreamingChatService;
@@ -98,12 +115,20 @@ public class SessionMessageService {
         this.userLlmKeyService = userLlmKeyService;
         this.pushNotificationService = pushNotificationService;
         this.sharedSessionSettings = sharedSessionSettings;
+        this.chatAttachmentService = chatAttachmentService;
+        this.sharedCommandPolicy = sharedCommandPolicy;
     }
 
     /**
-     * What a message sends: the text the transcript shows, and what the agent is sent.
+     * What a message sends: the text the transcript shows, and what the agent is sent. A conversation
+     * message also carries the attachments and slash commands it runs with.
      */
-    private record Outgoing(String displayText, String text, Map<String, Object> answerContent) {
+    private record Outgoing(String displayText, String text, Map<String, Object> answerContent,
+                            Set<UUID> attachmentIds, Set<String> commands) {
+
+        Outgoing(String displayText, String text, Map<String, Object> answerContent) {
+            this(displayText, text, answerContent, Set.of(), Set.of());
+        }
 
         A2AParticipantMessage message(String senderName, List<String> participants) {
             return answerContent == null
@@ -123,7 +148,7 @@ public class SessionMessageService {
         requireAcceptsMessages(sharedSession);
 
         Outgoing outgoing = sharedSession.getMode() == SessionMode.CONVERSATION
-                ? conversationOutgoing(sessionMessageRequest)
+                ? conversationOutgoing(senderUserId, sessionMessageRequest)
                 : outgoing(sharedSession, senderUserId, sessionMessageRequest);
 
         return run(sharedSession, senderUserId, outgoing, false, authentication);
@@ -138,22 +163,31 @@ public class SessionMessageService {
     }
 
     /**
-     * A conversation takes text only, within its own length limit, and no slash command: commands
-     * change what the sender's own chat does, and here the chat is everyone's.
+     * A conversation message is text, any of the sender's own staged attachments, and any slash commands
+     * the room may run (see {@link SharedCommandPolicy}); the text may be empty if it has one of the
+     * others. It is held to the conversation's own length limit.
      */
-    private Outgoing conversationOutgoing(SessionMessageRequest sessionMessageRequest) {
-        if (sessionMessageRequest == null || sessionMessageRequest.promptAnswer() != null || sessionMessageRequest.text() == null) {
+    private Outgoing conversationOutgoing(UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
+        if (sessionMessageRequest == null || sessionMessageRequest.promptAnswer() != null) {
             throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message in this chat is text.");
         }
 
-        String text = HiddenText.strip(sessionMessageRequest.text().strip()).strip();
+        String text = sessionMessageRequest.text() == null
+                ? ""
+                : HiddenText.strip(sessionMessageRequest.text().strip()).strip();
 
-        if (text.isEmpty()) {
-            throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message cannot be empty.");
+        Set<UUID> attachmentIds = attachmentIds(senderUserId, sessionMessageRequest.attachmentIds());
+
+        //Ahead of the empty check: a refused command should say so, not that the message is empty.
+        Set<String> commands = sharedCommandPolicy.require(sessionMessageRequest.commands());
+
+        if (commands.stream().anyMatch(SlashCommand.SETTING_COMMANDS::contains)) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE,
+                    "Settings such as the model are changed from the chat's own controls, not sent as a message.");
         }
 
-        if (text.startsWith("/")) {
-            throw new SessionException(SessionErrorCode.COMMAND_NOT_ALLOWED, "Commands are not available in a shared chat.");
+        if (text.isEmpty() && attachmentIds.isEmpty() && commands.isEmpty()) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message cannot be empty.");
         }
 
         int limit = sharedSessionSettings.conversation().maxMessageCharacters();
@@ -162,12 +196,41 @@ public class SessionMessageService {
             throw new SessionException(SessionErrorCode.MESSAGE_TOO_LONG, "Messages are limited to " + limit + " characters.");
         }
 
-        return new Outgoing(text, text, null);
+        return new Outgoing(text, text, null, attachmentIds, commands);
+    }
+
+    /**
+     * The sender's own staged attachments, and nobody else's: an upload belongs to whoever staged it, and
+     * one already in a chat is spoken for. The bind at save time is the authoritative check; this
+     * refuses early, before a run is started.
+     */
+    private Set<UUID> attachmentIds(UUID senderUserId, Set<UUID> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return Set.of();
+        }
+
+        if (requested.size() > MAX_ATTACHMENTS_PER_MESSAGE || requested.stream().anyMatch(Objects::isNull)) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE,
+                    "A message can carry up to " + MAX_ATTACHMENTS_PER_MESSAGE + " attachments.");
+        }
+
+        Set<UUID> attachmentIds = Set.copyOf(requested);
+
+        if (!chatAttachmentService.allStagedFor(senderUserId, attachmentIds)) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE,
+                    "Those attachments cannot be sent. Upload them again and retry.");
+        }
+
+        return attachmentIds;
     }
 
     private Outgoing outgoing(SharedSession sharedSession, UUID senderUserId, SessionMessageRequest sessionMessageRequest) {
         if (sessionMessageRequest == null || (sessionMessageRequest.text() == null) == (sessionMessageRequest.promptAnswer() == null)) {
             throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "A message is either text or an answer to the session's question.");
+        }
+
+        if (CollectionUtils.isNotEmpty(sessionMessageRequest.attachmentIds()) || CollectionUtils.isNotEmpty(sessionMessageRequest.commands())) {
+            throw new SessionException(SessionErrorCode.INVALID_MESSAGE, "This session takes neither attachments nor commands.");
         }
 
         if (sessionMessageRequest.text() != null) {
@@ -267,6 +330,15 @@ public class SessionMessageService {
 
         boolean conversation = sharedSession.getMode() == SessionMode.CONVERSATION;
 
+        if (conversation) {
+            // Anyone seated may choose the chat's model, but each message runs on its sender's own key. Refuse
+            // here, before a run exists, rather than letting the provider fail halfway through one.
+            chatModelService.unusableSelectedModel(senderUserId, sharedSession.getChatId()).ifPresent(model -> {
+                throw new SessionException(SessionErrorCode.MODEL_NOT_AVAILABLE,
+                        "This chat is set to " + model + ", which your account can't use. Pick another model for the chat and send again.");
+            });
+        }
+
         if (!conversation && a2aAgentRegistry.agent(sharedSession.getAgentName()).isEmpty()) {
             throw new SessionException(SessionErrorCode.AGENT_UNAVAILABLE, "The agent is not available right now. Try again later.");
         }
@@ -309,7 +381,7 @@ public class SessionMessageService {
         }
 
         SessionTurnCollector collector = new SessionTurnCollector();
-        ChatRequest chatRequest = new ChatRequest(outgoing.displayText(), Set.of(), Set.of(), null);
+        ChatRequest chatRequest = new ChatRequest(outgoing.displayText(), outgoing.commands(), outgoing.attachmentIds(), null);
         String senderName = sender.getName();
 
         Supplier<Flux<String>> chunks;

@@ -10,6 +10,8 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.agui.community.core.message.Role;
+import com.solesonic.model.agui.AttachedUserMessage;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.agui.community.core.message.UserMessage;
 import com.openai.core.http.Headers;
 import com.openai.errors.BadRequestException;
@@ -1065,9 +1067,74 @@ class RedisStreamingChatServiceTest {
         verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_STARTED), any());
 
         RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
-        RunAgentInput input = (RunAgentInput) runStarted.input();
-        assertThat(input.messages()).singleElement()
-                .isInstanceOfSatisfying(UserMessage.class, message -> assertThat(message.name()).isEqualTo("Sam"));
+        AttachedUserMessage.Input input = (AttachedUserMessage.Input) runStarted.input();
+        assertThat(input.messages()).singleElement().satisfies(message -> {
+            assertThat(message.name()).isEqualTo("Sam");
+            assertThat(message.senderUserId()).isEqualTo(USER_ID);
+        });
+    }
+
+    /**
+     * The room sees an upload as it is sent: the sender's attachments and the commands they used ride the
+     * echoed user message, in the shape the transcript carries, with the sender's id so a client need not
+     * guess who sent it from a display name two people may share.
+     */
+    @Test
+    void aSharedRunsStartedFrameEchoesTheSendersAttachmentsCommandsAndId() throws Exception {
+        UUID userMessageId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        ChatAttachmentSummary summary = new ChatAttachmentSummary(attachmentId, userMessageId, "cat.png", null,
+                "image/png", 12L, false, null, false, null);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(chatMessageService.attachmentSummaries(CHAT_ID, Set.of(attachmentId))).thenReturn(List.of(summary));
+
+        TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam",
+                new ChatRequest("look", Set.of("web_search"), Set.of(attachmentId), null),
+                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+
+        StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
+
+        RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
+
+        tools.jackson.databind.JsonNode message = new com.solesonic.config.JacksonConfig().jsonMapper()
+                .readTree(new com.solesonic.config.JacksonConfig().jsonMapper().writeValueAsString(runStarted))
+                .get("input").get("messages").get(0);
+
+        assertThat(message.get("role").asString()).isEqualTo("user");
+        assertThat(message.get("content").asString()).isEqualTo("look");
+        assertThat(message.get("name").asString()).isEqualTo("Sam");
+        assertThat(message.get("senderUserId").asString()).isEqualTo(USER_ID.toString());
+        assertThat(message.get("commands")).extracting(tools.jackson.databind.JsonNode::asString).containsExactly("web_search");
+        assertThat(message.get("attachments")).hasSize(1);
+        assertThat(message.get("attachments").get(0).get("id").asString()).isEqualTo(attachmentId.toString());
+        assertThat(message.get("attachments").get(0).get("chatMessageId").asString()).isEqualTo(userMessageId.toString());
+        assertThat(message.get("attachments").get(0).get("fileName").asString()).isEqualTo("cat.png");
+    }
+
+    /**
+     * The private chat's frame is what every client already parses; it does not grow fields.
+     */
+    @Test
+    void aPrivateRunsStartedFrameStaysTheSimpleUserMessage() {
+        UUID userMessageId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+
+        TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, USER_ID, USER_ID, null,
+                new ChatRequest("hello", Set.of(), Set.of(), null),
+                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+
+        StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
+
+        RunAgentInput input = (RunAgentInput) ((RunStartedEvent) published.getFirst().payload()).input();
+        assertThat(input.messages()).singleElement().isInstanceOf(UserMessage.class);
+        verify(chatMessageService, never()).attachmentSummaries(any(), any());
     }
 
     /**

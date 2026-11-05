@@ -29,6 +29,7 @@ import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.tools.LocalToolRegistry;
 import com.solesonic.util.AttachmentContextFormatter;
 import com.solesonic.util.AuthenticationTokens;
+import com.solesonic.util.SharedMessageText;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -97,7 +98,7 @@ public class PromptService {
      */
     public static final String REFERENCE_ATTACHMENT_IDS = "referenceAttachmentIds";
     /**
-     * Left out of a shared conversation's prompt, which rejects slash commands.
+     * Left out of a shared conversation's prompt, where only some commands run.
      */
     private static final String SLASH_COMMAND_HINT = "If a request needs a capability you don't have in plain chat, tell the user they "
             + "can type \"/\" to browse available slash commands, tools, and agents.";
@@ -190,10 +191,12 @@ public class PromptService {
      * their token, with nothing of theirs that the other participants must not see. The shared session
      * calls this for every message.
      * <p>
-     * It is the default prompt route with the private parts taken out ({@link SharedPromptOptions}):
-     * no memory, no address or time zone, retrieval from the global corpus alone, and only the tools
-     * the session's allowlist names. There are no slash commands, no sticky agent and no attachments,
-     * so none of those collaborators is involved.
+     * It is the same turn as {@link #stream} with the private parts taken out ({@link SharedPromptOptions}):
+     * no memory, no address or time zone, no sticky agent, retrieval from the conversation's own documents
+     * and the global corpus (never the sender's library), and only the tools the session's allowlist
+     * names. The message may carry the sender's attachments, which are described and indexed exactly as in
+     * a private chat, and any slash command {@code SharedCommandPolicy} let through, which the router runs
+     * with that same tool allowlist.
      *
      * @param senderName       the sender's name in the session, which prefixes their message for the model
      * @param participantNames the names of everyone currently seated, for the system prompt
@@ -206,22 +209,8 @@ public class PromptService {
                                      Authentication authentication) {
         log.info("Streaming shared prompt for chat id {}", chatId);
 
-        String authToken = AuthenticationTokens.token(authentication);
-
-        LlmApiKey llmApiKey = userLlmKeyService.requireKey(senderUserId);
-
-        String model = chatModel(chatId);
-
-        //Tools act as the sender, so generated images and tool progress belong to the sender and the shared chat.
-        Map<String, Object> contextMap = Map.of(
-                USER_TOKEN, authToken,
-                USER_ID, senderUserId,
-                CHAT_ID, chatId,
-                PROGRESS_TOKEN, chatId,
-                REFERENCE_ATTACHMENT_IDS, List.of());
-
-        return streamDefaultSystemPrompt(chatId, senderUserId, senderName + ": " + chatRequest.chatMessage(), null,
-                contextMap, model, llmApiKey, SharedPromptOptions.of(participantNames));
+        return turn(chatId, senderUserId, chatRequest, authentication,
+                new SharedPromptOptions(participantNames == null ? List.of() : List.copyOf(participantNames), senderName));
     }
 
     public Flux<String> stream(UUID chatId,
@@ -230,6 +219,18 @@ public class PromptService {
                                Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
 
+        return turn(chatId, userId, chatMessage, authentication, null);
+    }
+
+    /**
+     * @param shared null for a private chat; for a shared conversation, what is left out of the turn and
+     *               who is in the room
+     */
+    private Flux<String> turn(UUID chatId,
+                              UUID userId,
+                              ChatRequest chatMessage,
+                              Authentication authentication,
+                              SharedPromptOptions shared) {
         String authToken = AuthenticationTokens.token(authentication);
 
         //Ahead of the attachment work for the same reason as the token: a user with no key must not
@@ -242,14 +243,23 @@ public class PromptService {
 
         //Ahead of the attachment work: the route decides whether images are described at all.
         SlashCommand slashCommand = CollectionUtils.isEmpty(commands) ? null : slashCommand(commands);
-        Optional<String> stickyAgent = slashCommand == null ? stickyAgent(chatId) : Optional.empty();
+
+        if (shared != null && slashCommand instanceof AgentSlashCommand) {
+            //Refused when the message was sent; this is the backstop for a plan that got past it.
+            throw new IllegalStateException("A shared conversation never runs an agent command: " + slashCommand.command());
+        }
+
+        //A shared conversation has no sticky agent: agents are refused there.
+        Optional<String> stickyAgent = slashCommand == null && shared == null ? stickyAgent(chatId) : Optional.empty();
         ImageHandling imageHandling = imageHandling(slashCommand, stickyAgent.isPresent());
 
         //The image decision, vision and document indexing are blocking calls made on this thread, which
-        //is what lets the scope carry the key to them.
-        AttachmentResolution attachments = LlmCredentialScope.asUser(llmApiKey,
-                () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.chatMessage(),
-                        chatMessage.attachmentIds(), imageHandling));
+        //is what lets the scope carry the key to them. A shared message with nothing attached has none.
+        AttachmentResolution attachments = shared != null && CollectionUtils.isEmpty(chatMessage.attachmentIds())
+                ? new AttachmentResolution(List.of(), null)
+                : LlmCredentialScope.asUser(llmApiKey,
+                        () -> attachmentContextResolver.resolve(chatId, userId, chatMessage.chatMessage(),
+                                chatMessage.attachmentIds(), imageHandling));
 
         log.info("Chat {} routed to {} with image handling {}: {} image(s), {} described, attachment context {} characters",
                 chatId, route(slashCommand, stickyAgent.isPresent()), imageHandling, attachments.imageIds().size(),
@@ -258,6 +268,7 @@ public class PromptService {
 
         //After the send path has indexed this turn's documents, so the background run never contends
         //with it for their lease. Only the routes that retrieve: the others would not use the result.
+        //In a shared chat it heals the sender's own uploads, under their key.
         if (retrieves(slashCommand, stickyAgent.isPresent())) {
             chatDocumentHealer.schedule(chatId, userId, chatMessage.attachmentIds());
         }
@@ -270,8 +281,11 @@ public class PromptService {
                 REFERENCE_ATTACHMENT_IDS, attachments.imageIds());
 
         if (slashCommand != null) {
-            return slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
-                    contextMap, model, llmApiKey);
+            return shared == null
+                    ? slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
+                            contextMap, model, llmApiKey)
+                    : slashCommandRouter.routeShared(slashCommand, chatId, userId, SharedMessageText.orNoText(chatMessage.chatMessage()), attachments,
+                            contextMap, model, llmApiKey, sharedSessionSettings.conversation().tools());
         }
 
         if (stickyAgent.isPresent()) {
@@ -285,8 +299,14 @@ public class PromptService {
 
         log.info("No command or sticky agent, using default system prompt.");
 
-        return streamDefaultSystemPrompt(chatId, userId, chatMessage.chatMessage(),
-                attachments.attachmentContext(), contextMap, model, llmApiKey, null);
+        String message = shared == null
+                ? chatMessage.chatMessage()
+                : SharedMessageText.forModel(shared.senderName(), chatMessage.chatMessage());
+
+        //Tools act as the sender in a shared chat, so generated images and tool progress belong to the
+        //sender and the shared chat.
+        return streamDefaultSystemPrompt(chatId, userId, message,
+                attachments.attachmentContext(), contextMap, model, llmApiKey, shared);
     }
 
     private SlashCommand slashCommand(Set<String> commands) {
@@ -506,12 +526,9 @@ public class PromptService {
      * the private route passes null.
      *
      * @param participantNames everyone currently seated, named to the model
+     * @param senderName       who sent this message, which prefixes it for the model
      */
-    record SharedPromptOptions(List<String> participantNames) {
+    record SharedPromptOptions(List<String> participantNames, String senderName) {
         static final String ADDRESS_WITHHELD = "Not shared in a group conversation.";
-
-        static SharedPromptOptions of(List<String> participantNames) {
-            return new SharedPromptOptions(participantNames == null ? List.of() : List.copyOf(participantNames));
-        }
     }
 }

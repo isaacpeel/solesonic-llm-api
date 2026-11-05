@@ -467,4 +467,64 @@ class ChatGroupServiceTest {
         assertThat(chat.getChatGroupId()).isNotNull();
         verify(chatRepository, never()).save(any(Chat.class));
     }
+
+    // ---- shared chats ----
+
+    private void stubOwnedGroup() {
+        when(userRequestContext.getUserId()).thenReturn(USER_ID);
+        when(chatGroupRepository.findByIdAndUserId(CHAT_GROUP_ID, USER_ID)).thenReturn(Optional.of(chatGroup()));
+    }
+
+    private Chat sharedChat(UUID ownerId) {
+        Chat chat = new Chat();
+        chat.setId(CHAT_ID);
+        chat.setUserId(ownerId);
+        chat.setKind(com.solesonic.model.chat.history.ChatKind.SHARED);
+        chat.setChatGroupId(CHAT_GROUP_ID);
+
+        return chat;
+    }
+
+    /**
+     * Deleting a group ungroups whatever is filed in it with one statement scoped to the owner's rows. A
+     * shared chat in it is ungrouped like any other, never deleted: the delete here has no path to the chat
+     * or its session, and the client's own cascade gets a 409 for the shared one and ungroups it instead.
+     */
+    @Test
+    void deletingAGroupUngroupsASharedChatInsteadOfDeletingIt() {
+        stubOwnedGroup();
+        when(chatRepository.clearChatGroup(USER_ID, CHAT_GROUP_ID)).thenReturn(2);
+
+        chatGroupService.delete(CHAT_GROUP_ID);
+
+        verify(chatRepository).clearChatGroup(USER_ID, CHAT_GROUP_ID);
+        verify(chatRepository, never()).delete(any());
+        verify(chatRepository, never()).deleteById(any());
+        verify(chatService, never()).delete(any());
+    }
+
+    @Test
+    void theOwnerCanUngroupAndFileTheirSharedChat() {
+        stubOwnedGroup();
+        Chat chat = sharedChat(USER_ID);
+        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.empty());
+        when(chatRepository.findVisibleSharedById(CHAT_ID, USER_ID)).thenReturn(Optional.of(chat));
+
+        chatGroupService.removeChat(CHAT_GROUP_ID, CHAT_ID);
+
+        assertThat(chat.getChatGroupId()).isNull();
+        verify(chatRepository).save(chat);
+    }
+
+    @Test
+    void aParticipantWhoDoesNotOwnTheSharedChatCannotFileIt() {
+        stubOwnedGroup();
+        when(chatRepository.findByIdAndUserId(CHAT_ID, USER_ID)).thenReturn(Optional.empty());
+        when(chatRepository.findVisibleSharedById(CHAT_ID, USER_ID)).thenReturn(Optional.of(sharedChat(UUID.randomUUID())));
+
+        assertThatThrownBy(() -> chatGroupService.addChat(CHAT_GROUP_ID, CHAT_ID))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(chatRepository, never()).save(any());
+    }
 }

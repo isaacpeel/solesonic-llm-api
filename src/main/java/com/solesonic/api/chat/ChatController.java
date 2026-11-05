@@ -4,6 +4,8 @@ import com.solesonic.model.chat.ChatOrderRequest;
 import com.solesonic.model.chat.ChatRenameRequest;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.chat.ChatService;
+import com.solesonic.model.chat.history.ChatKind;
+import com.solesonic.service.session.SharedSessionService;
 import com.solesonic.service.security.ResourceOwnershipService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.apache.commons.lang3.StringUtils;
@@ -36,8 +38,11 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ResourceOwnershipService resourceOwnershipService;
+    private final SharedSessionService sharedSessionService;
 
-    ChatController(ChatService chatService, ResourceOwnershipService resourceOwnershipService) {
+    ChatController(ChatService chatService, ResourceOwnershipService resourceOwnershipService,
+                   SharedSessionService sharedSessionService) {
+        this.sharedSessionService = sharedSessionService;
         this.chatService = chatService;
         this.resourceOwnershipService = resourceOwnershipService;
     }
@@ -102,6 +107,11 @@ public class ChatController {
     public ResponseEntity<Chat> rename(@PathVariable UUID chatId, @RequestBody ChatRenameRequest chatRenameRequest) {
         log.info("Renaming chat id {}", chatId);
         Chat chat = chatService.rename(chatId, chatRenameRequest.name());
+
+        // Everyone seated sees the shared chat under its new name.
+        if (chat.getKind() == ChatKind.SHARED) {
+            sharedSessionService.publishStateForChat(chatId);
+        }
 
         return ResponseEntity.ok(chat);
     }

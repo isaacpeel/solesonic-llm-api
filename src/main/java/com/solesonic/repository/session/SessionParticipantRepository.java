@@ -12,4 +12,6 @@ public interface SessionParticipantRepository extends JpaRepository<SessionParti
     List<SessionParticipant> findBySessionIdOrderBySeatAsc(UUID sessionId);
 
     List<SessionParticipant> findBySessionIdInOrderBySeatAsc(Collection<UUID> sessionIds);
+
+    List<SessionParticipant> findBySessionIdInAndLeftAtIsNullOrderBySeatAsc(Collection<UUID> sessionIds);
 }

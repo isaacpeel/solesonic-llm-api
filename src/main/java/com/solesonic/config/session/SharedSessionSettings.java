@@ -58,6 +58,9 @@ public record SharedSessionSettings(Set<String> agentNames,
      * @param idle                 how long a conversation may go unwritten before it expires; a chat may sit
      *                             idle far longer than a game
      * @param maxActiveSessions    the most ACTIVE conversations one user may own
+     * @param commands             the slash commands a participant may send, by name. Being listed is
+     *                             necessary, not sufficient: {@code SharedCommandPolicy} also applies
+     *                             the rule for the command's kind
      */
     public record Conversation(boolean enabled,
                                int maxParticipants,
@@ -66,17 +69,35 @@ public record SharedSessionSettings(Set<String> agentNames,
                                Set<String> tools,
                                int forkMaxMessages,
                                Duration idle,
-                               int maxActiveSessions) {
+                               int maxActiveSessions,
+                               Set<String> commands) {
 
         /**
          * With the default idle window (90 days) and active-session cap (20).
          */
         public Conversation(boolean enabled, int maxParticipants, int maxMessageCharacters, Duration runLock,
                             Set<String> tools, int forkMaxMessages) {
-            this(enabled, maxParticipants, maxMessageCharacters, runLock, tools, forkMaxMessages, Duration.ofDays(90), 20);
+            this(enabled, maxParticipants, maxMessageCharacters, runLock, tools, forkMaxMessages, Duration.ofDays(90), 20,
+                    DEFAULT_COMMANDS);
         }
 
-        static Conversation defaults() {
+        /**
+         * With the default command allowlist.
+         */
+        public Conversation(boolean enabled, int maxParticipants, int maxMessageCharacters, Duration runLock,
+                            Set<String> tools, int forkMaxMessages, Duration idle, int maxActiveSessions) {
+            this(enabled, maxParticipants, maxMessageCharacters, runLock, tools, forkMaxMessages, idle, maxActiveSessions,
+                    DEFAULT_COMMANDS);
+        }
+
+        /**
+         * The web-search tool commands, image generation and the model command: what the default tool
+         * allowlist offers, and the one setting command that changes only the chat.
+         */
+        public static final Set<String> DEFAULT_COMMANDS = Set.of("web_search", "web_search_advanced", "web_search_news",
+                "web_extract_content", "generate_image", "model");
+
+        public static Conversation defaults() {
             return new Conversation(true, 8, 8000, Duration.ofSeconds(2100),
                     Set.of("web_search", "web_search_advanced", "web_search_news", "web_extract_content", "generate_image"),
                     500);

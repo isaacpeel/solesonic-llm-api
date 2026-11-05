@@ -22,6 +22,7 @@ class SessionExceptionHandlerTest {
         assertThat(statusOf(SessionErrorCode.CHAT_STREAMING)).isEqualTo(HttpStatus.CONFLICT);
         assertThat(statusOf(SessionErrorCode.COMMAND_NOT_ALLOWED)).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(statusOf(SessionErrorCode.SESSION_LIMIT_REACHED)).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(statusOf(SessionErrorCode.SHARED_CHAT_USE_LEAVE)).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test

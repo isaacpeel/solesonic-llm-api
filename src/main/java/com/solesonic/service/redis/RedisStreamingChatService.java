@@ -11,6 +11,8 @@ import com.agui.community.core.event.TextMessageContentEvent;
 import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.message.Role;
+import com.solesonic.model.agui.AttachedUserMessage;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.agui.community.core.message.UserMessage;
 import com.openai.errors.OpenAIIoException;
 import com.openai.errors.OpenAIServiceException;
@@ -61,6 +63,7 @@ import reactor.core.scheduler.Schedulers;
 import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
@@ -214,10 +217,21 @@ public class RedisStreamingChatService {
      * by {@link #update} does. A run that fails to start never calls its hooks.
      */
     public Mono<StartedRun> start(TurnPlan turnPlan) {
-        return Mono.fromCallable(() -> chatMessageService.saveUserMessage(turnPlan.chatId(), turnPlan.senderUserId(), turnPlan.chatRequest()))
+        return Mono.fromCallable(() -> {
+                    ChatMessage saved = chatMessageService.saveUserMessage(turnPlan.chatId(), turnPlan.senderUserId(), turnPlan.chatRequest());
+
+                    // A shared run's frame is read by people who did not send it, so it carries what was
+                    // attached. A private chat's sender already has its own attachments on screen.
+                    List<ChatAttachmentSummary> attachments = turnPlan.senderName() == null
+                            ? List.of()
+                            : chatMessageService.attachmentSummaries(turnPlan.chatId(), turnPlan.chatRequest().attachmentIds());
+
+                    return new SavedTurn(saved, attachments);
+                })
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMap(chatMessage -> publish(turnPlan.chatId(), turnPlan.streamUserId(), runStarted(turnPlan, chatMessage))
-                        .thenReturn(chatMessage))
+                .flatMap(savedTurn -> publish(turnPlan.chatId(), turnPlan.streamUserId(),
+                        runStarted(turnPlan, savedTurn.chatMessage(), savedTurn.attachments()))
+                        .thenReturn(savedTurn.chatMessage()))
                 .map(chatMessage -> {
                     runTurn(turnPlan).subscribe();
 
@@ -235,13 +249,29 @@ public class RedisStreamingChatService {
                 new ConversationHooks(chatId, userId));
     }
 
-    private static RunStartedEvent runStarted(TurnPlan turnPlan, ChatMessage userMessage) {
+    private record SavedTurn(ChatMessage chatMessage, List<ChatAttachmentSummary> attachments) {
+    }
+
+    private static RunStartedEvent runStarted(TurnPlan turnPlan, ChatMessage userMessage, List<ChatAttachmentSummary> attachments) {
         String chatId = turnPlan.chatId().toString();
         String runId = turnPlan.runId().toString();
+        String messageId = String.valueOf(userMessage.getId());
+        String text = turnPlan.chatRequest().chatMessage();
 
-        RunAgentInput input = new RunAgentInput(chatId, runId,
-                List.of(new UserMessage(String.valueOf(userMessage.getId()), turnPlan.chatRequest().chatMessage(), turnPlan.senderName())),
-                List.of());
+        // A named sender means a shared run, whose frame goes to the whole room; a conversation's own
+        // frame keeps the plain message every client already parses.
+        Object input;
+
+        if (turnPlan.senderName() == null) {
+            input = new RunAgentInput(chatId, runId, List.of(new UserMessage(messageId, text, null)), List.of());
+        } else {
+            Set<String> commands = turnPlan.chatRequest().commands();
+
+            input = new AttachedUserMessage.Input(chatId, runId,
+                    List.of(new AttachedUserMessage(messageId, text, turnPlan.senderName(), turnPlan.senderUserId(), attachments,
+                            commands == null ? List.of() : commands.stream().sorted().toList())),
+                    List.of());
+        }
 
         return new RunStartedEvent(chatId, runId, null, input, null, null);
     }

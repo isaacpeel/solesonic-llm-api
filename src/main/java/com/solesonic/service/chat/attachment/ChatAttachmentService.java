@@ -140,6 +140,32 @@ public class ChatAttachmentService {
                         "Attachment not found: " + attachmentId));
     }
 
+    /**
+     * {@link #get} for reading: also the attachments of a shared conversation, to the people seated in
+     * it. Only the get and download endpoints use this; deleting stays with the uploader.
+     */
+    @Transactional(readOnly = true)
+    public ChatAttachment getReadable(UUID attachmentId) {
+        UUID userId = userRequestContext.getUserId();
+
+        return chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Attachment not found: " + attachmentId));
+    }
+
+    /**
+     * Whether every id is one of the user's own staged attachments, which is what a send may attach.
+     * Not request-scoped, like {@link #bind}.
+     */
+    @Transactional(readOnly = true)
+    public boolean allStagedFor(UUID userId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return true;
+        }
+
+        return chatAttachmentRepository.countStagedByIdInAndUserId(attachmentIds, userId) == attachmentIds.size();
+    }
+
     @Transactional
     public void delete(UUID attachmentId) {
         ChatAttachment chatAttachment = get(attachmentId);
@@ -162,6 +188,14 @@ public class ChatAttachmentService {
     @Transactional(readOnly = true)
     public List<ChatAttachmentSummary> forChat(UUID chatId) {
         return chatAttachmentRepository.findSummariesByChatId(chatId);
+    }
+
+    /**
+     * The summaries of the given attachments of one chat, for a message that has just been bound to them.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> forChatAndIds(UUID chatId, Set<UUID> attachmentIds) {
+        return chatAttachmentRepository.findSummariesByChatIdAndIdIn(chatId, attachmentIds);
     }
 
     /**

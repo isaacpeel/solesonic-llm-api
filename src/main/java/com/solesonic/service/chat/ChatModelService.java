@@ -21,6 +21,7 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
 
@@ -79,6 +80,39 @@ public class ChatModelService {
         log.info("Chat {} switched to model {}", chatId, model);
 
         return state(chatId);
+    }
+
+    /**
+     * The chat's selected model when {@code userId}'s own key cannot use it, otherwise empty. A shared chat's
+     * model is chosen by any participant but every message runs on its sender's key, so before a run starts the
+     * sender is checked rather than the run being left to fail at the provider. A chat on the default model is
+     * not checked: nobody chose it, and a key that cannot use the server's default is a different problem. When
+     * the model list cannot be fetched the answer is "usable" (and a warning), because a send is not worth
+     * refusing on a guess.
+     */
+    public Optional<String> unusableSelectedModel(UUID userId, UUID chatId) {
+        String selectedModel = chatModelSelection.get(chatId)
+                .onErrorResume(exception -> {
+                    log.warn("Could not read the model selected for chat {}: {}", chatId, exception.getMessage());
+
+                    return Mono.empty();
+                })
+                .blockOptional()
+                .orElse(null);
+
+        if (selectedModel == null) {
+            return Optional.empty();
+        }
+
+        try {
+            boolean usable = availableModels(userId).stream().anyMatch(model -> model.id().equalsIgnoreCase(selectedModel));
+
+            return usable ? Optional.empty() : Optional.of(selectedModel);
+        } catch (ChatModelException exception) {
+            log.warn("Could not check whether the key of user {} can use {}: {}", userId, selectedModel, exception.getErrorCode());
+
+            return Optional.empty();
+        }
     }
 
     public void reset(UUID chatId) {

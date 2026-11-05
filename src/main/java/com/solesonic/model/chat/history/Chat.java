@@ -82,6 +82,55 @@ public class Chat {
     @JdbcTypeCode(SqlTypes.JSON)
     private Set<String> activeCommands;
 
+    /**
+     * The shared session this chat is, for a {@code SHARED} row in a history list; null for a private
+     * chat. The client opens {@code /shared-sessions/{sharedSessionId}} rather than the chat.
+     */
+    @Transient
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private UUID sharedSessionId;
+
+    /**
+     * Who owns a shared chat (the user in seat 0); null for a private chat, which is simply the caller's.
+     */
+    @Transient
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private UUID ownerUserId;
+
+    /**
+     * The people still seated in a shared chat; empty for a private chat.
+     */
+    @Transient
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private List<ChatParticipant> participants = List.of();
+
+    public UUID getSharedSessionId() {
+        return sharedSessionId;
+    }
+
+    public void setSharedSessionId(UUID sharedSessionId) {
+        this.sharedSessionId = sharedSessionId;
+    }
+
+    public UUID getOwnerUserId() {
+        return ownerUserId;
+    }
+
+    public void setOwnerUserId(UUID ownerUserId) {
+        this.ownerUserId = ownerUserId;
+    }
+
+    public List<ChatParticipant> getParticipants() {
+        return participants;
+    }
+
+    public void setParticipants(List<ChatParticipant> participants) {
+        this.participants = participants == null ? List.of() : participants;
+    }
+
     public UUID getId() {
         return id;
     }

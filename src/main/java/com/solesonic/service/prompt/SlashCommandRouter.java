@@ -21,6 +21,7 @@ import io.modelcontextprotocol.spec.McpSchema;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.tool.ToolCallback;
@@ -32,6 +33,7 @@ import reactor.core.publisher.Flux;
 import java.time.Duration;
 import java.time.ZonedDateTime;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
@@ -110,17 +112,69 @@ public class SlashCommandRouter {
                               String model,
                               LlmApiKey llmApiKey) {
 
+        return route(slashCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, null);
+    }
+
+    /**
+     * {@link #route} for a command sent in a shared conversation, whose answer the whole room reads.
+     * Whatever the command does, it does with the conversation's own scope:
+     * <ul>
+     *   <li>a tool command runs only if its tool is in {@code allowedTools};</li>
+     *   <li>an MCP prompt retrieves from the conversation and the global corpus (not the sender's library)
+     *       and may call only {@code allowedTools};</li>
+     *   <li>an agent command is never run, because it would run as the sender and pin the chat.</li>
+     * </ul>
+     * Reaching a refusal here means a command got past {@code SharedCommandPolicy}, which is a bug.
+     *
+     * @param allowedTools the tools a shared conversation may call
+     */
+    public Flux<String> routeShared(SlashCommand slashCommand,
+                                    UUID chatId,
+                                    UUID userId,
+                                    String message,
+                                    AttachmentResolution attachments,
+                                    Map<String, Object> contextMap,
+                                    String model,
+                                    LlmApiKey llmApiKey,
+                                    Set<String> allowedTools) {
+
+        return route(slashCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, Set.copyOf(allowedTools));
+    }
+
+    /**
+     * @param sharedTools null for a private chat; for a shared conversation, the tools it may call
+     */
+    private Flux<String> route(SlashCommand slashCommand,
+                               UUID chatId,
+                               UUID userId,
+                               String message,
+                               AttachmentResolution attachments,
+                               Map<String, Object> contextMap,
+                               String model,
+                               LlmApiKey llmApiKey,
+                               Set<String> sharedTools) {
+
         return switch (slashCommand) {
             case PromptSlashCommand promptCommand -> releasingStickyAgent(chatId,
-                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey));
+                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, sharedTools));
 
-            case ToolSlashCommand toolCommand -> releasingStickyAgent(chatId,
-                    toolCallService.stream(chatId, message, toolCommand, contextMap, llmApiKey));
+            case ToolSlashCommand toolCommand -> {
+                requireSharedTool(sharedTools, toolCommand.name());
 
-            case LocalToolSlashCommand localToolCommand -> releasingStickyAgent(chatId,
-                    toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, llmApiKey));
+                yield releasingStickyAgent(chatId, toolCallService.stream(chatId, message, toolCommand, contextMap, llmApiKey));
+            }
+
+            case LocalToolSlashCommand localToolCommand -> {
+                requireSharedTool(sharedTools, localToolCommand.name());
+
+                yield releasingStickyAgent(chatId, toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, llmApiKey));
+            }
 
             case AgentSlashCommand agentCommand -> {
+                if (sharedTools != null) {
+                    throw new IllegalStateException("A shared conversation never runs an agent command: " + agentCommand.command());
+                }
+
                 log.info("A2A agent invoke: {}", agentCommand.command());
 
                 yield a2aStickyAgentService.activate(chatId, agentCommand.command())
@@ -146,7 +200,8 @@ public class SlashCommandRouter {
                                          AttachmentResolution attachments,
                                          Map<String, Object> contextMap,
                                          String model,
-                                         LlmApiKey llmApiKey) {
+                                         LlmApiKey llmApiKey,
+                                         Set<String> sharedTools) {
 
         log.info("Prompt invoke: {}", promptCommand.name());
 
@@ -167,11 +222,17 @@ public class SlashCommandRouter {
         McpSchema.GetPromptResult getPromptResult = mcpClient.getPrompt(getPromptRequest);
 
         Prompt prompt = promptCommand.buildPrompt(getPromptResult, message, attachments.attachmentContext());
-        ToolCallback[] toolCallbacks = mcpIdentityProvider.getToolCallbacks();
+        ToolCallback[] toolCallbacks = sharedTools == null
+                ? mcpIdentityProvider.getToolCallbacks()
+                : mcpIdentityProvider.getToolCallbacks(sharedTools).toArray(new ToolCallback[0]);
+
+        Advisor retrievalAdvisor = sharedTools == null
+                ? vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey)
+                : vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, llmApiKey);
 
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
                 .tools((Object[]) toolCallbacks)
-                .advisors(vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey))
+                .advisors(retrievalAdvisor)
                 .advisors(advisorSpec -> advisorSpec
                         .param(CONVERSATION_ID, chatId)
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture))
@@ -182,6 +243,12 @@ public class SlashCommandRouter {
 
         return capturingContentFlux(promptChatResponse, responseMetadataCapture, chatMessageService,
                 liteLlmHeaderRegistry, chatId, since, correlationId);
+    }
+
+    private static void requireSharedTool(Set<String> sharedTools, String tool) {
+        if (sharedTools != null && !sharedTools.contains(tool)) {
+            throw new IllegalStateException("A shared conversation does not allow the tool " + tool);
+        }
     }
 
     /**

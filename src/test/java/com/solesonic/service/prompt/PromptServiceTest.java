@@ -385,7 +385,7 @@ class PromptServiceTest {
     }
 
     @Test
-    void streamShared_retrievesFromTheSharedCorpusOnly() {
+    void streamShared_retrievesFromTheConversationAndTheGlobalCorpusNeverThePrivateLibrary() {
         stubBasicPromptChain(Flux.just("hello"));
 
         StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
@@ -438,7 +438,7 @@ class PromptServiceTest {
                 .containsEntry(PromptService.CHAT_ID, chatId)
                 .containsEntry(PromptService.PROGRESS_TOKEN, chatId)
                 .containsEntry("userToken", "token-abc")
-                .containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, List.of());
+                .containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, Set.of());
     }
 
     @Test
@@ -451,7 +451,102 @@ class PromptServiceTest {
         verify(userLlmKeyService).requireKey(userId);
         assertThat(requestedModel()).isEqualTo("openai/gpt-4o");
         verifyNoInteractions(slashCommandService, slashCommandRouter, attachmentContextResolver, a2aStickyAgentService,
-                a2aAgentService, chatDocumentHealer);
+                a2aAgentService);
+    }
+
+    @Test
+    void streamShared_healsTheSendersOwnUploadsOnEveryRetrievingTurn() {
+        stubBasicPromptChain(Flux.just("hello"));
+
+        StepVerifier.create(sharedStream("hi")).expectNext("hello").verifyComplete();
+
+        verify(chatDocumentHealer).schedule(chatId, userId, Set.of());
+    }
+
+    @Test
+    void streamShared_withAttachments_runsThePrivateAttachmentPipelineAsTheSender() {
+        UUID attachmentId = UUID.randomUUID();
+        resolvesToImage("screenshot.png", "a login screen");
+        stubBasicPromptChain(Flux.just("that is a login screen"));
+
+        StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                        new ChatRequest("what is this?", Set.of(), Set.of(attachmentId), null), authentication))
+                .expectNext("that is a login screen")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, "what is this?", Set.of(attachmentId), DECIDE);
+        verify(chatDocumentHealer).schedule(chatId, userId, Set.of(attachmentId));
+        verify(requestSpec).user("Sam: what is this?");
+
+        ArgumentCaptor<Message> messageCaptor = ArgumentCaptor.forClass(Message.class);
+        verify(requestSpec).messages(messageCaptor.capture());
+        assertThat(messageCaptor.getValue()).isInstanceOf(UserMessage.class);
+        assertThat(messageCaptor.getValue().getText()).contains("screenshot.png").contains("a login screen");
+        verify(a2aStickyAgentService, never()).getActiveAgent(any());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void streamShared_handsTheAttachedImagesToTheToolsAsReferences() {
+        UUID imageId = UUID.randomUUID();
+        when(attachmentContextResolver.resolve(any(), any(), any(), any(), any()))
+                .thenReturn(new AttachmentResolution(List.of(), null, Set.of(imageId)));
+        stubBasicPromptChain(Flux.just("done"));
+
+        StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                        new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null), authentication))
+                .expectNext("done")
+                .verifyComplete();
+
+        ArgumentCaptor<Map<String, Object>> toolContext = ArgumentCaptor.forClass(Map.class);
+        verify(requestSpec).toolContext(toolContext.capture());
+        assertThat(toolContext.getValue()).containsEntry(PromptService.REFERENCE_ATTACHMENT_IDS, Set.of(imageId));
+        verify(requestSpec, never()).messages(ArgumentMatchers.<Message>any());
+    }
+
+    @Test
+    void streamShared_aMessageWithOnlyAttachmentsIsNamedToTheModelNotLeftBlank() {
+        UUID attachmentId = UUID.randomUUID();
+        resolvesToImage("sky.png", "an overcast sky");
+        stubBasicPromptChain(Flux.just("an overcast sky"));
+
+        StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                        new ChatRequest("", Set.of(), Set.of(attachmentId), null), authentication))
+                .expectNext("an overcast sky")
+                .verifyComplete();
+
+        verify(requestSpec).user("Sam: (sent without any text)");
+    }
+
+    @Test
+    void streamShared_aToolCommandGoesToTheSharedRouterWithTheAllowlistAndReferenceOnlyImages() {
+        UUID imageId = UUID.randomUUID();
+        LocalToolSlashCommand generateImage = new LocalToolSlashCommand(
+                ImageGenerationTool.GENERATE_IMAGE, ImageGenerationTool.GENERATE_IMAGE, "Generates an image");
+        when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
+        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("a lighthouse"), any(),
+                any(), anyString(), eq(LLM_API_KEY), eq(SHARED_SETTINGS.conversation().tools()))).thenReturn(Flux.just("drawn"));
+
+        StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                        new ChatRequest("a lighthouse", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(imageId), null), authentication))
+                .expectNext("drawn")
+                .verifyComplete();
+
+        verify(attachmentContextResolver).resolve(chatId, userId, "a lighthouse", Set.of(imageId), REFERENCE_ONLY);
+        verify(slashCommandRouter, never()).route(any(), any(), any(), any(), any(), any(), any(), any());
+        verifyNoInteractions(chatDocumentHealer, userMemoryService, a2aStickyAgentService);
+    }
+
+    @Test
+    void streamShared_anAgentCommandIsNeverRun() {
+        AgentSlashCommand agentCommand = new AgentSlashCommand("feud", "feud", "Family feud");
+        when(slashCommandService.commands(Set.of("feud"))).thenReturn(List.of(agentCommand));
+
+        assertThatThrownBy(() -> promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                new ChatRequest("play", Set.of("feud"), Set.of(), null), authentication).blockFirst())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(slashCommandRouter, a2aAgentService, a2aStickyAgentService, attachmentContextResolver);
     }
 
     @Test
@@ -1082,5 +1177,19 @@ class PromptServiceTest {
         ArgumentCaptor<Object> toolsCaptor = ArgumentCaptor.captor();
         verify(requestSpec).tools(toolsCaptor.capture());
         assertThat(toolsCaptor.getValue()).isEqualTo(List.of(imageToolCallback));
+    }
+
+    @Test
+    void streamShared_aToolCommandSentWithoutTextIsNotHandedAnEmptyString() {
+        LocalToolSlashCommand generateImage = new LocalToolSlashCommand(
+                ImageGenerationTool.GENERATE_IMAGE, ImageGenerationTool.GENERATE_IMAGE, "Generates an image");
+        when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
+        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("(sent without any text)"), any(),
+                any(), anyString(), eq(LLM_API_KEY), eq(SHARED_SETTINGS.conversation().tools()))).thenReturn(Flux.just("drawn"));
+
+        StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
+                        new ChatRequest("  ", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(), null), authentication))
+                .expectNext("drawn")
+                .verifyComplete();
     }
 }

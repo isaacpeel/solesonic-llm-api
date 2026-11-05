@@ -64,6 +64,25 @@ public interface SharedSessionRepository extends JpaRepository<SharedSession, UU
             """)
     Page<SharedSession> findAllForParticipant(UUID userId, Collection<SessionStatus> statuses, Pageable pageable);
 
+    /**
+     * The chats of the conversation sessions a user is seated in and that still take messages: what their
+     * history shows besides their own chats. One lookup on {@code session_participant_user_idx}.
+     */
+    @Query("""
+            select sharedSession.chatId
+            from SharedSession sharedSession, SessionParticipant participant
+            where participant.sessionId = sharedSession.id
+              and participant.userId = :userId
+              and participant.leftAt is null
+              and sharedSession.mode = com.solesonic.model.session.SessionMode.CONVERSATION
+              and sharedSession.status in (com.solesonic.model.session.SessionStatus.ACTIVE,
+                                           com.solesonic.model.session.SessionStatus.COMPLETED)
+            order by sharedSession.updated desc, sharedSession.id desc
+            """)
+    java.util.List<UUID> findVisibleConversationChatIds(UUID userId, org.springframework.data.domain.Limit limit);
+
+    java.util.List<SharedSession> findAllByChatIdIn(Collection<UUID> chatIds);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
             from SharedSession sharedSession

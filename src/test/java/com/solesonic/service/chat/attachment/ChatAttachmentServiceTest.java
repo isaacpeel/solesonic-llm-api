@@ -313,4 +313,48 @@ class ChatAttachmentServiceTest {
         verify(vectorStoreService, never()).deleteByChatAttachmentId(any());
         verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
     }
+
+    @Test
+    void getReadableUsesTheReadLookupSoSeatedParticipantsCanOpenAnAttachment() {
+        UUID attachmentId = UUID.randomUUID();
+        ChatAttachment chatAttachment = new ChatAttachment();
+        when(chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)).thenReturn(Optional.of(chatAttachment));
+
+        assertThat(chatAttachmentService.getReadable(attachmentId)).isSameAs(chatAttachment);
+        verify(chatAttachmentRepository, never()).findByIdAndUserId(any(), any());
+    }
+
+    @Test
+    void getReadableIsNotFoundWhenTheCallerMayNotRead() {
+        UUID attachmentId = UUID.randomUUID();
+        when(chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatAttachmentService.getReadable(attachmentId))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void deleteStaysWithTheUploader() {
+        UUID attachmentId = UUID.randomUUID();
+        when(chatAttachmentRepository.findByIdAndUserId(attachmentId, userId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatAttachmentService.delete(attachmentId)).isInstanceOf(ResponseStatusException.class);
+        verify(chatAttachmentRepository, never()).findReadableByIdAndUserId(any(), any());
+        verify(chatAttachmentRepository, never()).delete(any());
+    }
+
+    @Test
+    void allStagedForIsTrueOnlyWhenEveryIdIsTheUsersOwnStagedOne() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(chatAttachmentRepository.countStagedByIdInAndUserId(Set.of(first, second), userId)).thenReturn(2L);
+        when(chatAttachmentRepository.countStagedByIdInAndUserId(Set.of(first), userId)).thenReturn(0L);
+
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of(first, second))).isTrue();
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of(first))).isFalse();
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of())).isTrue();
+        assertThat(chatAttachmentService.allStagedFor(userId, null)).isTrue();
+    }
 }

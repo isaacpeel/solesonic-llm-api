@@ -151,23 +151,35 @@ public class VectorStoreService {
     }
 
     /**
-     * The advisor for a shared conversation, which every participant reads: the global corpus tier
-     * only. Not the sender's own tier, and not a conversation tier either, because a shared chat has
-     * no attachments of its own. With no conversation documents there is no manifest and no
-     * compression, and the threshold is the configured default, not any one participant's preference.
+     * The advisor for a shared conversation, which every participant reads: the conversation's own
+     * documents, whoever uploaded them, then the global corpus. Never the sender's personal tier, which
+     * would put one person's library into a reply the whole room reads.
+     * <p>
+     * The thresholds are the configured defaults, not any one participant's preference. The manifest
+     * names every completed document of the conversation, so the model can say a document exists even
+     * when no passage matched, and compression and the floor apply once there is one, as in a private chat.
      */
     public Advisor sharedRetrievalAugmentationAdvisor(UUID chatId, LlmApiKey llmApiKey) {
+        List<String> chatDocumentNames = sharedChatDocumentNames(chatId);
+        boolean hasChatDocuments = !chatDocumentNames.isEmpty();
+
         HistoryAwareQueryCompressor historyAwareQueryCompressor = new HistoryAwareQueryCompressor(
                 queryCompressionEnabled,
-                false,
+                hasChatDocuments,
                 () -> CompressionQueryTransformer.builder()
                         .chatClientBuilder(taskClientBuilder(llmApiKey))
                         .build());
 
-        log.debug("Retrieving at global scope only for shared chat {}", chatId);
+        log.debug("Retrieving at conversation and global scope for shared chat {}", chatId);
 
-        return advisor(llmApiKey, List.of(tier(DocumentPrincipal.global(), defaultGlobalSimilarityThreshold)),
-                historyAwareQueryCompressor, List.of());
+        ScopedDocumentRetriever.ScopedTier chatTier = tier(DocumentPrincipal.chat(chatId), defaultChatSimilarityThreshold);
+
+        List<ScopedDocumentRetriever.ScopedTier> tiers = List.of(
+                new ScopedDocumentRetriever.ScopedTier(chatTier.principal(), chatTier.filterExpression(),
+                        chatTier.similarityThreshold(), hasChatDocuments ? chatFloorTopK : 0),
+                tier(DocumentPrincipal.global(), defaultGlobalSimilarityThreshold));
+
+        return advisor(llmApiKey, tiers, historyAwareQueryCompressor, chatDocumentNames);
     }
 
     private Advisor advisor(LlmApiKey llmApiKey,
@@ -208,6 +220,26 @@ public class VectorStoreService {
                     .toList();
         } catch (RuntimeException runtimeException) {
             log.warn("Could not list the documents of chat {}; retrieving without them: {}",
+                    chatId, runtimeException.getMessage());
+
+            return List.of();
+        }
+    }
+
+    /**
+     * {@link #chatDocumentNames} for a shared conversation: every participant's completed documents.
+     */
+    private List<String> sharedChatDocumentNames(UUID chatId) {
+        try {
+            return ingestedDocumentRepository.findAllChatDocuments(chatId.toString(), DocumentStatus.COMPLETED,
+                            PageRequest.of(0, MANIFEST_DOCUMENTS))
+                    .getContent().stream()
+                    .map(IngestedDocument::getFileName)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException runtimeException) {
+            log.warn("Could not list the documents of shared chat {}; retrieving without them: {}",
                     chatId, runtimeException.getMessage());
 
             return List.of();

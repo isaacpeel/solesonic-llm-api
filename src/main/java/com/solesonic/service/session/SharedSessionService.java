@@ -27,6 +27,7 @@ import com.solesonic.repository.session.SessionParticipantRepository;
 import com.solesonic.repository.session.SharedSessionRepository;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.chat.ChatService;
 import com.solesonic.service.redis.TurnOutcome;
 import com.solesonic.service.user.UserProfileService;
@@ -77,7 +78,10 @@ public class SharedSessionService {
     private final RedisStreamService redisStreamService;
     private final SessionRunLock sessionRunLock;
     private final SharedSessionSettings sharedSessionSettings;
+    private final ChatModelSelection chatModelSelection;
     private final Clock clock;
+
+    private static final java.time.Duration MODEL_READ_TIMEOUT = java.time.Duration.ofSeconds(2);
 
     public SharedSessionService(SharedSessionRepository sharedSessionRepository,
                                 SessionParticipantRepository sessionParticipantRepository,
@@ -90,7 +94,9 @@ public class SharedSessionService {
                                 RedisStreamService redisStreamService,
                                 SessionRunLock sessionRunLock,
                                 SharedSessionSettings sharedSessionSettings,
+                                ChatModelSelection chatModelSelection,
                                 Clock clock) {
+        this.chatModelSelection = chatModelSelection;
         this.sharedSessionRepository = sharedSessionRepository;
         this.sessionParticipantRepository = sessionParticipantRepository;
         this.sessionInviteRepository = sessionInviteRepository;
@@ -194,7 +200,8 @@ public class SharedSessionService {
         return summary(sharedSession, participants(sessionId), viewerUserId, sessionRunLock.isHeld(sessionId));
     }
 
-    @Transactional(readOnly = true)
+    // Not one transaction: the models come from Redis, one read for the page, and nothing here should hold
+    // a database connection while it waits. Each repository call is its own read.
     public Page<SharedSessionSummary> list(UUID viewerUserId, Collection<SessionStatus> statuses, Pageable pageable) {
         Page<SharedSession> sharedSessions = sharedSessionRepository.findAllForParticipant(viewerUserId, statuses, pageable);
 
@@ -214,10 +221,12 @@ public class SharedSessionService {
                 .collect(Collectors.toMap(Chat::getId, Chat::getName));
 
         Map<UUID, List<SharedSessionSummary.PendingInvitee>> pendingInvitees = pendingInvitees(sharedSessions.getContent());
+        Map<UUID, String> models = models(sharedSessions.getContent());
 
         return sharedSessions.map(sharedSession -> summary(sharedSession,
                 participantsBySession.getOrDefault(sharedSession.getId(), List.of()), usernames,
                 names.get(sharedSession.getChatId()),
+                modelOf(models, sharedSession),
                 pendingInvitees.getOrDefault(sharedSession.getId(), List.of()),
                 viewerUserId, sessionRunLock.isHeld(sharedSession.getId())));
     }
@@ -238,13 +247,14 @@ public class SharedSessionService {
      */
     @Transactional
     public SharedSessionSummary applyOutcome(UUID sessionId, UUID runId, TurnOutcome outcome, SessionTurnCollector collector) {
+        Map<UUID, String> models = modelsBeforeLock(sessionId);
         SharedSession sharedSession = sharedSessionRepository.lockById(sessionId).orElseThrow(SharedSessionService::sessionNotFound);
         List<SessionParticipant> participants = participants(sessionId);
 
         if (!sharedSession.getStatus().acceptsMessages()) {
             log.info("Discarding run {} of shared session {}: the session is {}", runId, sessionId, sharedSession.getStatus());
 
-            return summary(sharedSession, participants, null, false);
+            return summary(sharedSession, participants, null, false, models);
         }
 
         if (outcome == TurnOutcome.COMPLETED && sharedSession.getMode() == SessionMode.AGENT) {
@@ -292,7 +302,7 @@ public class SharedSessionService {
         sharedSession.setLastRunId(runId);
         sharedSession.setUpdated(ZonedDateTime.now(clock));
 
-        return summary(sharedSessionRepository.save(sharedSession), participants, null, false);
+        return summary(sharedSessionRepository.save(sharedSession), participants, null, false, models);
     }
 
     /**
@@ -313,6 +323,7 @@ public class SharedSessionService {
      */
     @Transactional
     public void leave(UUID sessionId, UUID userId) {
+        Map<UUID, String> models = modelsBeforeLock(sessionId);
         SharedSession sharedSession = sharedSessionRepository.lockById(sessionId).orElseThrow(SharedSessionService::sessionNotFound);
         List<SessionParticipant> participants = participants(sessionId);
 
@@ -365,7 +376,7 @@ public class SharedSessionService {
         }
 
         // Once the leave has committed, so nobody is told of a leave that rolled back.
-        SharedSessionSummary summary = summary(sharedSession, participants, null, false);
+        SharedSessionSummary summary = summary(sharedSession, participants, null, false, models);
         UUID streamUserId = streamOwner(participants);
 
         AfterCommit.run(() -> publishState(chatId, streamUserId, summary)
@@ -512,6 +523,15 @@ public class SharedSessionService {
     }
 
     SharedSessionSummary summary(SharedSession sharedSession, List<SessionParticipant> participants, UUID viewerUserId, boolean runActive) {
+        return summary(sharedSession, participants, viewerUserId, runActive, models(List.of(sharedSession)));
+    }
+
+    /**
+     * {@link #summary(SharedSession, List, UUID, boolean)} with the models already read, for the callers that
+     * hold a database lock and must not wait on Redis while they do.
+     */
+    SharedSessionSummary summary(SharedSession sharedSession, List<SessionParticipant> participants, UUID viewerUserId, boolean runActive,
+                                 Map<UUID, String> models) {
         Map<UUID, String> usernames = userProfileService.usernames(participants.stream().map(SessionParticipant::getUserId).toList());
 
         String name = chatRepository.findById(sharedSession.getChatId()).map(Chat::getName).orElse(null);
@@ -519,7 +539,75 @@ public class SharedSessionService {
         List<SharedSessionSummary.PendingInvitee> pendingInvitees = pendingInvitees(List.of(sharedSession))
                 .getOrDefault(sharedSession.getId(), List.of());
 
-        return summary(sharedSession, participants, usernames, name, pendingInvitees, viewerUserId, runActive);
+        return summary(sharedSession, participants, usernames, name, modelOf(models, sharedSession), pendingInvitees, viewerUserId, runActive);
+    }
+
+    /**
+     * The models of the conversation sessions among {@code sharedSessions}, in one Redis round trip with one
+     * overall timeout. A chat with no selection maps to null (the default). When the read fails the result is
+     * empty, so {@link #modelOf} reports every model as unread rather than guessing the default: a summary is
+     * not worth failing for it, and a client that is not told the model keeps what it had.
+     */
+    private Map<UUID, String> models(Collection<SharedSession> sharedSessions) {
+        List<UUID> chatIds = sharedSessions.stream()
+                .filter(sharedSession -> sharedSession.getMode() == SessionMode.CONVERSATION)
+                .map(SharedSession::getChatId)
+                .toList();
+
+        if (chatIds.isEmpty()) {
+            return Map.of();
+        }
+
+        try {
+            Map<UUID, String> models = chatModelSelection.getAll(chatIds).block(MODEL_READ_TIMEOUT);
+
+            return models == null ? Map.of() : models;
+        } catch (RuntimeException exception) {
+            log.warn("Could not read the models of {} shared chat(s): {}", chatIds.size(), exception.getClass().getSimpleName());
+
+            return Map.of();
+        }
+    }
+
+    /**
+     * {@link #models} for one session by id, read before the caller takes its row lock.
+     */
+    private Map<UUID, String> modelsBeforeLock(UUID sessionId) {
+        return sharedSessionRepository.findById(sessionId)
+                .map(sharedSession -> models(List.of(sharedSession)))
+                .orElse(Map.of());
+    }
+
+    private static String modelOf(Map<UUID, String> models, SharedSession sharedSession) {
+        if (sharedSession.getMode() != SessionMode.CONVERSATION) {
+            return null;
+        }
+
+        return models.containsKey(sharedSession.getChatId())
+                ? models.get(sharedSession.getChatId())
+                : SharedSessionSummary.MODEL_UNREAD;
+    }
+
+    /**
+     * Tells everyone seated that the chat changed outside a run (its name, its model): the current state,
+     * as a {@code session_state} frame. A no-op for a chat that is not a shared conversation. Best effort
+     * and never failing the change that caused it: a client that missed the frame reads the same state on
+     * its next fetch.
+     */
+    public void publishStateForChat(UUID chatId) {
+        try {
+            sharedSessionRepository.findByChatIdAndMode(chatId, SessionMode.CONVERSATION).ifPresent(sharedSession -> {
+                List<SessionParticipant> participants = participants(sharedSession.getId());
+                SharedSessionSummary summary = summary(sharedSession, participants, null, sessionRunLock.isHeld(sharedSession.getId()));
+
+                publishState(chatId, streamOwner(participants), summary)
+                        .doOnError(error -> log.warn("Could not tell shared chat {} about a change: {}", chatId, error.getClass().getSimpleName()))
+                        .onErrorComplete()
+                        .subscribe();
+            });
+        } catch (RuntimeException exception) {
+            log.warn("Could not tell shared chat {} about a change: {}", chatId, exception.getClass().getSimpleName());
+        }
     }
 
     /**
@@ -583,6 +671,7 @@ public class SharedSessionService {
                                                 List<SessionParticipant> participants,
                                                 Map<UUID, String> usernames,
                                                 String name,
+                                                String model,
                                                 List<SharedSessionSummary.PendingInvitee> pendingInvitees,
                                                 UUID viewerUserId,
                                                 boolean runActive) {
@@ -613,6 +702,7 @@ public class SharedSessionService {
                 ownerUserId,
                 sharedSession.getAgentName(),
                 sharedSession.getStatus(),
+                model,
                 participantSummaries,
                 pendingInvitees,
                 turn,

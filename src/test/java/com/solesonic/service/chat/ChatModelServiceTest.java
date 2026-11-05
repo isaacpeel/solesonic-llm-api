@@ -218,4 +218,36 @@ class ChatModelServiceTest {
 
         verifyNoInteractions(openAiClient);
     }
+
+    @Test
+    void aSelectedModelOutsideTheSendersKeyIsReportedUnusable() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
+        stubAvailableModels("qwen3-8b");
+
+        assertThat(chatModelService.unusableSelectedModel(USER_ID, chatId)).contains("openai/gpt-4o");
+    }
+
+    @Test
+    void aSelectedModelTheKeyCanUseIsUsableIgnoringCase() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("OpenAI/GPT-4o"));
+        stubAvailableModels("openai/gpt-4o");
+
+        assertThat(chatModelService.unusableSelectedModel(USER_ID, chatId)).isEmpty();
+    }
+
+    @Test
+    void aChatOnTheDefaultModelIsNotCheckedAndAsksForNoList() {
+        assertThat(chatModelService.unusableSelectedModel(USER_ID, chatId)).isEmpty();
+
+        verifyNoInteractions(openAiClient);
+    }
+
+    @Test
+    void anUnavailableModelListDoesNotRefuseTheSend() {
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
+        when(openAiClient.models()).thenReturn(modelService);
+        when(modelService.list(any(ModelListParams.class))).thenThrow(new OpenAIIoException("connection refused"));
+
+        assertThat(chatModelService.unusableSelectedModel(USER_ID, chatId)).isEmpty();
+    }
 }

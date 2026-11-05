@@ -156,7 +156,7 @@ class SharedConversationServiceTest {
 
     private static SharedSessionSummary summary() {
         return new SharedSessionSummary(SESSION_ID, NEW_CHAT, SessionMode.CONVERSATION, "Trip plans", ALEX, null, SessionStatus.ACTIVE,
-                List.of(), List.of(), null, null, null, false, NOW, NOW);
+                null, List.of(), List.of(), null, null, null, false, NOW, NOW);
     }
 
     private static SessionException refused(Runnable action) {

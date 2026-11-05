@@ -99,6 +99,9 @@ class SharedSessionServiceTest {
     @Mock
     private SessionRunLock sessionRunLock;
 
+    @Mock
+    private com.solesonic.service.chat.ChatModelSelection chatModelSelection;
+
     private SharedSessionService sharedSessionService;
     private SharedSession sharedSession;
     private List<SessionParticipant> participants;
@@ -107,7 +110,7 @@ class SharedSessionServiceTest {
     void setUp() {
         sharedSessionService = new SharedSessionService(sharedSessionRepository, sessionParticipantRepository, sessionInviteRepository,
                 chatRepository, chatService, chatMessageService, userProfileService, a2aStickyAgentService, redisStreamService,
-                sessionRunLock, CONVERSATION_SETTINGS, Clock.fixed(NOW.toInstant(), NOW.getZone()));
+                sessionRunLock, CONVERSATION_SETTINGS, chatModelSelection, Clock.fixed(NOW.toInstant(), NOW.getZone()));
 
         sharedSession = session(SessionStatus.ACTIVE);
         participants = participants();
@@ -624,5 +627,131 @@ class SharedSessionServiceTest {
     void noSessionIdsMeansNoLookup() {
         assertThat(sharedSessionService.sessionNames(java.util.Set.of())).isEmpty();
         verify(sharedSessionRepository, never()).findAllById(any());
+    }
+
+    private void conversation() {
+        sharedSession.setMode(com.solesonic.model.session.SessionMode.CONVERSATION);
+        sharedSession.setAgentName(null);
+    }
+
+    @Test
+    void aConversationSummaryCarriesTheChatsCurrentModelAndNullMeansTheDefault() {
+        conversation();
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(Map.of(CHAT_ID, "openai/gpt-4o")));
+
+        assertThat(sharedSessionService.summary(sharedSession, participants, null, false).model()).isEqualTo("openai/gpt-4o");
+
+        Map<UUID, String> noSelection = new java.util.HashMap<>();
+        noSelection.put(CHAT_ID, null);
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(noSelection));
+
+        assertThat(sharedSessionService.summary(sharedSession, participants, null, false).model()).isNull();
+    }
+
+    @Test
+    void aModelThatCannotBeReadIsReportedUnreadAndLeftOutOfTheJsonWhileTheDefaultIsAnExplicitNull() throws Exception {
+        conversation();
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.error(new IllegalStateException("redis down")));
+
+        SharedSessionSummary unread = sharedSessionService.summary(sharedSession, participants, null, false);
+
+        assertThat(unread.model()).isEqualTo(SharedSessionSummary.MODEL_UNREAD);
+
+        var mapper = new com.solesonic.config.JacksonConfig().jsonMapper();
+        assertThat(mapper.readTree(mapper.writeValueAsString(unread)).has("model")).isFalse();
+
+        Map<UUID, String> noSelection = new java.util.HashMap<>();
+        noSelection.put(CHAT_ID, null);
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(noSelection));
+
+        var defaulted = mapper.readTree(mapper.writeValueAsString(sharedSessionService.summary(sharedSession, participants, null, false)));
+        assertThat(defaulted.has("model")).isTrue();
+        assertThat(defaulted.get("model").isNull()).isTrue();
+    }
+
+    @Test
+    void anAgentSessionNeverReadsAModel() {
+        sharedSessionService.summary(sharedSession, participants, null, false);
+
+        verify(chatModelSelection, never()).getAll(any());
+    }
+
+    @Test
+    void listingReadsEveryModelOfThePageInOneRoundTripAndOutsideATransaction() throws Exception {
+        conversation();
+        com.solesonic.model.session.SharedSession second = session(SessionStatus.ACTIVE);
+        second.setId(UUID.randomUUID());
+        second.setChatId(UUID.randomUUID());
+        second.setMode(com.solesonic.model.session.SessionMode.CONVERSATION);
+        second.setAgentName(null);
+
+        when(sharedSessionRepository.findAllForParticipant(any(), any(), any()))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(sharedSession, second)));
+        when(sessionParticipantRepository.findBySessionIdInOrderBySeatAsc(any())).thenReturn(participants);
+        when(chatRepository.findAllById(any())).thenReturn(List.of());
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(Map.of(CHAT_ID, "m1", second.getChatId(), "m2")));
+
+        var page = sharedSessionService.list(SAM, List.of(SessionStatus.ACTIVE), org.springframework.data.domain.PageRequest.of(0, 20));
+
+        assertThat(page.getContent()).extracting(SharedSessionSummary::model).containsExactly("m1", "m2");
+        verify(chatModelSelection).getAll(any());
+        verify(chatModelSelection, never()).get(any());
+        assertThat(SharedSessionService.class.getMethod("list", UUID.class, java.util.Collection.class,
+                org.springframework.data.domain.Pageable.class)
+                .isAnnotationPresent(org.springframework.transaction.annotation.Transactional.class)).isFalse();
+    }
+
+    @Test
+    void theModelIsReadBeforeTheSessionRowIsLockedWhenAnOutcomeIsApplied() {
+        conversation();
+        when(sharedSessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(sharedSession));
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(Map.of(CHAT_ID, "m1")));
+
+        SharedSessionSummary summary = sharedSessionService.applyOutcome(SESSION_ID, RUN_ID, TurnOutcome.COMPLETED, new SessionTurnCollector());
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(chatModelSelection, sharedSessionRepository);
+        order.verify(chatModelSelection).getAll(any());
+        order.verify(sharedSessionRepository).lockById(SESSION_ID);
+        assertThat(summary.model()).isEqualTo("m1");
+    }
+
+    @Test
+    void theModelIsReadBeforeTheSessionRowIsLockedWhenSomeoneLeaves() {
+        conversation();
+        when(sharedSessionRepository.findById(SESSION_ID)).thenReturn(Optional.of(sharedSession));
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(Map.of(CHAT_ID, "m1")));
+
+        sharedSessionService.leave(SESSION_ID, SAM);
+
+        org.mockito.InOrder order = org.mockito.Mockito.inOrder(chatModelSelection, sharedSessionRepository);
+        order.verify(chatModelSelection).getAll(any());
+        order.verify(sharedSessionRepository).lockById(SESSION_ID);
+    }
+
+    @Test
+    void publishingAChatsStateSendsTheCurrentModelToTheStreamOwner() {
+        sharedSession.setMode(com.solesonic.model.session.SessionMode.CONVERSATION);
+        sharedSession.setAgentName(null);
+        when(sharedSessionRepository.findByChatIdAndMode(CHAT_ID, com.solesonic.model.session.SessionMode.CONVERSATION))
+                .thenReturn(Optional.of(sharedSession));
+        when(chatModelSelection.getAll(any())).thenReturn(Mono.just(Map.of(CHAT_ID, "openai/gpt-4o")));
+
+        sharedSessionService.publishStateForChat(CHAT_ID);
+
+        org.mockito.ArgumentCaptor<Object> payload = org.mockito.ArgumentCaptor.forClass(Object.class);
+        verify(redisStreamService).publish(eq(CHAT_ID), eq(ALEX), eq("CUSTOM"), payload.capture());
+        com.agui.community.core.event.CustomEvent event = (com.agui.community.core.event.CustomEvent) payload.getValue();
+        assertThat(event.name()).isEqualTo(SharedSessionService.SESSION_STATE);
+        assertThat(((SharedSessionSummary) event.value()).model()).isEqualTo("openai/gpt-4o");
+    }
+
+    @Test
+    void publishingTheStateOfAChatThatIsNotASharedConversationDoesNothing() {
+        when(sharedSessionRepository.findByChatIdAndMode(CHAT_ID, com.solesonic.model.session.SessionMode.CONVERSATION))
+                .thenReturn(Optional.empty());
+
+        sharedSessionService.publishStateForChat(CHAT_ID);
+
+        verify(redisStreamService, never()).publish(any(), any(), anyString(), any());
     }
 }

@@ -13,7 +13,11 @@ import com.solesonic.model.session.SessionStatus;
 import com.solesonic.model.session.SharedConversationRequest;
 import com.solesonic.model.session.SharedSessionSummary;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.model.prompt.ModelSlashCommand;
+import com.solesonic.model.prompt.ToolSlashCommand;
+import com.solesonic.model.session.SharedSession;
 import com.solesonic.service.redis.RedisStreamingChatService;
+import com.solesonic.service.session.SharedCommandPolicy;
 import com.solesonic.service.session.SessionMessageService;
 import com.solesonic.service.session.SessionStreamService;
 import com.solesonic.service.session.SharedConversationService;
@@ -31,13 +35,16 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -61,6 +68,8 @@ class SharedSessionControllerTest {
     @Mock
     private RedisStreamingChatService redisStreamingChatService;
     @Mock
+    private SharedCommandPolicy sharedCommandPolicy;
+    @Mock
     private UserRequestContext userRequestContext;
     @Mock
     private Authentication authentication;
@@ -70,7 +79,7 @@ class SharedSessionControllerTest {
     @BeforeEach
     void setUp() {
         SharedSessionController controller = new SharedSessionController(sharedSessionService, sharedConversationService,
-                sessionMessageService, sessionStreamService, redisStreamingChatService, userRequestContext);
+                sessionMessageService, sessionStreamService, redisStreamingChatService, sharedCommandPolicy, userRequestContext);
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new SessionExceptionHandler())
@@ -81,7 +90,7 @@ class SharedSessionControllerTest {
 
     private SharedSessionSummary summary() {
         return new SharedSessionSummary(sessionId, chatId, SessionMode.CONVERSATION, "Trip plans", callerId, null, SessionStatus.ACTIVE,
-                List.of(), List.of(new SharedSessionSummary.PendingInvitee(UUID.randomUUID(), "sam", "Sam")),
+                null, List.of(), List.of(new SharedSessionSummary.PendingInvitee(UUID.randomUUID(), "sam", "Sam")),
                 null, null, null, false, NOW, NOW);
     }
 
@@ -206,5 +215,108 @@ class SharedSessionControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"text\":\"/model x\"}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void aMessageBodyCarriesTextAttachmentsAndCommands() throws Exception {
+        UUID attachmentId = UUID.randomUUID();
+        when(sessionMessageService.send(eq(sessionId), eq(callerId), any(SessionMessageRequest.class), eq(authentication)))
+                .thenReturn(new SessionMessageAccepted(UUID.randomUUID(), UUID.randomUUID()));
+
+        mockMvc.perform(post("/shared-sessions/{id}/messages", sessionId)
+                        .principal(authentication)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"\",\"attachmentIds\":[\"" + attachmentId + "\"],\"commands\":[\"web_search\"]}"))
+                .andExpect(status().isAccepted());
+
+        ArgumentCaptor<SessionMessageRequest> request = ArgumentCaptor.forClass(SessionMessageRequest.class);
+        verify(sessionMessageService).send(eq(sessionId), eq(callerId), request.capture(), eq(authentication));
+        assertThat(request.getValue().text()).isEmpty();
+        assertThat(request.getValue().attachmentIds()).containsExactly(attachmentId);
+        assertThat(request.getValue().commands()).containsExactly("web_search");
+    }
+
+    @Test
+    void aTextOnlyBodyStillWorksForAgentModeAndAnswers() throws Exception {
+        when(sessionMessageService.send(eq(sessionId), eq(callerId), any(SessionMessageRequest.class), any()))
+                .thenReturn(new SessionMessageAccepted(UUID.randomUUID(), UUID.randomUUID()));
+
+        mockMvc.perform(post("/shared-sessions/{id}/messages", sessionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"promptAnswer\":{\"elicitationId\":\"" + UUID.randomUUID() + "\",\"action\":\"accept\",\"content\":{\"choice\":\"play\"}}}"))
+                .andExpect(status().isAccepted());
+
+        ArgumentCaptor<SessionMessageRequest> request = ArgumentCaptor.forClass(SessionMessageRequest.class);
+        verify(sessionMessageService).send(eq(sessionId), eq(callerId), request.capture(), any());
+        assertThat(request.getValue().promptAnswer().action()).isEqualTo("accept");
+        assertThat(request.getValue().attachmentIds()).isNull();
+    }
+
+    @Test
+    void aRefusedCommandIs400AndNamesIt() throws Exception {
+        when(sessionMessageService.send(eq(sessionId), eq(callerId), any(), any()))
+                .thenThrow(new SessionException(SessionErrorCode.COMMAND_NOT_ALLOWED, "The command /feud is not available in a shared chat."));
+
+        mockMvc.perform(post("/shared-sessions/{id}/messages", sessionId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"text\":\"hi\",\"commands\":[\"feud\"]}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("COMMAND_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("/feud")));
+    }
+
+    private SharedSession conversation(SessionMode mode) {
+        SharedSession sharedSession = new SharedSession();
+        sharedSession.setId(sessionId);
+        sharedSession.setChatId(chatId);
+        sharedSession.setMode(mode);
+        sharedSession.setStatus(SessionStatus.ACTIVE);
+
+        return sharedSession;
+    }
+
+    @Test
+    void theCommandsOfAConversationAreTheAllowedCatalogueInTheUsualShape() throws Exception {
+        when(sharedSessionService.requireSeated(sessionId, callerId)).thenReturn(conversation(SessionMode.CONVERSATION));
+        when(sharedCommandPolicy.catalogue(null)).thenReturn(List.of(new ModelSlashCommand(),
+                new ToolSlashCommand("web_search", "web_search", "Search the web", null)));
+
+        mockMvc.perform(get("/shared-sessions/{id}/commands", sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.commands.length()").value(2))
+                .andExpect(jsonPath("$.commands[0].command").value("model"))
+                .andExpect(jsonPath("$.commands[0].commandType").value("model"))
+                .andExpect(jsonPath("$.commands[1].command").value("web_search"))
+                .andExpect(jsonPath("$.commands[1].commandType").value("tool"));
+    }
+
+    @Test
+    void theCommandsSearchIsPassedOn() throws Exception {
+        when(sharedSessionService.requireSeated(sessionId, callerId)).thenReturn(conversation(SessionMode.CONVERSATION));
+        when(sharedCommandPolicy.catalogue("web")).thenReturn(List.of());
+
+        mockMvc.perform(get("/shared-sessions/{id}/commands", sessionId).param("command", "web"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.commands.length()").value(0));
+    }
+
+    @Test
+    void someoneNotSeatedGetsA404ForTheCommands() throws Exception {
+        when(sharedSessionService.requireSeated(sessionId, callerId)).thenThrow(new SessionException(SessionErrorCode.SESSION_NOT_FOUND, "No such session"));
+
+        mockMvc.perform(get("/shared-sessions/{id}/commands", sessionId)).andExpect(status().isNotFound());
+
+        verify(sharedCommandPolicy, never()).catalogue(any());
+    }
+
+    @Test
+    void anAgentSessionOffersNoCommands() throws Exception {
+        when(sharedSessionService.requireSeated(sessionId, callerId)).thenReturn(conversation(SessionMode.AGENT));
+
+        mockMvc.perform(get("/shared-sessions/{id}/commands", sessionId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.commands.length()").value(0));
+
+        verify(sharedCommandPolicy, never()).catalogue(any());
     }
 }

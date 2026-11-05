@@ -93,4 +93,29 @@ class ChatModelSelectionTest {
 
         verify(redisTemplate).delete("chat:model:" + chatId);
     }
+
+    @Test
+    void getAllReadsEveryChatInOneRoundTripAndMapsAChatWithNoSelectionToNull() {
+        UUID other = UUID.randomUUID();
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.multiGet(java.util.List.of("chat:model:" + chatId, "chat:model:" + other)))
+                .thenReturn(Mono.just(java.util.Arrays.asList("openai/gpt-4o", null)));
+
+        StepVerifier.create(chatModelSelection.getAll(java.util.List.of(chatId, other)))
+                .assertNext(selections -> {
+                    org.assertj.core.api.Assertions.assertThat(selections).containsEntry(chatId, "openai/gpt-4o");
+                    org.assertj.core.api.Assertions.assertThat(selections.containsKey(other)).isTrue();
+                    org.assertj.core.api.Assertions.assertThat(selections.get(other)).isNull();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    void getAllOfNothingTouchesNothing() {
+        StepVerifier.create(chatModelSelection.getAll(java.util.List.of()))
+                .expectNext(java.util.Map.of())
+                .verifyComplete();
+
+        org.mockito.Mockito.verifyNoInteractions(redisTemplate);
+    }
 }
