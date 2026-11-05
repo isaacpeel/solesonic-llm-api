@@ -1,6 +1,7 @@
 package com.solesonic.mcp.client.config;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
+import com.solesonic.service.chat.events.ToolActivityReporter;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -32,7 +33,8 @@ public class McpClientConfig {
     @Bean
     public McpIdentityProvider securityContextPropagatingMcpToolCallbackProvider(List<McpSyncClient> mcpSyncClients,
                                                                                  JwtDecoder jwtDecoder,
-                                                                                 JwtAuthenticationConverter jwtAuthenticationConverter) {
+                                                                                 JwtAuthenticationConverter jwtAuthenticationConverter,
+                                                                                 ToolActivityReporter toolActivityReporter) {
 
         if (mcpSyncClients.isEmpty()) {
             log.warn("No MCP clients configured. MCP tools will not be available.");
@@ -57,7 +59,7 @@ public class McpClientConfig {
 
         this.mcpClient = mcpSyncClient;
 
-        return new McpIdentityProvider(mcpSyncClient, jwtDecoder, jwtAuthenticationConverter);
+        return new McpIdentityProvider(mcpSyncClient, jwtDecoder, jwtAuthenticationConverter, toolActivityReporter);
     }
 
     @Bean

@@ -1,6 +1,9 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
+import com.solesonic.model.prompt.AgentSlashCommand;
+import com.solesonic.service.chat.events.ToolActivityReporter;
 import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
@@ -69,6 +72,8 @@ class SlashCommandServiceTest {
     private JwtDecoder jwtDecoder;
     @Mock
     private JwtAuthenticationConverter jwtAuthenticationConverter;
+    @Mock
+    private ToolActivityReporter toolActivityReporter;
 
     private SlashCommandService slashCommandService;
 
@@ -84,6 +89,7 @@ class SlashCommandServiceTest {
                 localToolRegistry,
                 jwtDecoder,
                 jwtAuthenticationConverter,
+                toolActivityReporter,
                 3600L,
                 false);
     }
@@ -242,6 +248,7 @@ class SlashCommandServiceTest {
     @Test
     void refreshSkipsAnMcpToolNamedLikeALocalTool() {
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(CACHE_KEY)).thenReturn(Mono.empty());
         when(mcpSyncClient.listPrompts()).thenReturn(new McpSchema.ListPromptsResult(List.of(), null, null));
         when(mcpSyncClient.listTools()).thenReturn(new McpSchema.ListToolsResult(List.of(
                 McpSchema.Tool.builder("generate_image", Map.of("type", "object")).description("MCP image").build(),
@@ -253,11 +260,57 @@ class SlashCommandServiceTest {
         when(objectWriter.writeValueAsString(any())).thenReturn("refreshed-json");
         when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
 
-        List<SlashCommand> slashCommands = slashCommandService.refreshSlashCommands();
+        List<SlashCommand> slashCommands = slashCommandService.slashCommands();
 
-        assertThat(slashCommands).extracting(SlashCommand::command).containsExactly("web_search", "generate_image");
+        assertThat(slashCommands).extracting(SlashCommand::command).containsExactly("model", "web_search", "generate_image");
         assertThat(slashCommands).filteredOn(slashCommand -> "generate_image".equals(slashCommand.command()))
                 .singleElement()
                 .isInstanceOf(LocalToolSlashCommand.class);
+    }
+
+    /**
+     * Agents are read from the registry on every call rather than cached with the MCP catalog, so one
+     * added to or removed from LiteLLM shows up without waiting for the cache to expire.
+     */
+    @Test
+    void agentCommandsFollowTheRegistryRatherThanTheCache() {
+        A2AAgentRegistry a2aAgentRegistry = mock(A2AAgentRegistry.class);
+        SlashCommandService service = new SlashCommandService(List.of(mcpSyncClient), redisTemplate, jsonMapper,
+                chatMemory, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
+                jwtAuthenticationConverter, toolActivityReporter, 3600L, false);
+
+        stubCachedCatalog(List.of(promptCommand("ask")));
+        when(a2aAgentRegistry.asSlashCommands())
+                .thenReturn(List.of(new AgentSlashCommand("network", "network", "Network agent")))
+                .thenReturn(List.of(
+                        new AgentSlashCommand("network", "network", "Network agent"),
+                        new AgentSlashCommand("nba", "nba", "NBA agent")))
+                .thenReturn(List.of());
+
+        assertThat(service.slashCommands()).extracting(SlashCommand::command).containsExactly("model", "ask", "network");
+        assertThat(service.slashCommands()).extracting(SlashCommand::command).containsExactly("model", "ask", "network", "nba");
+        assertThat(service.slashCommands()).extracting(SlashCommand::command).containsExactly("model", "ask");
+    }
+
+    @Test
+    void theCachedCatalogHoldsNoAgentOrLocalToolCommands() {
+        A2AAgentRegistry a2aAgentRegistry = mock(A2AAgentRegistry.class);
+        SlashCommandService service = new SlashCommandService(List.of(mcpSyncClient), redisTemplate, jsonMapper,
+                chatMemory, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
+                jwtAuthenticationConverter, toolActivityReporter, 3600L, false);
+
+        when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(mcpSyncClient.listPrompts()).thenReturn(new McpSchema.ListPromptsResult(List.of(), null, null));
+        when(mcpSyncClient.listTools()).thenReturn(new McpSchema.ListToolsResult(List.of(
+                McpSchema.Tool.builder("web_search", Map.of("type", "object")).description("Search").build()), null, null));
+        when(jsonMapper.writerFor(ArgumentMatchers.<TypeReference<?>>any())).thenReturn(objectWriter);
+        when(objectWriter.writeValueAsString(any())).thenReturn("refreshed-json");
+        when(valueOperations.set(anyString(), anyString(), any(Duration.class))).thenReturn(Mono.just(true));
+
+        List<SlashCommand> cached = service.refreshSlashCommands();
+
+        assertThat(cached).extracting(SlashCommand::command).containsExactly("web_search");
+        verify(a2aAgentRegistry, never()).asSlashCommands();
+        verify(localToolRegistry, never()).asSlashCommands();
     }
 }

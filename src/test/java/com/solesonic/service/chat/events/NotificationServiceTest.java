@@ -111,4 +111,17 @@ class NotificationServiceTest {
             return messageBody;
         }
     }
+
+    @Test
+    void recordFailureCarriesTheServersFailureTime() {
+        java.time.Instant before = java.time.Instant.now().minusMillis(1);
+
+        java.util.Map<String, Object> failure = notificationService.recordFailure(UUID.randomUUID(),
+                "An unexpected error occurred. Please try again.", com.solesonic.model.chat.TurnErrorCode.INTERNAL);
+
+        java.time.Instant occurredAt = java.time.Instant.parse((String) failure.get(NotificationService.OCCURRED_AT));
+        assertThat(occurredAt).isBetween(before, java.time.Instant.now().plusMillis(1));
+        assertThat(failure).containsEntry("code", "internal");
+        verify(chatMessageService).save(argThat(saved -> saved.getProgressData().containsKey(NotificationService.OCCURRED_AT)));
+    }
 }

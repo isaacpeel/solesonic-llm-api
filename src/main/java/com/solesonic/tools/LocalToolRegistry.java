@@ -2,6 +2,7 @@ package com.solesonic.tools;
 
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
+import com.solesonic.service.chat.events.ToolActivityReporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.support.ToolCallbacks;
@@ -26,11 +27,13 @@ public class LocalToolRegistry {
 
     public LocalToolRegistry(List<LocalTool> localTools,
                              JwtDecoder jwtDecoder,
-                             JwtAuthenticationConverter jwtAuthenticationConverter) {
+                             JwtAuthenticationConverter jwtAuthenticationConverter,
+                             ToolActivityReporter toolActivityReporter) {
         for (LocalTool localTool : localTools) {
             for (ToolCallback toolCallback : ToolCallbacks.from(localTool)) {
                 String toolName = toolCallback.getToolDefinition().name();
-                toolCallbacksByName.put(toolName, new LocalToolCallback(toolCallback, jwtDecoder, jwtAuthenticationConverter));
+                toolCallbacksByName.put(toolName, new ActivityReportingToolCallback(
+                        new LocalToolCallback(toolCallback, jwtDecoder, jwtAuthenticationConverter), toolActivityReporter));
 
                 log.debug("Registered local tool: {}", toolName);
             }

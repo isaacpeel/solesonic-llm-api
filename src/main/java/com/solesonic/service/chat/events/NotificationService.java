@@ -15,6 +15,8 @@ import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -22,6 +24,7 @@ import java.util.stream.Collectors;
 
 @Service
 public class NotificationService {
+    public static final String OCCURRED_AT = "occurredAt";
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
     public static final String CHAT_ID = "chatId";
     public static final String PROGRESS = "progress";
@@ -130,7 +133,8 @@ public class NotificationService {
      * after the terminal frame, where no client reads.
      * <p>
      * Carries the same {@code code} the caller's own {@code RUN_ERROR} carries, so a client reading
-     * either frame branches on the same value.
+     * either frame branches on the same value, and {@code occurredAt} (ISO-8601 UTC), the server's own
+     * time of the failure, which the client hands to the log agent when the user asks what happened.
      */
     public Map<String, Object> recordFailure(UUID chatId, String message, TurnErrorCode code) {
         log.warn("Recording failure notification for chat id {} with message: {}", chatId, message);
@@ -139,6 +143,7 @@ public class NotificationService {
         errorData.put(CHAT_ID, chatId.toString());
         errorData.put("message", message);
         errorData.put("code", code.wireValue());
+        errorData.put(OCCURRED_AT, Instant.now().truncatedTo(ChronoUnit.MILLIS).toString());
 
         ChatMessage chatMessage = new ChatMessage();
         chatMessage.setChatId(chatId);

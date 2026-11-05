@@ -43,7 +43,16 @@ public class ChatStreamSubscriber {
      * the reader goes.
      */
     public Flux<ServerSentEvent<?>> follow(String streamKey, String lastEventId) {
-        return keepalive(receive(streamKey, lastEventId));
+        return opened(receive(streamKey, lastEventId));
+    }
+
+    /**
+     * Starts with a keepalive, so the response is committed the moment the reader connects. Without
+     * it a quiet stream sends nothing, headers included, until the first keepalive is due, and a
+     * reader cannot tell a connected stream from one still being opened.
+     */
+    Flux<ServerSentEvent<?>> opened(Flux<ServerSentEvent<?>> events) {
+        return keepalive(events).startWith(keepaliveComment());
     }
 
     private Flux<ServerSentEvent<?>> receive(String streamKey, String lastEventId) {
@@ -91,9 +100,13 @@ public class ChatStreamSubscriber {
         Flux<ServerSentEvent<?>> keepalives = Flux.interval(keepaliveInterval, keepaliveInterval)
                 .filter(_ -> System.nanoTime() - lastFrameNanos.get() >= keepaliveInterval.toNanos())
                 .doOnNext(_ -> lastFrameNanos.set(System.nanoTime()))
-                .map(_ -> ServerSentEvent.builder().comment(KEEPALIVE_COMMENT).build());
+                .map(_ -> keepaliveComment());
 
         return tracked.mergeWith(keepalives);
+    }
+
+    private static ServerSentEvent<?> keepaliveComment() {
+        return ServerSentEvent.builder().comment(KEEPALIVE_COMMENT).build();
     }
 
     private StreamOffset<String> resolveOffset(String streamKey, String lastEventId) {

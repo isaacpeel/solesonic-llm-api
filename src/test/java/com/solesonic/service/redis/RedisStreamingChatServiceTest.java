@@ -41,6 +41,8 @@ import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.chat.PendingMessageMetadata;
+import com.solesonic.service.chat.TurnToolCalls;
+import com.solesonic.model.chat.ToolCallSummary;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
 import com.solesonic.service.chat.events.SideChannelMessage;
@@ -89,6 +91,7 @@ import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -153,6 +156,8 @@ class RedisStreamingChatServiceTest {
 
     private final PendingMessageMetadata pendingMessageMetadata = spy(new PendingMessageMetadata());
 
+    private final TurnToolCalls turnToolCalls = spy(new TurnToolCalls());
+
     private RedisStreamingChatService redisStreamingChatService;
 
     private final List<PublishedEvent> published = new CopyOnWriteArrayList<>();
@@ -173,7 +178,8 @@ class RedisStreamingChatServiceTest {
                 new SideChannelEventTranslator(JSON_MAPPER),
                 chatModelSelection,
                 pushNotificationService,
-                pendingMessageMetadata);
+                pendingMessageMetadata,
+                turnToolCalls);
 
         published.clear();
 
@@ -375,6 +381,29 @@ class RedisStreamingChatServiceTest {
 
         assertThat(finishedMessage().getResponseMetadata()).isEqualTo(responseMetadata);
         assertThat(finishedMessage().getResponseMetadataCalls()).isEqualTo(calls);
+    }
+
+    @Test
+    void completedTurnSavesItsToolLogAndCarriesItOnTheFinishedFrame() {
+        List<ToolCallSummary> toolCalls = List.of(new ToolCallSummary("t1", "web_search", "{\"query\":\"denver\"}", "ok", 1500L));
+        doReturn(toolCalls).when(turnToolCalls).take(CHAT_ID);
+        modelStreams("Hello");
+
+        runTurn();
+
+        verify(chatMessageService).updateToolCalls(eq(CHAT_ID), any(), eq(toolCalls));
+        assertThat(finishedMessage().getToolCalls()).isEqualTo(toolCalls);
+        verify(turnToolCalls, timeout(1000).atLeast(2)).clear(CHAT_ID);
+    }
+
+    @Test
+    void aTurnWithoutToolCallsSavesNoToolLog() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        verify(chatMessageService, never()).updateToolCalls(any(), any(), any());
+        assertThat(finishedMessage().getToolCalls()).isNull();
     }
 
     @Test

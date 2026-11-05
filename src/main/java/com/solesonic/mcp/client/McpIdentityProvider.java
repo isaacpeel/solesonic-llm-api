@@ -1,5 +1,7 @@
 package com.solesonic.mcp.client;
 
+import com.solesonic.service.chat.events.ToolActivityReporter;
+import com.solesonic.tools.ActivityReportingToolCallback;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
@@ -32,14 +34,17 @@ public class McpIdentityProvider implements ToolCallbackProvider {
     private final List<ToolCallback> toolCallbacks;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
+    private final ToolActivityReporter toolActivityReporter;
     private final Map<String, Tool> toolsByName;
 
     public McpIdentityProvider(McpSyncClient mcpClient,
                                JwtDecoder jwtDecoder,
-                               JwtAuthenticationConverter jwtAuthenticationConverter) {
+                               JwtAuthenticationConverter jwtAuthenticationConverter,
+                               ToolActivityReporter toolActivityReporter) {
         this.mcpClient = mcpClient;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
+        this.toolActivityReporter = toolActivityReporter;
         this.toolCallbacks = new ArrayList<>();
         this.toolsByName = new LinkedHashMap<>();
         initializeToolCallbacks();
@@ -52,7 +57,9 @@ public class McpIdentityProvider implements ToolCallbackProvider {
             log.debug("Initializing {} MCP tools with security context propagation", rawCallbacks.size());
 
             for (Map.Entry<Tool, ToolCallback> rawCallback : rawCallbacks.entrySet()) {
-                toolCallbacks.add(new IdentityToolCallback(rawCallback.getValue(), jwtDecoder, jwtAuthenticationConverter));
+                toolCallbacks.add(new ActivityReportingToolCallback(
+                        new IdentityToolCallback(rawCallback.getValue(), jwtDecoder, jwtAuthenticationConverter),
+                        toolActivityReporter));
                 log.debug("Wrapped MCP tool: {}", rawCallback.getKey().name());
             }
         } catch (Exception exception) {

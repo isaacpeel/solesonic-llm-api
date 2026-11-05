@@ -16,6 +16,7 @@ import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.agui.community.core.message.UserMessage;
 import com.openai.errors.OpenAIIoException;
 import com.openai.errors.OpenAIServiceException;
+import com.solesonic.config.logging.TurnMdc;
 import com.solesonic.exception.ChatException;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
@@ -45,8 +46,11 @@ import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.prompt.PromptService;
 import com.solesonic.service.push.PushNotificationService;
 import com.solesonic.util.ResponseSanitizer;
+import com.solesonic.service.chat.TurnToolCalls;
+import com.solesonic.model.chat.ToolCallSummary;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.Strings;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.connection.stream.RecordId;
@@ -117,6 +121,7 @@ public class RedisStreamingChatService {
     private final ChatModelSelection chatModelSelection;
     private final PushNotificationService pushNotificationService;
     private final PendingMessageMetadata pendingMessageMetadata;
+    private final TurnToolCalls turnToolCalls;
 
     public RedisStreamingChatService(ChatRepository chatRepository,
                                      PromptService promptService,
@@ -129,7 +134,8 @@ public class RedisStreamingChatService {
                                      SideChannelEventTranslator sideChannelEventTranslator,
                                      ChatModelSelection chatModelSelection,
                                      PushNotificationService pushNotificationService,
-                                     PendingMessageMetadata pendingMessageMetadata) {
+                                     PendingMessageMetadata pendingMessageMetadata,
+                                     TurnToolCalls turnToolCalls) {
         this.chatRepository = chatRepository;
         this.promptService = promptService;
         this.elicitationService = elicitationService;
@@ -142,6 +148,7 @@ public class RedisStreamingChatService {
         this.chatModelSelection = chatModelSelection;
         this.pushNotificationService = pushNotificationService;
         this.pendingMessageMetadata = pendingMessageMetadata;
+        this.turnToolCalls = turnToolCalls;
     }
 
     private Chat save(Chat chat) {
@@ -168,7 +175,8 @@ public class RedisStreamingChatService {
         log.debug("Starting Redis streaming chat with new chat id {}", chatId);
 
         return selectModel(chatId, model)
-                .thenMany(update(chatId, userId, chatRequest, authentication));
+                .thenMany(update(chatId, userId, chatRequest, authentication))
+                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)));
     }
 
     /**
@@ -208,7 +216,8 @@ public class RedisStreamingChatService {
 
         return redisStreamService.getLatestOffset(chatId, userId)
                 .flatMap(offset -> start(turnPlan).thenReturn(offset))
-                .flatMapMany(offset -> redisStreamService.subscribe(chatId, userId, offset));
+                .flatMapMany(offset -> redisStreamService.subscribe(chatId, userId, offset))
+                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)));
     }
 
     /**
@@ -217,6 +226,10 @@ public class RedisStreamingChatService {
      * by {@link #update} does. A run that fails to start never calls its hooks.
      */
     public Mono<StartedRun> start(TurnPlan turnPlan) {
+        //Taken now, on the caller's thread: the run below is subscribed detached and would otherwise log
+        //with no request ids and no chat id at all.
+        Map<String, String> turnMdc = TurnMdc.capture(turnPlan.chatId());
+
         return Mono.fromCallable(() -> {
                     ChatMessage saved = chatMessageService.saveUserMessage(turnPlan.chatId(), turnPlan.senderUserId(), turnPlan.chatRequest());
 
@@ -233,7 +246,7 @@ public class RedisStreamingChatService {
                         runStarted(turnPlan, savedTurn.chatMessage(), savedTurn.attachments()))
                         .thenReturn(savedTurn.chatMessage()))
                 .map(chatMessage -> {
-                    runTurn(turnPlan).subscribe();
+                    runTurn(turnPlan).contextWrite(TurnMdc.into(turnMdc)).subscribe();
 
                     return new StartedRun(turnPlan.runId(), chatMessage.getId());
                 });
@@ -343,6 +356,8 @@ public class RedisStreamingChatService {
         //Time rather than message id because the assistant message is written by the chat memory
         //advisor, which does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
+
+        turnToolCalls.clear(chatId);
 
         Flux<SideChannelMessage> elicitationEvents = elicitationService.registerChat(chatId);
 
@@ -457,7 +472,8 @@ public class RedisStreamingChatService {
         return Mono.fromCallable(() -> new CompletedTurn(
                         generatedImageService.forChatSince(chatId, turn.started()),
                         chatMessageService.responseMetadata(chatId, turn.started()),
-                        chatMessageService.responseMetadataCalls(chatId, turn.started())))
+                        chatMessageService.responseMetadataCalls(chatId, turn.started()),
+                        saveToolCalls(turn)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMap(completedTurn -> {
                     ChatMessage responseMessage = new ChatMessage();
@@ -475,6 +491,7 @@ public class RedisStreamingChatService {
                     //answered.
                     responseMessage.setResponseMetadata(completedTurn.responseMetadata());
                     responseMessage.setResponseMetadataCalls(completedTurn.responseMetadataCalls());
+                    responseMessage.setToolCalls(completedTurn.toolCalls());
 
                     log.debug("Publishing run finished event to Redis for chat id {}", chatId);
 
@@ -516,7 +533,28 @@ public class RedisStreamingChatService {
      */
     private record CompletedTurn(List<GeneratedImageSummary> generatedImages,
                                  ResponseMetadata responseMetadata,
-                                 List<ModelCallMetadata> responseMetadataCalls) {
+                                 List<ModelCallMetadata> responseMetadataCalls,
+                                 @Nullable List<ToolCallSummary> toolCalls) {
+    }
+
+    /**
+     * Saves the turn's tool log on its assistant message. A failed save only loses the log: the turn
+     * still finishes, carrying the calls on its terminal frame.
+     */
+    private @Nullable List<ToolCallSummary> saveToolCalls(Turn turn) {
+        List<ToolCallSummary> toolCalls = turnToolCalls.take(turn.chatId());
+
+        if (toolCalls.isEmpty()) {
+            return null;
+        }
+
+        try {
+            chatMessageService.updateToolCalls(turn.chatId(), turn.started(), toolCalls);
+        } catch (RuntimeException exception) {
+            log.warn("Could not save the tool log of chat {}: {}", turn.chatId(), exception.getMessage());
+        }
+
+        return toolCalls;
     }
 
     /**
@@ -738,6 +776,7 @@ public class RedisStreamingChatService {
 
         elicitationService.closeChat(chatId);
         pendingMessageMetadata.clear(chatId);
+        turnToolCalls.clear(chatId);
         untrackActiveStream(turn.senderUserId(), chatId);
 
         try {

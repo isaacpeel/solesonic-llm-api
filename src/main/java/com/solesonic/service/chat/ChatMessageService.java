@@ -17,6 +17,7 @@ import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
 import com.solesonic.util.SharedMessageText;
+import com.solesonic.model.chat.ToolCallSummary;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -185,6 +186,20 @@ public class ChatMessageService {
                 .ifPresent(chatMessage -> {
                     chatMessage.setResponseMetadata(responseMetadata);
                     chatMessage.setResponseMetadataCalls(responseMetadataCalls);
+                    chatMessageRepository.save(chatMessage);
+                });
+    }
+
+    /**
+     * Attaches the turn's finished tool calls to its assistant message, found the same way
+     * {@link #updateResponseMetadata} finds it.
+     */
+    @Transactional
+    public void updateToolCalls(UUID chatId, ZonedDateTime since, List<ToolCallSummary> toolCalls) {
+        chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setToolCalls(toolCalls);
                     chatMessageRepository.save(chatMessage);
                 });
     }
