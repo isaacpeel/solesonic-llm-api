@@ -84,7 +84,7 @@ class ChatModelServiceTest {
 
     @Test
     void optionsCarryEachModelsDisplaySettingsMatchedIgnoringCase() {
-        stubAvailableModels("Auto-Kev", "nba-agent", "qwen3:8b", "vision-model");
+        stubAvailableModels("vision-model", "Auto-Kev", "qwen3:8b", "nba-agent");
         when(liteLlmModelInfoClient.displaySettings(LLM_API_KEY)).thenReturn(Map.of(
                 "auto-kev", new ModelDisplaySettings("auto", false),
                 "nba-agent", new ModelDisplaySettings(null, true),
@@ -114,8 +114,8 @@ class ChatModelServiceTest {
     }
 
     @Test
-    void optionsListTheEndpointsModelsInItsOwnOrderAndSpelling() {
-        stubAvailableModels("openai/gpt-4o", "qwen3:8b");
+    void optionsListTheEndpointsModelsSortedByName() {
+        stubAvailableModels("qwen3:8b", "openai/gpt-4o");
 
         ChatModelOptions options = chatModelService.options(USER_ID);
 
@@ -125,6 +125,20 @@ class ChatModelServiceTest {
         assertThat(options.defaultModel()).isEqualTo(DEFAULT_MODEL);
         assertThat(options.selectedModel()).isNull();
         assertThat(options.activeAgent()).isNull();
+    }
+
+    @Test
+    void optionsSortModelsByDisplayNameWhenCustomDisplayNamesAreProvided() {
+        stubAvailableModels("model-z", "model-a");
+        when(liteLlmModelInfoClient.displaySettings(LLM_API_KEY)).thenReturn(Map.of(
+                "model-z", new ModelDisplaySettings("Alpha Model", false),
+                "model-a", new ModelDisplaySettings("Beta Model", false)));
+
+        ChatModelOptions options = chatModelService.options(USER_ID);
+
+        assertThat(options.models()).containsExactly(
+                new AvailableModel("model-z", "owner", "Alpha Model", false),
+                new AvailableModel("model-a", "owner", "Beta Model", false));
     }
 
     @Test

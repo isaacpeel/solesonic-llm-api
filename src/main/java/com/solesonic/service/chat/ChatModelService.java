@@ -21,6 +21,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -187,11 +188,14 @@ public class ChatModelService {
         Map<String, ModelDisplaySettings> settingsByName = liteLlmModelInfoClient.displaySettings(llmApiKey);
 
         if (settingsByName.isEmpty()) {
-            return models;
+            return models.stream()
+                    .sorted(Comparator.comparing(AvailableModel::displayName))
+                    .toList();
         }
 
         return models.stream()
                 .map(model -> withDisplaySettings(model, settingsByName.get(model.id().toLowerCase(Locale.ROOT))))
+                .sorted(Comparator.comparing(AvailableModel::displayName))
                 .toList();
     }
 
