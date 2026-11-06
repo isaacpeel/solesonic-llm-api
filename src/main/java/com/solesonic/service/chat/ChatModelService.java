@@ -10,6 +10,7 @@ import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelState;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.LiteLlmModelInfoClient.ModelDisplaySettings;
 import com.solesonic.service.llm.UserLlmKeyService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -21,6 +22,8 @@ import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Function;
@@ -44,17 +47,20 @@ public class ChatModelService {
     private final ChatModelSelection chatModelSelection;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final UserLlmKeyService userLlmKeyService;
+    private final LiteLlmModelInfoClient liteLlmModelInfoClient;
     private final String defaultModel;
 
     public ChatModelService(@Qualifier(OPENAI_CLIENT) OpenAIClient openAiClient,
                             ChatModelSelection chatModelSelection,
                             A2AStickyAgentService a2aStickyAgentService,
                             UserLlmKeyService userLlmKeyService,
+                            LiteLlmModelInfoClient liteLlmModelInfoClient,
                             @Value("${spring.ai.openai.model}") String defaultModel) {
         this.openAiClient = openAiClient;
         this.chatModelSelection = chatModelSelection;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.userLlmKeyService = userLlmKeyService;
+        this.liteLlmModelInfoClient = liteLlmModelInfoClient;
         this.defaultModel = defaultModel;
     }
 
@@ -62,11 +68,11 @@ public class ChatModelService {
      * The options for a chat that does not exist yet: nothing is selected and no agent holds it.
      */
     public ChatModelOptions options(UUID userId) {
-        return new ChatModelOptions(availableModels(userId), defaultModel, null, null);
+        return new ChatModelOptions(displayedModels(userId), defaultModel, null, null);
     }
 
     public ChatModelOptions options(UUID userId, UUID chatId) {
-        return ChatModelOptions.of(availableModels(userId), state(chatId));
+        return ChatModelOptions.of(displayedModels(userId), state(chatId));
     }
 
     /**
@@ -170,11 +176,43 @@ public class ChatModelService {
     }
 
     /**
+     * The live list with each model's display settings from LiteLLM's {@code model_info}. Only a picker
+     * needs them, so validation ({@link #resolve}) asks for the bare list. A model with no settings, or
+     * any model when they cannot be read, shows under its id and is not hidden.
+     */
+    private List<AvailableModel> displayedModels(UUID userId) {
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
+        List<AvailableModel> models = availableModels(llmApiKey);
+
+        Map<String, ModelDisplaySettings> settingsByName = liteLlmModelInfoClient.displaySettings(llmApiKey);
+
+        if (settingsByName.isEmpty()) {
+            return models;
+        }
+
+        return models.stream()
+                .map(model -> withDisplaySettings(model, settingsByName.get(model.id().toLowerCase(Locale.ROOT))))
+                .toList();
+    }
+
+    private static AvailableModel withDisplaySettings(AvailableModel model, ModelDisplaySettings settings) {
+        if (settings == null) {
+            return model;
+        }
+
+        String displayName = settings.displayName() != null ? settings.displayName() : model.id();
+
+        return new AvailableModel(model.id(), model.ownedBy(), displayName, settings.hidden());
+    }
+
+    /**
      * @throws com.solesonic.exception.llm.LlmKeyMissingException when the user has no key
      */
     private List<AvailableModel> availableModels(UUID userId) {
-        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
+        return availableModels(userLlmKeyService.requireKey(userId));
+    }
 
+    private List<AvailableModel> availableModels(LlmApiKey llmApiKey) {
         ModelListParams modelListParams = ModelListParams.builder()
                 .putAdditionalHeader(HttpHeaders.AUTHORIZATION, llmApiKey.bearer())
                 .build();

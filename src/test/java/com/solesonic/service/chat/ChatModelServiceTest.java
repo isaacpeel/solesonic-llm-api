@@ -14,6 +14,7 @@ import com.solesonic.model.chat.model.ChatModelOptions;
 import com.solesonic.model.chat.model.ChatModelState;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.service.chat.LiteLlmModelInfoClient.ModelDisplaySettings;
 import com.solesonic.service.llm.UserLlmKeyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.mockito.ArgumentCaptor;
@@ -25,6 +26,7 @@ import reactor.core.publisher.Mono;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -57,6 +59,8 @@ class ChatModelServiceTest {
     private A2AStickyAgentService a2aStickyAgentService;
     @Mock
     private UserLlmKeyService userLlmKeyService;
+    @Mock
+    private LiteLlmModelInfoClient liteLlmModelInfoClient;
 
     private UUID chatId;
 
@@ -66,7 +70,8 @@ class ChatModelServiceTest {
     void setUp() {
         chatId = UUID.randomUUID();
 
-        chatModelService = new ChatModelService(openAiClient, chatModelSelection, a2aStickyAgentService, userLlmKeyService, DEFAULT_MODEL);
+        chatModelService = new ChatModelService(openAiClient, chatModelSelection, a2aStickyAgentService, userLlmKeyService,
+                liteLlmModelInfoClient, DEFAULT_MODEL);
 
         lenient().when(userLlmKeyService.requireKey(USER_ID)).thenReturn(LLM_API_KEY);
 
@@ -74,6 +79,38 @@ class ChatModelServiceTest {
         lenient().when(chatModelSelection.get(any())).thenReturn(Mono.empty());
         lenient().when(chatModelSelection.set(any(), anyString())).thenReturn(Mono.empty());
         lenient().when(chatModelSelection.clear(any())).thenReturn(Mono.empty());
+        lenient().when(liteLlmModelInfoClient.displaySettings(any())).thenReturn(Map.of());
+    }
+
+    @Test
+    void optionsCarryEachModelsDisplaySettingsMatchedIgnoringCase() {
+        stubAvailableModels("Auto-Kev", "nba-agent", "qwen3:8b", "vision-model");
+        when(liteLlmModelInfoClient.displaySettings(LLM_API_KEY)).thenReturn(Map.of(
+                "auto-kev", new ModelDisplaySettings("auto", false),
+                "nba-agent", new ModelDisplaySettings(null, true),
+                "vision-model", new ModelDisplaySettings(null, false)));
+
+        ChatModelOptions options = chatModelService.options(USER_ID);
+
+        assertThat(options.models()).containsExactly(
+                new AvailableModel("Auto-Kev", "owner", "auto", false),
+                new AvailableModel("nba-agent", "owner", "nba-agent", true),
+                new AvailableModel("qwen3:8b", "owner", "qwen3:8b", false),
+                new AvailableModel("vision-model", "owner", "vision-model", false));
+    }
+
+    /**
+     * Hiding is a picker's business: a hidden model can still be chosen by name.
+     */
+    @Test
+    void aHiddenModelCanStillBeSelectedAndValidationReadsNoDisplaySettings() {
+        stubAvailableModels("nba-agent");
+        when(chatModelSelection.get(chatId)).thenReturn(Mono.just("nba-agent"));
+
+        chatModelService.select(USER_ID, chatId, "nba-agent");
+
+        verify(chatModelSelection).set(chatId, "nba-agent");
+        verifyNoInteractions(liteLlmModelInfoClient);
     }
 
     @Test
@@ -83,8 +120,8 @@ class ChatModelServiceTest {
         ChatModelOptions options = chatModelService.options(USER_ID);
 
         assertThat(options.models()).containsExactly(
-                new AvailableModel("openai/gpt-4o", "owner"),
-                new AvailableModel("qwen3:8b", "owner"));
+                new AvailableModel("openai/gpt-4o", "owner", "openai/gpt-4o", false),
+                new AvailableModel("qwen3:8b", "owner", "qwen3:8b", false));
         assertThat(options.defaultModel()).isEqualTo(DEFAULT_MODEL);
         assertThat(options.selectedModel()).isNull();
         assertThat(options.activeAgent()).isNull();
