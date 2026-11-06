@@ -31,7 +31,7 @@
 
     <properties>
         <java.version>25</java.version>
-        <spring-ai.version>2.1.0-RC1</spring-ai.version>
+        <spring-ai.version>2.1.0-RC2</spring-ai.version>
         <a2a-java-sdk.version>1.4.0.Final</a2a-java-sdk.version>
         <ag-ui.version>0.1.1</ag-ui.version>
         <jackson-bom.version>3.2.4</jackson-bom.version>
