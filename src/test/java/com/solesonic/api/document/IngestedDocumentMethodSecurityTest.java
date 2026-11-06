@@ -6,6 +6,7 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.ingestion.IngestedDocumentService;
 import com.solesonic.service.ingestion.StatusHistoryService;
 import com.solesonic.service.ingestion.UriIngestionService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -69,6 +70,7 @@ class IngestedDocumentMethodSecurityTest {
     private static UriIngestionService uriIngestionService;
     private static VectorStoreService vectorStoreService;
     private static StatusHistoryService statusHistoryService;
+    private static UserLlmKeyService userLlmKeyService;
     private static UserRequestContext userRequestContext;
 
     @Configuration
@@ -85,7 +87,7 @@ class IngestedDocumentMethodSecurityTest {
 
         @Bean
         DocumentController documentController() {
-            return new DocumentController(vectorStoreService, statusHistoryService);
+            return new DocumentController(vectorStoreService, statusHistoryService, userLlmKeyService, userRequestContext);
         }
     }
 
@@ -95,6 +97,7 @@ class IngestedDocumentMethodSecurityTest {
         uriIngestionService = mock(UriIngestionService.class);
         vectorStoreService = mock(VectorStoreService.class);
         statusHistoryService = mock(StatusHistoryService.class);
+        userLlmKeyService = mock(UserLlmKeyService.class);
         userRequestContext = mock(UserRequestContext.class);
     }
 

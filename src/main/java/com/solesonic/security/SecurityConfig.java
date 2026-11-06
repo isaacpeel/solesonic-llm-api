@@ -16,6 +16,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
+import org.springframework.security.oauth2.server.resource.authentication.DelegatingJwtGrantedAuthoritiesConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.AuthenticationEntryPoint;
@@ -42,6 +43,14 @@ public class SecurityConfig {
 
     public static final String ROLE = "ROLE_";
     public static final String ROLES = "roles";
+    public static final String GROUP = "GROUP_";
+    public static final String GROUPS = "groups";
+
+    /**
+     * The Keycloak group allowed to manage every user's memories, as the authority
+     * {@link #rolesAndGroupsConverter()} grants for it.
+     */
+    public static final String IZZY_BOT_ADMIN = GROUP + "izzy-bot-admin";
 
     private static final String EXPIRED_MARKER = "expired";
     private static final String SIGNATURE_MARKER = "signature";
@@ -108,12 +117,27 @@ public class SecurityConfig {
 
     @Bean
     public JwtAuthenticationConverter jwtAuthenticationConverter() {
-        JwtGrantedAuthoritiesConverter grantedAuthoritiesConverter = new JwtGrantedAuthoritiesConverter();
-        grantedAuthoritiesConverter.setAuthorityPrefix(ROLE);
-        grantedAuthoritiesConverter.setAuthoritiesClaimName(ROLES);
+        return rolesAndGroupsConverter();
+    }
+
+    /**
+     * Client roles from {@code roles} become {@code ROLE_*} authorities, and Keycloak group names
+     * from {@code groups} become {@code GROUP_*} — a separate prefix, so a group can never pass a
+     * {@code hasRole} check by sharing a role's name. Shared with {@code LocalSecurityConfig} so the
+     * two profiles grant exactly the same authorities.
+     */
+    public static JwtAuthenticationConverter rolesAndGroupsConverter() {
+        JwtGrantedAuthoritiesConverter rolesConverter = new JwtGrantedAuthoritiesConverter();
+        rolesConverter.setAuthorityPrefix(ROLE);
+        rolesConverter.setAuthoritiesClaimName(ROLES);
+
+        JwtGrantedAuthoritiesConverter groupsConverter = new JwtGrantedAuthoritiesConverter();
+        groupsConverter.setAuthorityPrefix(GROUP);
+        groupsConverter.setAuthoritiesClaimName(GROUPS);
 
         JwtAuthenticationConverter jwtAuthenticationConverter = new JwtAuthenticationConverter();
-        jwtAuthenticationConverter.setJwtGrantedAuthoritiesConverter(grantedAuthoritiesConverter);
+        jwtAuthenticationConverter.setJwtGrantedAuthoritiesConverter(
+                new DelegatingJwtGrantedAuthoritiesConverter(rolesConverter, groupsConverter));
 
         return jwtAuthenticationConverter;
     }

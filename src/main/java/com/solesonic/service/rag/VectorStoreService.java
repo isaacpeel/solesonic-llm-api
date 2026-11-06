@@ -4,8 +4,13 @@ import com.solesonic.model.VectorSearch;
 import com.solesonic.model.rag.DocumentPrincipal;
 import com.solesonic.model.rag.RetrievalMetadata;
 import com.solesonic.model.ingestion.VectorDocument;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.ingestion.DocumentStatus;
+import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.repository.ingestion.IngestedDocumentRepository;
 import com.solesonic.repository.rag.VectorStoreRepository;
+import com.solesonic.service.llm.LlmCredentialScope;
 import com.solesonic.service.user.UserPreferencesService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,24 +18,24 @@ import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.rag.advisor.RetrievalAugmentationAdvisor;
-import org.springframework.ai.rag.generation.augmentation.ContextualQueryAugmenter;
 import org.springframework.ai.rag.preretrieval.query.expansion.MultiQueryExpander;
-import org.springframework.ai.rag.preretrieval.query.transformation.QueryTransformer;
-import org.springframework.ai.rag.preretrieval.query.transformation.RewriteQueryTransformer;
-import org.springframework.ai.rag.retrieval.search.VectorStoreDocumentRetriever;
+import org.springframework.ai.rag.preretrieval.query.transformation.CompressionQueryTransformer;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.ai.vectorstore.filter.Filter;
 import org.springframework.ai.vectorstore.filter.FilterExpressionBuilder;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -46,10 +51,21 @@ public class VectorStoreService {
     private static final int RERANK_TOP_N = 5;
     private static final int EXPANSION_QUERIES = 3;
 
+    /**
+     * How many of a conversation's documents are named to the model. A guard on prompt size; a chat
+     * with more than this many documents is rare, and naming most of them is what matters.
+     */
+    private static final int MANIFEST_DOCUMENTS = 20;
+
     private final VectorStore vectorStore;
     private final VectorStoreRepository vectorStoreRepository;
     private final UserPreferencesService userPreferencesService;
     private final OpenAiChatModel taskChatModel;
+
+    /**
+     * The repository, not {@code IngestedDocumentService}: that service depends on this one.
+     */
+    private final IngestedDocumentRepository ingestedDocumentRepository;
 
     @Value("${solesonic.llm.retrieval.similarity-threshold.chat}")
     private Double defaultChatSimilarityThreshold;
@@ -63,14 +79,30 @@ public class VectorStoreService {
     @Value("${solesonic.llm.embedding.max-query-chars}")
     private int maxQueryChars;
 
+    /**
+     * Folds a follow-up and the conversation into a standalone query before retrieval, for chats with
+     * documents of their own. One extra task-model call per such turn; off until evaluated.
+     */
+    @Value("${solesonic.llm.retrieval.query-compression.enabled:false}")
+    private boolean queryCompressionEnabled;
+
+    /**
+     * When the conversation tier finds nothing, how many of its chunks to take anyway, below the
+     * threshold. Zero is off; see {@link ScopedDocumentRetriever.ScopedTier}.
+     */
+    @Value("${solesonic.llm.retrieval.chat-floor-top-k:0}")
+    private int chatFloorTopK;
+
     public VectorStoreService(VectorStore vectorStore,
                               VectorStoreRepository vectorStoreRepository,
                               UserPreferencesService userPreferencesService,
-                              @Qualifier(RAG_TASK_CHAT_MODEL) OpenAiChatModel taskChatModel) {
+                              @Qualifier(RAG_TASK_CHAT_MODEL) OpenAiChatModel taskChatModel,
+                              IngestedDocumentRepository ingestedDocumentRepository) {
         this.vectorStore = vectorStore;
         this.vectorStoreRepository = vectorStoreRepository;
         this.userPreferencesService = userPreferencesService;
         this.taskChatModel = taskChatModel;
+        this.ingestedDocumentRepository = ingestedDocumentRepository;
     }
 
     /**
@@ -79,51 +111,144 @@ public class VectorStoreService {
      * <p>
      * {@code chatId} may be null for a call that belongs to no conversation, in which case the
      * conversation tier is simply absent rather than filtered to nothing.
+     * <p>
+     * Every model call the advisor makes carries {@code llmApiKey}: the task clients as a request
+     * header, since the advisor runs on a thread of its own, and the retriever's embeddings through
+     * the scope it binds around each search.
+     * <p>
+     * Everything that makes a conversation's own documents easier to reach — follow-up compression,
+     * the chat-tier floor, the document manifest in {@link ChatDocumentQueryAugmenter} — applies only
+     * when the conversation has retrievable documents, so a chat without any behaves, and costs,
+     * exactly as before. Compression and the floor are also off unless configured.
+     * <p>
+     * Only the default route and MCP prompt commands build this advisor. Tool, local-tool, agent and
+     * sticky-agent routes do not retrieve at all; whether they should is an open product question.
      */
     @SuppressWarnings("unused")
-    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId) {
+    public Advisor retrievalAugmentationAdvisor(UUID userId, UUID chatId, LlmApiKey llmApiKey) {
         UserPreferences userPreferences = userPreferencesService.get(userId);
 
-        QueryTransformer truncatingTransformer = query -> {
-            String text = query.text();
+        List<String> chatDocumentNames = chatDocumentNames(userId, chatId);
+        boolean hasChatDocuments = !chatDocumentNames.isEmpty();
 
-            if (text.length() <= maxQueryChars) {
-                return query;
-            }
+        HistoryAwareQueryCompressor historyAwareQueryCompressor = new HistoryAwareQueryCompressor(
+                queryCompressionEnabled,
+                hasChatDocuments,
+                () -> CompressionQueryTransformer.builder()
+                        .chatClientBuilder(taskClientBuilder(llmApiKey))
+                        .build());
 
-            log.warn("Query text truncated from {} to {} characters for embedding", text.length(), maxQueryChars);
-            return query.mutate().text(text.substring(0, maxQueryChars)).build();
-        };
-
-        RewriteQueryTransformer rewriteQueryTransformer = RewriteQueryTransformer.builder()
-                .chatClientBuilder(ChatClient.builder(taskChatModel))
-                .build();
-
+        // Deferred: query expansion and reranking stay off until they are evaluated.
         MultiQueryExpander multiQueryExpander = MultiQueryExpander.builder()
-                .chatClientBuilder(ChatClient.builder(taskChatModel))
+                .chatClientBuilder(taskClientBuilder(llmApiKey))
                 .numberOfQueries(EXPANSION_QUERIES)
                 .build();
 
-        LlmDocumentReranker documentReranker = new LlmDocumentReranker(ChatClient.builder(taskChatModel).build(), RERANK_TOP_N);
+        LlmDocumentReranker documentReranker = new LlmDocumentReranker(taskClientBuilder(llmApiKey).build(), RERANK_TOP_N);
 
-        RetrievalLoggingPostProcessor retrievalLoggingPostProcessor = new RetrievalLoggingPostProcessor();
-        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K, tiers(userId, chatId, userPreferences));
+        return advisor(llmApiKey, tiers(userId, chatId, userPreferences, hasChatDocuments ? chatFloorTopK : 0),
+                historyAwareQueryCompressor, chatDocumentNames);
+    }
 
-        VectorStoreDocumentRetriever vectorStoreDocumentRetriever = VectorStoreDocumentRetriever.builder()
-                .similarityThreshold(0.5)
-                .topK(RETRIEVAL_TOP_K)
-                .vectorStore(vectorStore)
-                .build();
+    /**
+     * The advisor for a shared conversation, which every participant reads: the conversation's own
+     * documents, whoever uploaded them, then the global corpus. Never the sender's personal tier, which
+     * would put one person's library into a reply the whole room reads.
+     * <p>
+     * The thresholds are the configured defaults, not any one participant's preference. The manifest
+     * names every completed document of the conversation, so the model can say a document exists even
+     * when no passage matched, and compression and the floor apply once there is one, as in a private chat.
+     */
+    public Advisor sharedRetrievalAugmentationAdvisor(UUID chatId, LlmApiKey llmApiKey) {
+        List<String> chatDocumentNames = sharedChatDocumentNames(chatId);
+        boolean hasChatDocuments = !chatDocumentNames.isEmpty();
+
+        HistoryAwareQueryCompressor historyAwareQueryCompressor = new HistoryAwareQueryCompressor(
+                queryCompressionEnabled,
+                hasChatDocuments,
+                () -> CompressionQueryTransformer.builder()
+                        .chatClientBuilder(taskClientBuilder(llmApiKey))
+                        .build());
+
+        log.debug("Retrieving at conversation and global scope for shared chat {}", chatId);
+
+        ScopedDocumentRetriever.ScopedTier chatTier = tier(DocumentPrincipal.chat(chatId), defaultChatSimilarityThreshold);
+
+        List<ScopedDocumentRetriever.ScopedTier> tiers = List.of(
+                new ScopedDocumentRetriever.ScopedTier(chatTier.principal(), chatTier.filterExpression(),
+                        chatTier.similarityThreshold(), hasChatDocuments ? chatFloorTopK : 0),
+                tier(DocumentPrincipal.global(), defaultGlobalSimilarityThreshold));
+
+        return advisor(llmApiKey, tiers, historyAwareQueryCompressor, chatDocumentNames);
+    }
+
+    private Advisor advisor(LlmApiKey llmApiKey,
+                            List<ScopedDocumentRetriever.ScopedTier> tiers,
+                            HistoryAwareQueryCompressor historyAwareQueryCompressor,
+                            List<String> chatDocumentNames) {
+        ScopedDocumentRetriever scopedDocumentRetriever = new ScopedDocumentRetriever(vectorStore, RETRIEVAL_TOP_K, tiers, llmApiKey);
 
         return RetrievalAugmentationAdvisor.builder()
-//                .queryTransformers(rewriteQueryTransformer, truncatingTransformer)
-//                .queryExpander(multiQueryExpander)
+                .queryTransformers(historyAwareQueryCompressor, new TruncatingQueryTransformer(maxQueryChars))
                 .documentRetriever(scopedDocumentRetriever)
-//                .documentPostProcessors(retrievalLoggingPostProcessor, documentReranker)
-                .queryAugmenter(ContextualQueryAugmenter.builder()
-                        .allowEmptyContext(true)
-                        .build())
+                .documentPostProcessors(new RetrievalLoggingPostProcessor())
+                .queryAugmenter(new ChatDocumentQueryAugmenter(chatDocumentNames))
                 .build();
+    }
+
+    /**
+     * The names of the documents this conversation can retrieve from: completed, carrying a
+     * {@code RETRIEVE} grant to this chat. Derived from grants rather than from attachment chunk
+     * counts, so a promoted or removed document is excluded and one uploaded straight to the chat is
+     * included.
+     * <p>
+     * Retrieval must never fail a turn, so a failed lookup is treated as "no documents" — which is
+     * exactly the previous behaviour.
+     */
+    private List<String> chatDocumentNames(UUID userId, UUID chatId) {
+        if (chatId == null) {
+            return List.of();
+        }
+
+        try {
+            return ingestedDocumentRepository.findAllChatDocumentsManagedBy(userId.toString(), chatId.toString(),
+                            DocumentStatus.COMPLETED, PageRequest.of(0, MANIFEST_DOCUMENTS))
+                    .getContent().stream()
+                    .map(IngestedDocument::getFileName)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException runtimeException) {
+            log.warn("Could not list the documents of chat {}; retrieving without them: {}",
+                    chatId, runtimeException.getMessage());
+
+            return List.of();
+        }
+    }
+
+    /**
+     * {@link #chatDocumentNames} for a shared conversation: every participant's completed documents.
+     */
+    private List<String> sharedChatDocumentNames(UUID chatId) {
+        try {
+            return ingestedDocumentRepository.findAllChatDocuments(chatId.toString(), DocumentStatus.COMPLETED,
+                            PageRequest.of(0, MANIFEST_DOCUMENTS))
+                    .getContent().stream()
+                    .map(IngestedDocument::getFileName)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+        } catch (RuntimeException runtimeException) {
+            log.warn("Could not list the documents of shared chat {}; retrieving without them: {}",
+                    chatId, runtimeException.getMessage());
+
+            return List.of();
+        }
+    }
+
+    private ChatClient.Builder taskClientBuilder(LlmApiKey llmApiKey) {
+        return ChatClient.builder(taskChatModel)
+                .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()));
     }
 
     /**
@@ -134,14 +259,20 @@ public class VectorStoreService {
      * The ids are compared as strings because that is how they are written — a UUID serialized into
      * JSON is a string, and a filter comparing against anything else matches nothing.
      */
-    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId, UUID chatId, UserPreferences userPreferences) {
+    private List<ScopedDocumentRetriever.ScopedTier> tiers(UUID userId,
+                                                           UUID chatId,
+                                                           UserPreferences userPreferences,
+                                                           int chatFloor) {
         List<ScopedDocumentRetriever.ScopedTier> tiers = new ArrayList<>(3);
 
         if (chatId != null) {
             Double chatSimilarityThreshold = Optional.ofNullable(userPreferences.getChatSimilarityThreshold())
                     .orElse(defaultChatSimilarityThreshold);
 
-            tiers.add(tier(DocumentPrincipal.chat(chatId), chatSimilarityThreshold));
+            ScopedDocumentRetriever.ScopedTier chatTier = tier(DocumentPrincipal.chat(chatId), chatSimilarityThreshold);
+
+            tiers.add(new ScopedDocumentRetriever.ScopedTier(chatTier.principal(), chatTier.filterExpression(),
+                    chatTier.similarityThreshold(), chatFloor));
         }
 
         Double userSimilarityThreshold = Optional.ofNullable(userPreferences.getUserSimilarityThreshold())
@@ -183,19 +314,26 @@ public class VectorStoreService {
         }
     }
 
-    public List<Document> findSimilarDocuments(VectorSearch vectorSearch) {
+    /**
+     * The query is embedded on {@code llmApiKey}, the caller's own key.
+     */
+    public List<Document> findSimilarDocuments(VectorSearch vectorSearch, LlmApiKey llmApiKey) {
         SearchRequest searchRequest = SearchRequest.builder()
                 .query(vectorSearch.query())
                 .similarityThreshold(vectorSearch.similarityThreshold())
                 .topK(vectorSearch.topK())
                 .build();
 
-        return vectorStore.similaritySearch(searchRequest);
+        return LlmCredentialScope.asUser(llmApiKey, () -> vectorStore.similaritySearch(searchRequest));
     }
 
     public List<VectorDocument> findByIngestedDocumentId(UUID ingestedDocumentId) {
         return vectorStoreRepository.findByIngestedDocumentId(ingestedDocumentId.toString())
                 .orElse(Collections.emptyList());
+    }
+
+    public boolean hasChunks(UUID ingestedDocumentId) {
+        return vectorStoreRepository.existsChunkForDocument(ingestedDocumentId.toString());
     }
 
     public void delete(List<VectorDocument> vectorDocuments) {

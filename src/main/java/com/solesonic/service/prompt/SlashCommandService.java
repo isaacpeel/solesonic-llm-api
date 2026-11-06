@@ -3,10 +3,13 @@ package com.solesonic.service.prompt;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
+import com.solesonic.service.chat.events.ToolActivityReporter;
+import com.solesonic.tools.ActivityReportingToolCallback;
 import com.solesonic.tools.LocalToolRegistry;
 import io.modelcontextprotocol.client.McpSyncClient;
 import io.modelcontextprotocol.spec.McpSchema;
@@ -20,6 +23,7 @@ import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -46,6 +50,8 @@ public class SlashCommandService {
     private static final TypeReference<List<SlashCommand>> CATALOG_TYPE_REFERENCE = new TypeReference<>() {
     };
 
+    private static final List<SlashCommand> BUILT_IN_COMMANDS = List.of(new ModelSlashCommand());
+
     private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
@@ -59,7 +65,7 @@ public class SlashCommandService {
     private final OpenAiChatModel taskChatModel;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
-    private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
+    private final ToolActivityReporter toolActivityReporter;
 
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
@@ -70,7 +76,7 @@ public class SlashCommandService {
                                LocalToolRegistry localToolRegistry,
                                JwtDecoder jwtDecoder,
                                JwtAuthenticationConverter jwtAuthenticationConverter,
-                               GeneratedImageToolInterceptor generatedImageToolInterceptor,
+                               ToolActivityReporter toolActivityReporter,
                                @Value("${solesonic.llm.slash-commands.cache.ttl-seconds:3600}") long cacheTtlSeconds,
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
         this.redisTemplate = redisTemplate;
@@ -82,20 +88,32 @@ public class SlashCommandService {
         this.localToolRegistry = localToolRegistry;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
-        this.generatedImageToolInterceptor = generatedImageToolInterceptor;
+        this.toolActivityReporter = toolActivityReporter;
         this.taskChatModel = taskChatModel;
 
         mcpSyncClient = mcpSyncClients.getFirst();
     }
 
-    public ChatClient taskClient(ToolCallback toolCallback) {
+    /**
+     * A task client for an MCP tool, which is wrapped so it travels on the user's identity and nothing
+     * internal reaches the MCP server.
+     *
+     * @param llmApiKey the user's own key, which every call through the client carries
+     */
+    public ChatClient taskClient(ToolCallback mcpToolCallback, LlmApiKey llmApiKey) {
+        return localTaskClient(new ActivityReportingToolCallback(
+                new IdentityToolCallback(mcpToolCallback, jwtDecoder, jwtAuthenticationConverter), toolActivityReporter), llmApiKey);
+    }
+
+    /**
+     * A task client for a tool already wrapped for the turn, as every {@link LocalToolRegistry} callback is.
+     */
+    public ChatClient localTaskClient(ToolCallback toolCallback, LlmApiKey llmApiKey) {
         log.info("Creating task client with tool: {}", toolCallback.getToolDefinition().name());
 
-        IdentityToolCallback identityToolCallback = new IdentityToolCallback(toolCallback, jwtDecoder,
-                jwtAuthenticationConverter, generatedImageToolInterceptor);
-
         return ChatClient.builder(taskChatModel)
-                .defaultTools(identityToolCallback)
+                .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()))
+                .defaultTools(toolCallback)
                 .defaultAdvisors(
                         MessageChatMemoryAdvisor.builder(chatMemory).build(),
                         simpleLoggerAdvisor
@@ -103,9 +121,14 @@ public class SlashCommandService {
                 .build();
     }
 
+    /**
+     * Resolves commands for routing, which is why setting commands never match — including an MCP
+     * prompt or tool that shares a setting command's name.
+     */
     public List<SlashCommand> commands(Set<String> commands) {
 
         var matched = slashCommands().stream()
+                .filter(slashCommand -> !SlashCommand.SETTING_COMMANDS.contains(slashCommand.command()))
                 .filter(slashCommand -> commands.contains(slashCommand.command()))
                 .toList();
 
@@ -142,7 +165,28 @@ public class SlashCommandService {
         return matches;
     }
 
+    /**
+     * The built-in commands, then the MCP-sourced catalog, then the A2A agents and local tools.
+     * <p>
+     * Built-ins come first so that an MCP prompt or tool of the same name cannot shadow one —
+     * {@code PromptService} takes the first match — and they are added on every read rather than
+     * cached, so a catalog written to Redis before a built-in existed cannot hide it.
+     * <p>
+     * Only the MCP prompts and tools are cached. The agents and local tools are already held in memory,
+     * and the agents are read live so that one added to or removed from LiteLLM is offered or withdrawn
+     * as soon as the registry refreshes, not when the cached catalog expires.
+     */
     public List<SlashCommand> slashCommands() {
+        List<SlashCommand> agentCommands = a2aAgentRegistry
+                .map(A2AAgentRegistry::asSlashCommands)
+                .orElse(List.of());
+
+        return ListUtils.union(
+                ListUtils.union(ListUtils.union(BUILT_IN_COMMANDS, catalogCommands()), agentCommands),
+                localToolRegistry.asSlashCommands());
+    }
+
+    private List<SlashCommand> catalogCommands() {
         String cachedPayload = redisTemplate.opsForValue()
                 .get(CACHE_KEY)
                 .block();
@@ -183,6 +227,7 @@ public class SlashCommandService {
     }
 
     @EventListener(ApplicationReadyEvent.class)
+    @org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
     public void warmupCatalogOnStartup() {
         if (!warmupOnStartup) {
             return;
@@ -222,8 +267,10 @@ public class SlashCommandService {
         try {
             McpSchema.ListToolsResult listToolsResult = mcpSyncClient.listTools();
 
+            //A local tool of the same name wins: routing takes the first match, and MCP tools come first.
             toolCommands = listToolsResult.tools().stream()
                     .filter(tool -> StringUtils.isNotBlank(tool.name()))
+                    .filter(tool -> !localToolRegistry.contains(tool.name()))
                     .<SlashCommand>map(ToolSlashCommand::new)
                     .sorted(Comparator.comparing(SlashCommand::command))
                     .toList();
@@ -232,14 +279,6 @@ public class SlashCommandService {
                     exception.getMessage());
         }
 
-        List<SlashCommand> agentCommands = a2aAgentRegistry
-                .map(A2AAgentRegistry::asSlashCommands)
-                .orElse(List.of());
-
-        List<SlashCommand> localToolCommands = localToolRegistry.asSlashCommands();
-
-        return ListUtils.union(
-                ListUtils.union(ListUtils.union(promptCommands, toolCommands), agentCommands),
-                localToolCommands);
+        return ListUtils.union(promptCommands, toolCommands);
     }
 }

@@ -1,5 +1,6 @@
 package com.solesonic.service.etl;
 
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.exception.rag.DocumentReadException;
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.document.DocumentSource;
@@ -7,8 +8,10 @@ import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.model.rag.DocumentPrincipal;
+import com.solesonic.model.rag.GrantKind;
 import com.solesonic.service.ingestion.DocumentEntitlementService;
 import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -63,13 +66,16 @@ class DocumentServiceTest {
     @Mock
     private DocumentEntitlementService documentEntitlementService;
 
+    @Mock
+    private UserLlmKeyService userLlmKeyService;
+
     private DocumentService documentService;
 
     @BeforeEach
     void beforeEach() {
         documentService = spy(new DocumentService(vectorStoreService, etlService, ingestedDocumentService,
-                uriContentFetcher, chatAttachmentRepository, documentEntitlementService));
-        doReturn(List.of(new Document("raw text"))).when(documentService).read(any(Resource.class), anyString());
+                uriContentFetcher, chatAttachmentRepository, documentEntitlementService, userLlmKeyService));
+        lenient().doReturn(List.of(new Document("raw text"))).when(documentService).read(any(Resource.class), anyString());
     }
 
     /**
@@ -386,5 +392,88 @@ class DocumentServiceTest {
 
         assertThat(chunk.getMetadata())
                 .containsEntry(ENTITLEMENTS, List.of("user:" + ownerId));
+    }
+
+    /**
+     * A user's document is enriched and embedded on the key of the user who manages it, not the
+     * shared service key.
+     */
+    @Test
+    void test_resourceToVectorStore_uuid_ingests_a_users_document_on_its_owners_key() {
+        UUID ingestedDocumentId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = queuedUserDocument(ingestedDocumentId);
+
+        when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        storedContent(ingestedDocumentId);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.user(ownerId));
+        managedBy(ingestedDocumentId, DocumentPrincipal.user(ownerId));
+        when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(new Document("chunk")));
+        doAnswer(invocation -> {
+            invocation.<Runnable>getArgument(1).run();
+            return null;
+        }).when(userLlmKeyService).runAsUser(eq(ownerId), any(Runnable.class));
+
+        documentService.resourceToVectorStore(ingestedDocumentId);
+
+        verify(userLlmKeyService).runAsUser(eq(ownerId), any(Runnable.class));
+        verify(ingestedDocumentService).update(ingestedDocument, DocumentStatus.COMPLETED);
+    }
+
+    /**
+     * An owner without a key gets no model call at all: the document fails before it is read, and the
+     * queue marks it failed.
+     */
+    @Test
+    void test_resourceToVectorStore_uuid_refuses_a_users_document_whose_owner_has_no_key() {
+        UUID ingestedDocumentId = UUID.randomUUID();
+        UUID ownerId = UUID.randomUUID();
+
+        managedBy(ingestedDocumentId, DocumentPrincipal.user(ownerId));
+        doThrow(new LlmKeyMissingException()).when(userLlmKeyService).runAsUser(eq(ownerId), any(Runnable.class));
+
+        assertThatThrownBy(() -> documentService.resourceToVectorStore(ingestedDocumentId))
+                .isInstanceOf(LlmKeyMissingException.class);
+
+        verifyNoInteractions(etlService, vectorStoreService);
+    }
+
+    /**
+     * The shared corpus has no owner to charge, and is the one ingestion that runs on the service key.
+     */
+    @Test
+    void test_resourceToVectorStore_uuid_ingests_a_global_document_without_a_users_key() {
+        UUID ingestedDocumentId = UUID.randomUUID();
+
+        IngestedDocument ingestedDocument = queuedUserDocument(ingestedDocumentId);
+
+        when(ingestedDocumentService.get(ingestedDocumentId)).thenReturn(ingestedDocument);
+        storedContent(ingestedDocumentId);
+        grantedTo(ingestedDocumentId, DocumentPrincipal.global());
+        managedBy(ingestedDocumentId, DocumentPrincipal.ragAdmin());
+        when(etlService.prepare(anyList(), eq(ingestedDocument))).thenReturn(List.of(new Document("chunk")));
+
+        documentService.resourceToVectorStore(ingestedDocumentId);
+
+        verifyNoInteractions(userLlmKeyService);
+        verify(ingestedDocumentService).update(ingestedDocument, DocumentStatus.COMPLETED);
+    }
+
+    private void managedBy(UUID ingestedDocumentId, DocumentPrincipal principal) {
+        when(documentEntitlementService.principals(ingestedDocumentId, GrantKind.MANAGE))
+                .thenReturn(List.of(principal));
+    }
+
+    private static IngestedDocument queuedUserDocument(UUID ingestedDocumentId) {
+        IngestedDocument ingestedDocument = new IngestedDocument();
+        ingestedDocument.setId(ingestedDocumentId);
+        ingestedDocument.setDocumentSource(DocumentSource.USER);
+        ingestedDocument.setContentType(MediaType.TEXT_PLAIN_VALUE);
+        ingestedDocument.setFileName("mine.txt");
+        ingestedDocument.setCreated(ZonedDateTime.now());
+        ingestedDocument.setUpdated(ZonedDateTime.now());
+
+        return ingestedDocument;
     }
 }

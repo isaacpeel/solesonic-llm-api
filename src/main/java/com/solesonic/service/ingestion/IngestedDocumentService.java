@@ -159,10 +159,18 @@ public class IngestedDocumentService {
      * that carried it is part of the conversation's history, and deleting the attachment would
      * rewrite that history rather than stop the document being retrieved. Removing the attachment as
      * well stays {@code DELETE /attachments/{attachmentId}}.
+     * <p>
+     * Because the attachment stays, it is tombstoned in the same transaction: an attachment that
+     * claims a chunk count but has no row is otherwise exactly what a document lost to {@code V3_27}
+     * looks like, and the healer would bring this one back.
      */
     @Transactional
     public void deleteChatDocument(UUID documentId, UUID userId) {
-        delete(manageable(documentId, DocumentPrincipal.user(userId)));
+        IngestedDocument ingestedDocument = manageable(documentId, DocumentPrincipal.user(userId));
+
+        detachAttachment(ingestedDocument);
+
+        delete(ingestedDocument);
     }
 
     @Transactional
@@ -510,6 +518,41 @@ public class IngestedDocumentService {
     }
 
     /**
+     * The rows one chat attachment opened, each carrying its latest status, for the ingestion health
+     * check. Normally one; more only where an earlier failure left a row behind.
+     */
+    @Transactional(readOnly = true)
+    public List<IngestedDocument> findByChatAttachmentId(UUID chatAttachmentId) {
+        List<IngestedDocument> ingestedDocuments =
+                ingestedDocumentRepository.findByChatAttachmentId(chatAttachmentId.toString());
+
+        for (IngestedDocument ingestedDocument : ingestedDocuments) {
+            ingestedDocument.setDocumentStatus(latestStatus(ingestedDocument.getId()));
+        }
+
+        return ingestedDocuments;
+    }
+
+    /**
+     * Tombstones the attachment a document came from, if it came from one, so it is never re-indexed
+     * into its conversation. Called only where a document leaves a conversation on purpose —
+     * {@link #promote} and {@link #deleteChatDocument} — and deliberately not from {@link #delete},
+     * which is also the healer's own pre-clean and would detach the very attachment being re-indexed.
+     */
+    private void detachAttachment(IngestedDocument ingestedDocument) {
+        Map<String, Object> metadata = ingestedDocument.getMetadata();
+        Object chatAttachmentId = metadata == null ? null : metadata.get(IngestedDocument.CHAT_ATTACHMENT_ID);
+
+        if (chatAttachmentId == null) {
+            return;
+        }
+
+        log.info("Detaching attachment {} from the index of its conversation", chatAttachmentId);
+
+        chatAttachmentRepository.markIndexDetached(UUID.fromString(chatAttachmentId.toString()));
+    }
+
+    /**
      * The same teardown for every document that came from one conversation. A row at a time, so each
      * one's chunks and status history go with it.
      * <p>
@@ -553,6 +596,10 @@ public class IngestedDocumentService {
         log.info("Promoting document {}", documentId);
 
         materializeContent(ingestedDocument);
+
+        // Before the provenance below is cleared: after that nothing links the attachment to this
+        // document, and an untombstoned attachment would be re-indexed into the chat as a duplicate.
+        detachAttachment(ingestedDocument);
 
         // Off CHAT, or the next refresh re-enters loadChatAttachmentContent and throws for want of
         // an attachment this document no longer belongs to.

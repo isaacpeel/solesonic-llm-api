@@ -7,8 +7,8 @@ import com.agui.community.core.event.ToolCallArgsEvent;
 import com.agui.community.core.event.ToolCallEndEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.solesonic.config.JacksonConfig;
+import com.solesonic.service.chat.events.SideChannelMessage;
 import org.junit.jupiter.api.Test;
-import org.springframework.http.codec.ServerSentEvent;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
@@ -18,17 +18,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SideChannelEventTranslatorTest {
     private static final String ELICITATION_ID = "5f0c3f2e-8f47-4a3c-9d0a-3f2f1d6b7c11";
+    private static final String CHAT_ID = "0b8e6a54-2d1f-4c7e-9a3b-6f5d4c3b2a19";
 
     private static final String ELICITATION_JSON = """
-            {"message":"Delete ticket?","requestedSchema":{"type":"object"},"elicitationId":"%s","chatId":"c1"}"""
-            .formatted(ELICITATION_ID);
+            {"message":"Delete ticket?","requestedSchema":{"type":"object"},"_meta":{"chatId":"%s"},"elicitationId":"%s","chatId":"%s"}"""
+            .formatted(CHAT_ID, ELICITATION_ID, CHAT_ID);
 
     private final JsonMapper jsonMapper = new JacksonConfig().jsonMapper();
 
     private final SideChannelEventTranslator translator = new SideChannelEventTranslator(jsonMapper);
 
-    private static ServerSentEvent<?> forwarded(String event, String data) {
-        return ServerSentEvent.builder(data).event(event).build();
+    private SideChannelMessage forwarded(String event, String dataJson) {
+        return new SideChannelMessage(event, jsonMapper.readTree(dataJson));
     }
 
     @Test
@@ -68,9 +69,9 @@ class SideChannelEventTranslatorTest {
     }
 
     @Test
-    void nonJsonPayloadIsCarriedAsText() {
-        CustomEvent custom = (CustomEvent) translator.translate(forwarded("progress", "plain words")).getFirst();
+    void aStringPayloadIsWrittenAsAJsonString() {
+        CustomEvent custom = (CustomEvent) translator.translate(forwarded("progress", "\"plain words\"")).getFirst();
 
-        assertThat(custom.value()).isEqualTo("plain words");
+        assertThat(jsonMapper.writeValueAsString(custom.value())).isEqualTo("\"plain words\"");
     }
 }

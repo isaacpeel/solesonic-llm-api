@@ -1,0 +1,130 @@
+@model = kev-serv
+
+### System One: choice (the shape the TypeSafe client sends)
+POST {{llm-uri}}/v1/systemone
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+{
+  "model": "{{model}}",
+  "state": "1 photo attached. Photo 1: a man standing on a beach. Request: put this guy in a medieval castle wearing armor",
+  "questions": {
+    "intent": {
+      "type": "choice",
+      "instructions": "What does the user want done with the attached photo?",
+      "criteria": {
+        "RESTYLE_PHOTO": "Keep the photo's composition and give it a new style, medium, lighting or mood.",
+        "EDIT_PERSON_IN_PHOTO": "Keep the person in the photo and show them somewhere else, doing something else, or dressed differently."
+      }
+    }
+  }
+}
+
+> {%
+    client.test("System One choice answered", () => {
+        client.assert(response.status === 200, "Expected 200 but got " + response.status);
+        client.assert(response.body.answers.intent.choice !== undefined, "No choice in the answer");
+        client.log("choice=" + response.body.answers.intent.choice + " confidence=" + response.body.answers.intent.confidence);
+    });
+%}
+
+### System One: noul and score, with Bearer auth (the header scheme the TypeSafe client is expected to use)
+POST {{llm-uri}}/v1/systemone
+Content-Type: application/json
+Authorization: Bearer {{lite-llm-key}}
+
+{
+  "model": "{{model}}",
+  "state": "Customer wrote: I was charged twice for my order and want one of the charges refunded today.",
+  "questions": {
+    "is_refund_request": {
+      "type": "noul",
+      "instructions": "Is the customer asking for a refund?"
+    },
+    "frustration": {
+      "type": "score",
+      "instructions": "How frustrated is the customer?",
+      "criteria": ["calm", "mildly annoyed", "angry"]
+    }
+  }
+}
+
+> {%
+    client.test("System One noul and score answered", () => {
+        client.assert(response.status === 200, "Expected 200 but got " + response.status);
+        client.assert(response.body.answers.is_refund_request.noul !== undefined, "No noul in the answer");
+        client.assert(response.body.answers.frustration.score !== undefined, "No score in the answer");
+    });
+%}
+
+### OpenAI Decisions: choice
+POST {{llm-uri}}/v1/decisions
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+{
+  "model": "{{model}}",
+  "input": "1 photo attached. Photo 1: a man standing on a beach. Request: make this look like a watercolor painting",
+  "questions": [
+    {
+      "type": "choice",
+      "name": "intent",
+      "instructions": "What does the user want done with the attached photo?",
+      "choices": [
+        {
+          "value": "RESTYLE_PHOTO",
+          "description": "Keep the photo's composition and give it a new style, medium, lighting or mood."
+        },
+        {
+          "value": "EDIT_PERSON_IN_PHOTO",
+          "description": "Keep the person in the photo and show them somewhere else, doing something else, or dressed differently."
+        }
+      ]
+    }
+  ]
+}
+
+> {%
+    client.test("Decisions choice answered", () => {
+        client.assert(response.status === 200, "Expected 200 but got " + response.status);
+        client.assert(response.body.answers[0].choice !== undefined, "No choice in the answer");
+        client.log("choice=" + response.body.answers[0].choice + " confidence=" + response.body.answers[0].confidence);
+    });
+%}
+
+### OpenAI Decisions: predicate and score
+POST {{llm-uri}}/v1/decisions
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+{
+  "model": "{{model}}",
+  "input": "Customer wrote: I was charged twice for my order and want one of the charges refunded today.",
+  "questions": [
+    {
+      "type": "predicate",
+      "name": "is_refund_request",
+      "instructions": "Is the customer asking for a refund?"
+    },
+    {
+      "type": "score",
+      "name": "frustration",
+      "instructions": "How frustrated is the customer?",
+      "levels": [
+        { "label": "calm" },
+        { "label": "mildly annoyed" },
+        { "label": "angry" }
+      ]
+    }
+  ]
+}
+
+> {%
+    client.test("Decisions predicate and score answered", () => {
+        client.assert(response.status === 200, "Expected 200 but got " + response.status);
+        client.assert(response.body.answers[0].probability !== undefined, "No probability in the predicate answer");
+        client.assert(response.body.answers[1].score !== undefined, "No score in the score answer");
+    });
+%}
+
+###

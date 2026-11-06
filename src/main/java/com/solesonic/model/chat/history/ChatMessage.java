@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import com.solesonic.model.chat.ToolCallSummary;
 
 @SuppressWarnings("unused")
 @Entity
@@ -25,6 +26,13 @@ public class ChatMessage {
     private UUID id;
 
     private UUID chatId;
+
+    /**
+     * Who sent a {@code USER} message in a shared chat, which several participants share. Null
+     * everywhere else: a conversation's messages are all its owner's.
+     */
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private UUID senderUserId;
 
     private ZonedDateTime timestamp;
 
@@ -84,6 +92,15 @@ public class ChatMessage {
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private List<ModelCallMetadata> responseMetadataCalls;
 
+    /**
+     * The tool calls this assistant message's turn made, in the order they finished, for the chat's
+     * tool log. Read-only for the same reason as {@link #responseMetadataCalls}.
+     */
+    @Column(columnDefinition = "jsonb")
+    @JdbcTypeCode(SqlTypes.JSON)
+    @JsonProperty(access = JsonProperty.Access.READ_ONLY)
+    private List<ToolCallSummary> toolCalls;
+
     @Transient
     private List<ChatAttachmentSummary> attachments;
 
@@ -101,6 +118,14 @@ public class ChatMessage {
 
     public void setId(UUID id) {
         this.id = id;
+    }
+
+    public UUID getSenderUserId() {
+        return senderUserId;
+    }
+
+    public void setSenderUserId(UUID senderUserId) {
+        this.senderUserId = senderUserId;
     }
 
     public ZonedDateTime getTimestamp() {
@@ -174,6 +199,14 @@ public class ChatMessage {
 
     public void setResponseMetadata(ResponseMetadata responseMetadata) {
         this.responseMetadata = responseMetadata;
+    }
+
+    public List<ToolCallSummary> getToolCalls() {
+        return toolCalls;
+    }
+
+    public void setToolCalls(List<ToolCallSummary> toolCalls) {
+        this.toolCalls = toolCalls;
     }
 
     public List<ModelCallMetadata> getResponseMetadataCalls() {

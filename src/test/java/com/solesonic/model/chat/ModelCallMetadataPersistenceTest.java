@@ -35,6 +35,7 @@ class ModelCallMetadataPersistenceTest {
                 11,
                 592,
                 603,
+                222.23,
                 97.957,
                 5215.708,
                 69.597,
@@ -72,6 +73,26 @@ class ModelCallMetadataPersistenceTest {
         });
 
         assertThat(roundTripped).singleElement().isEqualTo(callWithProxyHeaders());
+    }
+
+    /**
+     * Rows persisted before {@code tokensPerSecond} existed have no such key. A record component
+     * missing from the JSON reads back as null, even under this strict mapper.
+     */
+    @Test
+    void readsCallsWrittenBeforeTokensPerSecondExisted() throws JsonProcessingException {
+        String priorJson = """
+                [{"model": "qwen3-8b", "finishReason": "stop",
+                  "promptTokens": 10, "completionTokens": 2, "totalTokens": 12}]""";
+
+        List<ModelCallMetadata> roundTripped = HIBERNATE_STYLE_MAPPER.readValue(priorJson, new TypeReference<>() {
+        });
+
+        assertThat(roundTripped).singleElement()
+                .satisfies(call -> {
+                    assertThat(call.totalTokens()).isEqualTo(12);
+                    assertThat(call.tokensPerSecond()).isNull();
+                });
     }
 
     /**

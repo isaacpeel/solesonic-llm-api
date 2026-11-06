@@ -11,11 +11,12 @@ import org.a2aproject.sdk.spec.TextPart;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.MessageType;
-import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.stereotype.Service;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -23,26 +24,23 @@ import java.util.stream.Collectors;
 
 @Service
 public class NotificationService {
+    public static final String OCCURRED_AT = "occurredAt";
     private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
     public static final String CHAT_ID = "chatId";
     public static final String PROGRESS = "progress";
     public static final String ATTACHMENT = "attachment";
     public static final String IMAGE = "image";
 
-    private static final String EVENTS_CHANNEL_PREFIX = "elicitation:events:";
-    public static final String EVENT = "event";
-    public static final String DATA = "data";
-
     private final JsonMapper jsonMapper;
     private final ChatMessageService chatMessageService;
-    private final ReactiveStringRedisTemplate redisTemplate;
+    private final SideChannelPublisher sideChannelPublisher;
 
     public NotificationService(JsonMapper jsonMapper,
                                ChatMessageService chatMessageService,
-                               ReactiveStringRedisTemplate redisTemplate) {
+                               SideChannelPublisher sideChannelPublisher) {
         this.jsonMapper = jsonMapper;
         this.chatMessageService = chatMessageService;
-        this.redisTemplate = redisTemplate;
+        this.sideChannelPublisher = sideChannelPublisher;
     }
 
     public void emitProgress(UUID chatId, NotificationEventMessage notificationEventMessage) {
@@ -60,9 +58,7 @@ public class NotificationService {
         chatMessage.setProgressData(progressJson);
         chatMessageService.save(chatMessage);
 
-        String message = serializeEventMessage(PROGRESS, progressJson);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, PROGRESS, progressJson)
                 .subscribe(subscriberCount -> log.debug("Emitted progress event to {} subscribers for chat {}", subscriberCount, chatId));
     }
     /**
@@ -77,9 +73,7 @@ public class NotificationService {
     public void emitAttachment(UUID chatId, ChatAttachmentEvent chatAttachmentEvent) {
         log.debug("Emitting attachment event for chat {}: {}", chatId, chatAttachmentEvent);
 
-        String message = serializeEventMessage(ATTACHMENT, chatAttachmentEvent);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, ATTACHMENT, chatAttachmentEvent)
                 .subscribe(subscriberCount ->
                         log.debug("Emitted attachment event to {} subscribers for chat {}", subscriberCount, chatId));
     }
@@ -98,9 +92,7 @@ public class NotificationService {
     public void emitGeneratedImage(UUID chatId, GeneratedImageSummary generatedImageSummary) {
         log.info("Emitting generated image {} for chat {}", generatedImageSummary.imageId(), chatId);
 
-        String message = serializeEventMessage(IMAGE, generatedImageSummary);
-
-        redisTemplate.convertAndSend(eventsChannelKey(chatId), message)
+        sideChannelPublisher.publish(chatId, IMAGE, generatedImageSummary)
                 .subscribe(subscriberCount ->
                         log.debug("Emitted image event to {} subscribers for chat {}", subscriberCount, chatId));
     }
@@ -141,7 +133,8 @@ public class NotificationService {
      * after the terminal frame, where no client reads.
      * <p>
      * Carries the same {@code code} the caller's own {@code RUN_ERROR} carries, so a client reading
-     * either frame branches on the same value.
+     * either frame branches on the same value, and {@code occurredAt} (ISO-8601 UTC), the server's own
+     * time of the failure, which the client hands to the log agent when the user asks what happened.
      */
     public Map<String, Object> recordFailure(UUID chatId, String message, TurnErrorCode code) {
         log.warn("Recording failure notification for chat id {} with message: {}", chatId, message);
@@ -150,6 +143,7 @@ public class NotificationService {
         errorData.put(CHAT_ID, chatId.toString());
         errorData.put("message", message);
         errorData.put("code", code.wireValue());
+        errorData.put(OCCURRED_AT, Instant.now().truncatedTo(ChronoUnit.MILLIS).toString());
 
         ChatMessage chatMessage = new ChatMessage();
         chatMessage.setChatId(chatId);
@@ -159,13 +153,5 @@ public class NotificationService {
         chatMessageService.save(chatMessage);
 
         return errorData;
-    }
-
-    private String serializeEventMessage(String eventType, Object data) {
-        return jsonMapper.writeValueAsString(Map.of(EVENT, eventType, DATA, data));
-    }
-
-    private static String eventsChannelKey(UUID chatId) {
-        return EVENTS_CHANNEL_PREFIX + chatId;
     }
 }

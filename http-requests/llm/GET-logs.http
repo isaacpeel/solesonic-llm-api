@@ -1,0 +1,21 @@
+###
+GET {{llm-uri}}/spend/logs
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+###
+GET {{llm-uri}}/spend/logs?start_date=2026-09-01&end_date=2026-09-30
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+###
+GET {{llm-uri}}/spend/logs?request_id=
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+###
+GET {{llm-uri}}/spend/logs/v2?page=1&page_size=50
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}
+
+###

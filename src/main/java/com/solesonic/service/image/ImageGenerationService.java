@@ -1,216 +1,248 @@
 package com.solesonic.service.image;
 
 import com.solesonic.exception.image.ImageGenerationException;
-import com.solesonic.mcp.client.IdentityToolCallback;
+import com.solesonic.model.chat.attachment.ChatAttachment;
+import com.solesonic.model.image.GeneratedImageBytes;
 import com.solesonic.model.image.GeneratedImageSummary;
-import com.solesonic.model.image.ImageGenerationErrorCode;
 import com.solesonic.model.image.ImageGenerationEvent;
 import com.solesonic.model.image.ImageGenerationFailure;
 import com.solesonic.model.image.ImageGenerationMetadata;
-import io.modelcontextprotocol.client.McpSyncClient;
-import io.modelcontextprotocol.spec.McpError;
-import io.modelcontextprotocol.spec.McpSchema;
+import com.solesonic.model.llm.LlmApiKey;
+import com.solesonic.service.llm.UserLlmKeyService;
+import com.solesonic.service.user.UserProfileService;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
-import reactor.core.scheduler.Schedulers;
+import reactor.core.publisher.Mono;
+import reactor.core.publisher.Sinks;
 
-import java.net.ConnectException;
-import java.net.UnknownHostException;
 import java.time.Duration;
-import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.stream.Collectors;
 
-import static com.solesonic.model.image.ImageGenerationErrorCode.BACKEND_UNAVAILABLE;
-import static com.solesonic.model.image.ImageGenerationErrorCode.FORBIDDEN;
 import static com.solesonic.model.image.ImageGenerationErrorCode.GENERATION_TIMEOUT;
 import static com.solesonic.model.image.ImageGenerationErrorCode.INTERNAL;
 import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_PROMPT;
+import static com.solesonic.model.image.ImageGenerationErrorCode.INVALID_REFERENCE_IMAGE;
 import static com.solesonic.model.image.ImageGenerationErrorCode.RATE_LIMITED;
 
 /**
- * Generates an image from a prompt by calling the {@code generate_image} MCP tool directly.
+ * Generates an image through LiteLLM on the user's own model key, and stores it.
  * <p>
- * The model is not involved. This is explicit generation — the user asks for an image and gets one —
- * which is what keeps the tool's two megabytes of base64 structurally incapable of reaching a
- * prompt or chat memory: there is no tool-calling loop here to feed a result back into. Agentic
- * generation, where the model decides to call the tool itself, needs a deliberate interception step
- * in the tool-callback path before it can be enabled, and is not what this class does.
- * <p>
- * Three things this class owns that the tool does not:
+ * Three things this class owns that the image service does not:
  * <ul>
- *     <li><strong>Identity.</strong> The call travels on the user's own token, so the role the tool
- *     requires stays a per-user control rather than a property of a shared service account.</li>
- *     <li><strong>Admission control.</strong> The image server has one GPU and no admission control
- *     of its own: concurrent calls serialize while each one occupies a request thread there for up
- *     to its full deadline. This bounds how many the API will have in flight at once.</li>
- *     <li><strong>Error mapping.</strong> Failures arrive in three shapes and leave in one — see
- *     {@link #classify}.</li>
+ *     <li><strong>Identity.</strong> Every call carries the caller's key, so which users may make
+ *     images is LiteLLM's per-key model allowlist.</li>
+ *     <li><strong>Admission control.</strong> The image service has one GPU and no admission control
+ *     of its own. This bounds how many generations the API has in flight at once.</li>
+ *     <li><strong>Reference resolution.</strong> Explicit generation refuses any reference it cannot
+ *     use; chat skips it and carries on.</li>
  * </ul>
  */
 @Service
 public class ImageGenerationService {
     private static final Logger log = LoggerFactory.getLogger(ImageGenerationService.class);
 
-    public static final String GENERATE_IMAGE_TOOL = "generate_image";
-    public static final String PROMPT_ARGUMENT = "prompt";
-
-    private static final String DEFAULT_CONTENT_TYPE = "image/png";
-
     /**
-     * Depth bound on the cause walk in {@link #classify}: a malformed exception chain must not turn
-     * a failed generation into a hang.
+     * Added to the admission wait and the read timeout so that a generation the HTTP client times out
+     * reports its own {@code GENERATION_TIMEOUT} rather than tripping this guard first.
      */
-    private static final int MAX_CAUSE_DEPTH = 10;
+    private static final Duration DEADLINE_MARGIN = Duration.ofSeconds(30);
 
-    /**
-     * How long the stream tolerates hearing nothing at all before ending itself.
-     * <p>
-     * A guard, not a tuning knob, and deliberately a <em>silence</em> deadline rather than an
-     * absolute one: the tool reports progress about once a second while it works, so going quiet
-     * means something below has stopped answering. Set above the image server's own 180s deadline,
-     * so a generation that times out there reports its own error rather than tripping this.
-     * <p>
-     * Without it, a blocking call that neither returns nor throws — a torn-down connection whose
-     * JSON-RPC response is never delivered, say — leaves the client with no terminal frame and a
-     * spinner that runs until the MCP request timeout ten minutes later.
-     */
-    private static final Duration SILENCE_DEADLINE = Duration.ofSeconds(200);
-
-    private final McpSyncClient mcpSyncClient;
+    private final LiteLlmImageClient liteLlmImageClient;
     private final GeneratedImageService generatedImageService;
-    private final ImageGenerationProgressBroker imageGenerationProgressBroker;
+    private final ReferenceImageResolver referenceImageResolver;
+    private final UserLlmKeyService userLlmKeyService;
+    private final UserProfileService userProfileService;
     private final Semaphore inFlightGenerations;
     private final Duration admissionTimeout;
+    private final Duration streamDeadline;
+    private final int maxReferenceImages;
 
-    public ImageGenerationService(McpSyncClient mcpSyncClient,
+    public ImageGenerationService(LiteLlmImageClient liteLlmImageClient,
                                   GeneratedImageService generatedImageService,
-                                  ImageGenerationProgressBroker imageGenerationProgressBroker,
+                                  ReferenceImageResolver referenceImageResolver,
+                                  UserLlmKeyService userLlmKeyService,
+                                  UserProfileService userProfileService,
                                   @Value("${solesonic.llm.image.max-concurrent}") int maxConcurrent,
-                                  @Value("${solesonic.llm.image.admission-timeout}") Duration admissionTimeout) {
-        this.mcpSyncClient = mcpSyncClient;
+                                  @Value("${solesonic.llm.image.admission-timeout}") Duration admissionTimeout,
+                                  @Value("${solesonic.llm.image.read-timeout}") Duration readTimeout,
+                                  @Value("${solesonic.llm.image.max-reference-images}") int maxReferenceImages) {
+        this.liteLlmImageClient = liteLlmImageClient;
         this.generatedImageService = generatedImageService;
-        this.imageGenerationProgressBroker = imageGenerationProgressBroker;
+        this.referenceImageResolver = referenceImageResolver;
+        this.userLlmKeyService = userLlmKeyService;
+        this.userProfileService = userProfileService;
         this.inFlightGenerations = new Semaphore(maxConcurrent, true);
         this.admissionTimeout = admissionTimeout;
+        this.streamDeadline = admissionTimeout.plus(readTimeout).plus(DEADLINE_MARGIN);
+        this.maxReferenceImages = maxReferenceImages;
 
         log.info("Image generation admits {} concurrent generation(s), waiting up to {} beyond that",
                 maxConcurrent, admissionTimeout);
     }
 
     /**
-     * Generates an image and streams its progress.
+     * Generates an image and streams its single terminal frame.
      * <p>
-     * Every frame — progress, and the single terminal {@code complete} or {@code error} — travels
-     * through one sink, so the terminal frame cannot overtake the progress that preceded it.
+     * The key is looked up here, on the request thread, so a user without one is refused with a
+     * status before the response is committed. The generation itself runs detached from the returned
+     * stream: a client that disconnects stops receiving, but the image is still generated and stored.
      * <p>
-     * The generation itself runs independently of the returned stream: a client that disconnects
-     * halfway through stops receiving frames, but the image it paid for is still generated and
-     * stored, and can be fetched by id afterwards.
+     * Nothing reports progress while the image service works, so the deadline is absolute.
      */
-    public Flux<ImageGenerationEvent> stream(String prompt, UUID userId, String userToken) {
+    public Flux<ImageGenerationEvent> stream(String prompt, List<UUID> referenceAttachmentIds, UUID userId) {
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
+
         return Flux.defer(() -> {
-            UUID generationId = UUID.randomUUID();
+            Sinks.One<ImageGenerationEvent> terminalFrame = Sinks.one();
 
-            imageGenerationProgressBroker.open(generationId);
+            Thread.ofVirtual().name("image-generation").start(() -> {
+                try {
+                    terminalFrame.tryEmitValue(outcome(prompt, referenceAttachmentIds, userId, llmApiKey));
+                } finally {
+                    terminalFrame.tryEmitValue(new ImageGenerationFailure(INTERNAL, INTERNAL.userMessage()));
+                }
+            });
 
-            return imageGenerationProgressBroker.frames(generationId)
-                    .timeout(SILENCE_DEADLINE, Flux.defer(() -> {
-                        log.error("Image generation {} went silent for {}; ending the stream",
-                                generationId, SILENCE_DEADLINE);
+            return terminalFrame.asMono()
+                    .timeout(streamDeadline, Mono.fromSupplier(() -> {
+                        log.error("Image generation produced nothing within {}; ending the stream", streamDeadline);
 
-                        return Flux.just(new ImageGenerationFailure(GENERATION_TIMEOUT,
-                                message(GENERATION_TIMEOUT)));
+                        return new ImageGenerationFailure(GENERATION_TIMEOUT, GENERATION_TIMEOUT.userMessage());
                     }))
-                    .doOnSubscribe(_ -> Schedulers.boundedElastic().schedule(() ->
-                            generateInto(generationId, prompt, userId, userToken)));
+                    .flux();
         });
     }
 
     /**
-     * Runs one generation to its end and emits its terminal frame.
-     * <p>
-     * Detached from the subscription that started it on purpose: a client that closes the stream
-     * halfway through should not throw away a generation the GPU has already been paid for. The
-     * image is stored either way and can be fetched by id afterwards.
+     * The non-streaming variant, for scripts and tests. Throws {@link ImageGenerationException} rather
+     * than emitting a failure frame.
      */
-    private void generateInto(UUID generationId,
-                              String prompt,
-                              UUID userId,
-                              String userToken) {
-        try {
-            GeneratedImageSummary generatedImageSummary =
-                    generate(generationId, prompt, userId, userToken);
+    public GeneratedImageSummary generate(String prompt, List<UUID> referenceAttachmentIds, UUID userId) {
+        String trimmedPrompt = requirePrompt(prompt);
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
 
-            imageGenerationProgressBroker.emit(generationId, generatedImageSummary);
-        } catch (RuntimeException runtimeException) {
-            imageGenerationProgressBroker.emit(generationId, failure(runtimeException));
-        } finally {
-            imageGenerationProgressBroker.close(generationId);
-        }
+        return generate(trimmedPrompt, strictReferences(referenceAttachmentIds, userId), userId, null, llmApiKey);
     }
 
     /**
-     * The non-streaming variant, for scripts and tests. Blocks for the whole generation — five to
-     * fifteen seconds typically, up to the image server's deadline — and throws
-     * {@link ImageGenerationException} rather than emitting a failure frame.
-     * <p>
-     * The generation is still opened with the broker even though nobody is watching it: an unopened
-     * progress token is indistinguishable from a chat id to the shared progress callback, and would
-     * have this call's progress written into chat history.
+     * Generation the chat model or {@code /generate_image} asked for, stored against the chat. An
+     * attachment that cannot be used is skipped rather than failing the turn, and at most the
+     * service's limit is sent.
      */
-    public GeneratedImageSummary generate(String prompt, UUID userId, String userToken) {
-        UUID generationId = UUID.randomUUID();
+    public GeneratedImageSummary generateInChat(String prompt, List<UUID> referenceAttachmentIds, UUID userId, UUID chatId) {
+        String trimmedPrompt = requirePrompt(prompt);
+        LlmApiKey llmApiKey = userLlmKeyService.requireKey(userId);
 
-        imageGenerationProgressBroker.open(generationId);
+        return generate(trimmedPrompt, lenientReferences(referenceAttachmentIds, userId), userId, chatId, llmApiKey);
+    }
 
+    private ImageGenerationEvent outcome(String prompt, List<UUID> referenceAttachmentIds, UUID userId, LlmApiKey llmApiKey) {
         try {
-            return generate(generationId, prompt, userId, userToken);
-        } finally {
-            imageGenerationProgressBroker.close(generationId);
+            return generate(requirePrompt(prompt), strictReferences(referenceAttachmentIds, userId), userId, null, llmApiKey);
+        } catch (ImageGenerationException imageGenerationException) {
+            return new ImageGenerationFailure(imageGenerationException.getErrorCode(), imageGenerationException.getMessage());
+        } catch (RuntimeException runtimeException) {
+            log.error("Unmapped image generation failure", runtimeException);
+
+            return new ImageGenerationFailure(INTERNAL, INTERNAL.userMessage());
         }
     }
 
-    private GeneratedImageSummary generate(UUID generationId,
-                                           String prompt,
+    private GeneratedImageSummary generate(String prompt,
+                                           List<ChatAttachment> references,
                                            UUID userId,
-                                           String userToken) {
-
-        String trimmedPrompt = StringUtils.trimToNull(prompt);
-
-        //Rejected here rather than at the tool: an empty prompt is a round trip that can only ever
-        //come back as a validation failure.
-        if (trimmedPrompt == null) {
-            throw new ImageGenerationException(INVALID_PROMPT, message(INVALID_PROMPT));
-        }
-
-        admit(generationId);
+                                           UUID chatId,
+                                           LlmApiKey llmApiKey) {
+        admit();
 
         try {
-            McpSchema.CallToolResult callToolResult = callTool(generationId, trimmedPrompt, userToken);
+            long started = System.nanoTime();
 
-            return store(callToolResult, trimmedPrompt, userId);
+            log.info("Generating an image for user {} with {} reference image(s)", userId, references.size());
+
+            String archiveUser = archiveUser(userId);
+
+            GeneratedImageBytes generatedImageBytes = references.isEmpty()
+                    ? liteLlmImageClient.generate(prompt, llmApiKey, archiveUser)
+                    : liteLlmImageClient.edit(prompt, references, llmApiKey, archiveUser);
+
+            double elapsedSeconds = (System.nanoTime() - started) / 1_000_000_000.0;
+
+            ImageGenerationMetadata imageGenerationMetadata = new ImageGenerationMetadata(generatedImageBytes.model(),
+                    null, generatedImageBytes.width(), generatedImageBytes.height(), null, elapsedSeconds);
+
+            return generatedImageService.store(userId, chatId, prompt, generatedImageBytes.imageData(),
+                    generatedImageBytes.contentType(), imageGenerationMetadata,
+                    references.stream().map(ChatAttachment::getId).toList());
         } finally {
             inFlightGenerations.release();
         }
     }
 
+    private static String requirePrompt(String prompt) {
+        String trimmedPrompt = StringUtils.trimToNull(prompt);
+
+        if (trimmedPrompt == null) {
+            throw new ImageGenerationException(INVALID_PROMPT, INVALID_PROMPT.userMessage());
+        }
+
+        return trimmedPrompt;
+    }
+
     /**
-     * Bounds in-flight generations. Past the bound a caller waits, and past the wait it is told to
-     * retry — which is a far better outcome than letting user load turn into exhausted request
-     * threads on an MCP server whose single GPU is working through a queue anyway.
+     * An explicit request for references is a request, not a hint: generating without them would hand
+     * back an image the caller did not ask for. So every id must be the caller's own usable image.
      */
-    private void admit(UUID generationId) {
+    private List<ChatAttachment> strictReferences(List<UUID> referenceAttachmentIds, UUID userId) {
+        if (referenceAttachmentIds == null || referenceAttachmentIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<UUID> requested = List.copyOf(new LinkedHashSet<>(referenceAttachmentIds));
+
+        if (requested.size() > maxReferenceImages) {
+            throw new ImageGenerationException(INVALID_REFERENCE_IMAGE,
+                    "At most %d reference images are accepted.".formatted(maxReferenceImages));
+        }
+
+        List<ChatAttachment> attachments = referenceImageResolver.usableAttachments(userId, requested);
+
+        if (attachments.size() != requested.size()) {
+            log.warn("Refusing image generation: {} of {} reference attachment(s) are not usable images of user {}",
+                    requested.size() - attachments.size(), requested.size(), userId);
+
+            throw new ImageGenerationException(INVALID_REFERENCE_IMAGE, INVALID_REFERENCE_IMAGE.userMessage());
+        }
+
+        return attachments;
+    }
+
+    private List<ChatAttachment> lenientReferences(List<UUID> referenceAttachmentIds, UUID userId) {
+        List<ChatAttachment> attachments = referenceImageResolver.usableAttachments(userId, referenceAttachmentIds);
+
+        if (attachments.size() > maxReferenceImages) {
+            log.info("{} usable image attachment(s) but the image service takes {}; sending the first {}",
+                    attachments.size(), maxReferenceImages, maxReferenceImages);
+
+            return attachments.subList(0, maxReferenceImages);
+        }
+
+        return attachments;
+    }
+
+    /**
+     * Past the bound a caller waits, and past the wait it is told to retry — far better than letting
+     * user load pile up against a single GPU working through a queue anyway.
+     */
+    private void admit() {
         boolean admitted;
 
         try {
@@ -218,192 +250,24 @@ public class ImageGenerationService {
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
 
-            throw new ImageGenerationException(INTERNAL, message(INTERNAL), interruptedException);
+            throw new ImageGenerationException(INTERNAL, INTERNAL.userMessage(), interruptedException);
         }
 
         if (!admitted) {
-            log.warn("Refusing image generation {}: no capacity after waiting {}, {} caller(s) queued",
-                    generationId, admissionTimeout, inFlightGenerations.getQueueLength());
+            log.warn("Refusing image generation: no capacity after waiting {}, {} caller(s) queued",
+                    admissionTimeout, inFlightGenerations.getQueueLength());
 
-            throw new ImageGenerationException(RATE_LIMITED, message(RATE_LIMITED));
+            throw new ImageGenerationException(RATE_LIMITED, RATE_LIMITED.userMessage());
         }
     }
 
     /**
-     * {@code progressToken} is not optional if progress is wanted: the MCP server drops every
-     * notification for a request that arrived without one, which turns a five-to-fifteen second
-     * generation into a silent wait.
+     * Who the image service files the image under in its audit archive: the username recorded from
+     * the user's token, or the user id when no profile or username has been recorded.
      */
-    private McpSchema.CallToolResult callTool(UUID generationId, String prompt, String userToken) {
-        McpSchema.CallToolRequest callToolRequest = McpSchema.CallToolRequest.builder(GENERATE_IMAGE_TOOL)
-                .arguments(Map.of(PROMPT_ARGUMENT, prompt))
-                .progressToken(generationId.toString())
-                .build();
-
-        log.info("Calling {} for generation {}", GENERATE_IMAGE_TOOL, generationId);
-
-        try {
-            return IdentityToolCallback.withUserToken(userToken, () -> mcpSyncClient.callTool(callToolRequest));
-        } catch (RuntimeException runtimeException) {
-            throw classify(generationId, runtimeException);
-        }
-    }
-
-    private GeneratedImageSummary store(McpSchema.CallToolResult callToolResult,
-                                        String prompt,
-                                        UUID userId) {
-
-        List<McpSchema.Content> content = callToolResult.content() == null ? List.of() : callToolResult.content();
-
-        //Parsed by type rather than by position. The order is stable today, but indexing on it is
-        //brittle for no gain.
-        String metadataText = content.stream()
-                .filter(McpSchema.TextContent.class::isInstance)
-                .map(McpSchema.TextContent.class::cast)
-                .map(McpSchema.TextContent::text)
-                .collect(Collectors.joining(System.lineSeparator()));
-
-        if (Boolean.TRUE.equals(callToolResult.isError())) {
-            throw rejected(metadataText);
-        }
-
-        McpSchema.ImageContent imageContent = content.stream()
-                .filter(McpSchema.ImageContent.class::isInstance)
-                .map(McpSchema.ImageContent.class::cast)
-                .findFirst()
-                .orElseThrow(() -> {
-                    log.error("Image generation succeeded but returned no image content: {}", metadataText);
-
-                    return new ImageGenerationException(BACKEND_UNAVAILABLE, message(BACKEND_UNAVAILABLE));
-                });
-
-        byte[] imageData = decode(imageContent);
-
-        String contentType = StringUtils.defaultIfBlank(imageContent.mimeType(), DEFAULT_CONTENT_TYPE);
-
-        ImageGenerationMetadata imageGenerationMetadata = ImageGenerationMetadata.parse(metadataText);
-
-        //No chat: this is explicit generation, which is not part of a conversation.
-        return generatedImageService.store(userId, null, prompt, imageData, contentType,
-                imageGenerationMetadata);
-    }
-
-    private static byte[] decode(McpSchema.ImageContent imageContent) {
-        try {
-            return Base64.getDecoder().decode(imageContent.data());
-        } catch (IllegalArgumentException illegalArgumentException) {
-            log.error("Image generation returned data that is not valid base64", illegalArgumentException);
-
-            throw new ImageGenerationException(BACKEND_UNAVAILABLE, message(BACKEND_UNAVAILABLE),
-                    illegalArgumentException);
-        }
-    }
-
-    /**
-     * The tool's own validation rejections come back as an ordinary result with {@code isError}
-     * set, carrying text meant for a model rather than a person — so it is classified, logged, and
-     * replaced.
-     */
-    private static ImageGenerationException rejected(String errorText) {
-        log.warn("Image generation was rejected by the tool: {}", errorText);
-
-        if (Strings.CI.containsAny(errorText, "prompt is required", "non-empty prompt")) {
-            return new ImageGenerationException(INVALID_PROMPT, message(INVALID_PROMPT));
-        }
-
-        ImageGenerationErrorCode errorCode = fromMessage(errorText);
-
-        //A rejection this API cannot place is still a rejection from the image backend, so it says
-        //so rather than blaming the caller for a prompt that may have been fine.
-        if (errorCode == null) {
-            errorCode = BACKEND_UNAVAILABLE;
-        }
-
-        return new ImageGenerationException(errorCode, message(errorCode));
-    }
-
-    /**
-     * Collapses a thrown failure onto the user-facing taxonomy.
-     * <p>
-     * The tool signals failure in more than one shape — an {@link McpError} carrying a JSON-RPC
-     * error, a transport exception when the MCP server itself cannot be reached, and a result with
-     * {@code isError} set (handled in {@link #rejected}). All three are tolerated here rather than
-     * one being assumed, because which one a given failure takes is a property of the MCP SDK's
-     * exception handling, not of this API.
-     * <p>
-     * The raw message can name the image server's internal prompt id and host behaviour, so it is
-     * logged and never returned.
-     */
-    private static ImageGenerationException classify(UUID generationId, RuntimeException runtimeException) {
-        log.error("Image generation {} failed", generationId, runtimeException);
-
-        Throwable cause = runtimeException;
-
-        for (int depth = 0; cause != null && depth < MAX_CAUSE_DEPTH; depth++) {
-            if (cause instanceof TimeoutException) {
-                return new ImageGenerationException(GENERATION_TIMEOUT, message(GENERATION_TIMEOUT), runtimeException);
-            }
-
-            if (cause instanceof ConnectException || cause instanceof UnknownHostException) {
-                return new ImageGenerationException(BACKEND_UNAVAILABLE, message(BACKEND_UNAVAILABLE), runtimeException);
-            }
-
-            ImageGenerationErrorCode fromMessage = fromMessage(cause.getMessage());
-
-            if (fromMessage != null) {
-                return new ImageGenerationException(fromMessage, message(fromMessage), runtimeException);
-            }
-
-            if (cause == cause.getCause()) {
-                break;
-            }
-
-            cause = cause.getCause();
-        }
-
-        return new ImageGenerationException(INTERNAL, message(INTERNAL), runtimeException);
-    }
-
-    /**
-     * Matched on text because that is all these failures carry: the tool's exceptions and its
-     * validation rejections are both prose, with no code to switch on. Deliberately conservative —
-     * an unrecognised message returns null so the caller can decide, rather than guessing.
-     */
-    private static ImageGenerationErrorCode fromMessage(String failureText) {
-        if (Strings.CI.containsAny(failureText, "access is denied", "access denied", "accessdenied", "forbidden")) {
-            return FORBIDDEN;
-        }
-
-        if (Strings.CI.containsAny(failureText, "did not finish within", "timed out", "timeout")) {
-            return GENERATION_TIMEOUT;
-        }
-
-        if (Strings.CI.containsAny(failureText, "connection", "unreachable", "refused", "comfyui")) {
-            return BACKEND_UNAVAILABLE;
-        }
-
-        return null;
-    }
-
-    private static String message(ImageGenerationErrorCode errorCode) {
-        return switch (errorCode) {
-            case INVALID_PROMPT -> "Describe the image you want before generating one.";
-            case GENERATION_TIMEOUT -> "Image generation is taking longer than expected. Please try again.";
-            case BACKEND_UNAVAILABLE -> "Image generation is unavailable right now. Please try again shortly.";
-            case FORBIDDEN -> "You do not have access to image generation.";
-            case RATE_LIMITED -> "Too many images are being generated right now. Please try again in a moment.";
-            case INTERNAL -> "Image generation failed unexpectedly. Please try again.";
-        };
-    }
-
-    private static ImageGenerationFailure failure(Throwable throwable) {
-        if (throwable instanceof ImageGenerationException imageGenerationException) {
-            return new ImageGenerationFailure(imageGenerationException.getErrorCode(),
-                    imageGenerationException.getMessage());
-        }
-
-        log.error("Unmapped image generation failure", throwable);
-
-        return new ImageGenerationFailure(INTERNAL, message(INTERNAL));
+    private String archiveUser(UUID userId) {
+        return userProfileService.username(userId)
+                .filter(username -> !username.isBlank())
+                .orElse(userId.toString());
     }
 }

@@ -1,13 +1,18 @@
 package com.solesonic.service.chat;
 
+import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,7 +28,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.ZonedDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -49,11 +56,9 @@ class ChatMessageServiceTest {
     private ChatMessageRepository chatMessageRepository;
 
     @Mock
-    @SuppressWarnings("unused")
     private ChatRepository chatRepository;
 
     @Mock
-    @SuppressWarnings("unused")
     private UserPreferencesService userPreferencesService;
 
     @Mock
@@ -64,6 +69,9 @@ class ChatMessageServiceTest {
 
     @Mock
     private GeneratedImageService generatedImageService;
+
+    @Mock
+    private UserMemoryService userMemoryService;
 
     @InjectMocks
     private ChatMessageService chatMessageService;
@@ -82,6 +90,144 @@ class ChatMessageServiceTest {
 
     private ChatAttachmentDescription description(UUID chatMessageId, String visionDescription) {
         return new ChatAttachmentDescription(chatMessageId, "screenshot.png", null, visionDescription);
+    }
+
+    private ChatMessage sentBy(UUID senderUserId, String text) {
+        ChatMessage chatMessage = chatMessage(MessageType.USER, text);
+        chatMessage.setSenderUserId(senderUserId);
+
+        return chatMessage;
+    }
+
+    @Test
+    void sharedHistoryNamesTheSenderOfEachUserMessageAndLeavesAssistantMessagesAlone() {
+        UUID alex = UUID.randomUUID();
+        UUID sam = UUID.randomUUID();
+        UUID unknown = UUID.randomUUID();
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(alex, "hello"),
+                chatMessage(MessageType.ASSISTANT, "hi Alex"),
+                sentBy(sam, "and me?"),
+                chatMessage(MessageType.ASSISTANT, "hi Sam"),
+                sentBy(unknown, "who am I"),
+                chatMessage(MessageType.ASSISTANT, "someone"),
+                sentBy(null, "no sender"),
+                chatMessage(MessageType.ASSISTANT, "ok"),
+                sentBy(alex, "in flight")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+
+        assertThat(messages).extracting(Message::getText).containsExactly(
+                "Alex: hello", "hi Alex", "Sam: and me?", "hi Sam", "Someone: who am I", "someone", "Someone: no sender", "ok");
+    }
+
+    @Test
+    void aSharedTranscriptCarriesTheImagesGeneratedInItsReplies() {
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "here it is");
+        GeneratedImageSummary image = new GeneratedImageSummary(UUID.randomUUID(), UUID.randomUUID(), reply.getId(), "/images/x", null,
+                "a lighthouse", "model", null, 1024, 1024, null, 2.0, 8, ZonedDateTime.now(), List.of());
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(chatMessage(MessageType.USER, "draw"), reply));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of(image));
+
+        List<ChatMessage> transcript = chatMessageService.sharedTranscript(chatId);
+
+        assertThat(transcript.getLast().getGeneratedImages()).containsExactly(image);
+        assertThat(transcript.getFirst().getGeneratedImages()).isEmpty();
+    }
+
+    private static ChatAttachmentSummary attachmentOf(UUID chatMessageId, String fileName, String contentType) {
+        return new ChatAttachmentSummary(UUID.randomUUID(), chatMessageId, fileName, null, contentType, 12L, false, null, false, null);
+    }
+
+    @Test
+    void aSharedTranscriptCarriesEveryParticipantsAttachmentsOnTheirMessages() {
+        ChatMessage fromAlex = chatMessage(MessageType.USER, "see this");
+        ChatMessage fromSam = chatMessage(MessageType.USER, "and this");
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "ok");
+        ChatAttachmentSummary alexsImage = attachmentOf(fromAlex.getId(), "alex.png", "image/png");
+        ChatAttachmentSummary samsPdf = attachmentOf(fromSam.getId(), "sam.pdf", "application/pdf");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(fromAlex, reply, fromSam));
+        when(chatAttachmentService.forChat(chatId)).thenReturn(List.of(alexsImage, samsPdf));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        List<ChatMessage> transcript = chatMessageService.sharedTranscript(chatId);
+
+        assertThat(transcript.get(0).getAttachments()).containsExactly(alexsImage);
+        assertThat(transcript.get(1).getAttachments()).isEmpty();
+        assertThat(transcript.get(2).getAttachments()).containsExactly(samsPdf);
+    }
+
+    @Test
+    void aSharedTranscriptWithoutAttachmentsHasEmptyListsNotNulls() {
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(chatMessage(MessageType.USER, "hi")));
+        when(chatAttachmentService.forChat(chatId)).thenReturn(List.of());
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        assertThat(chatMessageService.sharedTranscript(chatId).getFirst().getAttachments()).isEmpty();
+    }
+
+    @Test
+    void sharedHistoryKeepsEachSendersImageDescriptionsAheadOfTheirNamedMessage() {
+        UUID alex = UUID.randomUUID();
+        UUID sam = UUID.randomUUID();
+        ChatMessage fromAlex = sentBy(alex, "what is this?");
+        ChatMessage fromSam = sentBy(sam, "and this?");
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                fromAlex, chatMessage(MessageType.ASSISTANT, "a login screen"), fromSam,
+                chatMessage(MessageType.ASSISTANT, "a chart"), sentBy(alex, "in flight")));
+        when(chatAttachmentService.descriptions(chatId)).thenReturn(List.of(
+                description(fromAlex.getId(), "a login screen"), description(fromSam.getId(), "a bar chart")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+
+        assertThat(messages).extracting(Message::getText).hasSize(6);
+        assertThat(messages.get(0).getText()).contains("a login screen");
+        assertThat(messages.get(1).getText()).isEqualTo("Alex: what is this?");
+        assertThat(messages.get(3).getText()).contains("a bar chart");
+        assertThat(messages.get(4).getText()).isEqualTo("Sam: and this?");
+    }
+
+    @Test
+    void sharedHistoryNamesAMessageSentWithoutText() {
+        UUID alex = UUID.randomUUID();
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(alex, ""), chatMessage(MessageType.ASSISTANT, "nice picture"), sentBy(alex, "in flight")));
+
+        assertThat(chatMessageService.findByChatId(chatId, Map.of(alex, "Alex"))).extracting(Message::getText)
+                .containsExactly("Alex: (sent without any text)", "nice picture");
+    }
+
+    @Test
+    void aSharedTranscriptKeepsTheTokenAndTimingSummaryButNotTheLiteLlmInternals() {
+        ChatMessage reply = chatMessage(MessageType.ASSISTANT, "here it is");
+        com.solesonic.model.chat.LiteLlmCallMetadata liteLlm = new com.solesonic.model.chat.LiteLlmCallMetadata(
+                "call-1", "gpt", "http://10.0.0.5:8585/v1", 0, 0, 120.0, 3.0);
+        reply.setResponseMetadataCalls(List.of(new com.solesonic.model.chat.ModelCallMetadata("qwen", "chatcmpl-1", null, "stop", 10, 20, 30,
+                41.5, 1.0, 2.0, 3.0, null, null, null, null, null, null, null, null, liteLlm)));
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(reply));
+        when(generatedImageService.forChat(chatId)).thenReturn(List.of());
+
+        com.solesonic.model.chat.ModelCallMetadata call = chatMessageService.sharedTranscript(chatId).getFirst()
+                .getResponseMetadataCalls().getFirst();
+
+        assertThat(call.liteLlm()).isNull();
+        assertThat(call.totalTokens()).isEqualTo(30);
+        assertThat(call.tokensPerSecond()).isEqualTo(41.5);
+        assertThat(call.predictedMillis()).isEqualTo(2.0);
+    }
+
+    @Test
+    void historyWithoutNamesIsUnattributed() {
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                sentBy(UUID.randomUUID(), "hello"),
+                chatMessage(MessageType.ASSISTANT, "hi")));
+
+        assertThat(chatMessageService.findByChatId(chatId)).extracting(Message::getText).containsExactly("hello", "hi");
     }
 
     @Test
@@ -215,6 +361,52 @@ class ChatMessageServiceTest {
     }
 
     @Test
+    void findByChatIdKeepsTurnsFromOtherCommands() {
+        ChatMessage toolRequest = chatMessage(MessageType.USER, "search for cats");
+        toolRequest.setCommands(Set.of("search"));
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                toolRequest,
+                chatMessage(MessageType.ASSISTANT, "cats found")));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).extracting(Message::getText)
+                .containsExactly("search for cats", "cats found");
+    }
+
+    @Test
+    void saveUserMessageRecordsTheSendsCommands() {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setUserId(UUID.randomUUID());
+
+        when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatMessage saved = chatMessageService.saveUserMessage(chatId, chat.getUserId(),
+                new ChatRequest("search for cats", Set.of("search"), Set.of(), null));
+
+        assertThat(saved.getCommands()).containsExactly("search");
+        verify(userPreferencesService).get(chat.getUserId());
+    }
+
+    @Test
+    void saveUserMessageLeavesCommandsNullForAPlainSend() {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setUserId(UUID.randomUUID());
+
+        when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        ChatMessage saved = chatMessageService.saveUserMessage(chatId, chat.getUserId(),
+                new ChatRequest("hello", Set.of(), Set.of(), null));
+
+        assertThat(saved.getCommands()).isNull();
+    }
+
+    @Test
     void findByChatIdReturnsEmptyForEmptyHistory() {
         when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of());
 
@@ -238,9 +430,9 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.of(assistantMessage));
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "tool_calls", 1042, 88, 1130, null, null, null, null,
                         null, null, null, null, null, null, null, null, null),
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-2", null, "stop", 1380, 165, 1545, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", null, "stop", calls);
 
@@ -265,7 +457,7 @@ class ChatMessageServiceTest {
                 .thenReturn(Optional.empty());
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 10, 2, 12, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
 
         chatMessageService.updateResponseMetadata(chatId, turnStarted,
@@ -284,7 +476,7 @@ class ChatMessageServiceTest {
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
 
@@ -325,7 +517,7 @@ class ChatMessageServiceTest {
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
 
         assistantMessage.setResponseMetadataCalls(calls);
@@ -366,6 +558,36 @@ class ChatMessageServiceTest {
         verify(chatAttachmentService).deleteForChatMessage(message.getId());
         verify(generatedImageService).deleteForChatMessage(message.getId());
         verify(chatMessageRepository).delete(message);
+    }
+
+    /**
+     * The owner comes from the ownership check, never from anything the caller sent, so the forget
+     * cannot be pointed at another user's memories.
+     */
+    @Test
+    void deleteForgetsWhatTheMessageAloneEvidencedForTheOwner() {
+        UUID ownerId = UUID.randomUUID();
+        ChatMessage message = chatMessage(MessageType.USER, "I moved to Leeds");
+
+        when(chatService.requireOwned(chatId)).thenReturn(ownerId);
+        when(chatMessageRepository.findById(message.getId())).thenReturn(Optional.of(message));
+
+        chatMessageService.delete(chatId, message.getId());
+
+        verify(userMemoryService).forgetChatMessage(chatId, message.getId(), ownerId);
+    }
+
+    @Test
+    void deleteForgetsNothingForAMessageFromAnotherChat() {
+        ChatMessage messageFromAnotherChat = chatMessage(MessageType.USER, "not this chat's question");
+        messageFromAnotherChat.setChatId(UUID.randomUUID());
+
+        when(chatMessageRepository.findById(messageFromAnotherChat.getId())).thenReturn(Optional.of(messageFromAnotherChat));
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageFromAnotherChat.getId()))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(userMemoryService, never()).forgetChatMessage(any(), any(), any());
     }
 
     /**
@@ -417,5 +639,30 @@ class ChatMessageServiceTest {
                 .isInstanceOf(ResponseStatusException.class)
                 .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
                 .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * An image used only as a reference has no description to replay. Without a line naming it, a
+     * later turn would reach a model with no idea a photo was ever sent.
+     */
+    @Test
+    void findByChatIdNamesAnImageThatWasNeverDescribed() {
+        ChatMessage withImage = chatMessage(MessageType.USER, "make the sky purple");
+        UUID attachmentId = UUID.randomUUID();
+
+        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+                withImage,
+                chatMessage(MessageType.ASSISTANT, "here it is")));
+        when(chatAttachmentService.undescribedImages(chatId)).thenReturn(List.of(new ChatAttachmentSummary(
+                attachmentId, withImage.getId(), "beach.png", null, "image/png", 10L, false, null, false, null)));
+
+        List<Message> messages = chatMessageService.findByChatId(chatId);
+
+        assertThat(messages).hasSize(3);
+        assertThat(messages.getFirst()).isInstanceOf(UserMessage.class);
+        assertThat(messages.getFirst().getText())
+                .contains("beach.png")
+                .contains("never described");
+        assertThat(messages.get(1).getText()).isEqualTo("make the sky purple");
     }
 }

@@ -2,7 +2,6 @@ package com.solesonic.service.vision;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
-import com.solesonic.model.chat.attachment.ChatAttachmentEvent;
 import com.solesonic.model.chat.attachment.VisionFailureReason;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.chat.events.NotificationEventMessage;
@@ -33,7 +32,6 @@ import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -43,6 +41,7 @@ import static com.solesonic.config.openai.VisionOpenAiConfig.VISION_CHAT_MODEL;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.NOT_NEEDED;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_TIMEOUT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNAVAILABLE;
 
@@ -56,8 +55,8 @@ import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNA
  * question: the vision model is given a fixed instruction plus the user's own note, which is what
  * makes a stored description safe to reuse for every later question about that image.
  * <p>
- * Nothing here can fail a chat turn. Every failure path returns the message unchanged — and emits a
- * {@link ChatAttachmentEvent} saying so, because a turn that answers as though no image was attached
+ * Nothing here can fail a chat turn. Every failure path returns the message unchanged — and emits an
+ * {@code attachment} event saying so, because a turn that answers as though no image was attached
  * is otherwise indistinguishable from one that never had an image.
  */
 @Service
@@ -68,7 +67,7 @@ public class ImageDescriptionService {
      * Four sequential cold vision calls is already a long wait for a first token; forty is a hung
      * request. A constant rather than a property — this is a guard, not a tuning knob.
      */
-    static final int MAX_IMAGES_PER_MESSAGE = 4;
+    public static final int MAX_IMAGES_PER_MESSAGE = 4;
 
     /**
      * Depth bound on the cause walk in {@link #classify}: a malformed exception chain must not turn
@@ -120,6 +119,13 @@ public class ImageDescriptionService {
     }
 
     /**
+     * A fresh record of which of {@code attachmentIds} still owe their {@code attachment} event.
+     */
+    public AttachmentVisionSignals signals(UUID chatId, Set<UUID> attachmentIds) {
+        return new AttachmentVisionSignals(chatId, attachmentIds, notificationService);
+    }
+
+    /**
      * Describes every image named by one send, returning the descriptions in send order, or an empty
      * list when there are no attachments, none of them can be described, or the vision model is
      * unreachable.
@@ -143,23 +149,61 @@ public class ImageDescriptionService {
             return List.of();
         }
 
-        Set<UUID> unsignalled = new LinkedHashSet<>(attachmentIds);
+        return describe(chatId, userId, attachmentIds, signals(chatId, attachmentIds));
+    }
+
+    /**
+     * {@link #describe(UUID, UUID, Set)}, reporting through a record the turn already holds. Only ids
+     * still owed an event in {@code signals} are signalled, so describing an image from an earlier
+     * turn sends nothing: its event went out on the turn it was sent.
+     */
+    public List<ChatAttachmentDescription> describe(UUID chatId,
+                                                    UUID userId,
+                                                    Set<UUID> attachmentIds,
+                                                    AttachmentVisionSignals signals) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
 
         try {
-            return describeAll(chatId, userId, attachmentIds, unsignalled);
+            return describeAll(chatId, userId, attachmentIds, signals);
         } finally {
-            for (UUID attachmentId : Set.copyOf(unsignalled)) {
-                log.warn("No vision outcome was reached for attachment {} on chat {}", attachmentId, chatId);
-
-                signal(chatId, unsignalled, attachmentId, IMAGE_UNREADABLE);
+            for (UUID attachmentId : attachmentIds) {
+                if (signals.signal(attachmentId, IMAGE_UNREADABLE)) {
+                    log.warn("No vision outcome was reached for attachment {} on chat {}", attachmentId, chatId);
+                }
             }
         }
+    }
+
+    /**
+     * Closes every id with a {@link VisionFailureReason#NOT_NEEDED} event, for a route that sends the
+     * images themselves and never reads a description. Reads no row, calls no model and records
+     * nothing, so the image is still undescribed for any later turn that does need it.
+     * <p>
+     * Emits one progress frame first, because a client that sent images waits for a progress frame
+     * to know they were taken up; without it the turn looks as if no image was read.
+     */
+    public void notNeeded(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return;
+        }
+
+        int imageCount = attachmentIds.size();
+
+        notificationService.emitProgress(chatId, new NotificationEventMessage(
+                chatId.toString(),
+                "Using " + imageCount + " attached " + (imageCount == 1 ? "image" : "images") + " as a reference",
+                null,
+                null));
+
+        signals(chatId, attachmentIds).signalRemaining(NOT_NEEDED);
     }
 
     private List<ChatAttachmentDescription> describeAll(UUID chatId,
                                                         UUID userId,
                                                         Set<UUID> attachmentIds,
-                                                        Set<UUID> unsignalled) {
+                                                        AttachmentVisionSignals signals) {
         List<ChatAttachment> attachments = chatAttachmentService.attachments(userId, attachmentIds);
 
         if (attachments.size() > MAX_IMAGES_PER_MESSAGE) {
@@ -169,7 +213,7 @@ public class ImageDescriptionService {
             for (ChatAttachment beyondLimit : attachments.subList(MAX_IMAGES_PER_MESSAGE, attachments.size())) {
                 chatAttachmentService.saveVisionFailure(beyondLimit.getId(), EXCEEDED_IMAGE_LIMIT);
 
-                signal(chatId, unsignalled, beyondLimit.getId(), EXCEEDED_IMAGE_LIMIT);
+                signals.signal(beyondLimit.getId(), EXCEEDED_IMAGE_LIMIT);
             }
 
             attachments = attachments.subList(0, MAX_IMAGES_PER_MESSAGE);
@@ -180,7 +224,7 @@ public class ImageDescriptionService {
         for (ChatAttachment attachment : attachments) {
             DescribeOutcome describeOutcome = describeOne(chatId, attachment);
 
-            signal(chatId, unsignalled, attachment.getId(), describeOutcome.failureReason());
+            signals.signal(attachment.getId(), describeOutcome.failureReason());
 
             if (describeOutcome.visionDescription() == null) {
                 continue;
@@ -194,23 +238,6 @@ public class ImageDescriptionService {
         }
 
         return descriptions;
-    }
-
-    /**
-     * Emits the terminal event for one attachment, at most once per turn.
-     *
-     * @param failureReason null when the image was described
-     */
-    private void signal(UUID chatId, Set<UUID> unsignalled, UUID attachmentId, VisionFailureReason failureReason) {
-        if (!unsignalled.remove(attachmentId)) {
-            return;
-        }
-
-        ChatAttachmentEvent chatAttachmentEvent = (failureReason == null)
-                ? ChatAttachmentEvent.described(chatId, attachmentId)
-                : ChatAttachmentEvent.skipped(chatId, attachmentId, failureReason);
-
-        notificationService.emitAttachment(chatId, chatAttachmentEvent);
     }
 
     /**

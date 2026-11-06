@@ -10,6 +10,9 @@ import com.agui.community.core.event.TextMessageEndEvent;
 import com.agui.community.core.event.TextMessageStartEvent;
 import com.agui.community.core.event.ToolCallStartEvent;
 import com.agui.community.core.message.Role;
+import com.solesonic.model.agui.AttachedUserMessage;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
+import com.agui.community.core.message.UserMessage;
 import com.openai.core.http.Headers;
 import com.openai.errors.BadRequestException;
 import com.openai.errors.InternalServerException;
@@ -18,24 +21,34 @@ import com.openai.errors.RateLimitException;
 import com.openai.models.ErrorObject;
 import com.solesonic.config.JacksonConfig;
 import com.solesonic.exception.ChatException;
+import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
 import com.solesonic.exception.image.ImageGenerationException;
+import com.solesonic.exception.llm.LlmKeyMissingException;
 import com.solesonic.exception.rag.DocumentReadException;
-import com.solesonic.exception.xero.XeroApiException;
 import com.solesonic.model.SolesonicChatResponse;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.TurnErrorCode;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationErrorCode;
+import com.solesonic.model.push.PushEvent;
 import com.solesonic.redis.service.RedisStreamService;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ChatModelSelection;
+import com.solesonic.service.chat.PendingMessageMetadata;
+import com.solesonic.service.chat.TurnToolCalls;
+import com.solesonic.model.chat.ToolCallSummary;
 import com.solesonic.service.chat.events.ElicitationService;
 import com.solesonic.service.chat.events.NotificationService;
+import com.solesonic.service.chat.events.SideChannelMessage;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.prompt.PromptService;
+import com.solesonic.service.push.PushNotificationService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -46,16 +59,17 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.data.redis.connection.stream.RecordId;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.core.Authentication;
-import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -66,14 +80,19 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static com.solesonic.service.chat.events.ElicitationService.CANCEL_ACTION;
+import static com.solesonic.service.chat.events.ElicitationService.ELICITATION;
 import static com.solesonic.service.redis.RedisStreamingChatService.CHAT_CANCELED;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -100,6 +119,8 @@ class RedisStreamingChatServiceTest {
     private static final String RUN_ERROR = "RUN_ERROR";
     private static final String CUSTOM = "CUSTOM";
 
+    private static final JsonMapper JSON_MAPPER = new JacksonConfig().jsonMapper();
+
     @Mock
     private ChatRepository chatRepository;
 
@@ -125,7 +146,17 @@ class RedisStreamingChatServiceTest {
     private GeneratedImageService generatedImageService;
 
     @Mock
+    private ChatModelSelection chatModelSelection;
+
+    @Mock
     private Authentication authentication;
+
+    @Mock
+    private PushNotificationService pushNotificationService;
+
+    private final PendingMessageMetadata pendingMessageMetadata = spy(new PendingMessageMetadata());
+
+    private final TurnToolCalls turnToolCalls = spy(new TurnToolCalls());
 
     private RedisStreamingChatService redisStreamingChatService;
 
@@ -144,7 +175,11 @@ class RedisStreamingChatServiceTest {
                 activeStreamTracker,
                 notificationService,
                 generatedImageService,
-                new SideChannelEventTranslator(new JacksonConfig().jsonMapper()));
+                new SideChannelEventTranslator(JSON_MAPPER),
+                chatModelSelection,
+                pushNotificationService,
+                pendingMessageMetadata,
+                turnToolCalls);
 
         published.clear();
 
@@ -180,7 +215,7 @@ class RedisStreamingChatServiceTest {
 
     private void runTurn() {
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
     }
 
@@ -188,8 +223,8 @@ class RedisStreamingChatServiceTest {
         when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.just(chunks));
     }
 
-    private static ServerSentEvent<?> cancelEvent() {
-        return ServerSentEvent.builder(CANCEL_ACTION).event(CANCEL_ACTION).build();
+    private static SideChannelMessage cancelEvent() {
+        return new SideChannelMessage(CANCEL_ACTION, JSON_MAPPER.valueToTree(CANCEL_ACTION));
     }
 
     private List<String> publishedTypes() {
@@ -238,6 +273,55 @@ class RedisStreamingChatServiceTest {
         assertThat(end.messageId()).isEqualTo(start.messageId());
     }
 
+    /**
+     * Metadata a route left pending rides on the start frame, which otherwise serializes exactly as
+     * the SDK's own record does.
+     */
+    @Test
+    void pendingMetadataRidesOnTheStartFrame() {
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1", "playOnce", true));
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+
+        String messageId = ((TextMessageContentEvent) eventsOfType(TEXT_MESSAGE_CONTENT).getFirst().payload()).messageId();
+        JsonNode frame = JSON_MAPPER.valueToTree(eventsOfType(TEXT_MESSAGE_START).getFirst().payload());
+
+        assertThat(frame.at("/metadata/solesonic~1sound/cueId").asString()).isEqualTo("sound-1");
+        assertThat(frame.at("/metadata/solesonic~1sound/playOnce").asBoolean()).isTrue();
+
+        ObjectNode withoutMetadata = (ObjectNode) frame.deepCopy();
+        withoutMetadata.remove("metadata");
+        assertThat(withoutMetadata).isEqualTo(JSON_MAPPER.valueToTree(new TextMessageStartEvent(messageId, Role.ASSISTANT, null, null)));
+        assertThat(JSON_MAPPER.writeValueAsString(eventsOfType(TEXT_MESSAGE_START).getFirst().payload()))
+                .startsWith("{\"type\":\"TEXT_MESSAGE_START\"");
+    }
+
+    @Test
+    void withoutPendingMetadataTheStartFrameIsTheSdksOwn() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        Object start = eventsOfType(TEXT_MESSAGE_START).getFirst().payload();
+        assertThat(start).isInstanceOf(TextMessageStartEvent.class);
+        assertThat(JSON_MAPPER.valueToTree(start).has("metadata")).isFalse();
+    }
+
+    @Test
+    void metadataATurnNeverUsedDoesNotReachTheNextTurn() {
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1"));
+        modelStreams();
+
+        runTurn();
+
+        //Cleanup runs in doFinally, after the completion the verifier waits on.
+        verify(pendingMessageMetadata, timeout(1000)).clear(CHAT_ID);
+        assertThat(pendingMessageMetadata.take(CHAT_ID)).isEmpty();
+    }
+
     @Test
     void runFinishedCarriesTheRunAndTheAssistantMessage() {
         modelStreams("Hello ", "world");
@@ -284,7 +368,7 @@ class RedisStreamingChatServiceTest {
     @Test
     void normalTurnAttachesWhatTheServerReportedAboutTheTurn() {
         List<ModelCallMetadata> calls = List.of(
-                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null,
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
                         null, null, null, null, null, null, null, null, null));
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
 
@@ -297,6 +381,29 @@ class RedisStreamingChatServiceTest {
 
         assertThat(finishedMessage().getResponseMetadata()).isEqualTo(responseMetadata);
         assertThat(finishedMessage().getResponseMetadataCalls()).isEqualTo(calls);
+    }
+
+    @Test
+    void completedTurnSavesItsToolLogAndCarriesItOnTheFinishedFrame() {
+        List<ToolCallSummary> toolCalls = List.of(new ToolCallSummary("t1", "web_search", "{\"query\":\"denver\"}", "ok", 1500L));
+        doReturn(toolCalls).when(turnToolCalls).take(CHAT_ID);
+        modelStreams("Hello");
+
+        runTurn();
+
+        verify(chatMessageService).updateToolCalls(eq(CHAT_ID), any(), eq(toolCalls));
+        assertThat(finishedMessage().getToolCalls()).isEqualTo(toolCalls);
+        verify(turnToolCalls, timeout(1000).atLeast(2)).clear(CHAT_ID);
+    }
+
+    @Test
+    void aTurnWithoutToolCallsSavesNoToolLog() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        verify(chatMessageService, never()).updateToolCalls(any(), any(), any());
+        assertThat(finishedMessage().getToolCalls()).isNull();
     }
 
     @Test
@@ -428,24 +535,6 @@ class RedisStreamingChatServiceTest {
     }
 
     @Test
-    void xeroRateLimitIsClassifiedRateLimited() {
-        ClientResponse response = mock(ClientResponse.class);
-        when(response.statusCode()).thenReturn(HttpStatus.TOO_MANY_REQUESTS);
-
-        errorTurn(new XeroApiException("Xero's internal error body", response));
-
-        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.RATE_LIMITED.wireValue());
-        assertThat(publishedRunError().message()).doesNotContain("Xero's internal error body");
-    }
-
-    @Test
-    void xeroFailureWithNoResponseIsClassifiedToolFailure() {
-        errorTurn(new XeroApiException("Xero returned a bulk envelope with no invoice"));
-
-        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
-    }
-
-    @Test
     void imageGenerationFailureKeepsItsOwnUserSafeMessage() {
         errorTurn(new ImageGenerationException(ImageGenerationErrorCode.BACKEND_UNAVAILABLE,
                 "The image server is unavailable. Please try again."));
@@ -468,6 +557,27 @@ class RedisStreamingChatServiceTest {
 
         assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.TOOL_FAILURE.wireValue());
         assertThat(publishedRunError().message()).doesNotContain("/does-not-exist");
+    }
+
+    @Test
+    void unavailableAgentTellsTheUserTheChatWasReleased() {
+        errorTurn(new A2AAgentUnavailableException("network"));
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.UPSTREAM_UNAVAILABLE.wireValue());
+        assertThat(publishedRunError().message())
+                .isEqualTo("The network agent is not available right now. Send your message again to continue without it.");
+    }
+
+    /**
+     * A key removed between the send and the turn: the user is told why in words they can act on,
+     * never the generic failure.
+     */
+    @Test
+    void aMissingModelKeyTellsTheUserToAskAnAdministrator() {
+        errorTurn(new LlmKeyMissingException());
+
+        assertThat(publishedRunError().code()).isEqualTo(TurnErrorCode.LLM_KEY_MISSING.wireValue());
+        assertThat(publishedRunError().message()).isEqualTo(LlmKeyMissingException.MESSAGE);
     }
 
     /**
@@ -559,13 +669,76 @@ class RedisStreamingChatServiceTest {
     }
 
     @Test
+    void aFinishedTurnIsPushedOnceItsRunFinishedFrameIsPublished() {
+        modelStreams("Hello");
+
+        runTurn();
+
+        InOrder order = inOrder(redisStreamService, pushNotificationService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_FINISHED), any());
+        order.verify(pushNotificationService).push(USER_ID, new PushEvent.TurnFinished(CHAT_ID, RUN_ID));
+    }
+
+    @Test
+    void aFailedTurnIsPushedOnceItsRunErrorFrameIsPublished() {
+        errorTurn(new TimeoutException("too slow"));
+
+        InOrder order = inOrder(redisStreamService, pushNotificationService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(USER_ID), eq(RUN_ERROR), any());
+        order.verify(pushNotificationService).push(USER_ID, new PushEvent.TurnFailed(CHAT_ID, RUN_ID));
+    }
+
+    @Test
+    void aCancelledTurnIsNotPushed() {
+        cancelAfterChunks("Partial");
+
+        runTurn();
+
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    @Test
+    void anInterruptedTurnIsNotPushed() {
+        when(promptService.stream(any(), any(), any(), any()))
+                .thenReturn(Flux.error(new InterruptedException("shutting down")));
+
+        runTurn();
+
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    /**
+     * A push is never allowed to become the turn's failure: a throwing push after {@code RUN_FINISHED}
+     * must not add a {@code RUN_ERROR} behind it.
+     */
+    @Test
+    void aPushThatThrowsLeavesAFinishedTurnsFramesUnchanged() {
+        doThrow(new IllegalStateException("push broke")).when(pushNotificationService).push(any(), any());
+        modelStreams("Hello");
+
+        runTurn();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+    }
+
+    @Test
+    void aPushThatThrowsLeavesAFailedTurnsFramesUnchanged() {
+        doThrow(new IllegalStateException("push broke")).when(pushNotificationService).push(any(), any());
+
+        errorTurn(new TimeoutException("too slow"));
+
+        assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
+    }
+
+    @Test
     void turnTracksAndUntracksTheActiveStream() {
         modelStreams("Hello");
 
         runTurn();
 
         verify(activeStreamTracker).put(USER_ID, CHAT_ID);
-        verify(activeStreamTracker).remove(USER_ID, CHAT_ID);
+        // Untracking runs in the stream's cleanup, which can finish just after runTurn returns.
+        verify(activeStreamTracker, timeout(1000)).remove(USER_ID, CHAT_ID);
     }
 
     @Test
@@ -573,7 +746,7 @@ class RedisStreamingChatServiceTest {
         modelStreams("Hello");
 
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
 
         verify(activeStreamTracker, never()).put(any(), any());
@@ -583,10 +756,8 @@ class RedisStreamingChatServiceTest {
     @Test
     void forwardsAnElicitationAsAToolCall() {
         UUID elicitationId = UUID.randomUUID();
-        ServerSentEvent<?> elicitation = ServerSentEvent
-                .builder("{\"message\":\"Sure?\",\"elicitationId\":\"%s\"}".formatted(elicitationId))
-                .event("elicitation")
-                .build();
+        SideChannelMessage elicitation = new SideChannelMessage("elicitation",
+                JSON_MAPPER.readTree("{\"message\":\"Sure?\",\"elicitationId\":\"%s\"}".formatted(elicitationId)));
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(elicitation));
         modelStreams("Hello");
@@ -599,9 +770,34 @@ class RedisStreamingChatServiceTest {
         assertThat(start.toolCallId()).isEqualTo(elicitationId.toString());
     }
 
+    /**
+     * The client shows the text before a prompt as its own message and opens a new bubble for the
+     * answer, which {@code RUN_FINISHED} then replaces. Carrying the whole run there repeated the
+     * earlier reply inside the new bubble.
+     */
+    @Test
+    void finishedMessageIsOnlyTheTextAfterTheLatestPrompt() {
+        Sinks.Many<SideChannelMessage> elicitationSink = Sinks.many().replay().all();
+        SideChannelMessage elicitation = new SideChannelMessage(ELICITATION,
+                JSON_MAPPER.readTree("{\"message\":\"Play or pass?\",\"elicitationId\":\"%s\"}".formatted(UUID.randomUUID())));
+
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(
+                Flux.just("Dad, play or pass?")
+                        .doOnComplete(() -> elicitationSink.tryEmitNext(elicitation))
+                        .concatWith(Flux.just("Dad passes. ", "Penny has to play.")));
+
+        runTurn();
+
+        assertThat(eventsOfType(TEXT_MESSAGE_CONTENT))
+                .extracting(event -> ((TextMessageContentEvent) event.payload()).delta())
+                .containsExactly("Dad, play or pass?", "Dad passes. ", "Penny has to play.");
+        assertThat(finishedMessage().getMessage()).isEqualTo("Dad passes. Penny has to play.");
+    }
+
     @Test
     void forwardsProgressAsACustomEvent() {
-        ServerSentEvent<?> progress = ServerSentEvent.builder("{\"message\":\"Searching\"}").event("progress").build();
+        SideChannelMessage progress = new SideChannelMessage("progress", JSON_MAPPER.readTree("{\"message\":\"Searching\"}"));
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(Flux.just(progress));
         modelStreams("Hello");
@@ -629,7 +825,7 @@ class RedisStreamingChatServiceTest {
         when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
 
         StepVerifier.create(redisStreamingChatService
-                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of()), authentication))
+                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
                 .verifyComplete();
 
         assertThat(published.getFirst().type()).isEqualTo(RUN_STARTED);
@@ -644,6 +840,67 @@ class RedisStreamingChatServiceTest {
             assertThat(message.role()).isEqualTo(Role.USER);
             assertThat(message.content()).isEqualTo("hello");
         });
+    }
+
+    /**
+     * A model picked before the chat existed must already be stored when the turn resolves which model
+     * it uses, or the first turn would silently run on the default.
+     */
+    @Test
+    void createStoresTheModelBeforeTheTurnStarts() {
+        stubNewChat();
+        when(chatModelSelection.set(CHAT_ID, "openai/gpt-4o")).thenReturn(Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), "openai/gpt-4o"), "openai/gpt-4o", authentication))
+                .verifyComplete();
+
+        InOrder turnOrder = inOrder(chatModelSelection, chatMessageService);
+        turnOrder.verify(chatModelSelection).set(CHAT_ID, "openai/gpt-4o");
+        turnOrder.verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    @Test
+    void createStoresNothingForTheDefault() {
+        stubNewChat();
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), null), null, authentication))
+                .verifyComplete();
+
+        verify(chatModelSelection, never()).set(any(), anyString());
+        verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    /**
+     * Storing the selection costs the chat its choice of model, never its first turn.
+     */
+    @Test
+    void createStillStartsTheTurnWhenTheModelCannotBeStored() {
+        stubNewChat();
+        when(chatModelSelection.set(CHAT_ID, "openai/gpt-4o")).thenReturn(Mono.error(new IllegalStateException("redis down")));
+
+        StepVerifier.create(redisStreamingChatService.create(USER_ID,
+                        new ChatRequest("hello", Set.of(), Set.of(), "openai/gpt-4o"), "openai/gpt-4o", authentication))
+                .verifyComplete();
+
+        verify(chatMessageService).saveUserMessage(eq(CHAT_ID), eq(USER_ID), any());
+    }
+
+    private void stubNewChat() {
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(UUID.randomUUID());
+
+        when(chatRepository.save(any(Chat.class))).thenAnswer(invocation -> {
+            Chat chat = invocation.getArgument(0);
+            chat.setId(CHAT_ID);
+
+            return chat;
+        });
+        when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
+        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
     }
 
     /**
@@ -699,11 +956,222 @@ class RedisStreamingChatServiceTest {
     }
 
     /**
+     * A shared session's run: the frames go to the owner's stream while the message is the sender's, and the
+     * route's hooks run around the terminal frame.
+     */
+    private record RecordedHooks(List<String> calls, Mono<Void> beforeTerminal) implements TurnHooks {
+
+        @Override
+        public Mono<Void> beforeTerminal(UUID runId, TurnOutcome outcome) {
+            return Mono.fromRunnable(() -> calls.add("before " + outcome)).then(beforeTerminal);
+        }
+
+        @Override
+        public void afterTerminal(UUID runId, TurnOutcome outcome) {
+            calls.add("after " + outcome);
+        }
+
+        @Override
+        public void finished(UUID runId) {
+            calls.add("finished");
+        }
+    }
+
+    private static final UUID OWNER_ID = UUID.randomUUID();
+
+    private TurnPlan sharedPlan(Flux<String> chunks, RecordedHooks hooks) {
+        return new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
+                () -> chunks, hooks);
+    }
+
+    @Test
+    void aSharedRunWritesToTheOwnersStreamAndTracksItsSender() {
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+                .verifyComplete();
+
+        verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_FINISHED), any());
+        verify(redisStreamService, never()).publish(eq(CHAT_ID), eq(USER_ID), anyString(), any());
+        verify(activeStreamTracker).put(USER_ID, CHAT_ID);
+        verify(pushNotificationService, never()).push(any(), any());
+    }
+
+    /**
+     * A shared conversation run goes through the same engine as a private chat, so its frames are the
+     * same ones: the start frame with the route's metadata, the images and model accounting on the
+     * finished message, and tool side-channel frames forwarded, all on the owner's stream.
+     */
+    @Test
+    void aSharedRunEmitsTheSameFramesAsAPrivateChat() {
+        GeneratedImageSummary image = new GeneratedImageSummary(UUID.randomUUID(), USER_ID, null, "/images/x", null, "a lighthouse",
+                "solesonic-image (izzy-bot)", null, 1024, 1024, null, 2.0, 8, ZonedDateTime.now(), List.of());
+        List<ModelCallMetadata> calls = List.of(
+                new ModelCallMetadata("qwen3-8b", "chatcmpl-1", null, "stop", 1042, 259, 1301, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null));
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-1", null, "stop", calls);
+
+        when(generatedImageService.forChatSince(eq(CHAT_ID), any())).thenReturn(List.of(image));
+        when(chatMessageService.responseMetadata(eq(CHAT_ID), any())).thenReturn(responseMetadata);
+        when(chatMessageService.responseMetadataCalls(eq(CHAT_ID), any())).thenReturn(calls);
+        pendingMessageMetadata.put(CHAT_ID, "solesonic/sound", Map.of("cueId", "sound-1"));
+
+        Sinks.Many<SideChannelMessage> sideChannel = Sinks.many().replay().all();
+        when(elicitationService.registerChat(CHAT_ID)).thenReturn(sideChannel.asFlux());
+        sideChannel.tryEmitNext(new SideChannelMessage("image", JSON_MAPPER.valueToTree(image)));
+
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Look: ", "a lighthouse"), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).contains(CUSTOM, TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END);
+        assertThat(publishedTypes()).last().isEqualTo(RUN_FINISHED);
+        assertThat(((CustomEvent) eventsOfType(CUSTOM).getFirst().payload()).name()).isEqualTo("image");
+        assertThat(JSON_MAPPER.valueToTree(eventsOfType(TEXT_MESSAGE_START).getFirst().payload()).has("metadata")).isTrue();
+
+        ChatMessage responseMessage = finishedMessage();
+        assertThat(responseMessage.getMessage()).isEqualTo("Look: a lighthouse");
+        assertThat(responseMessage.getGeneratedImages()).containsExactly(image);
+        assertThat(responseMessage.getResponseMetadata()).isEqualTo(responseMetadata);
+        assertThat(responseMessage.getResponseMetadataCalls()).isEqualTo(calls);
+
+        verify(redisStreamService, never()).publish(eq(CHAT_ID), eq(USER_ID), anyString(), any());
+    }
+
+    @Test
+    void aRoutesHooksRunAroundTheTerminalFrame() {
+        TurnHooks hooks = mock(TurnHooks.class);
+        when(hooks.beforeTerminal(RUN_ID, TurnOutcome.COMPLETED)).thenReturn(Mono.empty());
+        TurnPlan turnPlan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
+                () -> Flux.just("Good answer!"), hooks);
+
+        StepVerifier.create(redisStreamingChatService.runTurn(turnPlan)).verifyComplete();
+
+        //finished runs in doFinally, after the completion the verifier waits on.
+        verify(hooks, timeout(1000)).finished(RUN_ID);
+
+        InOrder order = inOrder(hooks, redisStreamService);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(TEXT_MESSAGE_END), any());
+        order.verify(hooks).beforeTerminal(RUN_ID, TurnOutcome.COMPLETED);
+        order.verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_FINISHED), any());
+        order.verify(hooks).afterTerminal(RUN_ID, TurnOutcome.COMPLETED);
+        order.verify(hooks).finished(RUN_ID);
+    }
+
+    @Test
+    void aHookThatFailsNeverFailsTheRun() {
+        RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.error(new IllegalStateException("database down")));
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
+    }
+
+    @Test
+    void aFailedRunCallsItsHooksAroundRunError() {
+        List<String> calls = new CopyOnWriteArrayList<>();
+        RecordedHooks hooks = new RecordedHooks(calls, Mono.empty());
+
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.error(new TimeoutException("slow")), hooks)))
+                .verifyComplete();
+
+        assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
+        assertThat(calls).containsSubsequence("before FAILED", "after FAILED");
+    }
+
+    @Test
+    void startAnswersOnceRunStartedIsOutWithTheSendersName() {
+        UUID userMessageId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+
+        StepVerifier.create(redisStreamingChatService.start(sharedPlan(Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()))))
+                .expectNext(new StartedRun(RUN_ID, userMessageId))
+                .verifyComplete();
+
+        verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_STARTED), any());
+
+        RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
+        AttachedUserMessage.Input input = (AttachedUserMessage.Input) runStarted.input();
+        assertThat(input.messages()).singleElement().satisfies(message -> {
+            assertThat(message.name()).isEqualTo("Sam");
+            assertThat(message.senderUserId()).isEqualTo(USER_ID);
+        });
+    }
+
+    /**
+     * The room sees an upload as it is sent: the sender's attachments and the commands they used ride the
+     * echoed user message, in the shape the transcript carries, with the sender's id so a client need not
+     * guess who sent it from a display name two people may share.
+     */
+    @Test
+    void aSharedRunsStartedFrameEchoesTheSendersAttachmentsCommandsAndId() throws Exception {
+        UUID userMessageId = UUID.randomUUID();
+        UUID attachmentId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        ChatAttachmentSummary summary = new ChatAttachmentSummary(attachmentId, userMessageId, "cat.png", null,
+                "image/png", 12L, false, null, false, null);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(chatMessageService.attachmentSummaries(CHAT_ID, Set.of(attachmentId))).thenReturn(List.of(summary));
+
+        TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam",
+                new ChatRequest("look", Set.of("web_search"), Set.of(attachmentId), null),
+                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+
+        StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
+
+        RunStartedEvent runStarted = (RunStartedEvent) published.getFirst().payload();
+
+        tools.jackson.databind.JsonNode message = new com.solesonic.config.JacksonConfig().jsonMapper()
+                .readTree(new com.solesonic.config.JacksonConfig().jsonMapper().writeValueAsString(runStarted))
+                .get("input").get("messages").get(0);
+
+        assertThat(message.get("role").asString()).isEqualTo("user");
+        assertThat(message.get("content").asString()).isEqualTo("look");
+        assertThat(message.get("name").asString()).isEqualTo("Sam");
+        assertThat(message.get("senderUserId").asString()).isEqualTo(USER_ID.toString());
+        assertThat(message.get("commands")).extracting(tools.jackson.databind.JsonNode::asString).containsExactly("web_search");
+        assertThat(message.get("attachments")).hasSize(1);
+        assertThat(message.get("attachments").get(0).get("id").asString()).isEqualTo(attachmentId.toString());
+        assertThat(message.get("attachments").get(0).get("chatMessageId").asString()).isEqualTo(userMessageId.toString());
+        assertThat(message.get("attachments").get(0).get("fileName").asString()).isEqualTo("cat.png");
+    }
+
+    /**
+     * The private chat's frame is what every client already parses; it does not grow fields.
+     */
+    @Test
+    void aPrivateRunsStartedFrameStaysTheSimpleUserMessage() {
+        UUID userMessageId = UUID.randomUUID();
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(userMessageId);
+
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+
+        TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, USER_ID, USER_ID, null,
+                new ChatRequest("hello", Set.of(), Set.of(), null),
+                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+
+        StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
+
+        RunAgentInput input = (RunAgentInput) ((RunStartedEvent) published.getFirst().payload()).input();
+        assertThat(input.messages()).singleElement().isInstanceOf(UserMessage.class);
+        verify(chatMessageService, never()).attachmentSummaries(any(), any());
+    }
+
+    /**
      * Emits the given chunks, then fires the cancel signal, then stalls — so cancellation is what ends the
      * turn, deterministically and without a sleep.
      */
     private void cancelAfterChunks(String... chunks) {
-        Sinks.Many<ServerSentEvent<?>> elicitationSink = Sinks.many().replay().all();
+        Sinks.Many<SideChannelMessage> elicitationSink = Sinks.many().replay().all();
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
 

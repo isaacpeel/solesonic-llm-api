@@ -343,6 +343,10 @@ Branch on the status code or on `code` — never on the message text, which is n
 5. **API Usage**: the MCP server calls Gmail with that access token
 6. **Re-consent**: if the grant is revoked, the broker reports it and the user is sent back through step 1
 
+## Image Tools and Reference Images
+
+The API calls the MCP server's single ComfyUI-backed image tool, `generate_image`, on the user's own token, and finds it by name. The server routes each call itself: it classifies the intent (a new image, restyling the photo, editing the person in it), picks the workflow, and rewrites the prompt. So `prompt` carries the user's request in their own words. When the tool declares a `referenceImages` input property, the user's attached images are sent as `[{ "data": "<base64>", "mimeType": "image/png", "description": "..." }]`, at most three of them. The model writes each `description` (what the image shows, and whether a person is the focus); the server uses it only to choose the workflow. The API injects `data` and `mimeType` at the tool-callback boundary, and the model is shown the parameter with only `description` in it. When the model gives no description, the attachment's vision description is used. The server enforces the count each workflow takes and reports a count it cannot route as an `isError` result, which is relayed to the model as text. A tool that does not declare the property is never sent it, and the attachment ids that supplied the images are kept out of the request's `_meta`. See [api.md — Reference Images](api.md#reference-images).
+
 ## Environment Configuration
 
 For a complete list of all required environment variables including MCP, Atlassian OAuth2, Google OAuth2, database, security, and CORS configuration, see [docs/configuration.md](configuration.md).

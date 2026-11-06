@@ -129,6 +129,11 @@ the two columns are mutually exclusive; both null means the image has not been a
 find images worth retrying: `select id from public.chat_attachment where vision_failure_reason =
 'VISION_TIMEOUT';`
 
+The event's `NOT_NEEDED` reason, sent when nothing in the turn needed to read the image, is never
+stored here: both columns stay null, so the image counts as not yet attempted. An image used only as
+a reference never gets a description; replayed history names it instead
+(`ChatAttachmentService.undescribedImages`).
+
 The `generated_image` table (V3_7) stores images produced by the `generate_image` MCP tool. Same
 `bytea` shape as `chat_attachment`, and for the same reason. The tool persists nothing and returns
 ~2MB of base64 per image; this table is where that base64 stops, so that everything downstream
@@ -212,6 +217,150 @@ delete from public.chat where id = '<chat uuid>';
    - Adding new columns
    - Dropping constraints
    - Adding new models
+
+### User memory — three tables (V3_34)
+
+| Table | Holds |
+|---|---|
+| `user_memory` | One memory: `user_id`, `kind`, `origin`, `status`, `memory_key`, `content`, `confidence`, `created`/`updated`/`last_confirmed`, and `supersedes` — the memory it replaced |
+| `user_memory_evidence` | One row per `USER` message a memory was learned from: `memory_id`, `user_id`, `chat_id`, `chat_message_id`, `chat_message_timestamp` |
+| `chat_memory_reflection` | Per conversation, how far reflection has read (`reflected_through`), its `status` and `attempts` |
+
+Load-bearing details:
+
+- **Every row carries `user_id NOT NULL`, and every reference between these tables carries it too.**
+  Evidence references its memory through `(memory_id, user_id) → user_memory (id, user_id)`, and
+  `supersedes` through `(supersedes, user_id)`, so a row can never point at another user's row even
+  by mistake. Both need the `unique (id, user_id)` constraint on `user_memory`.
+- **`user_memory_active_key_idx` is a partial unique index** on `(user_id, memory_key)` where
+  `status = 'ACTIVE'`: two active values for one key cannot coexist. Code superseding a memory must
+  flush the old row as `SUPERSEDED` before inserting its replacement, or the insert fails.
+- **`on delete set null (supersedes)`** — a column-list `SET NULL`, Postgres 15 or later.
+- **No foreign key to `chat` or `chat_message`**, as elsewhere in the schema. Forgetting a
+  conversation is written out in `UserMemoryService.forgetChat`; a memory whose last evidence row
+  goes is deleted with it.
+- **`chat_message_timestamp` on evidence** is what lets reflection refuse to let an older statement
+  replace a newer one during backfill.
+
+### User profile (V3_38, V3_39, V3_40)
+
+`user_profile` holds who each user id belongs to, as their identity provider last described them:
+`user_id` (PK), `username` (`preferred_username`), `email`, `display_name` (`given_name`, else
+`name`), `updated`. The JWT filters write it on every authenticated request through
+`UserProfileService.record`, and the lifecycle sweep writes it from Keycloak's admin API.
+
+`checked` is when the sweep last looked the user up in Keycloak; `removed` is when Keycloak was found
+not to have them, or to have disabled them. A row with `removed` set is never seeded for reflection
+again, and a login clears it. To see who has been concluded removed:
+`select user_id, username, removed from public.user_profile where removed is not null;`
+
+- **Every column but the key is nullable**, because a token need not carry any of the claims.
+- **A claim missing from a later token never clears the stored value**: the upsert `coalesce`s each
+  column, and rewrites the row only when something changed.
+- **No foreign key to anything**, as elsewhere in the schema. A user who has not signed in since a
+  column was added has no value in it until their next request.
+
+### Model access keys (V3_41)
+
+`user_llm_key` holds each user's own model-server key, which every model call made for them carries
+in place of the shared service key: `user_id` (PK), `api_key` (`bytea`, encrypted by the same
+`BytesEncryptor` as the Atlassian and Google tokens), `key_hint` (the key's last four characters),
+`created`, `updated`, `updated_by` (the administrator who last set it). Written only through
+`/llm-keys`; read only through `UserLlmKeyRepository`, whose `findApiKey` is the one query that
+selects the key column.
+
+- **The claim queries depend on it.** `ChatMemoryReflectionRepository.findClaimable`,
+  `InterestScanRepository.findClaimable`, `InterestAgentRepository.findDue` and
+  `MemoryEmbeddingRepository.findStale` each require a `user_llm_key` row for the owner, so work for a
+  user without a key waits rather than being claimed and failed every tick.
+- **The user lifecycle purge leaves it alone**: a dormant user keeps their key. Only an administrator's
+  `DELETE` removes it.
+
+### Push notifications — two tables (V3_36)
+
+| Table | Holds |
+|---|---|
+| `push_subscription` | One browser subscription: `user_id`, `endpoint` (unique), `p256dh`, `auth`, `expiration_time`, `label`, `user_agent`, `created`/`updated`, `last_delivered`, `failure_count` |
+| `push_preference` | Per user, which events are pushed: `turn_complete`, `elicitation`, `interest_offers`, `interest_updates` (the last two added by `V3_37`, default `true`), `updated`. No row means all are on |
+
+Load-bearing details:
+
+- **`endpoint` is unique, not unique per user.** One browser subscription belongs to whichever user
+  presented its endpoint and keys last; a `PUT` of a stored endpoint moves the row to the caller.
+- **`endpoint`, `p256dh` and `auth` are a capability**: whoever holds them can push to that browser.
+  They are never returned by the API and never logged.
+- **`failure_count`** resets on every delivery and counts every other refusal, retried or not. A row is
+  deleted once it reaches `PUSH_MAX_FAILURES`, and at once when the push service answers `403`, `404`
+  or `410`. A user keeps at most 20 rows; the oldest are deleted past that.
+- **`push_preference` is not part of `user_preferences`**: that endpoint is a full replace, and a client
+  unaware of these fields would switch notifications off.
+- **No foreign key to a user table**, as elsewhere in the schema.
+
+### Interest agents — five tables (V3_37)
+
+| Table | Holds |
+|---|---|
+| `interest_scan` | Per user, how far discovery has read their memories: `scanned_through` (newest `user_memory.updated` considered), `last_offered`, `status`, `attempts` |
+| `interest_offer` | A topic offered to a user: `agent_type`, `topic_key`, `label`, `query`, `rationale`, `source_memory_ids` (`uuid[]`), `confidence`, `status`, `created`, `expires`, `decided` |
+| `interest_agent` | An accepted agent: `offer_id`, `agent_type`, `topic_key`, `label`, `query`, `chat_group_id`, `cadence`, `status`, `next_run_at`, `last_run_at`, `last_update_at`, `last_failure_at`, `failures` |
+| `interest_update` | One run that delivered news: `agent_id`, `label`, `chat_id` (unique), `item_count`. The id is the run id and the push dedupe key |
+| `interest_agent_item` | A URL an agent has seen, as `url_hash` (SHA-256 hex of the normalized URL) and `first_seen` |
+
+Load-bearing details:
+
+- **Every table carries `user_id`, and every reference between them includes it** through composite
+  `(id, user_id)` foreign keys, as `user_memory_evidence` does.
+- **`interest_offer_one_pending_idx`** (partial unique on `user_id` where `PENDING`) makes "one question
+  at a time" a database guarantee; **`unique (user_id, topic_key)`** on agents makes a duplicate agent
+  impossible.
+- **Deleting an agent** cascades its seen items and sets `interest_update.agent_id` and nothing else to
+  null: the chats are the user's history and stay recognisable as news, which is why the update row
+  copies the label.
+- **Only a URL's hash is stored**, never titles or content.
+- **No foreign key to `chat`, `chat_group` or `user_memory`**, consistent with the rest of the schema.
+  `ChatService.delete` removes a news chat's update row; the forget paths in `UserMemoryService` withdraw
+  pending offers whose memories are gone.
+
+### Shared sessions — three tables (V3_42)
+
+- **`chat.kind`** (`CONVERSATION` | `SHARED`, default `CONVERSATION`) separates shared chats from conversations;
+  every chat path filters on it.
+- **`chat_message.sender_user_id`** records who sent a `USER` row in a shared chat, and is null everywhere else.
+- **`shared_session`:** one per shared chat (`chat_id` unique, `on delete cascade` from `chat`), naming its
+  `agent_name`. The jsonb columns hold what the agent last reported:
+  - `turn_state`: user ids, next and over;
+  - `pending_prompt`: the open question, with its A2A task id.
+- **`session_participant`:** the seats.
+  - `seat >= 0` with `unique (session_id, seat)`; the schema sets no ceiling on participants. An invite creates
+    two today.
+  - Seat 0 is the inviter, who owns the chat and its stream key.
+  - `name` is unique per session, ignoring case.
+- **`session_invite`:** names the `agent_name` and an optional `opening_message`. `session_invite_one_pending_idx`
+  allows one pending invite between any two users, whichever sent it.
+- **`push_preference`** gains `session_invites` and `session_turns`, both default true.
+
+The activity checks in memory reflection and the user lifecycle count a `USER` row for
+`coalesce(sender_user_id, chat.user_id)`, so a guest's messages keep the guest active, not the owner.
+
+V3_42 was rewritten in place before release. A local database that applied the earlier `V3_42__create_games`
+must drop its `game`, `game_participant` and `game_invite` tables, the `chat.kind`, `chat_message.sender_user_id`
+and `push_preference.game_*` columns, and the `flyway_schema_history` row for version `3.42` before startup.
+
+### Chat search indexes (V3_43)
+
+Backs the `q` search on `GET /chats/users/{userId}`, whose query is `lower(column) like '%q%'`.
+
+- **`pg_trgm`** is created by the migration itself, unlike `vector`, `hstore` and `uuid-ossp`. It is a
+  *trusted* extension (PG13+), so the database owner can create it without superuser, provided the
+  Flyway role has `CREATE` on the database. `docker/init_schema.*` creates it too.
+- **`chat_message_message_trgm_idx`** and **`chat_name_trgm_idx`**: `gin (lower(...) gin_trgm_ops)`,
+  matching the expression the repository emits. Trigrams rather than full-text search, because a
+  search box needs partial words (`unif` → "unifi"), which `tsvector` does not match.
+- **`chat_message_chat_id_idx`** on `(chat_id, timestamp)`. `chat_message` had no `chat_id` index
+  before, which every `findByChatId` and the search's `exists` need.
+- **`chat_user_timestamp_idx`** on `(user_id, timestamp desc, id desc)`, the search's ordering.
+- No partial index on `message_type`: the query passes the types as a bind parameter, and Postgres
+  cannot use a partial index whose condition depends on one.
 
 ## Vector Storage with pgvector
 

@@ -35,6 +35,7 @@ import java.util.stream.Collectors;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.EXCEEDED_IMAGE_LIMIT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_TOO_LARGE;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.IMAGE_UNREADABLE;
+import static com.solesonic.model.chat.attachment.VisionFailureReason.NOT_NEEDED;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_TIMEOUT;
 import static com.solesonic.model.chat.attachment.VisionFailureReason.VISION_UNAVAILABLE;
 import static com.solesonic.service.vision.ImageDescriptionService.MAX_IMAGES_PER_MESSAGE;
@@ -43,6 +44,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anySet;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -441,5 +443,83 @@ class ImageDescriptionServiceTest {
                 .isInstanceOf(IllegalStateException.class);
 
         assertThat(describedEvents(1).get(attachmentId).reason()).isEqualTo(IMAGE_UNREADABLE);
+    }
+
+    /**
+     * A route that sends the image itself still owes the client one event per id, but reads nothing,
+     * calls no model and records no failure, so a later turn can still describe the image.
+     */
+    @Test
+    void notNeededSignalsEachIdWithoutReadingOrDescribingIt() {
+        UUID firstAttachmentId = UUID.randomUUID();
+        UUID secondAttachmentId = UUID.randomUUID();
+
+        imageDescriptionService.notNeeded(chatId, Set.of(firstAttachmentId, secondAttachmentId));
+
+        Map<UUID, ChatAttachmentEvent> events = describedEvents(2);
+
+        assertThat(events.values()).allSatisfy(chatAttachmentEvent -> {
+            assertThat(chatAttachmentEvent.described()).isFalse();
+            assertThat(chatAttachmentEvent.reason()).isEqualTo(NOT_NEEDED);
+        });
+
+        verifyNoInteractions(visionChatModel, chatAttachmentService);
+    }
+
+    /**
+     * The client clears its "reading" placeholder only on a progress frame, so a skipped describe
+     * still sends one.
+     */
+    @Test
+    void notNeededEmitsOneProgressFrame() {
+        imageDescriptionService.notNeeded(chatId, Set.of(UUID.randomUUID()));
+
+        verify(notificationService).emitProgress(eq(chatId), argThat((NotificationEventMessage notificationEventMessage) ->
+                notificationEventMessage.message().equals("Using 1 attached image as a reference")));
+    }
+
+    @Test
+    void notNeededWithNoIdsEmitsNothing() {
+        imageDescriptionService.notNeeded(chatId, Set.of());
+
+        verifyNoInteractions(notificationService, visionChatModel, chatAttachmentService);
+    }
+
+    /**
+     * {@code view_attachments} describes through the turn's own record, so an image of this turn is
+     * signalled once, by whichever path gets there first.
+     */
+    @Test
+    void describeThroughTheTurnsRecordSignalsAnImageOnlyOnce() {
+        ChatAttachment chatAttachment = attachment("beach.png");
+        Set<UUID> attachmentIds = Set.of(chatAttachment.getId());
+        AttachmentVisionSignals signals = imageDescriptionService.signals(chatId, attachmentIds);
+
+        when(chatAttachmentService.attachments(userId, attachmentIds)).thenReturn(List.of(chatAttachment));
+        when(visionChatModel.call(any(Prompt.class))).thenReturn(chatResponse("a beach at sunset"));
+
+        imageDescriptionService.describe(chatId, userId, attachmentIds, signals);
+        signals.signalRemaining(NOT_NEEDED);
+
+        assertThat(describedEvents(1).get(chatAttachment.getId()).described()).isTrue();
+    }
+
+    /**
+     * An image from an earlier turn had its event on that turn. Describing it now sends none, even
+     * when the describe fails.
+     */
+    @Test
+    void describingAnEarlierTurnsImageSendsNoEvent() {
+        ChatAttachment earlierAttachment = attachment("earlier.png");
+        Set<UUID> attachmentIds = Set.of(earlierAttachment.getId());
+        AttachmentVisionSignals signals = imageDescriptionService.signals(chatId, Set.of());
+
+        when(chatAttachmentService.attachments(userId, attachmentIds)).thenReturn(List.of(earlierAttachment));
+        when(visionChatModel.call(any(Prompt.class))).thenThrow(new ResourceAccessException("down", new ConnectException()));
+
+        List<?> descriptions = imageDescriptionService.describe(chatId, userId, attachmentIds, signals);
+
+        assertThat(descriptions).isEmpty();
+        verify(notificationService, never()).emitAttachment(any(), any());
     }
 }

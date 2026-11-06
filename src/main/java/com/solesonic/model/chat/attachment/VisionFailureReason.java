@@ -32,5 +32,12 @@ public enum VisionFailureReason {
     /**
      * More images were attached to one message than the vision pass will describe.
      */
-    EXCEEDED_IMAGE_LIMIT
+    EXCEEDED_IMAGE_LIMIT,
+
+    /**
+     * Not a failure: the route this send took uses the image itself, not a description of it, so no
+     * vision call was made. Never persisted, which leaves the image free to be described on a later
+     * turn that does need it.
+     */
+    NOT_NEEDED
 }

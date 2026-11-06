@@ -1,6 +1,7 @@
 package com.solesonic.service.chat.events;
 
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.push.ElicitationReminderScheduler;
 import io.modelcontextprotocol.spec.McpSchema;
 import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,15 +11,12 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.connection.ReactiveSubscription;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.http.codec.ServerSentEvent;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
-import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
-import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -26,8 +24,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
-
-import org.springframework.data.redis.core.ReactiveValueOperations;
 
 @ExtendWith(MockitoExtension.class)
 class NotificationServiceTest {
@@ -38,20 +34,14 @@ class NotificationServiceTest {
     @Mock
     private ReactiveStringRedisTemplate redisTemplate;
 
-    @Mock
-    private ReactiveValueOperations<String, String> valueOperations;
-
     private NotificationService notificationService;
     private ElicitationService elicitationService;
-    private JsonMapper jsonMapper;
     private Sinks.Many<String> messageRelay;
 
     @BeforeEach
     void setUp() {
-        jsonMapper = JsonMapper.builder().build();
+        JsonMapper jsonMapper = JsonMapper.builder().build();
         messageRelay = Sinks.many().multicast().onBackpressureBuffer();
-
-        lenient().doReturn(valueOperations).when(redisTemplate).opsForValue();
 
         Flux<ReactiveSubscription.Message<String, String>> listenerFlux = messageRelay.asFlux()
                 .map(body -> new FixedChannelMessage("channel", body));
@@ -64,20 +54,23 @@ class NotificationServiceTest {
                     return Mono.just(1L);
                 });
 
-        notificationService = new NotificationService(jsonMapper, chatMessageService, redisTemplate);
-        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate);
+        SideChannelPublisher sideChannelPublisher = new SideChannelPublisher(jsonMapper, redisTemplate);
+
+        notificationService = new NotificationService(jsonMapper, chatMessageService, sideChannelPublisher);
+        elicitationService = new ElicitationService(jsonMapper, chatMessageService, redisTemplate,
+                sideChannelPublisher, mock(ElicitationReminderScheduler.class));
     }
 
     @Test
     void emitProgressShouldSendProgressEventToRegisteredChatSink() {
         UUID chatId = UUID.randomUUID();
-        AtomicReference<ServerSentEvent<?>> serverSentEventRef = new AtomicReference<>();
+        AtomicReference<SideChannelMessage> received = new AtomicReference<>();
         CountDownLatch countDownLatch = new CountDownLatch(1);
 
         elicitationService.registerChat(chatId)
                 .take(1)
-                .subscribe(serverSentEvent -> {
-                    serverSentEventRef.set(serverSentEvent);
+                .subscribe(message -> {
+                    received.set(message);
                     countDownLatch.countDown();
                 });
 
@@ -96,18 +89,13 @@ class NotificationServiceTest {
             throw new RuntimeException(interruptedException);
         }
 
-        ServerSentEvent<?> serverSentEvent = serverSentEventRef.get();
+        SideChannelMessage message = received.get();
 
-        assertThat(serverSentEvent).isNotNull();
-        assertThat(serverSentEvent.event()).isEqualTo(NotificationService.PROGRESS);
-        assertThat(serverSentEvent.data()).isInstanceOf(String.class);
-
-        assert serverSentEvent.data() != null;
-        Object data = serverSentEvent.data();
-
-        Map<String, Object> eventData = jsonMapper.readValue(data.toString(), new TypeReference<>() {});
-
-        assertThat(eventData).containsEntry(NotificationService.CHAT_ID, chatId.toString());
+        assertThat(message).isNotNull();
+        assertThat(message.event()).isEqualTo(NotificationService.PROGRESS);
+        assertThat(message.data().isObject()).isTrue();
+        assertThat(message.data().path(NotificationService.CHAT_ID).asString()).isEqualTo(chatId.toString());
+        assertThat(message.data().path("message").asString()).isEqualTo("half-way");
     }
 
     private record FixedChannelMessage(String channelName, String messageBody)
@@ -122,5 +110,18 @@ class NotificationServiceTest {
         public @NonNull String getMessage() {
             return messageBody;
         }
+    }
+
+    @Test
+    void recordFailureCarriesTheServersFailureTime() {
+        java.time.Instant before = java.time.Instant.now().minusMillis(1);
+
+        java.util.Map<String, Object> failure = notificationService.recordFailure(UUID.randomUUID(),
+                "An unexpected error occurred. Please try again.", com.solesonic.model.chat.TurnErrorCode.INTERNAL);
+
+        java.time.Instant occurredAt = java.time.Instant.parse((String) failure.get(NotificationService.OCCURRED_AT));
+        assertThat(occurredAt).isBetween(before, java.time.Instant.now().plusMillis(1));
+        assertThat(failure).containsEntry("code", "internal");
+        verify(chatMessageService).save(argThat(saved -> saved.getProgressData().containsKey(NotificationService.OCCURRED_AT)));
     }
 }

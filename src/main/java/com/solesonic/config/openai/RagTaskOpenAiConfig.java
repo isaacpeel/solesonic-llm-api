@@ -2,12 +2,14 @@ package com.solesonic.config.openai;
 
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The small model the RAG pipeline runs its own prompts against — query rewriting, multi-query
@@ -36,7 +38,8 @@ public class RagTaskOpenAiConfig {
     @Qualifier(RAG_TASK_CHAT_MODEL)
     public OpenAiChatModel ragTaskChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                             @Value("${spring.ai.openai.base-url}") String baseUrl,
-                                            @Value("${solesonic.llm.rag-task.openai.read-timeout}") Duration readTimeout) {
+                                            @Value("${solesonic.llm.rag-task.openai.read-timeout}") Duration readTimeout,
+                                            List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -46,6 +49,7 @@ public class RagTaskOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 }

@@ -5,10 +5,13 @@ import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.GeneratedImageUpdateRequest;
 import com.solesonic.model.image.ImageGenerationEvent;
+import com.solesonic.model.image.ImageToolSummary;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.image.GeneratedImageService;
 import com.solesonic.service.image.ImageGenerationService;
-import com.solesonic.util.AuthenticationTokens;
+import com.solesonic.service.image.ImageToolCatalog;
+import com.solesonic.util.logging.Redactor;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -21,7 +24,6 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.security.access.prepost.PreAuthorize;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -35,14 +37,15 @@ import reactor.core.publisher.Flux;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.List;
 import java.util.UUID;
 
 /**
- * Text-to-image generation and the images it produces.
+ * Image generation and the images it produces.
  * <p>
- * Generation is offered twice over the same path, chosen by the {@code Accept} header: as SSE,
- * which is the one worth using — a generation takes five to fifteen seconds and the progress frames
- * are what make that wait legible — and as plain JSON for scripts and tests.
+ * Generation is offered twice: as SSE, which answers with a single terminal frame and survives the
+ * client disconnecting mid-generation, and as plain JSON for scripts and tests. Both run on the
+ * caller's own model key; a caller without one is refused with {@code 403} before anything starts.
  */
 @RestController
 @RequestMapping(GeneratedImageController.IMAGES)
@@ -55,24 +58,27 @@ public class GeneratedImageController {
 
     private final ImageGenerationService imageGenerationService;
     private final GeneratedImageService generatedImageService;
+    private final ImageToolCatalog imageToolCatalog;
     private final UserRequestContext userRequestContext;
 
     public GeneratedImageController(ImageGenerationService imageGenerationService,
                                     GeneratedImageService generatedImageService,
+                                    ImageToolCatalog imageToolCatalog,
                                     UserRequestContext userRequestContext) {
         this.imageGenerationService = imageGenerationService;
         this.generatedImageService = generatedImageService;
+        this.imageToolCatalog = imageToolCatalog;
         this.userRequestContext = userRequestContext;
     }
 
     @PostMapping(produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<?>> generateStreaming(@RequestBody GenerateImageRequest generateImageRequest,
-                                                      Authentication authentication) {
+    public Flux<ServerSentEvent<?>> generateStreaming(@RequestBody GenerateImageRequest generateImageRequest) {
         log.info("Streaming image generation for user {}", userRequestContext.getUserId());
+        logIgnoredTool(generateImageRequest);
 
         return imageGenerationService
-                .stream(generateImageRequest.prompt(), userRequestContext.getUserId(),
-                        AuthenticationTokens.token(authentication))
+                .stream(generateImageRequest.prompt(),
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId())
                 .map(GeneratedImageController::serverSentEvent);
     }
 
@@ -82,15 +88,31 @@ public class GeneratedImageController {
      * ambiguous mapping rather than picking one.
      */
     @PostMapping(value = "/sync", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<GeneratedImageSummary> generate(@RequestBody GenerateImageRequest generateImageRequest,
-                                                          Authentication authentication) {
+    public ResponseEntity<GeneratedImageSummary> generate(@RequestBody GenerateImageRequest generateImageRequest) {
         log.info("Generating image for user {}", userRequestContext.getUserId());
+        logIgnoredTool(generateImageRequest);
 
         GeneratedImageSummary generatedImageSummary = imageGenerationService
-                .generate(generateImageRequest.prompt(), userRequestContext.getUserId(),
-                        AuthenticationTokens.token(authentication));
+                .generate(generateImageRequest.prompt(),
+                        generateImageRequest.referenceAttachmentIds(), userRequestContext.getUserId());
 
         return ResponseEntity.created(URI.create(generatedImageSummary.imageUrl())).body(generatedImageSummary);
+    }
+
+    /**
+     * The single image generator, with the most reference images it accepts. A literal path, so it
+     * wins over {@code /{imageId}}.
+     */
+    @GetMapping("/tools")
+    public ResponseEntity<List<ImageToolSummary>> tools() {
+        return ResponseEntity.ok(imageToolCatalog.summaries());
+    }
+
+    private static void logIgnoredTool(GenerateImageRequest generateImageRequest) {
+        if (StringUtils.isNotBlank(generateImageRequest.tool())) {
+            log.debug("Ignoring deprecated image tool '{}'; generate_image is always called",
+                    Redactor.sanitizePath(generateImageRequest.tool()));
+        }
     }
 
     /**
@@ -168,13 +190,14 @@ public class GeneratedImageController {
     @GetMapping("/admin")
     public ResponseEntity<PagedModel<GeneratedImageSummary>> listAll(
             @RequestParam(required = false) UUID userId,
+            @RequestParam(required = false) String username,
             @PageableDefault(size = DEFAULT_PAGE_SIZE) Pageable pageable) {
         Pageable imagePage = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize());
 
         log.info("Listing generated images page {} size {} user {}",
                 imagePage.getPageNumber(), imagePage.getPageSize(), userId);
 
-        Page<GeneratedImageSummary> summaries = generatedImageService.listAll(userId, imagePage);
+        Page<GeneratedImageSummary> summaries = generatedImageService.listAll(userId, username, imagePage);
 
         return ResponseEntity.ok(new PagedModel<>(summaries));
     }

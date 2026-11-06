@@ -1,0 +1,5 @@
+###
+@modelId =
+GET {{llm-uri}}/model/info?litellm_model_id={{modelId}}
+Content-Type: application/json
+x-litellm-api-key: {{lite-llm-key}}

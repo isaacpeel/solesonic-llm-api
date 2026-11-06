@@ -1,0 +1,286 @@
+package com.solesonic.api.chat;
+
+import com.solesonic.exception.chat.ChatModelException;
+import com.solesonic.exception.handler.AttachmentExceptionHandler;
+import com.solesonic.exception.handler.ChatModelExceptionHandler;
+import com.solesonic.exception.handler.ExceptionService;
+import com.solesonic.exception.handler.GeneralExceptionHandler;
+import com.solesonic.exception.handler.LlmKeyExceptionHandler;
+import com.solesonic.exception.llm.LlmKeyMissingException;
+import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.model.AvailableModel;
+import com.solesonic.model.chat.model.ChatModelErrorCode;
+import com.solesonic.model.chat.model.ChatModelOptions;
+import com.solesonic.model.chat.model.ChatModelState;
+import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.chat.ChatModelService;
+import com.solesonic.service.chat.ChatService;
+import com.solesonic.service.session.SharedSessionService;
+import com.solesonic.service.security.ResourceOwnershipService;
+import com.solesonic.service.security.SecurityEventLogger;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
+import java.util.UUID;
+
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+/**
+ * Pins the model endpoints' status codes, and that they sit beside {@link ChatController}'s
+ * {@code /chats/{chatId}} routes without either one capturing the other's requests.
+ */
+@ExtendWith(MockitoExtension.class)
+class ChatModelControllerTest {
+
+    private static final String DEFAULT_MODEL = "qwen3-8b";
+    private static final UUID USER_ID = UUID.fromString("00000000-0000-0000-0000-000000000001");
+
+    @Mock
+    private ChatModelService chatModelService;
+
+    @Mock
+    private ChatService chatService;
+
+    @Mock
+    private SharedSessionService sharedSessionService;
+
+    @Mock
+    private ResourceOwnershipService resourceOwnershipService;
+
+    @Mock
+    private ExceptionService exceptionService;
+
+    @Mock
+    private SecurityEventLogger securityEventLogger;
+
+    private MockMvc mockMvc;
+
+    private UUID chatId;
+
+    @BeforeEach
+    void setUp() {
+        chatId = UUID.randomUUID();
+
+        // A private conversation unless a test says otherwise.
+        org.mockito.Mockito.lenient().when(chatService.requireModelAccess(any())).thenReturn(new Chat());
+
+        UserRequestContext userRequestContext = new UserRequestContext();
+        userRequestContext.setUserId(USER_ID);
+
+        mockMvc = MockMvcBuilders
+                .standaloneSetup(new ChatModelController(chatModelService, chatService, userRequestContext, sharedSessionService),
+                        new ChatController(chatService, resourceOwnershipService, sharedSessionService))
+                .setControllerAdvice(new ChatModelExceptionHandler(), new AttachmentExceptionHandler(),
+                        new LlmKeyExceptionHandler(), new GeneralExceptionHandler(exceptionService, securityEventLogger))
+                .build();
+    }
+
+    @Test
+    void refusesToListModelsForAUserWithNoModelKey() throws Exception {
+        when(chatModelService.options(USER_ID)).thenThrow(new LlmKeyMissingException());
+
+        mockMvc.perform(get("/chats/models"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("LLM_KEY_MISSING"));
+    }
+
+    /**
+     * The request that once reached {@code GET /chats/{chatId}} and failed converting "models" to a
+     * UUID. A literal segment outranks a template, so it lands here.
+     */
+    @Test
+    void listsModelsRatherThanLookingUpAChatCalledModels() throws Exception {
+        when(chatModelService.options(USER_ID)).thenReturn(new ChatModelOptions(
+                List.of(new AvailableModel("openai/gpt-4o", "openai")), DEFAULT_MODEL, null, null));
+
+        mockMvc.perform(get("/chats/models"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.models[0].id").value("openai/gpt-4o"))
+                .andExpect(jsonPath("$.models[0].ownedBy").value("openai"))
+                .andExpect(jsonPath("$.defaultModel").value(DEFAULT_MODEL))
+                .andExpect(jsonPath("$.selectedModel").doesNotExist());
+
+        verify(chatService, never()).get(any());
+        verify(chatService, never()).requireModelAccess(any());
+    }
+
+    @Test
+    void stillLooksUpAChatById() throws Exception {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+
+        when(chatService.get(chatId)).thenReturn(chat);
+
+        mockMvc.perform(get("/chats/{chatId}", chatId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(chatId.toString()));
+
+        verify(chatModelService, never()).options(any());
+    }
+
+    @Test
+    void listsModelsForAnOwnedChat() throws Exception {
+        when(chatModelService.options(USER_ID, chatId)).thenReturn(new ChatModelOptions(
+                List.of(new AvailableModel("openai/gpt-4o", "openai")), DEFAULT_MODEL, "openai/gpt-4o", "jira"));
+
+        mockMvc.perform(get("/chats/models").param("chatId", chatId.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.selectedModel").value("openai/gpt-4o"))
+                .andExpect(jsonPath("$.activeAgent").value("jira"));
+
+        verify(chatService).requireModelAccess(chatId);
+    }
+
+    @Test
+    void refusesToListModelsForAnotherUsersChat() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
+
+        mockMvc.perform(get("/chats/models").param("chatId", chatId.toString()))
+                .andExpect(status().isNotFound());
+
+        verify(chatModelService, never()).options(any(), any());
+    }
+
+    @Test
+    void answersServiceUnavailableWhenTheListCannotBeFetched() throws Exception {
+        when(chatModelService.options(USER_ID)).thenThrow(
+                new ChatModelException(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE, "The model list could not be retrieved."));
+
+        mockMvc.perform(get("/chats/models"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("MODEL_LIST_UNAVAILABLE"));
+    }
+
+    @Test
+    void selectsAModelForAnOwnedChat() throws Exception {
+        when(chatModelService.select(USER_ID, chatId, "OpenAI/GPT-4o"))
+                .thenReturn(new ChatModelState(DEFAULT_MODEL, "openai/gpt-4o", null));
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"OpenAI/GPT-4o\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.selectedModel").value("openai/gpt-4o"))
+                .andExpect(jsonPath("$.defaultModel").value(DEFAULT_MODEL))
+                .andExpect(jsonPath("$.models").doesNotExist());
+
+        verify(chatService).requireModelAccess(chatId);
+    }
+
+    @Test
+    void refusesAnUnknownModel() throws Exception {
+        when(chatModelService.select(USER_ID, chatId, "gpt-5"))
+                .thenThrow(new ChatModelException(ChatModelErrorCode.UNKNOWN_MODEL, "The model gpt-5 is not offered."));
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"gpt-5\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("UNKNOWN_MODEL"));
+    }
+
+    @Test
+    void answersServiceUnavailableWhenASelectionCannotBeValidated() throws Exception {
+        when(chatModelService.select(USER_ID, chatId, "openai/gpt-4o")).thenThrow(
+                new ChatModelException(ChatModelErrorCode.MODEL_LIST_UNAVAILABLE, "The model list could not be retrieved."));
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"openai/gpt-4o\"}"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("MODEL_LIST_UNAVAILABLE"));
+    }
+
+    @Test
+    void refusesToSelectAModelForAnotherUsersChat() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"openai/gpt-4o\"}"))
+                .andExpect(status().isNotFound());
+
+        verify(chatModelService, never()).select(any(), any(), any());
+    }
+
+    @Test
+    void resetIsIdempotent() throws Exception {
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(chatModelService, times(2)).reset(chatId);
+        verify(chatService, never()).delete(any());
+    }
+
+    @Test
+    void aModelChangeInASharedChatIsAnnouncedToEveryoneSeated() throws Exception {
+        Chat shared = new Chat();
+        shared.setKind(com.solesonic.model.chat.history.ChatKind.SHARED);
+        when(chatService.requireModelAccess(chatId)).thenReturn(shared);
+        when(chatModelService.select(USER_ID, chatId, "openai/gpt-4o"))
+                .thenReturn(new ChatModelState(DEFAULT_MODEL, "openai/gpt-4o", null));
+
+        mockMvc.perform(put("/chats/{chatId}/model", chatId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"openai/gpt-4o\"}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(sharedSessionService, times(2)).publishStateForChat(chatId);
+    }
+
+    @Test
+    void aModelChangeInAPrivateChatAnnouncesNothing() throws Exception {
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNoContent());
+
+        verify(sharedSessionService, never()).publishStateForChat(any());
+    }
+
+    @Test
+    void refusesToResetAnotherUsersChat() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found")).when(chatService).requireModelAccess(chatId);
+
+        mockMvc.perform(delete("/chats/{chatId}/model", chatId))
+                .andExpect(status().isNotFound());
+
+        verify(chatModelService, never()).reset(any());
+    }
+
+    /**
+     * A word where a chat id belongs is the caller's mistake: a {@code 400}, never the {@code 500} the
+     * catch-all would make of the conversion failure.
+     */
+    @Test
+    void answersBadRequestForAChatIdThatIsNotAUuid() throws Exception {
+        mockMvc.perform(put("/chats/{chatId}/model", "not-a-chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"model\":\"openai/gpt-4o\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(chatModelService, never()).select(any(), any(), any());
+    }
+}

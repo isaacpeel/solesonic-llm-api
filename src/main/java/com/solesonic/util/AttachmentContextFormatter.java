@@ -1,11 +1,14 @@
 package com.solesonic.util;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static com.solesonic.tools.ImageGenerationTool.GENERATE_IMAGE;
 
 /**
  * Renders vision-model descriptions of image attachments.
@@ -23,6 +26,15 @@ public final class AttachmentContextFormatter {
             The descriptions below were produced by a vision model reading the image bytes; treat \
             them as a faithful account of what the images show and answer as though you had seen them.
             """;
+
+    private static final String REFERENCE_HEADER =
+            "The user attached %d image(s) to the message that follows: %s. They are inputs for the image the "
+            + "user wants created or edited, and are sent to " + GENERATE_IMAGE + " automatically as reference "
+            + "images. You cannot see them; do not describe them, and do not ask the user to upload them again.";
+
+    private static final String REFERENCE_HISTORY_HEADER =
+            "The user attached %d image(s) to the message that follows: %s. They were used only as references "
+            + "for image generation and were never described, so you do not know what they show.";
 
     private AttachmentContextFormatter() {
     }
@@ -51,11 +63,39 @@ public final class AttachmentContextFormatter {
             return null;
         }
 
-        String names = fileNames.stream()
-                .map(fileName -> StringUtils.defaultIfBlank(fileName, "untitled"))
-                .collect(Collectors.joining(", "));
+        return DOCUMENT_HEADER.formatted(fileNames.size(), names(fileNames));
+    }
 
-        return DOCUMENT_HEADER.formatted(fileNames.size(), names);
+    /**
+     * Names the images of the message that follows without describing them, once the decision model
+     * has said they are only inputs for creating or editing an image. Without it the chat model sees a
+     * request about "this person" with no sign that anything was attached.
+     *
+     * @return the block, or {@code null} when there is nothing to name
+     */
+    public static String referenceContext(List<String> fileNames) {
+        if (CollectionUtils.isEmpty(fileNames)) {
+            return null;
+        }
+
+        return REFERENCE_HEADER.formatted(fileNames.size(), names(fileNames));
+    }
+
+    /**
+     * The replayed form of {@link #referenceContext}, for an earlier image that was never described.
+     *
+     * @return the block, or {@code null} when there is nothing to name
+     */
+    public static String referenceHistoryContext(List<ChatAttachmentSummary> undescribedImages) {
+        if (CollectionUtils.isEmpty(undescribedImages)) {
+            return null;
+        }
+
+        List<String> fileNames = undescribedImages.stream()
+                .map(ChatAttachmentSummary::fileName)
+                .toList();
+
+        return REFERENCE_HISTORY_HEADER.formatted(undescribedImages.size(), names(fileNames));
     }
 
     /**
@@ -76,10 +116,16 @@ public final class AttachmentContextFormatter {
 
         StringBuilder context = new StringBuilder(HEADER.formatted(descriptions.size()));
 
+        appendDescriptions(context, descriptions);
+
+        return context.toString();
+    }
+
+    private static void appendDescriptions(StringBuilder text, List<ChatAttachmentDescription> descriptions) {
         int imageNumber = 1;
 
         for (ChatAttachmentDescription description : descriptions) {
-            context.append(System.lineSeparator())
+            text.append(System.lineSeparator())
                     .append(heading(imageNumber, description))
                     .append(System.lineSeparator())
                     .append(description.visionDescription())
@@ -87,8 +133,6 @@ public final class AttachmentContextFormatter {
 
             imageNumber++;
         }
-
-        return context.toString();
     }
 
     /**
@@ -107,6 +151,12 @@ public final class AttachmentContextFormatter {
         }
 
         return context + System.lineSeparator() + message;
+    }
+
+    private static String names(List<String> fileNames) {
+        return fileNames.stream()
+                .map(fileName -> StringUtils.defaultIfBlank(fileName, "untitled"))
+                .collect(Collectors.joining(", "));
     }
 
     private static String heading(int imageNumber, ChatAttachmentDescription description) {

@@ -4,7 +4,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "Intel/Qwen3.5-122B-A10B-int4-AutoRound",
+  "model": "ministral-3-14b",
   "messages": [
     {
       "role": "user",
@@ -19,7 +19,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 {
-  "model": "qwen3.8",
+  "model": "ministral-3-14b",
   "stream": true,
   "stream_options": {
     "include_usage": true

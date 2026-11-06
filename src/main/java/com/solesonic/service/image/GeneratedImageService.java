@@ -3,8 +3,10 @@ package com.solesonic.service.image;
 import com.solesonic.model.image.GeneratedImage;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.model.image.ImageGenerationMetadata;
+import com.solesonic.model.user.UserFilter;
 import com.solesonic.repository.image.GeneratedImageRepository;
 import com.solesonic.scope.UserRequestContext;
+import com.solesonic.service.user.UserProfileService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -20,6 +22,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.ZonedDateTime;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -44,6 +47,7 @@ public class GeneratedImageService {
 
     private final GeneratedImageRepository generatedImageRepository;
     private final UserRequestContext userRequestContext;
+    private final UserProfileService userProfileService;
     private final String contextPath;
 
     /**
@@ -56,9 +60,11 @@ public class GeneratedImageService {
      */
     public GeneratedImageService(GeneratedImageRepository generatedImageRepository,
                                  UserRequestContext userRequestContext,
+                                 UserProfileService userProfileService,
                                  @Value("${server.servlet.context-path}") String contextPath) {
         this.generatedImageRepository = generatedImageRepository;
         this.userRequestContext = userRequestContext;
+        this.userProfileService = userProfileService;
         this.contextPath = contextPath;
     }
 
@@ -69,9 +75,12 @@ public class GeneratedImageService {
      * runs on a {@code boundedElastic} thread, where the request scope is not bound — the same
      * reason {@code ChatAttachmentService.bind} takes one.
      *
-     * @param chatId the conversation the image was generated in, or null for explicit generation.
-     *               An image with a chat is left unbound to a message: the assistant turn it
-     *               belongs to does not exist yet, and {@link #bind} claims it once it does
+     * @param chatId                 the conversation the image was generated in, or null for
+     *                               explicit generation. An image with a chat is left unbound to a
+     *                               message: the assistant turn it belongs to does not exist yet, and
+     *                               {@link #bind} claims it once it does
+     * @param referenceAttachmentIds the chat attachments sent as reference images; empty for a
+     *                               prompt-only generation
      */
     @Transactional
     public GeneratedImageSummary store(UUID userId,
@@ -79,7 +88,8 @@ public class GeneratedImageService {
                                        String prompt,
                                        byte[] imageData,
                                        String contentType,
-                                       ImageGenerationMetadata imageGenerationMetadata) {
+                                       ImageGenerationMetadata imageGenerationMetadata,
+                                       List<UUID> referenceAttachmentIds) {
 
         GeneratedImage generatedImage = new GeneratedImage();
         generatedImage.setUserId(userId);
@@ -96,6 +106,8 @@ public class GeneratedImageService {
         generatedImage.setImageData(imageData);
         generatedImage.setFileSizeBytes(imageData.length);
         generatedImage.setCreated(ZonedDateTime.now());
+        generatedImage.setReferenceAttachmentIds(
+                referenceAttachmentIds == null || referenceAttachmentIds.isEmpty() ? null : List.copyOf(referenceAttachmentIds));
 
         GeneratedImage stored = generatedImageRepository.save(generatedImage);
 
@@ -109,7 +121,8 @@ public class GeneratedImageService {
     public GeneratedImage get(UUID imageId) {
         UUID userId = userRequestContext.getUserId();
 
-        return generatedImageRepository.findByIdAndUserId(imageId, userId)
+        //Readable by its owner, or by anyone still seated in the shared conversation it was made in.
+        return generatedImageRepository.findReadableByIdAndUserId(imageId, userId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Generated image not found: " + imageId));
     }
@@ -198,7 +211,8 @@ public class GeneratedImageService {
                 generatedImage.getSteps(),
                 generatedImage.getElapsedSeconds(),
                 generatedImage.getFileSizeBytes(),
-                generatedImage.getCreated());
+                generatedImage.getCreated(),
+                generatedImage.getReferenceAttachmentIds());
     }
 
     /**
@@ -210,16 +224,25 @@ public class GeneratedImageService {
     }
 
     /**
-     * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter}
-     * narrows the listing to one user without needing a separate endpoint.
+     * Every user's images, newest first, for the {@code image-admin} role. {@code userIdFilter} or
+     * {@code username} narrows the listing to one user without needing a separate endpoint. The only
+     * listing that names each image's owner.
      */
     @Transactional(readOnly = true)
-    public Page<GeneratedImageSummary> listAll(UUID userIdFilter, Pageable pageable) {
-        Page<GeneratedImageSummary> summaries = userIdFilter == null
-                ? generatedImageRepository.findSummaryPage(pageable)
-                : generatedImageRepository.findSummaryPageByUserId(userIdFilter, pageable);
+    public Page<GeneratedImageSummary> listAll(UUID userIdFilter, String username, Pageable pageable) {
+        UserFilter userFilter = userProfileService.filter(userIdFilter, username);
 
-        return withImageUrls(summaries);
+        if (userFilter.matchesNobody()) {
+            return Page.empty(pageable);
+        }
+
+        Page<GeneratedImageSummary> summaries = userFilter.userId() == null
+                ? generatedImageRepository.findSummaryPage(pageable)
+                : generatedImageRepository.findSummaryPageByUserId(userFilter.userId(), pageable);
+
+        Map<UUID, String> usernames = userProfileService.usernames(summaries.map(GeneratedImageSummary::userId).getContent());
+
+        return withImageUrls(summaries).map(summary -> summary.withUsername(usernames.get(summary.userId())));
     }
 
     /**
@@ -236,7 +259,8 @@ public class GeneratedImageService {
     }
 
     /**
-     * Renames any user's image, for the {@code image-admin} role.
+     * Renames any user's image, for the {@code image-admin} role. Names the owner, like the admin
+     * listing the renamed image came from.
      */
     @Transactional
     public GeneratedImageSummary rename(UUID imageId, String name) {
@@ -244,7 +268,10 @@ public class GeneratedImageService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Generated image not found: " + imageId));
 
-        return rename(generatedImage, name);
+        UUID ownerId = generatedImage.getUserId();
+
+        return rename(generatedImage, name)
+                .withUsername(userProfileService.usernames(List.of(ownerId)).get(ownerId));
     }
 
     /**

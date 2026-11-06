@@ -28,7 +28,7 @@ public enum TurnErrorCode {
     RATE_LIMITED("RATE_LIMITED"),
 
     /**
-     * An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG
+     * An MCP or local tool call failed mid-turn — Jira, Google, image generation, or the RAG
      * pipeline.
      */
     TOOL_FAILURE("TOOL_FAILURE"),
@@ -56,6 +56,12 @@ public enum TurnErrorCode {
      * still be running; only the connection broke.
      */
     STREAM_UNAVAILABLE("STREAM_UNAVAILABLE"),
+
+    /**
+     * The user has no model-server key, so no model may be called for them. Retrying cannot fix it;
+     * an administrator has to register one.
+     */
+    LLM_KEY_MISSING("LLM_KEY_MISSING"),
 
     /**
      * Anything else.

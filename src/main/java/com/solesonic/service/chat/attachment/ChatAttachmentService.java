@@ -2,6 +2,7 @@ package com.solesonic.service.chat.attachment;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentIndexState;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.attachment.ExtractionFailureReason;
 import com.solesonic.model.chat.attachment.VisionFailureReason;
@@ -26,6 +27,7 @@ import java.time.ZonedDateTime;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -138,6 +140,32 @@ public class ChatAttachmentService {
                         "Attachment not found: " + attachmentId));
     }
 
+    /**
+     * {@link #get} for reading: also the attachments of a shared conversation, to the people seated in
+     * it. Only the get and download endpoints use this; deleting stays with the uploader.
+     */
+    @Transactional(readOnly = true)
+    public ChatAttachment getReadable(UUID attachmentId) {
+        UUID userId = userRequestContext.getUserId();
+
+        return chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "Attachment not found: " + attachmentId));
+    }
+
+    /**
+     * Whether every id is one of the user's own staged attachments, which is what a send may attach.
+     * Not request-scoped, like {@link #bind}.
+     */
+    @Transactional(readOnly = true)
+    public boolean allStagedFor(UUID userId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return true;
+        }
+
+        return chatAttachmentRepository.countStagedByIdInAndUserId(attachmentIds, userId) == attachmentIds.size();
+    }
+
     @Transactional
     public void delete(UUID attachmentId) {
         ChatAttachment chatAttachment = get(attachmentId);
@@ -160,6 +188,14 @@ public class ChatAttachmentService {
     @Transactional(readOnly = true)
     public List<ChatAttachmentSummary> forChat(UUID chatId) {
         return chatAttachmentRepository.findSummariesByChatId(chatId);
+    }
+
+    /**
+     * The summaries of the given attachments of one chat, for a message that has just been bound to them.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> forChatAndIds(UUID chatId, Set<UUID> attachmentIds) {
+        return chatAttachmentRepository.findSummariesByChatIdAndIdIn(chatId, attachmentIds);
     }
 
     /**
@@ -331,12 +367,121 @@ public class ChatAttachmentService {
     }
 
     /**
+     * The index lifecycle of one attachment, without its bytes — read fresh, because the entity a
+     * caller loaded at the start of a turn may already be stale.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ChatAttachmentIndexState> indexState(UUID attachmentId) {
+        return chatAttachmentRepository.findIndexState(attachmentId);
+    }
+
+    /**
+     * The index lifecycle of every document attachment of one conversation, images excluded.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentIndexState> documentIndexStates(UUID chatId) {
+        return chatAttachmentRepository.findIndexStatesByChatId(chatId).stream()
+                .filter(state -> !isImage(state.contentType()))
+                .toList();
+    }
+
+    /**
+     * Every document attachment, in any conversation, that claims to be indexed and has not left its
+     * conversation.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentIndexState> documentsClaimingIndexed() {
+        return chatAttachmentRepository.findClaimingIndexed().stream()
+                .filter(state -> !isImage(state.contentType()))
+                .toList();
+    }
+
+    /**
+     * The whole row, bytes included, for an attachment about to be indexed.
+     */
+    @Transactional(readOnly = true)
+    public Optional<ChatAttachment> forIndexing(UUID attachmentId) {
+        return chatAttachmentRepository.findById(attachmentId);
+    }
+
+    /**
+     * Takes the indexing lease in its own short transaction, so it is visible to every other worker
+     * the moment this returns.
+     *
+     * @param now                 the lease token; release and the final writes match on it
+     * @param staleBefore         a lease taken before this is treated as abandoned and may be taken over
+     * @param observedAttemptedAt the {@code indexAttemptedAt} the caller's decision was based on
+     * @return whether this caller now holds the lease
+     */
+    @Transactional
+    public boolean claimIndexing(UUID attachmentId,
+                                 ZonedDateTime now,
+                                 ZonedDateTime staleBefore,
+                                 ZonedDateTime observedAttemptedAt) {
+        int claimed = observedAttemptedAt == null
+                ? chatAttachmentRepository.claimIndexingNeverAttempted(attachmentId, now, staleBefore)
+                : chatAttachmentRepository.claimIndexing(attachmentId, now, staleBefore, observedAttemptedAt);
+
+        return claimed == 1;
+    }
+
+    /**
+     * Releases the lease if it is still {@code claimedAt}'s; a no-op for a lease already taken over.
+     */
+    @Transactional
+    public void releaseIndexing(UUID attachmentId, ZonedDateTime claimedAt) {
+        chatAttachmentRepository.releaseIndexing(attachmentId, claimedAt);
+    }
+
+    /**
+     * @return false when the lease was taken over meanwhile, in which case nothing was written
+     */
+    @Transactional
+    public boolean saveChunkCountUnderLease(UUID attachmentId, int chunkCount, ZonedDateTime claimedAt) {
+        return chatAttachmentRepository.saveChunkCountUnderLease(attachmentId, chunkCount, claimedAt) == 1;
+    }
+
+    @Transactional
+    public void saveExtractionFailureUnderLease(UUID attachmentId,
+                                                ExtractionFailureReason extractionFailureReason,
+                                                ZonedDateTime claimedAt) {
+        chatAttachmentRepository.saveExtractionFailureUnderLease(attachmentId, extractionFailureReason, claimedAt);
+    }
+
+    /**
      * Descriptions of every described attachment bound to a chat, for replaying image context into
      * earlier turns of the conversation.
      */
     @Transactional(readOnly = true)
     public List<ChatAttachmentDescription> descriptions(UUID chatId) {
         return chatAttachmentRepository.findDescriptionsByChatId(chatId);
+    }
+
+    /**
+     * The images among {@code attachmentIds} bound to {@code chatId}, without their bytes: enough to
+     * name them to the model without describing them.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> imageSummaries(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
+
+        return chatAttachmentRepository.findSummariesByChatIdAndIdIn(chatId, attachmentIds)
+                .stream()
+                .filter(summary -> isImage(summary.contentType()))
+                .toList();
+    }
+
+    /**
+     * Every image of the conversation with no stored description, for naming in replayed history.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> undescribedImages(UUID chatId) {
+        return chatAttachmentRepository.findSummariesByChatId(chatId)
+                .stream()
+                .filter(summary -> isImage(summary.contentType()) && !summary.described())
+                .toList();
     }
 
     /**

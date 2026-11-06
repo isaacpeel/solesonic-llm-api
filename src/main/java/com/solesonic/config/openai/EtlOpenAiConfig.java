@@ -2,12 +2,14 @@ package com.solesonic.config.openai;
 
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.openai.http.okhttp.OpenAiHttpClientBuilderCustomizer;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Duration;
+import java.util.List;
 
 /**
  * The two enrichment models the ETL pipeline runs over every chunk it ingests, served by the same
@@ -44,7 +46,8 @@ public class EtlOpenAiConfig {
     public OpenAiChatModel etlKeywordChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                                @Value("${spring.ai.openai.base-url}") String baseUrl,
                                                @Value("${solesonic.llm.etl.model}") String etlModel,
-                                               @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
+                                               @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout,
+                                               List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -57,6 +60,7 @@ public class EtlOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 
@@ -65,7 +69,8 @@ public class EtlOpenAiConfig {
     public OpenAiChatModel etlMetadataChatModel(@Value("${spring.ai.openai.api-key}") String apiKey,
                                                 @Value("${spring.ai.openai.base-url}") String baseUrl,
                                                 @Value("${solesonic.llm.etl.model}") String etlModel,
-                                                @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout) {
+                                                @Value("${solesonic.llm.etl.openai.read-timeout}") Duration readTimeout,
+                                                List<OpenAiHttpClientBuilderCustomizer> httpClientBuilderCustomizers) {
         OpenAiChatOptions options = OpenAiChatOptions.builder()
                 .baseUrl(baseUrl)
                 .apiKey(apiKey)
@@ -79,6 +84,7 @@ public class EtlOpenAiConfig {
 
         return OpenAiChatModel.builder()
                 .options(options)
+                .httpClientBuilderCustomizers(httpClientBuilderCustomizers)
                 .build();
     }
 }

@@ -2,7 +2,15 @@ package com.solesonic.service.chat;
 
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.chat.history.ChatParticipant;
+import com.solesonic.model.session.SessionErrorCode;
+import com.solesonic.model.session.SessionParticipant;
+import com.solesonic.model.session.SharedSession;
+import com.solesonic.exception.session.SessionException;
+import com.solesonic.repository.session.SessionParticipantRepository;
+import com.solesonic.repository.session.SharedSessionRepository;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.redis.service.RedisStreamService;
@@ -11,9 +19,13 @@ import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.interest.InterestUpdateService;
+import com.solesonic.service.memory.UserMemoryService;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.messages.MessageType;
+import org.springframework.data.domain.Limit;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -23,7 +35,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
@@ -35,13 +49,39 @@ public class ChatService {
 
     private static final int MAX_NAME_LENGTH = 255;
 
+    private static final int MIN_SEARCH_LENGTH = 2;
+    private static final int MAX_SEARCH_LENGTH = 200;
+
+    /**
+     * {@code SYSTEM} and {@code TOOL} rows hold elicitation JSON, tool output and progress data —
+     * nothing the user saw as conversation text.
+     */
+    static final Set<MessageType> SEARCHABLE_MESSAGE_TYPES = Set.of(MessageType.USER, MessageType.ASSISTANT);
+
     private final ChatRepository chatRepository;
     private final ChatMessageRepository chatMessageRepository;
     private final ChatAttachmentService chatAttachmentService;
     private final GeneratedImageService generatedImageService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final RedisStreamService redisStreamService;
+    private final ChatModelSelection chatModelSelection;
+    private final UserMemoryService userMemoryService;
+    private final InterestUpdateService interestUpdateService;
     private final UserRequestContext userRequestContext;
+    private final SharedSessionRepository sharedSessionRepository;
+    private final SessionParticipantRepository sessionParticipantRepository;
+
+    /**
+     * Stands in for "no shared chats" in an {@code id in (...)} list, which an empty collection would
+     * make invalid on some drivers. No chat has the nil id.
+     */
+    private static final UUID NO_CHAT = new UUID(0, 0);
+
+    /**
+     * The most shared chats one history list will consider (the most recently active seats), so the
+     * {@code id in (...)} list stays a sane size however many chats someone has been added to.
+     */
+    static final int MAX_SHARED_CHATS_IN_HISTORY = 500;
 
     public ChatService(
             ChatRepository chatRepository,
@@ -50,19 +90,29 @@ public class ChatService {
             GeneratedImageService generatedImageService,
             A2AStickyAgentService a2aStickyAgentService,
             RedisStreamService redisStreamService,
-            UserRequestContext userRequestContext) {
+            ChatModelSelection chatModelSelection,
+            UserMemoryService userMemoryService,
+            InterestUpdateService interestUpdateService,
+            UserRequestContext userRequestContext,
+            SharedSessionRepository sharedSessionRepository,
+            SessionParticipantRepository sessionParticipantRepository) {
+        this.sharedSessionRepository = sharedSessionRepository;
+        this.sessionParticipantRepository = sessionParticipantRepository;
         this.chatRepository = chatRepository;
         this.chatMessageRepository = chatMessageRepository;
         this.chatAttachmentService = chatAttachmentService;
         this.generatedImageService = generatedImageService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.redisStreamService = redisStreamService;
+        this.chatModelSelection = chatModelSelection;
+        this.userMemoryService = userMemoryService;
+        this.interestUpdateService = interestUpdateService;
         this.userRequestContext = userRequestContext;
     }
 
     public Page<Chat> getByUserId(UUID userId, Pageable pageable) {
         log.info("Getting chats by user id {} page {} size {}", userId, pageable.getPageNumber(), pageable.getPageSize());
-        Page<Chat> chats = chatRepository.findByUserId(userId, pageable);
+        Page<Chat> chats = chatRepository.findByUserId(userId, sharedChatIds(userId), pageable);
 
         return withMessages(chats);
     }
@@ -75,7 +125,7 @@ public class ChatService {
     public Page<Chat> getByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable) {
         log.info("Getting chats by user id {} group {} page {} size {}",
                 userId, chatGroupId, pageable.getPageNumber(), pageable.getPageSize());
-        Page<Chat> chats = chatRepository.findByUserIdAndChatGroupId(userId, chatGroupId, pageable);
+        Page<Chat> chats = chatRepository.findByUserIdAndChatGroupId(userId, chatGroupId, sharedChatIds(userId), pageable);
 
         return withMessages(chats);
     }
@@ -90,9 +140,38 @@ public class ChatService {
     public Page<Chat> getUngroupedByUserId(UUID userId, Pageable pageable) {
         log.info("Getting ungrouped chats by user id {} page {} size {}",
                 userId, pageable.getPageNumber(), pageable.getPageSize());
-        Page<Chat> chats = chatRepository.findUngroupedByUserId(userId, pageable);
+        Page<Chat> chats = chatRepository.findUngroupedByUserId(userId, sharedChatIds(userId), pageable);
 
         return withMessages(chats);
+    }
+
+    /**
+     * The user's conversations, grouped or not, whose name or {@code USER}/{@code ASSISTANT} text
+     * contains {@code query}, ignoring case, newest first. Each carries the newest message that
+     * matched as {@link Chat#getMatch()}, or none when only its name did.
+     */
+    public Page<Chat> searchByUserId(UUID userId, String query, Pageable pageable) {
+        String searchQuery = searchQuery(query);
+        log.info("Searching chats by user id {} page {} size {}", userId, pageable.getPageNumber(), pageable.getPageSize());
+        log.debug("Chat search for user id {}: {}", userId, searchQuery);
+        Page<Chat> chats = chatRepository.searchByUserId(userId, sharedChatIds(userId), likePattern(searchQuery), SEARCHABLE_MESSAGE_TYPES, pageable);
+
+        return withMatches(withMessages(chats), searchQuery);
+    }
+
+    /**
+     * {@link #searchByUserId(UUID, String, Pageable)}, narrowed to the conversations not filed under
+     * any group.
+     */
+    public Page<Chat> searchUngroupedByUserId(UUID userId, String query, Pageable pageable) {
+        String searchQuery = searchQuery(query);
+        log.info("Searching ungrouped chats by user id {} page {} size {}",
+                userId, pageable.getPageNumber(), pageable.getPageSize());
+        log.debug("Ungrouped chat search for user id {}: {}", userId, searchQuery);
+        Page<Chat> chats = chatRepository.searchUngroupedByUserId(
+                userId, sharedChatIds(userId), likePattern(searchQuery), SEARCHABLE_MESSAGE_TYPES, pageable);
+
+        return withMatches(withMessages(chats), searchQuery);
     }
 
     /**
@@ -128,13 +207,13 @@ public class ChatService {
 
         UUID userId = userRequestContext.getUserId();
 
-        Chat chat = ownedChat(chatId, userId);
+        Chat chat = listedChat(chatId, userId);
 
         chat.setName(trimmedName);
 
         log.info("Renaming chat {} for user {}", chatId, userId);
 
-        return chatRepository.save(chat);
+        return withSharedDetails(chatRepository.save(chat));
     }
 
     /**
@@ -152,13 +231,13 @@ public class ChatService {
         requireValidPosition(position);
 
         UUID userId = userRequestContext.getUserId();
-        Chat chat = ownedChat(chatId, userId);
+        Chat chat = listedChat(chatId, userId);
 
         log.info("Moving chat {} to position {} for user {}", chatId, position, userId);
 
         return place(chat,
                 position,
-                chatRepository.findPlacedByUserId(userId),
+                chatRepository.findPlacedByUserId(userId, sharedChatIds(userId)),
                 Chat::getSortOrder,
                 Chat::setSortOrder);
     }
@@ -175,7 +254,7 @@ public class ChatService {
         requireValidPosition(position);
 
         UUID userId = userRequestContext.getUserId();
-        Chat chat = ownedChat(chatId, userId);
+        Chat chat = listedChat(chatId, userId);
 
         if (!chatGroupId.equals(chat.getChatGroupId())) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND,
@@ -186,14 +265,14 @@ public class ChatService {
 
         return place(chat,
                 position,
-                chatRepository.findPlacedByUserIdAndChatGroupId(userId, chatGroupId),
+                chatRepository.findPlacedByUserIdAndChatGroupId(userId, chatGroupId, sharedChatIds(userId)),
                 Chat::getGroupSortOrder,
                 Chat::setGroupSortOrder);
     }
 
     /**
      * Deletes a conversation and everything stored under it: its messages, the images attached to
-     * them, and the images generated inside it.
+     * them, the images generated inside it, and everything learned from it.
      * <p>
      * The cascade is written out here because the database will not do it — none of those tables
      * carries a foreign key to {@code chat}, so deleting the row alone would leave a transcript and
@@ -207,12 +286,15 @@ public class ChatService {
     @Transactional
     public void delete(UUID chatId) {
         UUID userId = userRequestContext.getUserId();
-        Chat chat = ownedChat(chatId, userId);
+        Chat chat = chatRepository.lockByIdAndUserId(chatId, userId)
+                .orElseThrow(() -> notDeletable(chatId, userId));
 
         log.info("Deleting chat {} for user {}", chatId, userId);
 
         chatAttachmentService.deleteForChat(chatId);
         generatedImageService.deleteForChat(chatId);
+        userMemoryService.forgetChat(chatId, userId);
+        interestUpdateService.deleteForChat(chatId, userId);
 
         int messages = chatMessageRepository.deleteByChatId(chatId);
 
@@ -221,6 +303,33 @@ public class ChatService {
         log.info("Deleted chat {} and {} message(s) for user {}", chatId, messages, userId);
 
         discardTransientState(chatId, userId);
+    }
+
+    /**
+     * Deletes a shared session's chat once everyone has left it. Not request-scoped: the last
+     * participant to leave is not necessarily the owner, and the session service has already checked
+     * that they were seated. Whatever any participant attached or generated in the room goes with it, since
+     * none of those tables has a foreign key to {@code chat}: the attachments (with their ingested documents
+     * and vector chunks, which belong to the chat itself) and the generated images. A shared chat has no
+     * memories or news, so there is nothing of those to forget. The session rows follow the chat by
+     * {@code on delete cascade}.
+     */
+    @Transactional
+    public void deleteSharedChat(UUID chatId) {
+        chatRepository.lockById(chatId)
+                .filter(chat -> chat.getKind() == ChatKind.SHARED)
+                .ifPresent(chat -> {
+                    chatAttachmentService.deleteForChat(chatId);
+                    generatedImageService.deleteForChat(chatId);
+
+                    int messages = chatMessageRepository.deleteByChatId(chatId);
+
+                    chatRepository.delete(chat);
+
+                    log.info("Deleted shared chat {} and {} message(s)", chatId, messages);
+
+                    discardTransientState(chatId, chat.getUserId());
+                });
     }
 
     /**
@@ -289,9 +398,58 @@ public class ChatService {
      * same reason: a chat owned by someone else must be indistinguishable from one that does not
      * exist. Messages are deliberately not loaded — this asks a question about the chat rather than
      * reading it.
+     *
+     * @return the owner, which is the caller
      */
-    public void requireOwned(UUID chatId) {
-        ownedChat(chatId, userRequestContext.getUserId());
+    public UUID requireOwned(UUID chatId) {
+        UUID userId = userRequestContext.getUserId();
+        ownedChat(chatId, userId);
+
+        return userId;
+    }
+
+    /**
+     * What a missing private chat means. A shared chat the caller is seated in is not missing: it is not
+     * theirs to delete, and a {@code 404} would tell the client it was already gone. Leaving (or ending the
+     * sharing, for the owner) is how a shared chat goes, which keeps one code path for it.
+     */
+    private RuntimeException notDeletable(UUID chatId, UUID userId) {
+        if (chatRepository.findVisibleSharedById(chatId, userId).isPresent()) {
+            return new SessionException(SessionErrorCode.SHARED_CHAT_USE_LEAVE,
+                    "This is a shared chat. Leave it instead of deleting it, or end the sharing if you own it.");
+        }
+
+        return new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId);
+    }
+
+    /**
+     * A chat the caller owns that history lists: their private conversation, or a shared conversation they
+     * own and are still seated in. This is the lookup for rename, order and groups, which are the owner's
+     * alone: a participant who does not own the chat gets the same {@code 404} as a stranger.
+     */
+    public Chat listedChat(UUID chatId, UUID userId) {
+        return chatRepository.findByIdAndUserId(chatId, userId)
+                .or(() -> chatRepository.findVisibleSharedById(chatId, userId)
+                        .filter(chat -> userId.equals(chat.getUserId())))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId));
+    }
+
+    /**
+     * Confirms the caller may choose the model of {@code chatId}: they own the private conversation, or they
+     * are seated in the shared one. Anyone else gets a {@code 404}.
+     */
+    public Chat requireModelAccess(UUID chatId) {
+        UUID userId = userRequestContext.getUserId();
+
+        return chatRepository.findByIdAndUserId(chatId, userId)
+                .or(() -> chatRepository.findVisibleSharedById(chatId, userId))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Chat not found: " + chatId));
+    }
+
+    private List<UUID> sharedChatIds(UUID userId) {
+        List<UUID> chatIds = sharedSessionRepository.findVisibleConversationChatIds(userId, Limit.of(MAX_SHARED_CHATS_IN_HISTORY));
+
+        return chatIds.isEmpty() ? List.of(NO_CHAT) : chatIds;
     }
 
     private Chat ownedChat(UUID chatId, UUID userId) {
@@ -301,28 +459,113 @@ public class ChatService {
 
     /**
      * Drops the Redis state a deleted conversation leaves behind: any sticky A2A agent and task
-     * bound to it, and its stream buffer.
+     * bound to it, its stream buffer, and the model it was switched to.
      * <p>
-     * Best effort, and deliberately not allowed to fail the delete. Every one of these keys carries
-     * a TTL and none of them means anything without the chat row, so the worst a failure here costs
-     * is a few kilobytes that expire on their own.
+     * Best effort, and deliberately not allowed to fail the delete. None of these keys means anything
+     * without the chat row. All but the model selection expire on their own; that one has no TTL, so
+     * this is the only thing that removes it, and a failure here leaves a few bytes keyed by a chat id
+     * that can never be used again.
      */
     private void discardTransientState(UUID chatId, UUID userId) {
         a2aStickyAgentService.deactivate(chatId)
                 .then(a2aStickyAgentService.deactivateTask(chatId))
                 .then(redisStreamService.deleteStream(chatId, userId).then())
+                .then(chatModelSelection.clear(chatId))
                 .doOnError(error -> log.warn("Could not discard Redis state for deleted chat {}: {}",
                         chatId, error.getMessage()))
                 .onErrorComplete()
                 .subscribe();
     }
 
-    private Page<Chat> withMessages(Page<Chat> chats) {
+    private static String searchQuery(String query) {
+        String searchQuery = StringUtils.trimToEmpty(query);
+
+        if (searchQuery.length() < MIN_SEARCH_LENGTH || searchQuery.length() > MAX_SEARCH_LENGTH) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Search must be between " + MIN_SEARCH_LENGTH + " and " + MAX_SEARCH_LENGTH + " characters");
+        }
+
+        return searchQuery;
+    }
+
+    /**
+     * The repository's {@code like} uses {@code \} as its escape character, so the query's own
+     * wildcards and backslashes match themselves.
+     */
+    private static String likePattern(String searchQuery) {
+        String escaped = searchQuery.toLowerCase(Locale.ROOT)
+                .replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_");
+
+        return "%" + escaped + "%";
+    }
+
+    private static Page<Chat> withMatches(Page<Chat> chats, String searchQuery) {
         for (Chat chat : chats) {
-            chat.setChatMessages(chatMessages(chat.getId()));
+            chat.setMatch(ChatSearchSnippets.match(chat.getChatMessages(), searchQuery).orElse(null));
         }
 
         return chats;
+    }
+
+    private Page<Chat> withMessages(Page<Chat> chats) {
+        for (Chat chat : chats) {
+            List<ChatMessage> messages = chatMessages(chat.getId());
+
+            if (chat.getKind() == ChatKind.SHARED) {
+                messages.forEach(ChatMessageService::redactForRoom);
+            }
+
+            chat.setChatMessages(messages);
+        }
+
+        withSharedDetails(chats.getContent());
+
+        return chats;
+    }
+
+    private Chat withSharedDetails(Chat chat) {
+        withSharedDetails(List.of(chat));
+
+        return chat;
+    }
+
+    /**
+     * Fills in the session, owner and seated people of the shared chats in a list: two queries for the whole
+     * page, and none when it holds only private chats.
+     */
+    private void withSharedDetails(List<Chat> chats) {
+        List<Chat> shared = chats.stream().filter(chat -> chat.getKind() == ChatKind.SHARED).toList();
+
+        if (shared.isEmpty()) {
+            return;
+        }
+
+        Map<UUID, SharedSession> sessionsByChat = sharedSessionRepository
+                .findAllByChatIdIn(shared.stream().map(Chat::getId).toList())
+                .stream()
+                .collect(Collectors.toMap(SharedSession::getChatId, Function.identity()));
+
+        Map<UUID, List<ChatParticipant>> seatedBySession = sessionParticipantRepository
+                .findBySessionIdInAndLeftAtIsNullOrderBySeatAsc(
+                        sessionsByChat.values().stream().map(SharedSession::getId).toList())
+                .stream()
+                .collect(Collectors.groupingBy(SessionParticipant::getSessionId,
+                        Collectors.mapping(participant -> new ChatParticipant(participant.getUserId(), participant.getName()),
+                                Collectors.toList())));
+
+        for (Chat chat : shared) {
+            SharedSession session = sessionsByChat.get(chat.getId());
+
+            if (session == null) {
+                continue;
+            }
+
+            chat.setSharedSessionId(session.getId());
+            chat.setOwnerUserId(chat.getUserId());
+            chat.setParticipants(seatedBySession.getOrDefault(session.getId(), List.of()));
+        }
     }
 
     private List<ChatMessage> chatMessages(UUID chatId) {

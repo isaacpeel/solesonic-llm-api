@@ -3,6 +3,8 @@ package com.solesonic.service.security;
 import com.solesonic.model.security.SecurityEventReason;
 import com.solesonic.scope.UserRequestContext;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
@@ -28,6 +30,26 @@ public class ResourceOwnershipService {
     public ResourceOwnershipService(UserRequestContext userRequestContext, SecurityEventLogger securityEventLogger) {
         this.userRequestContext = userRequestContext;
         this.securityEventLogger = securityEventLogger;
+    }
+
+    /**
+     * The owner, or a caller holding {@code authority} — which acts on any user's resources. The
+     * authority is checked first so that an administrator's access is not logged as a denial.
+     */
+    public boolean isOwnerOrHasAuthority(UUID pathUserId, String authority, HttpServletRequest request) {
+        if (hasAuthority(authority)) {
+            return true;
+        }
+
+        return isOwner(pathUserId, request);
+    }
+
+    public boolean hasAuthority(String authority) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+
+        return authentication != null && authentication.getAuthorities()
+                .stream()
+                .anyMatch(grantedAuthority -> authority.equals(grantedAuthority.getAuthority()));
     }
 
     public boolean isOwner(UUID pathUserId, HttpServletRequest request) {

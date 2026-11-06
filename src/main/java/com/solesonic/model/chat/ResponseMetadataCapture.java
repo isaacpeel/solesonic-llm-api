@@ -1,5 +1,7 @@
 package com.solesonic.model.chat;
 
+import com.openai.core.JsonNumber;
+import com.openai.models.completions.CompletionUsage;
 import org.jspecify.annotations.Nullable;
 import org.springframework.ai.chat.metadata.ChatGenerationMetadata;
 import org.springframework.ai.chat.metadata.ChatResponseMetadata;
@@ -30,10 +32,11 @@ import java.util.Optional;
  * A tool-calling turn repeats that pair once per round trip, which is why the counts are summed and
  * each round trip is also kept individually as a {@link ModelCallMetadata}.
  * <p>
- * Deliberately not thread-safe and deliberately not atomic. A single subscription's {@code onNext}
- * signals are serialized by the Reactive Streams contract, so the only writer is one response at a
- * time, and the reads in {@link #metadata()} and {@link #calls()} happen after that flux has
- * completed.
+ * Deliberately not thread-safe and deliberately not atomic. It is fed once per round trip by
+ * {@code ResponseMetadataCaptureAdvisor}; a single subscription's {@code onNext} signals are
+ * serialized by the Reactive Streams contract and the round trips run one after another, so the only
+ * writer is one response at a time, and the reads in {@link #metadata()} and {@link #calls()} happen
+ * after the turn's flux has completed.
  */
 public final class ResponseMetadataCapture {
 
@@ -57,6 +60,12 @@ public final class ResponseMetadataCapture {
     static final String PREDICTED_PER_SECOND = "predicted_per_second";
     static final String DRAFT_N = "draft_n";
     static final String DRAFT_N_ACCEPTED = "draft_n_accepted";
+
+    /**
+     * The LiteLLM plugin's throughput figure, on the final usage chunk. The SDK does not know it, so
+     * it arrives through {@code CompletionUsage._additionalProperties()} on the native usage.
+     */
+    static final String TOKENS_PER_SECOND = "tokens_per_second";
 
     /**
      * What Spring AI's OpenAI model reports for a streamed chunk that carries no finish reason of
@@ -119,6 +128,8 @@ public final class ResponseMetadataCapture {
                 pending.cachedPromptTokens = Math.toIntExact(cacheReadInputTokens);
             }
 
+            pending.tokensPerSecond = tokensPerSecond(usage);
+
             //Usage is the last thing a call reports, so this closes it. Flushing here rather than on
             //the next call's first chunk is what keeps the following round trip's finish reason from
             //being attributed to this one.
@@ -173,6 +184,7 @@ public final class ResponseMetadataCapture {
                         lastCall.promptTokens(),
                         lastCall.completionTokens(),
                         lastCall.totalTokens(),
+                        lastCall.tokensPerSecond(),
                         pending.promptMillis,
                         pending.predictedMillis,
                         pending.predictedPerSecond,
@@ -204,6 +216,7 @@ public final class ResponseMetadataCapture {
                 pending.promptTokens,
                 pending.completionTokens,
                 pending.totalTokens,
+                pending.tokensPerSecond,
                 pending.promptMillis,
                 pending.predictedMillis,
                 pending.predictedPerSecond,
@@ -328,6 +341,22 @@ public final class ResponseMetadataCapture {
     }
 
     /**
+     * Null against any server that does not send the field, and on a non-streamed response, which
+     * the proxy never adds it to.
+     */
+    private static @Nullable Double tokensPerSecond(Usage usage) {
+        if (!(usage.getNativeUsage() instanceof CompletionUsage completionUsage)) {
+            return null;
+        }
+
+        if (completionUsage._additionalProperties().get(TOKENS_PER_SECOND) instanceof JsonNumber tokensPerSecond) {
+            return tokensPerSecond.value().doubleValue();
+        }
+
+        return null;
+    }
+
+    /**
      * {@code created} is epoch seconds. Spring AI substitutes 0 for a server that omits the field, so
      * that is "not reported" rather than 1970.
      */
@@ -384,6 +413,7 @@ public final class ResponseMetadataCapture {
         private @Nullable Integer promptTokens;
         private @Nullable Integer completionTokens;
         private @Nullable Integer totalTokens;
+        private @Nullable Double tokensPerSecond;
         private @Nullable Double promptMillis;
         private @Nullable Double predictedMillis;
         private @Nullable Double predictedPerSecond;
@@ -412,6 +442,7 @@ public final class ResponseMetadataCapture {
             promptTokens = null;
             completionTokens = null;
             totalTokens = null;
+            tokensPerSecond = null;
             promptMillis = null;
             predictedMillis = null;
             predictedPerSecond = null;

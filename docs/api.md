@@ -28,6 +28,15 @@ All chat creation and continuation happens over Server-Sent Events (SSE). There 
 `{userId}` must be the subject of the bearer token, and `{chatId}` must name a chat that user owns —
 otherwise `403`. An unknown `{chatId}` is `404`.
 
+A user with no [model access key](#model-access-keys) is refused by both send endpoints with `403`
+and a JSON body, before anything is persisted — no chat, no message, no `RUN_STARTED`:
+
+```json
+{ "code": "LLM_KEY_MISSING", "message": "Model access isn't configured for your account. Ask an administrator." }
+```
+
+A key removed while a turn is already running ends that turn with `RUN_ERROR` code `LLM_KEY_MISSING`.
+
 ### Start Streaming Chat
 
 - **Endpoint**: `POST /streaming/chats/users/{userId}`
@@ -140,7 +149,7 @@ A turn is one AG-UI run, with `threadId` = the chat id.
 | Event | Description |
 |-------|-------------|
 | `RUN_STARTED` | First frame of every turn. `input.messages[0]` is the persisted user message — see below |
-| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"` |
+| `TEXT_MESSAGE_START` | The assistant's reply begins. Carries `messageId` and `role: "assistant"`, and `metadata` when the reply has a sound to play — see below |
 | `TEXT_MESSAGE_CONTENT` | Incremental assistant response text, in `delta` |
 | `TEXT_MESSAGE_END` | The assistant's reply is complete |
 | `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | An MCP tool is asking the user something — see [elicitation.md](elicitation.md) |
@@ -174,11 +183,12 @@ keepalives and mid-turn image frames working across an elicitation. It is not an
 | `timeout` | Generation did not finish inside the turn's deadline | Retry |
 | `UPSTREAM_UNAVAILABLE` | The model server, an MCP server, or an integration it called failed in a way that may succeed on a retry | Retry |
 | `RATE_LIMITED` | An upstream is throttling | Back off, then retry |
-| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Xero, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
+| `TOOL_FAILURE` | An MCP or local tool call failed mid-turn — Jira, Google, image generation, or the RAG pipeline | Retry; if it keeps failing, the underlying tool is broken |
 | `RECONNECT_REQUIRED` | An integration's grant is gone or was never given | Nothing a retry fixes — the user must reconnect that integration |
 | `VALIDATION` | The request itself was malformed or rejected before any generation was attempted | Nothing to retry — fix the request |
 | `CONTEXT_LENGTH_EXCEEDED` | The conversation — history, retrieved documents, and attachments combined — exceeds the model's context window | Nothing to retry as-is — start a new conversation, or remove an attachment or some earlier messages |
 | `STREAM_UNAVAILABLE` | The durable Redis stream this response is built from failed to read; the turn itself may still be running | Reconnect via `GET .../stream` to resume — see [Resume a Stream](#resume-a-stream) |
+| `LLM_KEY_MISSING` | The user has no model access key, so no model may be called for them — see [Model Access Keys](#model-access-keys). The message is fixed and safe to show | Nothing a retry fixes — an administrator has to register a key |
 | `internal` | Anything else | Retry; if it keeps failing, it is a server bug |
 
 `timeout` and `internal` are lowercase for backward compatibility — they predate this table. Every
@@ -218,6 +228,45 @@ The same references are repeated on the `RUN_FINISHED` result as `message.genera
 that reconnected mid-stream and missed this frame still finalizes the turn with the image on it.
 De-duplicate by `imageId`.
 
+### Sounds on TEXT_MESSAGE_START
+
+An A2A agent can send a sound to play with its reply (the Family Feud theme on a new game). The
+reply's start frame then carries AG-UI `metadata` under the namespaced key `solesonic/sound`;
+a frame without a sound has no `metadata` field at all:
+
+```json
+{
+  "type": "TEXT_MESSAGE_START",
+  "messageId": "…",
+  "role": "assistant",
+  "metadata": {
+    "solesonic/sound": {
+      "cueId": "sound-…",
+      "soundId": "<sha256 hex of the bytes>",
+      "cue": "theme",
+      "playOnce": true,
+      "source": { "type": "url", "value": "/izzybot/sounds/<soundId>", "mimeType": "audio/mpeg" }
+    }
+  }
+}
+```
+
+`source` has AG-UI's `PartSource` shape, and `value` is context-relative like `imageUrl`. `cueId`
+identifies this one cue — play each `cueId` once — while `soundId` identifies the clip, which is the
+same every game, so never de-duplicate on it. Only the cue travels on the stream; the bytes are
+fetched from `source.value`, and the clip is written to Redis in the background, so a fetch made the
+instant the frame arrives can `404` once — retry it once, then stay silent.
+
+#### Fetch a Sound
+
+`GET /sounds/{soundId}` — any signed-in user. A sound is the same for every user and its id is only
+learned from a stream the caller could read, so there is no ownership check.
+
+| Status | Meaning |
+|--------|---------|
+| `200` | The clip, with its stored `Content-Type` (always `audio/*`), `ETag: "<soundId>"` and `Cache-Control: max-age=31536000, private, immutable` — the id is the hash of the bytes |
+| `404` | Unknown, malformed or expired id. A clip is kept for `solesonic.a2a.sound.ttl` (7 days) after it was last cued |
+
 ### RUN_FINISHED Event Payload
 
 ```json
@@ -249,6 +298,7 @@ De-duplicate by `imageId`.
       "promptTokens": 1042,
       "completionTokens": 259,
       "totalTokens": 1301,
+      "tokensPerSecond": 222.23,
       "promptMillis": 130.079,
       "predictedMillis": 4232.71,
       "totalMillis": 4362.789,
@@ -268,6 +318,7 @@ De-duplicate by `imageId`.
         "promptTokens": 1042,
         "completionTokens": 259,
         "totalTokens": 1301,
+        "tokensPerSecond": 222.23,
         "promptMillis": 130.079,
         "predictedMillis": 4232.71,
         "predictedPerSecond": 61.2,
@@ -344,10 +395,13 @@ numbers, not an approximation of them.
   `x-litellm-model-name` response header, so it is absent against a server that is not behind such a
   proxy. When several round trips were routed differently it is the *last* call's, which is the one
   that produced the answer being read.
-- There is no top-level tokens-per-second on `responseMetadata`: a single rate summed across several
-  round trips would be meaningless, and this API does not compute what the server did not report. If
-  you want a turn-level rate anyway, divide `completionTokens` by `predictedMillis / 1000` yourself.
-  The per-call rate the server actually measured is on `responseMetadataCalls`, described next.
+- `tokensPerSecond` is the generation rate a LiteLLM-style proxy reports in the final streamed usage
+  chunk (`usage.tokens_per_second`), copied verbatim. **It is not a sum and it is not computed here**:
+  it is the value from the last model call that reported one, which is the call that produced the
+  answer being read. It is absent when no call in the turn carried the field — any server not behind
+  such a proxy, and non-streamed calls, which the proxy never adds it to. Display this value
+  directly; do not derive a rate from `completionTokens` and `predictedMillis`, which are not
+  comparable behind a proxy.
 
 `responseMetadataCalls` is the per-round-trip breakdown behind `responseMetadata`'s summed totals —
 one entry per model call, so a tool-calling turn has several and an ordinary turn has exactly one.
@@ -358,6 +412,9 @@ make sense per call and are never summed onto the totals:
   call — generation and prompt-evaluation tokens per second, respectively. `promptPerTokenMillis` and
   `predictedPerTokenMillis` are the same measurements inverted (milliseconds per token). All four are
   llama.cpp-only and absent against any other server.
+- `tokensPerSecond` here is that one call's proxy-reported rate, so a tool-calling turn shows each
+  round trip's. It is a different measurement from llama.cpp's `predictedPerSecond`; both can be
+  present on the same call and neither stands in for the other.
 - `liteLlm` is present only when the call went through a LiteLLM-style proxy, taken from its
   `x-litellm-*` response headers rather than the response body: `callId` is the proxy's own call id
   (the join key to LiteLLM's spend logs), `modelName`/`modelApiBase` are what actually served the
@@ -429,6 +486,9 @@ event per attachment (both `CUSTOM`). Guarantees a client can rely on:
   skipped before any work started, and ones the server could not resolve at all. A client never
   has to interpret a missing event.
 - **Always before `RUN_FINISHED`**, so the event lands while the assistant message is still streaming.
+- **Decided before the model runs.** On a plain chat message (no slash command, no agent) a decision
+  model reads the message first. A request to create or edit an image from the attachments sends them
+  to image generation without describing them (`NOT_NEEDED`); anything else describes them as before.
 
 Nothing else in the turn distinguishes a handled attachment from a skipped one: a skipped attachment
 still produces a normal answer, just one written as though nothing were attached.
@@ -442,6 +502,7 @@ When `described` is `false` on an image, `reason` is one of a closed set:
 | `IMAGE_TOO_LARGE` | The image exceeds `solesonic.llm.vision.max-image-bytes` |
 | `IMAGE_UNREADABLE` | The vision model returned nothing usable, or the attachment could not be loaded |
 | `EXCEEDED_IMAGE_LIMIT` | More images were attached to one message than the vision pass describes |
+| `NOT_NEEDED` | Not a failure. Nothing needed to read the image: the send took a tool route (`/generate_image` or an MCP tool command), which uses the image itself, or it was a plain chat message asking to create or edit an image from it, which sends it to image generation as a reference. No vision call was made. Render it as a neutral chip, not an error. It is never persisted, so the image stays undescribed and a later turn can still read it |
 
 `reason` is `null` when `described` is `true`. Unlike `progress`, these events are not persisted as
 `SYSTEM` chat messages — the durable form of the same signal is `described` on the attachment
@@ -465,11 +526,20 @@ is `false`. The durable form of this signal is `indexed` on the attachment summa
 {
   "chatMessage": "Your message here",
   "commands": ["/ask"],
-  "attachmentIds": ["3f9a...", "b721..."]
+  "attachmentIds": ["3f9a...", "b721..."],
+  "model": "openai/gpt-4o"
 }
 ```
 
-- `commands` (optional): slash commands to invoke for this turn.
+- `commands` (optional): slash commands to invoke for this turn. Recorded on the persisted user
+  message as `commands`. A setting command such as [`/model`](#model-built-in-setting-command) is
+  `400 Bad Request` here — it is applied through REST, never sent.
+- `model` (optional, **create only**): the model a new chat starts on, for a pick made before the
+  chat existed. Validated against the live list before the SSE response starts — `400
+  UNKNOWN_MODEL` or `503 MODEL_LIST_UNAVAILABLE`, the same bodies as
+  [Select a Model](#select-a-model), and no chat is created. On
+  [Continue Streaming Chat](#continue-streaming-chat) it is `400`: an existing chat changes model
+  only through `PUT /chats/{chatId}/model`. Omitted, the chat uses the default.
 - `attachmentIds` (optional): ids returned by `POST /attachments`. Every id must be one the caller
   uploaded and has not already sent, otherwise the turn is rejected with `409 Conflict` and no
   message is persisted.
@@ -569,9 +639,12 @@ These endpoints retrieve existing chat history. They do not create or send messa
   - `size` (int, default `20`, max `100`): Page size
   - `ungrouped` (boolean, default `false`): Return only the conversations that are not filed under a
     [group](#conversation-groups)
+  - `q` (string, optional): [Search](#searching-chat-history) the user's chats. Absent or blank is the
+    plain listing, unchanged
 - **Response**: A page of chat objects — hand-placed conversations first, in the order the user
   arranged them, then everything else newest first (`timestamp` descending, `id` as a tiebreaker).
   See [Move a Chat](#move-a-chat)
+- **Errors**: `400` when `q`, once trimmed, is 1 character or longer than 200
 
 `ungrouped` is opt-in, and omitting it returns every chat the user owns, grouped ones included — what
 every existing client already receives. It exists for a client that renders group sections above this
@@ -611,6 +684,45 @@ but ignored: the ordering is fixed by the repository query, so that pages cannot
 
 For infinite scroll, request `page = 0, 1, 2, …` and stop when `page.number + 1 >= page.totalPages`.
 The ordering is deterministic, so pages never overlap or skip a chat.
+
+#### Searching chat history
+
+With `q`, the page holds only the chats whose `name`, or any `USER`/`ASSISTANT` message, contains
+`q` ignoring case. `SYSTEM` and `TOOL` messages are never searched: they hold elicitation JSON, tool
+output and progress data rather than conversation text.
+
+- **Grouped and ungrouped together.** A search covers every conversation the user owns, so a match
+  inside a collapsed group is still found; each result keeps its `chatGroupId`. `ungrouped=true`
+  still narrows it.
+- **Ordered by time, not by hand-placed position**: `timestamp` descending, `id` as a tiebreaker.
+  Results are a timeline, so a client can group them by day as pages arrive.
+- **Filtered in the query**, so `page.totalElements` and `totalPages` count exactly the rows
+  returned, and no result is `totalElements: 0`.
+- **Same shape.** Each chat is unchanged, `chatMessages` included, plus one `match` field:
+
+```json
+"match": {
+  "chatMessageId": "…",
+  "messageType": "ASSISTANT",
+  "timestamp": "2026-10-24T09:14:40.2-06:00",
+  "snippet": "…set up the unifi POE switch so that the …",
+  "highlightStart": 13,
+  "highlightLength": 5
+}
+```
+
+- `match` is the newest `USER`/`ASSISTANT` message containing `q`, and `null` when only the chat's
+  name matched. It is omitted entirely on a request without `q`.
+- `snippet` is plain text on one line: at most 80 characters, not counting ellipses, starting at
+  most 12 characters before the hit (moved forward to a word boundary when one is in range).
+  Newlines, carriage returns and tabs become spaces one for one. It is prefixed with `…` when the
+  message continues before it and suffixed with `…` when it continues after. Markdown is left as is;
+  render it as text, never as HTML.
+- `highlightStart` and `highlightLength` are **UTF-16 offsets into `snippet`**, counted after the
+  `…` prefix — the same indices a JavaScript string uses. A query longer than the snippet highlights
+  only what fits.
+- In the rare case Postgres matched a character Java does not fold the same way, `match` is `null`
+  rather than pointing at the wrong text. The chat is still in the results.
 
 ### Get a Specific Chat
 
@@ -681,6 +793,10 @@ those messages, and the images generated inside it — as one transaction. Nothi
 afterwards, and there is no soft-delete or trash. Attachments the caller uploaded but never sent are
 untouched; they belong to no conversation and are swept on their own schedule.
 
+Deleting a conversation also **forgets everything learned from it**: every [memory](#user-memory)
+evidenced only by its messages is deleted, and a memory it superseded is restored. A memory another
+surviving conversation also supports is kept.
+
 A chat that does not exist, or is not owned by the caller, is `404`, so a repeated delete is `404`
 rather than `204`. Groups are unaffected: deleting the last conversation in a group leaves an empty
 group, not a deleted one.
@@ -701,7 +817,8 @@ on a conversation that no longer exists — unreachable from every read path, bu
 Deletes one message and everything stored under it — its own attachments and the images generated
 on its turn — as one transaction. Nothing is recoverable afterwards, and there is no soft-delete.
 Deleting a `USER` or `ASSISTANT` message does not delete the other side of the turn; delete both ids
-if the whole exchange should go.
+if the whole exchange should go. Whatever [memory](#user-memory) that message alone evidenced is
+forgotten with it, the same way deleting a whole chat forgets it.
 
 A chat that does not exist, or is not owned by the caller, is `404`. A `messageId` that does not
 belong to `chatId` is also `404`, the same as one that does not exist at all.
@@ -709,6 +826,77 @@ belong to `chatId` is also `404`, the same as one that does not exist at all.
 Deleting the in-flight `USER` message of a turn that is still streaming is not guarded against, the
 same as [Delete a Chat](#delete-a-chat): wait for `RUN_FINISHED` first, or send
 [Cancel a Streaming Turn](#cancel-a-streaming-turn).
+
+---
+
+## Chat Model Selection
+
+Which chat model a conversation uses — the endpoints behind [`/model`](#model-built-in-setting-command).
+The model list is the OpenAI-compatible endpoint's `GET /models`, asked live on every call with the
+caller's own [model access key](#model-access-keys), so it lists exactly the models that key may use;
+it is never cached. A caller with no key is `403` `LLM_KEY_MISSING` on the list and on a selection.
+
+A selection applies to every later turn of the chat that reaches the main chat model — plain
+messages and MCP-prompt commands. Tool commands, A2A agents and the vision, ETL and RAG-task models
+are unaffected.
+
+Failures carry a real status and a coded body:
+
+```json
+{ "code": "UNKNOWN_MODEL", "message": "The model gpt-5 is not offered." }
+```
+
+| Code | Status | Meaning |
+|---|---|---|
+| `UNKNOWN_MODEL` | `400` | The name is blank or not offered by the endpoint. Nothing is stored |
+| `MODEL_LIST_UNAVAILABLE` | `503` | The model list could not be fetched. Nothing is stored |
+
+A chat that does not exist, or is not the caller's, is `404` on all three operations.
+
+### List Models
+
+- **Endpoint**: `GET /chats/models`
+- **Query Parameters**:
+  - `chatId` (UUID, optional): include this chat's state. Omit for a chat that does not exist yet
+- **Response**: `200 OK`
+
+```json
+{
+  "models": [
+    { "id": "openai/gpt-4o", "ownedBy": "openai" },
+    { "id": "qwen3:8b", "ownedBy": "library" }
+  ],
+  "defaultModel": "qwen3-8b",
+  "selectedModel": "openai/gpt-4o",
+  "activeAgent": null
+}
+```
+
+- `models`: the endpoint's list, in its own order and spelling.
+- `defaultModel`: what a chat with no selection uses.
+- `selectedModel`: the chat's selection, or `null` when it follows the default, when no `chatId` was
+  given, or when the selection cannot be read. Mark `selectedModel ?? defaultModel` as current.
+- `activeAgent`: the sticky A2A agent holding the chat, or `null`. While one does, turns bypass the
+  chat model, so a selection takes effect only once the agent is released.
+
+### Select a Model
+
+- **Endpoint**: `PUT /chats/{chatId}/model`
+- **Request Body**: `{"model": "OpenAI/GPT-4o"}`
+- **Response**: `200 OK` — the list response without `models`:
+
+```json
+{ "defaultModel": "qwen3-8b", "selectedModel": "openai/gpt-4o", "activeAgent": null }
+```
+
+The name is matched exactly but case-insensitively against the live list, and the endpoint's own
+spelling is stored. `/` and `:` are ordinary characters in a model id. Idempotent. Selecting the
+default by name pins it; to follow the default as it changes, reset instead.
+
+### Reset to the Default
+
+- **Endpoint**: `DELETE /chats/{chatId}/model`
+- **Response**: `204 No Content`, also when nothing was selected
 
 ---
 
@@ -867,6 +1055,69 @@ unaffected.
 
 Not to be confused with [`DELETE /chatgroups/{chatGroupId}/chats/{chatId}`](#remove-a-conversation-from-a-group),
 which unfiles a single conversation and leaves the group standing.
+
+---
+
+## Model Access Keys
+
+Each user's own model-server key (a LiteLLM virtual key, created in LiteLLM's own admin UI). Every
+model call made for the user carries it instead of the shared service key, so spend, budgets and
+model access are the user's. A user without one gets no model call at all — see
+[Streaming Chat API](#streaming-chat-api) and `LLM_KEY_MISSING`. Rules: [Security](security.md#per-user-model-keys).
+
+Every endpoint requires the `llm-key-admin` role. The key is write-only: no response carries it, and
+only its last four characters are kept in the clear, as `keyHint`.
+
+### UserLlmKeySummary
+
+```json
+{
+  "userId": "4f6c…",
+  "username": "sam",
+  "keyHint": "9f2a",
+  "created": "2026-10-26T15:04:05Z",
+  "updated": "2026-10-26T15:04:05Z",
+  "updatedBy": "a1b2…"
+}
+```
+
+`username` is `null` for a user who has not signed in since profiles were recorded. `created` is when
+the user first got a key; `updated` and `updatedBy` say when, and by whom, it was last set.
+
+Failures carry a real status and a coded body, like the model selection endpoints:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `INVALID_LLM_KEY` | `400` | Malformed (under 12 or over 512 characters, or with whitespace or non-ASCII), the shared service key, or refused by the model server. Nothing is stored |
+| `LLM_KEY_VALIDATION_UNAVAILABLE` | `503` | The model server could not be reached to check the key. Nothing is stored |
+| `LLM_KEY_MISSING` | `403` | Returned by the chat endpoints, not these: the caller has no key |
+
+### List Keys
+
+- **Endpoint**: `GET /llm-keys`
+- **Query Parameters**: `page`, `size` (default 50)
+- **Response**: `200 OK`, a page of `UserLlmKeySummary`, most recently changed first
+
+### Get a User's Key
+
+- **Endpoint**: `GET /llm-keys/{userId}`
+- **Response**: `200 OK` with a `UserLlmKeySummary`, or `404` when the user has no key
+
+### Register or Replace a User's Key
+
+- **Endpoint**: `PUT /llm-keys/{userId}`
+- **Request Body**: `{"apiKey": "sk-…"}`
+- **Response**: `200 OK` with the `UserLlmKeySummary`
+
+The key is trimmed and then checked by asking the model server for its model list with it; only a
+key the server accepts is stored. Idempotent: putting the same key again only moves `updated`.
+
+### Remove a User's Key
+
+- **Endpoint**: `DELETE /llm-keys/{userId}`
+- **Response**: `204 No Content`, or `404` when the user had no key
+
+The user loses model access on their next call. Their memories, documents and chats are untouched.
 
 ---
 
@@ -1123,6 +1374,9 @@ sort appended to it is either an unknown property or a perturbation that paging 
 - **Request Body**: `VectorSearch` containing the query text
 - **Response**: Array of matching document text excerpts ranked by similarity
 
+The query is embedded on the caller's own model access key; a caller with none is `403`
+`LLM_KEY_MISSING`.
+
 ### Process the Ingestion Queue
 
 - **Endpoint**: `POST /documents/processQueue`
@@ -1208,6 +1462,214 @@ the stored tokens are preserved. Disconnecting is an explicit action
 
 ---
 
+## User Memory
+
+Durable facts, preferences and standing instructions learned about a user from their own
+conversations, and used to answer them better in later ones. A memory belongs to exactly one user:
+no prompt or background job ever reads, writes or shows another user's, and through the API only that
+user and members of the **`izzy-bot-admin`** Keycloak group can reach it.
+
+`{userId}` must be the authenticated subject on every `/users/{userId}/memories` endpoint, unless the
+caller is in `izzy-bot-admin` — otherwise `403`. An administrator uses these same endpoints, under
+the same rules, to manage any user's memories, and every such call is logged with the
+administrator's id. A `memoryId` that does not belong to `{userId}` is `404` whoever asks, the same
+as one that does not exist.
+
+Group membership is read from the access token's `groups` claim and checked as the
+`GROUP_izzy-bot-admin` authority, so a role that merely shares the name does not pass.
+
+Memories come from three places:
+
+| `origin` | Created by |
+|---|---|
+| `INFERRED` | Background reflection over quiet conversations. Evidenced by the `USER` messages it was learned from |
+| `REMEMBERED` | The `/remember` slash command. Evidenced by the message that issued it |
+| `AUTHORED` | Written or edited through this API. Has no evidence, and reflection never changes it |
+
+`kind` is `FACT`, `PREFERENCE` or `INSTRUCTION`; `status` is `ACTIVE` or `PENDING` (an inferred
+preference or instruction stays pending until it has been seen in two conversations, and is removed
+if that does not happen within `MEMORY_RETENTION_PENDING_DAYS`), or `SUPERSEDED` once a newer
+memory replaced it. Only `ACTIVE` memories are put in front of the model, and only on plain chat
+turns — never on slash-command tool turns, MCP prompt commands or turns delegated to an A2A agent.
+Standing instructions are carried on every such turn; facts and preferences only when relevant to the
+message and the conversation so far (see `MEMORY_RETRIEVAL_MODE` in
+[configuration](configuration.md)).
+
+Deleting a conversation or a message forgets what was learned from it — see
+[Delete a Chat](#delete-a-chat).
+
+| Method | Path | Who | Response |
+|---|---|---|---|
+| `GET` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | paged `UserMemorySummary` |
+| `POST` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `201` + `Location`, `UserMemorySummary` |
+| `GET` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
+| `PATCH` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `UserMemorySummary` |
+| `DELETE` | `/users/{userId}/memories/{memoryId}` | owner, `izzy-bot-admin` | `204` |
+| `DELETE` | `/users/{userId}/memories` | owner, `izzy-bot-admin` | `204` |
+| `GET` | `/memories` | `izzy-bot-admin` | paged `MemorySummary` — every user's |
+| `GET` | `/memories/status` | `izzy-bot-admin` | `MemoryProcessingStatus` |
+| `GET` | `/memories/reflections` | `izzy-bot-admin` | paged `ReflectionSummary` — every user's |
+
+### UserMemorySummary
+
+```json
+{
+  "id": "memory-uuid",
+  "kind": "PREFERENCE",
+  "origin": "INFERRED",
+  "status": "ACTIVE",
+  "content": "Prefers metric units",
+  "confidence": 0.85,
+  "created": "2026-10-01T09:00:00Z",
+  "updated": "2026-10-01T09:00:00Z",
+  "lastConfirmed": "2026-10-12T17:30:00Z",
+  "chatIds": ["chat-uuid"]
+}
+```
+
+`chatIds` names the conversations a memory was learned from, so the panel can link back to them.
+
+### List a User's Memories
+
+- **Endpoint**: `GET /users/{userId}/memories`
+- **Query**: `page`, `size` (default `50`); a client-supplied `sort` is ignored
+- **Response**: `PagedModel` of `UserMemorySummary` — active and pending memories, oldest first
+
+```json
+{
+  "content": [ { "id": "memory-uuid", "content": "Prefers metric units" } ],
+  "page": { "size": 50, "number": 0, "totalElements": 12, "totalPages": 1 }
+}
+```
+
+### Get a Memory
+
+- **Endpoint**: `GET /users/{userId}/memories/{memoryId}`
+- **Response**: `UserMemorySummary`, or `404` for a superseded memory or one that is not `{userId}`'s
+
+### Create a Memory
+
+- **Endpoint**: `POST /users/{userId}/memories`
+- **Request Body**: `{ "kind": "INSTRUCTION", "content": "Answer in British English" }`
+- **Response**: `201 Created` with the `AUTHORED`, `ACTIVE` memory and its `Location`
+- **Errors**: `400` when `kind` is missing or `content` is blank or longer than
+  `solesonic.llm.memory.max-memory-characters`
+
+### Edit a Memory
+
+- **Endpoint**: `PATCH /users/{userId}/memories/{memoryId}`
+- **Request Body**: `{ "content": "..." }`, `{ "kind": "FACT" }`, or both
+- **Response**: the edited `UserMemorySummary`
+
+An edited memory becomes `AUTHORED`, `ACTIVE`, confidence `1.0`, and loses its evidence: its text is
+owned directly now, so deleting the conversation it was learned from no longer removes it, and
+reflection never changes it. A superseded memory cannot be edited (`404`).
+
+### Delete a Memory
+
+- **Endpoint**: `DELETE /users/{userId}/memories/{memoryId}`
+- **Response**: `204 No Content`
+
+Removes that memory only. It is not re-learned from conversations already read, but can be learned
+again if the user says it again.
+
+### Delete All of a User's Memories
+
+- **Endpoint**: `DELETE /users/{userId}/memories`
+- **Response**: `204 No Content`
+
+### List Every User's Memories
+
+- **Endpoint**: `GET /memories` — `izzy-bot-admin` only
+- **Query**: `userId` (optional), `username` (optional), `status` and `kind` (optional, repeatable:
+  `?status=ACTIVE&status=PENDING`), `page` (from `0`), `size` (default `50`), and `sort`
+  (repeatable, `property[,asc|desc]`)
+- **Response**: paged `MemorySummary`, newest change first unless `sort` says otherwise
+- **Errors**: `400` for a `sort` property outside `created`, `updated`, `lastConfirmed`,
+  `confidence`, `kind`, `status`, `origin`, `userId`
+
+Left out, `status` and `kind` mean all values, so `SUPERSEDED` memories are listed too. Memories are
+read-only here: one is changed through its owner's `/users/{userId}/memories/{memoryId}`.
+`MemorySummary` is `UserMemorySummary` plus `userId`, `username`, `memoryKey` and `supersedes`.
+Paged responses have the same `content` / `page` shape as the document listings.
+
+`username` is the owner's identity-provider username (`preferred_username`), recorded from their
+token on each request. It is absent for a user who has not signed in since it began being recorded.
+
+The `username` query parameter narrows a listing to the user holding that username. It is matched
+exactly but case-insensitively, after trimming. A username nobody holds — or one held by someone other
+than the `userId` also given — is an empty page, never every user's rows. The same parameter works on
+`GET /memories/reflections` and `GET /images/admin`. Sorting stays on `userId`.
+
+```
+GET /memories?status=ACTIVE&sort=userId,asc&sort=confidence,desc&page=0&size=25
+```
+
+### Memory Processing Status
+
+- **Endpoint**: `GET /memories/status` — `izzy-bot-admin` only
+- **Response**: `MemoryProcessingStatus`
+
+```json
+{
+  "asOf": "2026-10-18T14:40:00Z",
+  "reflection": {
+    "enabled": true,
+    "model": "qwen3.5-9b",
+    "cron": "0 */5 * * * *",
+    "batchSize": 5,
+    "maxAttempts": 3,
+    "idleMinutes": 30,
+    "chatsByStatus": { "PENDING": 751, "IN_PROGRESS": 3, "COMPLETED": 553, "FAILED": 6 },
+    "awaitingReflection": 760,
+    "unseededChats": 0,
+    "completedLastHour": 60,
+    "lastCompleted": "2026-10-18T14:35:08Z"
+  },
+  "embedding": { "model": "qwen3-embedding", "cron": "0 * * * * *", "batchSize": 50, "embedded": 44, "stale": 0 },
+  "injection": { "enabled": true, "retrievalMode": "RELEVANT" },
+  "memoriesByStatus": { "PENDING": 1, "ACTIVE": 43, "SUPERSEDED": 1 },
+  "users": [
+    {
+      "userId": "user-uuid",
+      "username": "sam",
+      "activeMemories": 25,
+      "pendingMemories": 0,
+      "supersededMemories": 0,
+      "pendingChats": 639,
+      "inProgressChats": 3,
+      "completedChats": 293,
+      "failedChats": 5,
+      "lastReflected": "2026-10-18T14:35:08Z"
+    }
+  ]
+}
+```
+
+- `awaitingReflection` — conversations with messages reflection has not read yet, whatever their
+  status: a `COMPLETED` conversation that carried on is waiting again. This is the real backlog.
+- `unseededChats` — conversations with messages but no reflection row yet; the next run adds them.
+- `completedLastHour` — throughput. Reflection can finish at most `batchSize` conversations per
+  `cron` firing, so at the defaults the ceiling is 60 an hour.
+- `embedding.stale` — live memories with no current vector, which relevance retrieval cannot find
+  until the embedding task catches up.
+- `users` — one entry per user with a memory or a conversation queued for reflection. `username` is
+  absent for a user with none recorded, as on `MemorySummary`.
+
+### List Reflection Progress
+
+- **Endpoint**: `GET /memories/reflections` — `izzy-bot-admin` only
+- **Query**: `userId` (optional), `username` (optional), `status` (optional, repeatable), `page`, `size` (default `50`),
+  `sort` (`updated`, `reflectedThrough`, `attempts`, `status`, `userId`)
+- **Response**: paged `ReflectionSummary` — `chatId`, `userId`, `username`, `status`, `attempts`,
+  `reflectedThrough`, `updated` — newest change first unless `sort` says otherwise
+
+```
+GET /memories/reflections?status=FAILED&sort=updated,desc
+```
+
+---
+
 ## Addresses
 
 A generic postal address — `address`, `city`, `state`, `zip`, all optional. It carries no owner of
@@ -1259,6 +1721,57 @@ Slash commands are loaded from the connected MCP tool catalog and cached in Redi
 - **Query Parameters**:
   - `command` (string, optional): Prefix to filter commands. Omit to return all commands.
 - **Response**: `SlashCommandCatalogResponse` containing a list of matching `SlashCommand` objects
+
+### `/model` (built-in setting command)
+
+`/model` is the one command not sourced from the MCP server. It is always in the catalog, first, so
+it shows up in typeahead — but it is a **setting command**: the client applies it itself through
+[Chat Model Selection](#chat-model-selection), and **never sends it as a chat message**. It produces
+no turn, no message row, no SSE frames and no assistant response.
+
+```json
+{
+  "commandType": "model",
+  "command": "model",
+  "name": "model",
+  "description": "Choose the model this chat uses for its next messages",
+  "argument": {
+    "name": "model",
+    "description": "The chat model to use",
+    "required": true,
+    "optionsPath": "/chats/models"
+  }
+}
+```
+
+- `argument` says what value the command takes and where its valid values come from. `optionsPath`
+  is context-relative; append `?chatId=` when there is a chat. Only `/model` carries one today.
+- A client recognises a setting command by `commandType: "model"`.
+- Sending `commands: ["model"]` on either streaming endpoint is `400 Bad Request`, before anything
+  is persisted.
+
+### A2A agent commands (`/network` and others)
+
+Every A2A agent the API discovered at startup is an `agent` command named after its card. Agents come
+from LiteLLM's agent gateway (`A2A_LITELLM_BASE_URI`), which is where `/network` lives.
+
+- Sending an agent command makes that agent the chat's **sticky agent**: every later message in the chat
+  goes to it with no command, using the chat id as the A2A `contextId`, until the user sends any other
+  routed slash command. `/model` is a setting command that is never routed, so it does not release the
+  agent.
+- While the agent works, its status lines (`Running query_sql…`) arrive as `progress` `CUSTOM` events,
+  not as answer text. The answer arrives as ordinary `TEXT_MESSAGE_CONTENT`.
+- A failed agent task ends the turn with `RUN_ERROR`.
+- If the chat's sticky agent was not discovered (LiteLLM was unreachable when the API started, for
+  example), the turn ends with `RUN_ERROR` code `UPSTREAM_UNAVAILABLE` and the message
+  `The <agent> agent is not available right now. Send your message again to continue without it.`
+  The agent is released first, so the next message reaches the default route.
+- An agent registered in LiteLLM after the API started appears only after an API restart.
+- **Streaming through LiteLLM is unverified.** The SDK streams when the card says
+  `capabilities.streaming: true`. If the Java JSON-RPC transport cannot parse LiteLLM's `message/stream`
+  response, un-tick streaming on the curated card in LiteLLM: the answer still arrives, as one chunk,
+  without the progress events. Record the outcome here once it has been checked against the running
+  gateway.
 
 ---
 
@@ -1587,55 +2100,89 @@ not included; fetch them from `GET /images/{imageId}`.
 
 ## Image Generation
 
-Text-to-image generation, backed by the `generate_image` MCP tool. The prompt is the whole input
-surface: size (1024x1024), step count, and the seed are fixed by the image server and are not
-caller-tunable.
+Image generation through LiteLLM's OpenAI image routes (`/images/generations`, and `/images/edits`
+when reference images are sent), served by the `solesonic-image-generation` service. The prompt is the
+whole input surface: the image service chooses its workflow from the prompt, and size and the seed are
+not caller-tunable.
 
-The call travels on the caller's own identity, so the user's JWT must carry the
-`mcp-generate-image` role. A token without it comes back as `FORBIDDEN`.
+Every call carries the caller's own [model access key](#model-access-keys). A user with no key is
+refused with `403` `LLM_KEY_MISSING` before anything starts, the same as chat. Which users may make
+images is LiteLLM's per-key model allowlist: a key that is not allowed the image models comes back as
+`FORBIDDEN`.
 
-There are two ways in, and the model never sees an image on either. The tool returns roughly 2MB of
+There are two ways in, and the model never sees an image on either. The service returns the image as
 base64, which the API decodes once, stores, and replaces with a reference; nothing downstream carries
 the bytes.
 
 1. **Explicit** — `POST /images`, below. The model is not involved at all.
-2. **In a conversation** — the `/generate_image` slash command, or the model calling the tool
-   itself. The image is intercepted out of the tool result before that result re-enters the model's
-   context, and reaches the client as an [`image` stream event](#image-event-payload) and as
+2. **In a conversation** — the `/generate_image` slash command, or the model calling the
+   `generate_image` tool itself. The tool stores the image and tells the model only its id, and that it
+   cannot see it. The image reaches the client as an [`image` stream event](#image-event-payload) and as
    `message.generatedImages` on [`RUN_FINISHED`](#stream-event-types). It is persisted against the assistant
    turn, so [history](#generated-images-in-chat-history) renders it without regenerating.
+
+### Reference Images
+
+An image tool can be guided by images the user already has — "make this photo a watercolor". The
+references are ordinary staged chat attachments (PNG, JPEG or WebP; GIF is not accepted), and the
+model never handles them in either direction:
+
+- **In a conversation**, nothing extra is sent. Image attachments on the send are passed to the image
+  tool automatically when it is called that turn, by the slash command or by the model. The tool takes
+  only a `prompt`; the model has no parameter to put image data in. An attachment that is not the
+  caller's, is not an image, or is not a supported type is skipped, and the turn never fails over one.
+  At most `IMAGE_MAX_REFERENCE_IMAGES` (16) are sent; if no workflow takes that many, the model is told
+  so it can explain.
+- **Explicitly**, by listing them on `POST /images` (below). That path is strict: every id must
+  resolve and there may be at most 16, or the request is refused before any generation starts.
+
+References go to the image service as `image[]` files with the prompt, and nothing else describes
+them. Which counts are valid is decided by the service's workflows, by the number of images. The
+image's `referenceAttachmentIds` records which attachments were used.
+
+### List Image Tools
+
+- **Endpoint**: `GET /images/tools`
+- **Response**: `200`, the single image tool
+
+```json
+[
+  {"name": "generate_image", "title": "Generate image", "description": "Generates an image ...",
+   "referenceImageSlots": 16}
+]
+```
+
+Always one entry. The image service chooses the workflow from the request itself.
+`referenceImageSlots` is `IMAGE_MAX_REFERENCE_IMAGES`, the most reference images a request may carry.
 
 ### Generate an Image (streaming)
 
 - **Endpoint**: `POST /images`
 - **Produces**: `text/event-stream`
 - **Body**: `{ "prompt": "a lighthouse on a cliff in a storm, dramatic lighting, photorealistic" }`
+  - `tool` (deprecated): accepted and ignored. `generate_image` is always called.
+  - `referenceAttachmentIds` (optional): at most 16 staged attachment ids to guide the image, in order —
+    `{ "prompt": "the same scene as a watercolor", "referenceAttachmentIds": ["3f0c..."] }`. See
+    [Reference Images](#reference-images).
+- **Errors before the stream starts**: `403` `LLM_KEY_MISSING` for a caller with no model access key
 
-The stream carries any number of `progress` frames followed by exactly one terminal frame, either
-`complete` or `error`.
+The stream carries exactly one frame, either `complete` or `error`. The image service reports no
+progress, so nothing precedes it.
 
 ```
-event: progress
-data: {"percent":15,"message":"Queued as 4f1c8e2a-..."}
-
-event: progress
-data: {"percent":85,"message":"Generating…"}
-
 event: complete
 data: {"imageId":"7c2f...","chatMessageId":null,"imageUrl":"/izzybot/images/7c2f...","prompt":"a lighthouse ...",
-       "model":"FLUX.1-schnell","seed":8339331079448168597,"width":1024,"height":1024,"steps":4,
-       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z"}
+       "model":"solesonic-image (izzy-bot)","seed":null,"width":1024,"height":1024,"steps":null,
+       "elapsedSeconds":8.2,"fileSizeBytes":1502931,"created":"2026-07-31T16:40:14Z",
+       "referenceAttachmentIds":[]}
 ```
-
-`percent` is **approximate**. It is monotonic — it never goes backwards — but between 15 and 85 it
-is derived from an expected duration rather than real per-step progress, so it can sit at 85 for a
-while on a slow run. Show the `message` text; treat the number as a hint. It is `null` on a frame
-that carried no total.
 
 Closing the stream does not cancel the generation. The image is still produced and stored, and can
 be fetched by id afterwards.
 
-Typical latency is 5-15 seconds; the hard deadline is 180 seconds.
+The deadline is absolute: the admission wait plus `IMAGE_READ_TIMEOUT` (10 minutes) plus 30 seconds.
+A stream that reaches it ends with `GENERATION_TIMEOUT`, but a generation still running upstream may
+yet finish and appear in [`GET /images`](#list-my-images).
 
 ### Generate an Image (non-streaming)
 
@@ -1672,11 +2219,15 @@ stays correct behind a proxy that rewrites the host.
 For rendering an image that arrived long before the current page load. `prompt` and `seed` together
 are the provenance record: the prompt is the image's `alt` text, and the seed is what lets someone
 say *this specific image* when reporting a problem. Every field except `imageId`, `imageUrl`,
-`prompt`, `fileSizeBytes`, and `created` may be `null` — the image server reports its metadata as a
-text block, and an unparsed field costs a null rather than a failed generation.
+`prompt`, `fileSizeBytes`, and `created` may be `null`. The image service returns only a size, so
+`model` is the model requested, `elapsedSeconds` is measured by this API, and `seed` and `steps` are
+`null` on images generated through LiteLLM.
 
 `GeneratedImageSummary` also carries `userId` (the owner) and `name` (a display name the owner has
-set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed).
+set via [rename](#rename-an-image), distinct from `prompt`; `null` until renamed), and
+`referenceAttachmentIds` — the attachments the image was guided by, in slot order, never `null` and
+empty for a prompt-only image. Those attachments may since have been deleted with their chat; the ids
+remain as provenance.
 
 ### Managing Generated Images
 
@@ -1716,23 +2267,31 @@ caller's — the same idiom `rag-admin` uses for the shared document corpus.
 
 | Method | Endpoint | Notes |
 |---|---|---|
-| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` narrows to one user's images |
+| `GET` | `/images/admin` | Paginated, newest first. Optional `?userId=` or `?username=` narrows to one user's images |
 | `PATCH` | `/images/admin/{imageId}` | Rename any image; same request/response shape as the self-service rename |
 | `DELETE` | `/images/admin/{imageId}` | Delete any image; `204`, same retroactive-history caveat as above |
+
+Each image on `GET /images/admin`, and the image `PATCH /images/admin/{imageId}` returns, also
+carries `username`, the owner's identity-provider username, absent when none is recorded. No other
+image response carries it.
 
 ### Image Generation Errors
 
 Failures collapse onto a closed set of codes. The message is always user-safe; the underlying detail
-(including the image server's internal prompt id) is logged rather than returned.
+from LiteLLM or the image service is logged rather than returned.
 
 | Code | Status on `/images/sync` | Meaning |
 |---|---|---|
-| `INVALID_PROMPT` | `400` | The prompt was empty or the tool rejected it |
-| `FORBIDDEN` | `403` | The token does not carry `mcp-generate-image` |
-| `RATE_LIMITED` | `429` | Too many generations already in flight — retry |
-| `BACKEND_UNAVAILABLE` | `503` | The MCP server or the image backend behind it failed |
-| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the image server's deadline |
+| `INVALID_PROMPT` | `400` | The prompt was empty or the image service rejected it |
+| `INVALID_REFERENCE_IMAGE` | `400` | A reference id is not one of the caller's PNG/JPEG/WebP attachments, more than 16 were sent, no image workflow accepts that many, or the image service rejected an image |
+| `FORBIDDEN` | `403` | The caller's model key is not allowed the image models |
+| `RATE_LIMITED` | `429` | Too many generations already in flight, or the caller's key is over its budget or rate limit — retry |
+| `BACKEND_UNAVAILABLE` | `503` | The image service, or ComfyUI behind it, could not be reached |
+| `GENERATION_TIMEOUT` | `504` | Generation did not finish within the deadline |
 | `INTERNAL` | `500` | Anything else |
+
+A caller with no model access key gets `403` with `LLM_KEY_MISSING` (see
+[Model Access Keys](#model-access-keys)) instead, on both endpoints, before any generation starts.
 
 On the streaming endpoint the same payload arrives as the terminal `error` frame, since the response
 status is already committed by the time a generation can fail:
@@ -1743,6 +2302,363 @@ data: {"code":"GENERATION_TIMEOUT","message":"Image generation is taking longer 
 ```
 
 ---
+
+## Push Notifications
+
+Browser push (Chrome Web Push) for a user who is not looking: a turn finished or failed while no
+client was reading its chat, or an elicitation is waiting for an answer. A waiting elicitation is
+pushed once more, as a reminder, if it is still unanswered after `PUSH_ELICITATION_REMINDER_SECONDS`,
+whether or not a client is reading. A cancelled turn is never pushed.
+
+Chrome only (Android first; desktop Chrome works the same way). A subscription from any other push
+service is refused. **No push ever carries conversation content**: no chat title, no message text, no
+tool data.
+
+Every endpoint requires a bearer token. A `{userId}` that is not the caller is a `404` on every method.
+Failures carry a real status code and a body of `{"code": "…", "message": "…"}`.
+
+### Get the VAPID Public Key
+
+`GET /push/vapid-public-key`
+
+```json
+{ "publicKey": "BNdob4CMvKr3gKuFBgEvuKNLcvLj6Vh9NLyUdB-FXUCFR4rqn7cNZ9uc3_BD__G7pifMRrEq45qQxySV4cUeOKY" }
+```
+
+The base64url, 65-byte uncompressed P-256 point the browser passes as `applicationServerKey` to
+`pushManager.subscribe`. `503 PUSH_DISABLED` when `PUSH_ENABLED=false`: the UI hides the feature. A key
+different from the one a browser subscribed with means the deployment's keys were rotated, and that
+browser has to subscribe again.
+
+### List Subscriptions
+
+`GET /users/{userId}/push-subscriptions` — `200`, newest first:
+
+```json
+[
+  {
+    "id": "6f1c…",
+    "label": "Chrome on Android",
+    "userAgent": "Mozilla/5.0 (Linux; Android 14) …",
+    "created": "2026-10-20T12:00:00Z",
+    "updated": "2026-10-20T12:00:00Z",
+    "lastDelivered": null
+  }
+]
+```
+
+The endpoint and keys are **never** returned.
+
+### Subscribe a Browser
+
+`PUT /users/{userId}/push-subscriptions` — an idempotent upsert keyed on `subscription.endpoint`.
+
+```json
+{
+  "subscription": {
+    "endpoint": "https://fcm.googleapis.com/fcm/send/…",
+    "expirationTime": null,
+    "keys": { "p256dh": "…", "auth": "…" }
+  },
+  "label": "Chrome on Android"
+}
+```
+
+- `subscription` is exactly `PushSubscription.toJSON()`. `label` is 1–128 characters.
+- `user_agent` is taken from the request's `User-Agent` header, truncated to 256 characters, for display only.
+- An endpoint already stored under another user moves to the caller: only the browser holding a
+  subscription knows its endpoint and keys, so the user signed in on it last owns it.
+- A user keeps at most 20 subscriptions; past that, the oldest are deleted. A browser still in use
+  simply subscribes again.
+
+| Status | Meaning |
+|---|---|
+| `201` | Created → `PushSubscriptionSummary` |
+| `200` | Updated, including a move from another user → `PushSubscriptionSummary` |
+| `400 UNSUPPORTED_BROWSER` | The endpoint's host is not an allowed push service (a Firefox endpoint, say) |
+| `400 INVALID_SUBSCRIPTION` | A malformed URL or keys, or a missing or oversized label |
+| `503 PUSH_DISABLED` | Push is switched off |
+
+### Delete a Subscription
+
+`DELETE /users/{userId}/push-subscriptions/{subscriptionId}` — `204`, or `404`. The UI deletes its row
+before signing out.
+
+### Send a Test Push
+
+`POST /users/{userId}/push-subscriptions/{subscriptionId}/test` — one synchronous send that bypasses
+preferences and presence.
+
+| Status | Meaning |
+|---|---|
+| `204` | The push service accepted it |
+| `410 SUBSCRIPTION_GONE` | The push service says the subscription is dead. The row has been deleted; subscribe again |
+| `502 DELIVERY_FAILED` | Any other failure |
+| `404` / `503 PUSH_DISABLED` | |
+
+### Notification Preferences
+
+`GET /users/{userId}/push-preferences` / `PUT /users/{userId}/push-preferences`
+
+```json
+{ "turnComplete": true, "elicitation": true, "interestOffers": true, "interestUpdates": true }
+```
+
+- `GET` with nothing stored returns all four `true`.
+- `PUT` requires `turnComplete` and `elicitation`, non-null (`400 INVALID_PREFERENCES` otherwise), and
+  answers `200` with what was stored.
+- `interestOffers` and `interestUpdates` are **optional on `PUT`: absent means unchanged**. They came after
+  clients that send only the first two, and a client that does not know about them must not switch
+  them off by leaving them out.
+- Deliberately not part of `UserPreferences`: that endpoint is a full replace, and a client that does
+  not send these fields would silently switch notifications off.
+
+### Push Payload
+
+What the service worker receives after decryption:
+
+```json
+{
+  "version": 1,
+  "type": "TURN_FINISHED",
+  "title": "<solesonic.llm.bot.name>",
+  "body": "Your reply is ready",
+  "url": "/chat/<chatId>",
+  "tag": "chat:<chatId>",
+  "timestamp": "2026-10-20T12:00:00Z"
+}
+```
+
+| `type` | `body` | `url` | `tag` |
+|---|---|---|---|
+| `TURN_FINISHED` | `Your reply is ready` | `/chat/<chatId>` | `chat:<chatId>` |
+| `TURN_FAILED` | `Your request couldn't be completed` | `/chat/<chatId>` | `chat:<chatId>` |
+| `ELICITATION_WAITING` | `A tool is waiting for your answer` | `/chat/<chatId>` | `elicitation:<elicitationId>` |
+| `INTEREST_OFFER` | `I can keep you posted on something you're interested in` | `/interests/offers/<offerId>` | `interest-offer:<offerId>` |
+| `INTEREST_UPDATE` | `There's news on one of your interests` | `/chat/<chatId>` | `interest:<agentId>` |
+| `TEST` | `Notifications are working` | `/settings/notifications` | `test` |
+
+- `url` is always a same-origin path.
+- An unknown `type` must be displayed using `title` and `body` as given. `version` changes only on a
+  breaking change.
+- `actions` is optional and present only when there are actions, so every other payload is unchanged.
+  Only `INTEREST_OFFER` carries any: `[{"action":"enable","title":"Enable"},{"action":"dismiss","title":"Not now"}]`.
+  **Enable** opens `/interests/offers/<offerId>?intent=accept`, where the app shows what would be watched
+  and asks for one tap; **Not now** just closes the notification. The service worker never calls an
+  endpoint: it holds no token, and the lock screen deliberately does not name the topic.
+- A turn or elicitation push is sent with `Urgency: high`, so an idle phone in Doze is woken for it. A
+  turn's push lives 24 hours at the push service; an elicitation's only for as long as it can still be
+  answered. Interest pushes are `Urgency: normal`: an offer lives `INTEREST_OFFER_TTL_DAYS`, an update 24
+  hours, and a newer update for the same agent replaces one still queued. Neither is held back by
+  presence.
+
+### Push Error Codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `PUSH_DISABLED` | `503` | `PUSH_ENABLED=false` |
+| `UNSUPPORTED_BROWSER` | `400` | The subscription is not from an allowed push service |
+| `INVALID_SUBSCRIPTION` | `400` | The subscription or its label is malformed |
+| `INVALID_PREFERENCES` | `400` | A preference field is missing |
+| `NOT_FOUND` | `404` | No such subscription, or the path names another user |
+| `SUBSCRIPTION_GONE` | `410` | The browser is no longer subscribed; its row is gone |
+| `DELIVERY_FAILED` | `502` | The push service did not accept a test push |
+
+---
+
+## Interest Agents
+
+The application watches what memory learns about a user, notices a durable interest that public news
+covers, and **offers** an agent that monitors it. Nothing is monitored until the user accepts. An
+accepted news agent searches on its cadence and, when something new and relevant turns up, creates a
+**new chat** holding a summary with numbered citations and a source list, and pushes
+`INTEREST_UPDATE` with that chat's id. The chat is ordinary: the user can ask follow-up questions in it.
+
+Every endpoint requires a bearer token. A `{userId}` that is not the caller is a `404` on every method,
+as on the push endpoints. Failures carry a real status code and a body of `{"code": "…", "message": "…"}`.
+
+### Wire shapes
+
+```text
+InterestOfferSummary       { id, agentType: "NEWS", label, rationale,
+                             status: PENDING|ACCEPTED|DECLINED|EXPIRED|WITHDRAWN, created, expires }
+InterestAgentSummary       { id, agentType, label, query, cadence: DAILY|WEEKLY, status: ACTIVE|PAUSED,
+                             chatGroupId|null, nextRunAt, lastRunAt|null, lastUpdateAt|null,
+                             lastFailureAt|null, failures, created }
+InterestUpdateSummary      { id, agentId|null, label, chatId, itemCount, created }
+InterestAcceptRequest      { cadence?: DAILY|WEEKLY }                  -- absent body or cadence = DAILY
+InterestAgentUpdateRequest { label?, query?, cadence?, status? }       -- absent = unchanged
+```
+
+An offer never exposes its search query, topic key or the memories it came from.
+
+### Endpoints
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/users/{userId}/interest-offers` | Pending, unexpired offers (0 or 1). Lets the UI show a banner when push is off |
+| `GET` | `/users/{userId}/interest-offers/{offerId}` | One offer, any status — the screen a push opens |
+| `POST` | `/users/{userId}/interest-offers/{offerId}/accept` | `201` + `InterestAgentSummary`. Creates the agent and a chat group `News: <label>`; no chat. The first update arrives on the next news tick |
+| `POST` | `/users/{userId}/interest-offers/{offerId}/decline` | `204`. The topic is not offered again for `INTEREST_DECLINE_COOLDOWN_DAYS` |
+| `GET` | `/users/{userId}/interest-agents` | The user's agents, oldest first |
+| `PATCH` | `/users/{userId}/interest-agents/{agentId}` | Changes `label`, `query`, `cadence`, `status`. Resuming a paused agent clears its failures and makes it due now |
+| `DELETE` | `/users/{userId}/interest-agents/{agentId}` | `204`. Deletes the agent and its seen items; **keeps its chats, chat group and update rows** (`agentId` becomes null) |
+| `POST` | `/users/{userId}/interest-agents/{agentId}/run` | `202` + `InterestAgentSummary`. Makes the agent due now; the next tick picks it up |
+| `GET` | `/users/{userId}/interest-agents/{agentId}/updates?page=&size=` | The agent's updates, newest first (`Page<InterestUpdateSummary>`) |
+| `GET` | `/users/{userId}/interest-updates/by-chat/{chatId}` | The update a chat came from, or `404` — how a chat screen knows to badge a news chat |
+
+Accepting requires the caller's token to carry the `mcp-web-search` client role, the one the MCP
+server's search tools check: background runs search on the application's own credentials, so this is
+where the user's right to search is checked. `label` is at most 120 characters and `query` 400, each a
+single line.
+
+### Interest Error Codes
+
+| Code | Status | Meaning |
+|---|---|---|
+| `OFFER_NOT_FOUND`, `AGENT_NOT_FOUND`, `UPDATE_NOT_FOUND` | `404` | No such row for this user, or the path names another user |
+| `OFFER_ALREADY_DECIDED` | `409` | The offer was already accepted, declined, expired or withdrawn |
+| `OFFER_EXPIRED` | `409` | The offer passed its expiry; it is now `EXPIRED` |
+| `AGENT_LIMIT_REACHED` | `409` | The user already has `INTEREST_MAX_AGENTS_PER_USER` agents |
+| `OFFER_WITHDRAWN` | `410` | None of the memories behind the offer is still live (or an agent already watches the topic); it is now `WITHDRAWN` |
+| `INVALID_AGENT_UPDATE` | `400` | An empty or invalid edit, or a run of a paused agent |
+| `NOT_PERMITTED` | `403` | The caller lacks the `mcp-web-search` role |
+| `RUN_TOO_SOON` | `429` | The agent ran within `INTEREST_NEWS_MANUAL_RUN_COOLDOWN_MINUTES` |
+
+### A news chat
+
+One `ASSISTANT` message, rendered entirely by the server:
+
+```markdown
+## <headline>
+
+*<label> · Oct 21, 2026 · 3 sources*
+
+<summary, each citation a link: [[1]](https://…)>
+
+### Sources
+
+1. [<title>](https://…) — <host>
+   <what it adds>
+```
+
+Every link in it was built from a search result; the model can only cite by number. The chat is named
+`<label> · Oct 21` and filed in the agent's chat group while that group exists.
+
+---
+
+## Shared Sessions
+
+Several users work with one A2A agent in one shared chat. Today a session has two participants, the inviter and
+the invitee, and the agent must be one that `SHARED_SESSION_AGENTS` allows. The first use is the Family Feud agent,
+but nothing here knows about games: the agent reports who it is waiting on and what it expects next.
+
+A shared chat can only be reached through `/shared-sessions`. Every `/chats` and `/streaming/chats` endpoint
+answers `404` for one. The caller always comes from the token, and a session or invite the caller doesn't belong
+to is a `404`.
+
+### Endpoints
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/shared-sessions/invites` `{username, agentName, openingMessage?}` | `201 SessionInviteSummary`. The username matches exactly, ignoring case |
+| `GET` | `/shared-sessions/invites?direction=incoming\|outgoing` | Pending invites, newest first |
+| `GET` | `/shared-sessions/invites/{inviteId}` | One invite you sent or received |
+| `POST` | `/shared-sessions/invites/{inviteId}/accept` | `201 SharedSessionSummary`. Creates the session and, if the invite has one, sends its opening message as you |
+| `POST` | `/shared-sessions/invites/{inviteId}/decline` | `204` |
+| `DELETE` | `/shared-sessions/invites/{inviteId}` | `204`. The inviter cancels |
+| `GET` | `/shared-sessions?status=` | A page of `SharedSessionSummary`. Without `status`, sessions that still take messages (`ACTIVE`, `COMPLETED`) |
+| `GET` | `/shared-sessions/{sessionId}` | `SharedSessionSummary` |
+| `GET` | `/shared-sessions/{sessionId}/messages` | The whole transcript; each `USER` row carries `senderUserId` |
+| `POST` | `/shared-sessions/{sessionId}/messages` `{text}` or `{promptAnswer: {elicitationId, action, content}}` | `202 {runId, messageId}`. The run streams on `/stream` |
+| `GET` | `/shared-sessions/{sessionId}/stream` (`Last-Event-ID` or `?lastEventId=`) | SSE that follows every run, whoever started it |
+| `POST` | `/shared-sessions/{sessionId}/cancel` | `202` signalled, `204` nothing running |
+| `DELETE` | `/shared-sessions/{sessionId}` | `204`. You leave, which closes the session for everyone |
+
+`openingMessage` is the text the session starts with. It is sent to the agent as the invitee once they accept. It
+is agent-specific (the Feud screens send `new show` or `new main game`), optional, and limited to
+`SHARED_SESSION_MAX_MESSAGE_CHARACTERS`.
+
+### Wire shapes
+
+```json
+SharedSessionSummary {
+  "id", "chatId", "agentName", "status": "ACTIVE|COMPLETED|CLOSED|EXPIRED",
+  "participants": [{"userId", "seat": 0, "name": "Alex", "username", "left": false}],
+  "turn": {"userIds": ["…"], "next": "answer", "over": false, "inputHiddenFrom": ["Sam"]} | null,
+  "prompt": {"elicitationId", "message", "requestedSchema", "meta", "forUserIds": ["…"]} | null,
+  "yourTurn": true, "runActive": false, "created", "updated"
+}
+
+SessionInviteSummary {
+  "id", "inviterUserId", "inviterUsername", "inviterDisplayName",
+  "inviteeUserId", "inviteeUsername", "inviteeDisplayName",
+  "agentName", "openingMessage", "status": "PENDING|ACCEPTED|DECLINED|CANCELLED|EXPIRED", "sessionId",
+  "created", "expires"
+}
+```
+
+- **`turn`:** what the agent's last reply said about who it is waiting on.
+  - `next` is the agent's own word for what it expects (`[a-z_]{1,32}`), such as `answer` or `rematch`.
+  - `turn` is null until a run reports one.
+- **`yourTurn`:** answered for the caller on REST reads, true only while the session is `ACTIVE`. It is null on the
+  stream.
+- **`prompt`:** the question the last run ended on. A run never waits on it: answering is the next message, and
+  only a participant in `forUserIds` may send it.
+- **`COMPLETED`:** the agent reported `over`, and the session still takes messages, so it can start again. `CLOSED`
+  (a participant left) and `EXPIRED` (idle for `SHARED_SESSION_IDLE_DAYS`) take none.
+
+### The stream
+
+- **Every frame of every run:** every participant reads every frame, the sender included. Sending answers `202`
+  rather than streaming, so there is one way frames arrive.
+- **Where reading starts:** without a cursor, at the run in progress if there is one (from its `RUN_STARTED`),
+  otherwise at the end.
+- **Cursors:** a cursor older than the oldest kept frame is `410`. Reload `/messages` and read on with no cursor.
+  An empty or expired stream is not `410`: the stream waits for the next message.
+- **`RUN_STARTED`:** `input.messages[0].name` is the sender's participant `name`.
+- **`CUSTOM session_state`:** carries the `SharedSessionSummary` after every run (just before
+  `RUN_FINISHED`/`RUN_ERROR`) and when a participant leaves.
+- **Questions:** shared sessions never send `TOOL_CALL_*` frames; the question is `session_state.prompt`.
+
+### Hidden sections
+
+An agent can hide part of a session's text from some participants. **Clients enforce this, not the API:** every
+participant still receives all of the text, on the stream and from `/messages`.
+
+- **Markers:** `[[hidden:Sam,Jo]]` … `[[/hidden]]`, inline in the text. Names match participant `name`s, ignoring
+  case. A marker with no `[[/hidden]]` hides everything after it.
+- **Agent replies:** markers go through unchanged, both live and in `/messages`.
+- **`turn.inputHiddenFrom`:** the agent reports it in the `inputHiddenFrom` field of its `solesonic/turn` metadata.
+  Unknown names are dropped and the rest are given back in each participant's own spelling. The next typed message
+  from a participant in `turn.userIds` is wrapped in a marker naming those participants. This changes the
+  `RUN_STARTED` input and the stored `USER` row only: the agent still gets the text as typed. Answers to
+  `prompt` and opening messages are never wrapped. A turn saved before this field existed reads as `[]`.
+- **Typed markers are removed.** Any marker a participant types is taken out of the displayed text, so a participant
+  can't hide text from others or close a section early. The agent still gets the raw text.
+
+### Shared Session Error Codes
+
+Errors are `{code, message}` with a real status:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `SESSION_NOT_FOUND`, `INVITE_NOT_FOUND` | 404 | Not yours, or doesn't exist |
+| `PARTICIPANT_NOT_FOUND` | 404 | No active user with that username, or it's yours |
+| `INVALID_INVITE`, `INVALID_MESSAGE`, `MESSAGE_TOO_LONG` | 400 | The request itself is wrong. An agent that may not be shared is `INVALID_INVITE` |
+| `INVITE_PENDING` | 409 | An invite is already open between you two |
+| `INVITE_NOT_PENDING` | 409 | Accepted, declined, cancelled or expired |
+| `RUN_IN_PROGRESS` | 409 | The agent is still answering the last message |
+| `NOT_YOUR_TURN` | 409 | The question is for another participant, or has been replaced |
+| `SESSION_CLOSED` | 409 | The session takes no messages |
+| `TOO_MANY_INVITES` | 429 | `SHARED_SESSION_MAX_PENDING_INVITES` reached |
+| `AGENT_UNAVAILABLE` | 503 | The session's agent isn't registered |
+
+Every participant needs a model key: an invite, an accept or a message without one is `403 LLM_KEY_MISSING`.
+
+Push types `SESSION_INVITE` (url `/shared-sessions/invites/{inviteId}`), `SESSION_TURN` and `SESSION_STARTED` (url
+`/shared-sessions/{sessionId}`, tag `session:{sessionId}`) are fixed text. They follow the
+`sessionInvites`/`sessionTurns` preferences, which are optional on `PUT`, and the absent ones stay unchanged.
 
 ## Error Handling
 

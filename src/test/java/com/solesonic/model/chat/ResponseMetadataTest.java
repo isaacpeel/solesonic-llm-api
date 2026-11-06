@@ -1,6 +1,7 @@
 package com.solesonic.model.chat;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.databind.JsonNode;
@@ -27,8 +28,13 @@ class ResponseMetadataTest {
             .build();
 
     private static ModelCallMetadata call(int promptTokens, int completionTokens, double promptMillis, double predictedMillis) {
+        return call(promptTokens, completionTokens, promptMillis, predictedMillis, null);
+    }
+
+    private static ModelCallMetadata call(int promptTokens, int completionTokens, double promptMillis, double predictedMillis,
+                                          @Nullable Double tokensPerSecond) {
         return new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "stop",
-                promptTokens, completionTokens, promptTokens + completionTokens,
+                promptTokens, completionTokens, promptTokens + completionTokens, tokensPerSecond,
                 promptMillis, predictedMillis, 61.2,
                 null, null, null, null, null, null, null, null, null);
     }
@@ -86,10 +92,10 @@ class ResponseMetadataTest {
     @Test
     void sumsLlamaCppExtraCountsAcrossEveryCallInTheTurn() {
         ModelCallMetadata firstCall = new ModelCallMetadata("qwen3-8b", "chatcmpl-1", CREATED_AT, "tool_calls",
-                1042, 88, 1130, 130.0, 900.0, 97.8,
+                1042, 88, 1130, null, 130.0, 900.0, 97.8,
                 7, 4, 12.456, 80.284, 227, 5.674, 192, 164, null);
         ModelCallMetadata secondCall = new ModelCallMetadata("qwen3-8b", "chatcmpl-2", CREATED_AT, "stop",
-                1380, 165, 1545, 150.5, 2100.25, 78.5,
+                1380, 165, 1545, null, 150.5, 2100.25, 78.5,
                 3, 9, 16.7, 59.9, 165, 12.7, 200, 171, null);
 
         ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-2", CREATED_AT, "stop",
@@ -120,7 +126,7 @@ class ResponseMetadataTest {
     void leavesUnreportedFieldsNullRatherThanZero() {
         ResponseMetadata responseMetadata = ResponseMetadata.of("gpt-oss", "chatcmpl-4", null, "stop",
                 List.of(new ModelCallMetadata("gpt-oss", "chatcmpl-4", null, "stop",
-                        10, 2, 12, null, null, null,
+                        10, 2, 12, null, null, null, null,
                         null, null, null, null, null, null, null, null, null)));
 
         assertThat(responseMetadata).isNotNull();
@@ -129,6 +135,35 @@ class ResponseMetadataTest {
         assertThat(responseMetadata.promptMillis()).isNull();
         assertThat(responseMetadata.predictedMillis()).isNull();
         assertThat(responseMetadata.totalMillis()).isNull();
+        assertThat(responseMetadata.tokensPerSecond()).isNull();
+    }
+
+    /**
+     * The proxy's rate is copied, never computed: the turn reports the last round trip that carried
+     * one, which is the call that produced the answer the user is reading.
+     */
+    @Test
+    void reportsTheLastCallsTokensPerSecondVerbatim() {
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-5", CREATED_AT, "stop",
+                List.of(call(1042, 88, 130.0, 900.0, 180.5),
+                        call(1380, 165, 150.5, 2100.25, 222.23)));
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.tokensPerSecond()).isEqualTo(222.23);
+    }
+
+    /**
+     * Spring AI drops the native usage whenever it sums two rounds itself, so a later call can arrive
+     * without the rate an earlier one carried.
+     */
+    @Test
+    void fallsBackToTheLastCallThatReportedTokensPerSecond() {
+        ResponseMetadata responseMetadata = ResponseMetadata.of("qwen3-8b", "chatcmpl-6", CREATED_AT, "stop",
+                List.of(call(1042, 88, 130.0, 900.0, 180.5),
+                        call(1380, 165, 150.5, 2100.25, null)));
+
+        assertThat(responseMetadata).isNotNull();
+        assertThat(responseMetadata.tokensPerSecond()).isEqualTo(180.5);
     }
 
     /**
@@ -218,5 +253,19 @@ class ResponseMetadataTest {
         assertThat(roundTripped.promptMillis()).isNull();
         assertThat(roundTripped.predictedMillis()).isNull();
         assertThat(roundTripped.totalMillis()).isNull();
+    }
+
+    @Test
+    void readsRowsWrittenBeforeTokensPerSecondExisted() {
+        String priorJson = """
+                {
+                  "model": "qwen3-8b", "finishReason": "stop", "modelCalls": 1,
+                  "promptTokens": 10, "completionTokens": 2, "totalTokens": 12
+                }""";
+
+        ResponseMetadata roundTripped = JSON_MAPPER.readValue(priorJson, ResponseMetadata.class);
+
+        assertThat(roundTripped.totalTokens()).isEqualTo(12);
+        assertThat(roundTripped.tokensPerSecond()).isNull();
     }
 }

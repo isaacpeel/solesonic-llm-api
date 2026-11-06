@@ -6,6 +6,8 @@ import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.CacheControl;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -19,6 +21,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
 
@@ -51,13 +54,28 @@ public class ChatAttachmentController {
     public ResponseEntity<byte[]> download(@PathVariable UUID attachmentId) {
         log.info("Downloading attachment {}", attachmentId);
 
-        ChatAttachment chatAttachment = chatAttachmentService.get(attachmentId);
+        ChatAttachment chatAttachment = chatAttachmentService.getReadable(attachmentId);
 
-        return ResponseEntity.ok()
+        ResponseEntity.BodyBuilder response = ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(chatAttachment.getContentType()))
+                .header("X-Content-Type-Options", "nosniff")
                 .eTag("\"" + attachmentId + "\"")
-                .cacheControl(CacheControl.maxAge(Duration.ofDays(365)).cachePrivate().immutable())
-                .body(chatAttachment.getFileData());
+                .cacheControl(CacheControl.maxAge(Duration.ofDays(365)).cachePrivate().immutable());
+
+        // The room reads what anyone in it uploaded. Images (the few types the vision pass accepts) render
+        // inline; anything else is a download, so an uploaded HTML or SVG file is never rendered in the API's
+        // own origin. The builder encodes the file name, which is the uploader's and proves nothing.
+        if (!ChatAttachmentService.isImage(chatAttachment.getContentType())) {
+            ContentDisposition.Builder disposition = ContentDisposition.attachment();
+
+            if (chatAttachment.getFileName() != null && !chatAttachment.getFileName().isBlank()) {
+                disposition.filename(safeFileName(chatAttachment.getFileName()), StandardCharsets.UTF_8);
+            }
+
+            response.header(HttpHeaders.CONTENT_DISPOSITION, disposition.build().toString());
+        }
+
+        return response.body(chatAttachment.getFileData());
     }
 
     @DeleteMapping("/{attachmentId}")
@@ -66,5 +84,15 @@ public class ChatAttachmentController {
         chatAttachmentService.delete(attachmentId);
 
         return ResponseEntity.noContent().build();
+    }
+
+    /**
+     * Letters, digits, spaces and a few separators only: no quotes, angle brackets, slashes or control
+     * characters, and a bounded length.
+     */
+    static String safeFileName(String fileName) {
+        String safe = fileName.replaceAll("[^\\p{L}\\p{N} ._()\\-]", "_").strip();
+
+        return safe.length() > 120 ? safe.substring(0, 120) : safe;
     }
 }

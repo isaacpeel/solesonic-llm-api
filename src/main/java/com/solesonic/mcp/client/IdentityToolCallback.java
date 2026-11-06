@@ -1,6 +1,5 @@
 package com.solesonic.mcp.client;
 
-import com.solesonic.service.image.GeneratedImageToolInterceptor;
 import org.apache.commons.lang3.StringUtils;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
@@ -26,9 +25,11 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+import static com.solesonic.service.prompt.PromptService.REFERENCE_ATTACHMENT_IDS;
+
 
 /**
- * A wrapper around AsyncMcpToolCallback that captures the security context
+ * A wrapper around an MCP tool callback that captures the security context
  * and makes it available for reactive WebClient filters during MCP tool execution.
  * <p>
  * This class solves the context propagation issue where the user's JWT token
@@ -41,9 +42,8 @@ public class IdentityToolCallback implements ToolCallback {
     public static final String USER_TOKEN = "userToken";
 
     /**
-     * The generating user, needed by result post-processing that persists something on their
-     * behalf. Stripped before the call like {@link #USER_TOKEN}: an MCP server has no business
-     * knowing our internal user ids.
+     * The user whose turn it is. Stripped before the call like {@link #USER_TOKEN}: an MCP server has
+     * no business knowing our internal user ids.
      */
     public static final String USER_ID = "userId";
 
@@ -59,17 +59,14 @@ public class IdentityToolCallback implements ToolCallback {
     private final ToolMetadata toolMetadata;
     private final JwtDecoder jwtDecoder;
     private final JwtAuthenticationConverter jwtAuthenticationConverter;
-    private final GeneratedImageToolInterceptor generatedImageToolInterceptor;
 
     public IdentityToolCallback(ToolCallback tool,
                                 JwtDecoder jwtDecoder,
-                                JwtAuthenticationConverter jwtAuthenticationConverter,
-                                GeneratedImageToolInterceptor generatedImageToolInterceptor) {
+                                JwtAuthenticationConverter jwtAuthenticationConverter) {
 
         this.delegate = tool;
         this.jwtDecoder = jwtDecoder;
         this.jwtAuthenticationConverter = jwtAuthenticationConverter;
-        this.generatedImageToolInterceptor = generatedImageToolInterceptor;
 
         boolean returnDirect = tool.getToolMetadata().returnDirect();
         this.toolMetadata = ToolMetadata.builder()
@@ -121,6 +118,7 @@ public class IdentityToolCallback implements ToolCallback {
         Map<String, Object> filteredContextMap = new HashMap<>(toolContextMap);
         filteredContextMap.remove(USER_TOKEN);
         filteredContextMap.remove(USER_ID);
+        filteredContextMap.remove(REFERENCE_ATTACHMENT_IDS);
 
         ToolContext filteredToolContext = new ToolContext(filteredContextMap);
 
@@ -134,28 +132,10 @@ public class IdentityToolCallback implements ToolCallback {
         log.info("Security context authentication restored for tool call: {}", delegate.getToolDefinition().name());
 
         try {
-            return withUserToken(userToken, () -> postProcess(
-                    delegate.call(toolCallInput, filteredToolContext), toolCallInput, toolContextMap));
+            return withUserToken(userToken, () -> extractText(delegate.call(toolCallInput, filteredToolContext)));
         } finally {
             SecurityContextHolder.clearContext();
         }
-    }
-
-    /**
-     * Everything that happens to a tool result between the MCP server and the model.
-     * <p>
-     * Order matters: image interception runs first and is the only thing standing between the
-     * model's context window and a couple of megabytes of base64. It replaces the result outright,
-     * so nothing downstream ever sees the image data.
-     */
-    private String postProcess(String rawResult, String toolCallInput, Map<String, Object> toolContextMap) {
-        String toolName = delegate.getToolDefinition().name();
-
-        if (generatedImageToolInterceptor.handles(toolName)) {
-            return generatedImageToolInterceptor.intercept(toolCallInput, rawResult, toolContextMap);
-        }
-
-        return extractText(rawResult);
     }
 
     /**
@@ -163,13 +143,9 @@ public class IdentityToolCallback implements ToolCallback {
      * call it makes travels on the user's own identity — exchanged for an on-behalf-of token —
      * rather than on the application's client credentials.
      * <p>
-     * This exists for the callers that talk to the MCP server directly instead of through a model's
-     * tool-calling loop; without it the filter finds no identity and falls back to client
-     * credentials, which would flatten every per-user authorization the MCP server enforces into a
-     * single service account. The token lives in a {@link ThreadLocal} because the filter reads it
-     * on the subscribing thread, which is the thread that made the blocking call.
-     * <p>
-     * Any token already bound is restored on exit, so nesting is safe.
+     * The token lives in a {@link ThreadLocal} because the filter reads it on the subscribing thread,
+     * which is the thread that made the blocking call. Any token already bound is restored on exit, so
+     * nesting is safe.
      */
     public static <T> T withUserToken(String userToken, Supplier<T> action) {
         Context previousContext = TOOL_CALL_CONTEXT.get();

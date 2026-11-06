@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.chat.ChatMessageService;
@@ -23,7 +24,7 @@ import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.UUID;
 
-import static org.springframework.ai.chat.memory.ChatMemory.CONVERSATION_ID;
+import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 @Service
 public class ToolCallService {
@@ -52,27 +53,30 @@ public class ToolCallService {
     public Flux<String> stream(UUID chatId,
                                String message,
                                ToolSlashCommand toolCommand,
-                               Map<String, Object> contextMap) {
+                               Map<String, Object> contextMap,
+                               LlmApiKey llmApiKey) {
 
-        ToolCallback toolCallback = toolCommand.callback(mcpClient);
+        ChatClient taskClient = slashCommandService.taskClient(toolCommand.callback(mcpClient), llmApiKey);
 
-        return invoke(chatId, message, toolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, toolCommand.name(), taskClient, contextMap);
     }
 
     public Flux<String> streamLocal(UUID chatId,
                                     String message,
                                     LocalToolSlashCommand localToolCommand,
-                                    Map<String, Object> contextMap) {
+                                    Map<String, Object> contextMap,
+                                    LlmApiKey llmApiKey) {
 
         ToolCallback toolCallback = localToolRegistry.callback(localToolCommand.name());
+        ChatClient taskClient = slashCommandService.localTaskClient(toolCallback, llmApiKey);
 
-        return invoke(chatId, message, localToolCommand.name(), toolCallback, contextMap);
+        return invoke(chatId, message, localToolCommand.name(), taskClient, contextMap);
     }
 
     private Flux<String> invoke(UUID chatId,
                                 String message,
                                 String toolName,
-                                ToolCallback toolCallback,
+                                ChatClient taskClient,
                                 Map<String, Object> contextMap) {
 
         log.info("Tool invoke: {}", toolName);
@@ -80,8 +84,6 @@ public class ToolCallService {
         //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
         //chat memory advisor is about to write rather than the previous turn's.
         ZonedDateTime since = ZonedDateTime.now();
-
-        ChatClient taskClient = slashCommandService.taskClient(toolCallback);
 
         SystemPromptTemplate taskSystemPromptTemplate = new SystemPromptTemplate(taskPrompt);
         Prompt prompt = taskSystemPromptTemplate.create(Map.of(TASK_TOOL, toolName));

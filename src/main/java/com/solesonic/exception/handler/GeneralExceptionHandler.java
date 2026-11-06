@@ -13,6 +13,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static com.solesonic.model.security.SecurityEvent.METHOD_REJECTED;
@@ -71,6 +72,17 @@ public class GeneralExceptionHandler {
                                                          HttpServletRequest request) {
         log.debug("Unreadable request body", messageNotReadableException);
         securityEventLogger.log(METHOD_REJECTED, request, HttpStatus.BAD_REQUEST.value(), SecurityEventReason.MALFORMED_BODY);
+
+        return ResponseEntity.badRequest().build();
+    }
+
+    /**
+     * A path segment that is not the type its route declares — a word where a chat id belongs. The
+     * request reached a real route with a malformed id, so it is the caller's mistake, not ours.
+     */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Void> handleArgumentTypeMismatch(MethodArgumentTypeMismatchException argumentTypeMismatchException) {
+        log.debug("Rejected argument {}: {}", argumentTypeMismatchException.getName(), argumentTypeMismatchException.getMessage());
 
         return ResponseEntity.badRequest().build();
     }

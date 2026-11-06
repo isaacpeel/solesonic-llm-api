@@ -20,6 +20,21 @@ public interface VectorStoreRepository extends JpaRepository<VectorDocument, UUI
     Optional<List<VectorDocument>> findByIngestedDocumentId(@Param("ingestedDocumentId") String ingestedDocumentId);
 
     /**
+     * Whether one document has any chunk at all, for the chat-document health check.
+     * <p>
+     * Containment ({@code @>}) on {@code metadata::jsonb}, not {@code ->>} equality: only the former
+     * can use {@code vector_store_metadata_path_idx} ({@code jsonb_path_ops} on that exact
+     * expression), and this runs for every indexed attachment a heal run verifies.
+     */
+    @Query(value = """
+        SELECT EXISTS (
+            SELECT 1 FROM public.vector_store v
+             WHERE v.metadata::jsonb @> jsonb_build_object('INGESTED_DOCUMENT_ID', CAST(:ingestedDocumentId AS text)))
+        """
+        , nativeQuery = true)
+    boolean existsChunkForDocument(@Param("ingestedDocumentId") String ingestedDocumentId);
+
+    /**
      * Discards every chunk belonging to one conversation. There is no foreign key from the vector
      * store to {@code chat}, so a deleted conversation would otherwise keep answering questions
      * from the documents that were attached to it.

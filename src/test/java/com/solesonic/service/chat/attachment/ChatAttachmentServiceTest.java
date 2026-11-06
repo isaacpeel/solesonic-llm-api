@@ -1,6 +1,7 @@
 package com.solesonic.service.chat.attachment;
 
 import com.solesonic.model.chat.attachment.ChatAttachment;
+import com.solesonic.model.chat.attachment.ChatAttachmentIndexState;
 import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.scope.UserRequestContext;
@@ -17,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -249,6 +251,56 @@ class ChatAttachmentServiceTest {
         verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
     }
 
+    /**
+     * The index lifecycle never shields an attachment from teardown: a detached one and one a worker
+     * is indexing right now are swept exactly like any other. (A heal that loses this race cleans up
+     * after itself — see {@code ChatDocumentIngestionServiceTest}.)
+     */
+    @Test
+    void deleteSweepsDetachedAndMidHealAttachmentsLikeAnyOther() {
+        ChatAttachment detached = attachment("application/pdf");
+        detached.setIndexDetached(true);
+        detached.setChunkCount(4);
+
+        ChatAttachment leased = attachment("application/pdf");
+        leased.setIndexClaimedAt(ZonedDateTime.now());
+
+        for (ChatAttachment document : List.of(detached, leased)) {
+            when(chatAttachmentRepository.findByIdAndUserId(document.getId(), userId))
+                    .thenReturn(Optional.of(document));
+
+            chatAttachmentService.delete(document.getId());
+
+            verify(ingestedDocumentService).deleteByChatAttachmentId(document.getId());
+            verify(vectorStoreService).deleteByChatAttachmentId(document.getId());
+            verify(chatAttachmentRepository).delete(document);
+        }
+    }
+
+    @Test
+    void documentIndexStatesLeavesImagesOut() {
+        UUID chatId = UUID.randomUUID();
+        ChatAttachmentIndexState image = new ChatAttachmentIndexState(UUID.randomUUID(), userId, chatId,
+                "image/png", 10, null, null, false, null, null);
+        ChatAttachmentIndexState document = new ChatAttachmentIndexState(UUID.randomUUID(), userId, chatId,
+                "application/pdf", 10, 3, null, false, null, null);
+
+        when(chatAttachmentRepository.findIndexStatesByChatId(chatId)).thenReturn(List.of(image, document));
+
+        assertThat(chatAttachmentService.documentIndexStates(chatId)).containsExactly(document);
+    }
+
+    @Test
+    void claimIndexingReportsWhetherThisCallerWon() {
+        UUID attachmentId = UUID.randomUUID();
+        ZonedDateTime now = ZonedDateTime.now();
+
+        when(chatAttachmentRepository.claimIndexingNeverAttempted(attachmentId, now, now.minusMinutes(15))).thenReturn(1, 0);
+
+        assertThat(chatAttachmentService.claimIndexing(attachmentId, now, now.minusMinutes(15), null)).isTrue();
+        assertThat(chatAttachmentService.claimIndexing(attachmentId, now, now.minusMinutes(15), null)).isFalse();
+    }
+
     @Test
     void deleteForChatMessageIsANoOpWithoutAttachments() {
         UUID chatMessageId = UUID.randomUUID();
@@ -260,5 +312,49 @@ class ChatAttachmentServiceTest {
         verify(ingestedDocumentService, never()).deleteByChatAttachmentId(any());
         verify(vectorStoreService, never()).deleteByChatAttachmentId(any());
         verify(chatAttachmentRepository).deleteByChatMessageId(chatMessageId);
+    }
+
+    @Test
+    void getReadableUsesTheReadLookupSoSeatedParticipantsCanOpenAnAttachment() {
+        UUID attachmentId = UUID.randomUUID();
+        ChatAttachment chatAttachment = new ChatAttachment();
+        when(chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)).thenReturn(Optional.of(chatAttachment));
+
+        assertThat(chatAttachmentService.getReadable(attachmentId)).isSameAs(chatAttachment);
+        verify(chatAttachmentRepository, never()).findByIdAndUserId(any(), any());
+    }
+
+    @Test
+    void getReadableIsNotFoundWhenTheCallerMayNotRead() {
+        UUID attachmentId = UUID.randomUUID();
+        when(chatAttachmentRepository.findReadableByIdAndUserId(attachmentId, userId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatAttachmentService.getReadable(attachmentId))
+                .isInstanceOf(ResponseStatusException.class)
+                .extracting(exception -> ((ResponseStatusException) exception).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void deleteStaysWithTheUploader() {
+        UUID attachmentId = UUID.randomUUID();
+        when(chatAttachmentRepository.findByIdAndUserId(attachmentId, userId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> chatAttachmentService.delete(attachmentId)).isInstanceOf(ResponseStatusException.class);
+        verify(chatAttachmentRepository, never()).findReadableByIdAndUserId(any(), any());
+        verify(chatAttachmentRepository, never()).delete(any());
+    }
+
+    @Test
+    void allStagedForIsTrueOnlyWhenEveryIdIsTheUsersOwnStagedOne() {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        when(chatAttachmentRepository.countStagedByIdInAndUserId(Set.of(first, second), userId)).thenReturn(2L);
+        when(chatAttachmentRepository.countStagedByIdInAndUserId(Set.of(first), userId)).thenReturn(0L);
+
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of(first, second))).isTrue();
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of(first))).isFalse();
+        assertThat(chatAttachmentService.allStagedFor(userId, Set.of())).isTrue();
+        assertThat(chatAttachmentService.allStagedFor(userId, null)).isTrue();
     }
 }

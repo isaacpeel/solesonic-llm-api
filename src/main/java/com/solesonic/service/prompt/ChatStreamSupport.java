@@ -1,7 +1,9 @@
 package com.solesonic.service.prompt;
 
+import com.solesonic.config.chat.ResponseMetadataCaptureAdvisor;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import org.apache.commons.lang3.StringUtils;
@@ -70,12 +72,17 @@ public final class ChatStreamSupport {
      * that built its own options could otherwise stream from a llama.cpp-backed model and never see
      * {@code timings} at all, which is what {@link com.solesonic.model.chat.ResponseMetadataCapture}
      * needs for everything but {@code cachedPromptTokens}, {@code totalMillis} and {@code routedModel}.
+     * <p>
+     * {@code llmApiKey} is the user's own key, as a per-request {@code Authorization} header. A streamed
+     * call runs on the SDK's dispatcher thread, out of reach of {@code LlmCredentialScope}, so the
+     * header is the only way the user's key reaches it.
      */
-    public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout, UUID correlationId) {
+    public static OpenAiChatOptions.Builder chatOptions(String model, Duration timeout, UUID correlationId, LlmApiKey llmApiKey) {
         return OpenAiChatOptions.builder()
                 .model(model)
                 .streamUsage(true)
                 .timeout(timeout)
+                .customHeaders(llmApiKey.authorizationHeaders())
                 .extraBody(Map.of(
                         METADATA, Map.of(TURN_ID, correlationId.toString()),
                         TIMINGS_PER_TOKEN, true));
@@ -97,6 +104,12 @@ public final class ChatStreamSupport {
      * {@link #contentFlux} plus recording what the server reported about the turn, once the stream
      * completes.
      * <p>
+     * {@code responseMetadataCapture} is not fed from this flux. It has to be the one the call was
+     * given as its {@link ResponseMetadataCaptureAdvisor#RESPONSE_METADATA_CAPTURE} advisor param,
+     * which that advisor fills from beneath {@code ToolCallingAdvisor}: by the time a response
+     * reaches this flux, every tool-call round has been filtered out and the last round's usage has
+     * lost its native usage, and {@code tokens_per_second} with it.
+     * <p>
      * {@code since} has to be taken before the call is made: the assistant row this attaches to is
      * written by the chat memory advisor partway through, and the timestamp is the only handle the
      * caller has on it — the advisor never hands its id back. The ordering that makes the lookup
@@ -109,15 +122,14 @@ public final class ChatStreamSupport {
      * so both skip the write for free rather than recording half a turn.
      */
     public static Flux<String> capturingContentFlux(Flux<ChatResponse> chatResponseFlux,
+                                                    ResponseMetadataCapture responseMetadataCapture,
                                                     ChatMessageService chatMessageService,
                                                     LiteLlmHeaderRegistry liteLlmHeaderRegistry,
                                                     UUID chatId,
                                                     ZonedDateTime since,
                                                     UUID correlationId) {
 
-        ResponseMetadataCapture responseMetadataCapture = new ResponseMetadataCapture();
-
-        return contentFlux(chatResponseFlux.doOnNext(responseMetadataCapture::accept))
+        return contentFlux(chatResponseFlux)
                 .doOnComplete(() -> persist(responseMetadataCapture, chatMessageService, liteLlmHeaderRegistry,
                         chatId, since, correlationId));
     }
@@ -151,9 +163,8 @@ public final class ChatStreamSupport {
 
     /**
      * The same write for a route that sends no correlation id, and so has no proxy headers to
-     * attach. {@code ToolCallService} is the only one: it never sets request options, taking them
-     * from the hand-built tool-call model instead, and overriding them at the call site to smuggle
-     * an id in would replace that model's own base URL and key along with them.
+     * attach. {@code ToolCallService} is the only one: its task client adds nothing to the hand-built
+     * tool-call model's options but the user's key.
      */
     static void persist(ResponseMetadataCapture responseMetadataCapture,
                         ChatMessageService chatMessageService,

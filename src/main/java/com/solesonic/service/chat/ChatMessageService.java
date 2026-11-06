@@ -4,14 +4,20 @@ import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
+import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
 import com.solesonic.service.chat.attachment.ChatAttachmentService;
 import com.solesonic.service.image.GeneratedImageService;
+import com.solesonic.service.memory.UserMemoryService;
 import com.solesonic.service.user.UserPreferencesService;
 import com.solesonic.util.AttachmentContextFormatter;
+import com.solesonic.util.SharedMessageText;
+import com.solesonic.model.chat.ToolCallSummary;
 import org.apache.commons.collections4.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +25,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.data.domain.Limit;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,41 +34,62 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
 @Service()
 public class ChatMessageService {
     private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
+
+    private static final String UNKNOWN_SENDER = "Someone";
     private final ChatMessageRepository chatMessageRepository;
     private final ChatRepository chatRepository;
     private final UserPreferencesService userPreferencesService;
     private final ChatAttachmentService chatAttachmentService;
     private final ChatService chatService;
     private final GeneratedImageService generatedImageService;
+    private final UserMemoryService userMemoryService;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
                               ChatRepository chatRepository,
                               UserPreferencesService userPreferencesService,
                               ChatAttachmentService chatAttachmentService,
                               ChatService chatService,
-                              GeneratedImageService generatedImageService) {
+                              GeneratedImageService generatedImageService,
+                              UserMemoryService userMemoryService) {
         this.chatMessageRepository = chatMessageRepository;
         this.chatRepository = chatRepository;
         this.userPreferencesService = userPreferencesService;
         this.chatAttachmentService = chatAttachmentService;
         this.chatService = chatService;
         this.generatedImageService = generatedImageService;
+        this.userMemoryService = userMemoryService;
     }
 
     public ChatMessage save(ChatMessage message) {
+        return save(message, null);
+    }
+
+    /**
+     * @param senderUserId who sent the message, recorded only in a shared chat: a conversation's
+     *                     messages are all its owner's, and a shared chat is the one place several
+     *                     users write to the same transcript
+     */
+    private ChatMessage save(ChatMessage message, UUID senderUserId) {
         UUID chatId = message.getChatId();
 
         log.debug("Saving chat message with id {}", chatId);
 
         Chat chat = chatRepository.findById(chatId)
                 .orElseThrow(() -> new IllegalStateException("Chat not found: " + chatId));
+
+        if (chat.getKind() == ChatKind.SHARED && message.getMessageType() == MessageType.USER) {
+            message.setSenderUserId(senderUserId);
+        }
 
         //Routed through the service, not the repository, so a user's first-ever message
         //self-heals a missing preferences row instead of throwing. The result is unused — which
@@ -90,7 +118,11 @@ public class ChatMessageService {
         chatMessage.setMessageType(MessageType.USER);
         chatMessage.setMessage(chatRequest.chatMessage());
 
-        ChatMessage saved = save(chatMessage);
+        if (CollectionUtils.isNotEmpty(chatRequest.commands())) {
+            chatMessage.setCommands(chatRequest.commands());
+        }
+
+        ChatMessage saved = save(chatMessage, userId);
 
         //Inside the transaction on purpose: a turn that cannot claim its attachments must not
         //persist a message either.
@@ -100,8 +132,8 @@ public class ChatMessageService {
     }
 
     /**
-     * Deletes one message and everything stored under it: its attachments and the images generated
-     * on its turn.
+     * Deletes one message and everything stored under it: its attachments, the images generated on
+     * its turn, and whatever was learned from it alone.
      * <p>
      * Scoped exactly as {@link ChatService#requireOwned(UUID)} is: a chat owned by someone else must
      * be indistinguishable from one that does not exist, and a message id from another chat must be
@@ -110,7 +142,7 @@ public class ChatMessageService {
      */
     @Transactional
     public void delete(UUID chatId, UUID messageId) {
-        chatService.requireOwned(chatId);
+        UUID userId = chatService.requireOwned(chatId);
 
         ChatMessage chatMessage = chatMessageRepository.findById(messageId)
                 .filter(message -> chatId.equals(message.getChatId()))
@@ -121,6 +153,7 @@ public class ChatMessageService {
 
         chatAttachmentService.deleteForChatMessage(messageId);
         generatedImageService.deleteForChatMessage(messageId);
+        userMemoryService.forgetChatMessage(chatId, messageId, userId);
 
         chatMessageRepository.delete(chatMessage);
     }
@@ -158,6 +191,20 @@ public class ChatMessageService {
     }
 
     /**
+     * Attaches the turn's finished tool calls to its assistant message, found the same way
+     * {@link #updateResponseMetadata} finds it.
+     */
+    @Transactional
+    public void updateToolCalls(UUID chatId, ZonedDateTime since, List<ToolCallSummary> toolCalls) {
+        chatMessageRepository
+                .findFirstByChatIdAndMessageTypeAndTimestampGreaterThanEqualOrderByTimestampDesc(chatId, MessageType.ASSISTANT, since)
+                .ifPresent(chatMessage -> {
+                    chatMessage.setToolCalls(toolCalls);
+                    chatMessageRepository.save(chatMessage);
+                });
+    }
+
+    /**
      * Reads back what {@link #updateResponseMetadata} recorded for a turn, by the same {@code since}
      * the caller wrote it with.
      * <p>
@@ -188,7 +235,87 @@ public class ChatMessageService {
                 .orElse(null);
     }
 
+    /**
+     * A shared session's whole transcript, as every participant reads it. The caller has already
+     * checked the reader takes part; shared chats are bounded by their session, so this is not paged.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatMessage> sharedTranscript(UUID chatId) {
+        List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
+
+        //Every participant's attachments, as the private transcript carries its owner's: the room reads
+        //the files anyone sent. References, never bytes. One query for the chat, not one per message.
+        Map<UUID, List<ChatAttachmentSummary>> attachmentsByMessageId = chatAttachmentService.forChat(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+
+        //References, never bytes: a conversation's reply can carry an image, and a reload must show it
+        //as the live frame did. One query for the chat, not one per message.
+        Map<UUID, List<GeneratedImageSummary>> generatedImagesByMessageId = generatedImageService.forChat(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(GeneratedImageSummary::chatMessageId));
+
+        for (ChatMessage chatMessage : chatMessages) {
+            chatMessage.setAttachments(attachmentsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+            chatMessage.setGeneratedImages(generatedImagesByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+
+            redactForRoom(chatMessage);
+        }
+
+        return chatMessages;
+    }
+
+    /**
+     * What a shared chat's readers may see of a message's accounting: the token and timing summary, but not
+     * the proxy's call id or the model server's address, which are the sender's deployment and not the
+     * room's business. Every path that hands a shared chat's messages to a reader goes through here: the
+     * transcript, and the history list and search.
+     */
+    public static void redactForRoom(ChatMessage chatMessage) {
+        if (chatMessage.getResponseMetadataCalls() != null) {
+            chatMessage.setResponseMetadataCalls(chatMessage.getResponseMetadataCalls().stream()
+                    .map(call -> call.withLiteLlm(null))
+                    .toList());
+        }
+    }
+
+    /**
+     * The summaries of the attachments one message was sent with, for the live echo of a shared run. Read
+     * after {@link #saveUserMessage}, which has bound them, so they are the rows the transcript will show.
+     */
+    @Transactional(readOnly = true)
+    public List<ChatAttachmentSummary> attachmentSummaries(UUID chatId, Set<UUID> attachmentIds) {
+        if (CollectionUtils.isEmpty(attachmentIds)) {
+            return List.of();
+        }
+
+        return chatAttachmentService.forChatAndIds(chatId, attachmentIds);
+    }
+
+    /**
+     * Who sent the latest user message of a chat: in a shared conversation, the sender of the run in
+     * progress.
+     */
+    @Transactional(readOnly = true)
+    public Optional<UUID> lastUserSender(UUID chatId) {
+        return chatMessageRepository.findByChatIdAndMessageTypeOrderByTimestampDesc(chatId, MessageType.USER, Limit.of(1)).stream()
+                .map(ChatMessage::getSenderUserId)
+                .filter(Objects::nonNull)
+                .findFirst();
+    }
+
     public List<Message> findByChatId(UUID chatId) {
+        return findByChatId(chatId, null);
+    }
+
+    /**
+     * {@link #findByChatId(UUID)} for a shared conversation, where each user message reaches the model
+     * as {@code "<name>: <text>"}. The name comes from {@code participantNames} by the message's sender,
+     * or is "Someone" for a sender not in it. The prefix is for the model only: no stored row has it.
+     *
+     * @param participantNames names by user id, or null for a chat whose messages are not attributed
+     */
+    public List<Message> findByChatId(UUID chatId, Map<UUID, String> participantNames) {
         List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
 
         // The in-flight user message is persisted before the stream starts, and the chat memory
@@ -211,6 +338,13 @@ public class ChatMessageService {
                     .stream()
                     .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
 
+            //An image used only as a reference has no description to replay, so it is named instead:
+            //otherwise a later turn would not know an image was ever sent.
+            Map<UUID, List<ChatAttachmentSummary>> undescribedByMessageId = chatAttachmentService
+                    .undescribedImages(chatId)
+                    .stream()
+                    .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+
             for(ChatMessage chatMessage : chatMessages) {
                 // Every persisted SYSTEM row is a UI-only notification (cancellation, progress,
                 // failure, elicitation prompt) rather than a real conversation turn — the actual
@@ -231,14 +365,17 @@ public class ChatMessageService {
                         // Adjacent to the user message it describes, not merged into it — the same
                         // shape the live turn builds in PromptService, so a replayed turn and the
                         // turn that produced it look identical to the model.
-                        String imageContext = AttachmentContextFormatter.context(
-                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+                        String imageContext = imageContext(
+                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()),
+                                undescribedByMessageId.getOrDefault(chatMessage.getId(), List.of()));
 
                         if (imageContext != null) {
                             messages.add(new UserMessage(imageContext));
                         }
 
-                        message = new UserMessage(messageText);
+                        message = new UserMessage(participantNames == null
+                                ? messageText
+                                : SharedMessageText.forModel(senderName(participantNames, chatMessage.getSenderUserId()), messageText));
                     }
                     case ASSISTANT -> {
                         assert messageText != null;
@@ -255,5 +392,31 @@ public class ChatMessageService {
         }
 
         return List.of();
+    }
+
+    private static String senderName(Map<UUID, String> participantNames, UUID senderUserId) {
+        String name = senderUserId == null ? null : participantNames.get(senderUserId);
+
+        return name == null ? UNKNOWN_SENDER : name;
+    }
+
+    /**
+     * The described images first, then the ones never described, as one block ahead of the user message.
+     *
+     * @return the block, or null when the message carried no image
+     */
+    private static String imageContext(List<ChatAttachmentDescription> descriptions, List<ChatAttachmentSummary> undescribedImages) {
+        String describedContext = AttachmentContextFormatter.context(descriptions);
+        String undescribedContext = AttachmentContextFormatter.referenceHistoryContext(undescribedImages);
+
+        if (undescribedContext == null) {
+            return describedContext;
+        }
+
+        if (describedContext == null) {
+            return undescribedContext;
+        }
+
+        return describedContext + System.lineSeparator() + undescribedContext;
     }
 }

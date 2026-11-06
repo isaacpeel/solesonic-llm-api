@@ -45,6 +45,17 @@ class ChatStreamSubscriberTest {
     }
 
     @Test
+    void aFollowedStreamOpensWithAKeepaliveRightAway() {
+        ServerSentEvent<?> first = new ChatStreamSubscriber(redisTemplate, 5L, 60L)
+                .opened(Flux.never())
+                .blockFirst(Duration.ofMillis(500));
+
+        assertThat(first).isNotNull();
+        assertThat(first.comment()).isEqualTo("keepalive");
+        assertThat(first.id()).isNull();
+    }
+
+    @Test
     void staysQuietWhileFramesAreFlowing() {
         Flux<ServerSentEvent<?>> busy = Flux.interval(Duration.ofMillis(100))
                 .take(12)

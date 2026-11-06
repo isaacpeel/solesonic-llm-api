@@ -1,0 +1,196 @@
+[
+  {
+    "identity": null,
+    "identity_managed": false,
+    "enabled": true,
+    "execution_mode": "autonomous",
+    "jwt_auth_configured": false,
+    "agent_id": "56c732c5-b908-4756-800e-5fff4b81719b",
+    "agent_name": "logs",
+    "litellm_params": {
+      "is_public": false
+    },
+    "agent_card_params": {
+      "url": "http://izzy-bot:8090",
+      "name": "Log Analyst",
+      "skills": [
+        {
+          "id": "chat",
+          "name": "Chat",
+          "tags": [
+            "chat"
+          ],
+          "description": "Conversational interaction with the agent."
+        }
+      ],
+      "version": "1.0.0",
+      "provider": {
+        "url": "http://litellm.izzy-bot.com",
+        "organization": "LiteLLM Proxy"
+      },
+      "security": [
+        {
+          "LiteLLMKey": []
+        }
+      ],
+      "description": "Answers questions about the Solesonic suite's application logs: errors, restarts, security events and ingestion health (read-only).",
+      "capabilities": {},
+      "protocolVersion": "1.0",
+      "securitySchemes": {
+        "LiteLLMKey": {
+          "type": "http",
+          "scheme": "bearer",
+          "description": "LiteLLM virtual key"
+        }
+      },
+      "defaultInputModes": [
+        "text"
+      ],
+      "defaultOutputModes": [
+        "text"
+      ],
+      "supportedInterfaces": [
+        {
+          "url": "http://litellm.izzy-bot.com/a2a/56c732c5-b908-4756-800e-5fff4b81719b",
+          "protocolBinding": "JSONRPC",
+          "protocolVersion": "1.0"
+        }
+      ]
+    },
+    "object_permission": {
+      "object_permission_id": "4d1530a3-a188-458d-985d-3dd3a0d44158",
+      "mcp_servers": [],
+      "mcp_access_groups": [],
+      "mcp_tool_permissions": {},
+      "vector_stores": [],
+      "agents": [],
+      "agent_access_groups": [],
+      "models": [],
+      "blocked_tools": [],
+      "mcp_toolsets": [],
+      "search_tools": [],
+      "mcp_tool_search_enabled": null,
+      "skills": [],
+      "teams": null,
+      "projects": null,
+      "verification_tokens": null,
+      "organizations": null,
+      "users": null,
+      "end_users": null,
+      "agents_table": null
+    },
+    "spend": 0.028576,
+    "tpm_limit": null,
+    "rpm_limit": null,
+    "session_tpm_limit": null,
+    "session_rpm_limit": null,
+    "static_headers": null,
+    "extra_headers": null,
+    "access_group_ids": [],
+    "kill_switch": null,
+    "keys": null,
+    "search_score": null,
+    "created_at": "2026-10-22T20:36:22.896000Z",
+    "updated_at": "2026-10-22T22:55:09.563000Z",
+    "created_by": "default_user_id",
+    "updated_by": "default_user_id"
+  },
+  {
+    "identity": null,
+    "identity_managed": false,
+    "enabled": true,
+    "execution_mode": "autonomous",
+    "jwt_auth_configured": false,
+    "agent_id": "22932c7f-2ccb-4bf4-a54e-bbc27823485b",
+    "agent_name": "network",
+    "litellm_params": {
+      "is_public": false
+    },
+    "agent_card_params": {
+      "url": "http://izzy-bot:8089",
+      "name": "Network Analyst",
+      "skills": [
+        {
+          "id": "chat",
+          "name": "Chat",
+          "tags": [
+            "chat"
+          ],
+          "description": "Conversational interaction with the agent."
+        }
+      ],
+      "version": "1.0.0",
+      "provider": {
+        "url": "http://litellm.izzy-bot.com",
+        "organization": "LiteLLM Proxy"
+      },
+      "security": [
+        {
+          "LiteLLMKey": []
+        }
+      ],
+      "description": "Answers questions about the household network from UniFi data (read-only).",
+      "capabilities": {
+        "streaming": true
+      },
+      "protocolVersion": "1.0",
+      "securitySchemes": {
+        "LiteLLMKey": {
+          "type": "http",
+          "scheme": "bearer",
+          "description": "LiteLLM virtual key"
+        }
+      },
+      "defaultInputModes": [
+        "text"
+      ],
+      "defaultOutputModes": [
+        "text"
+      ],
+      "supportedInterfaces": [
+        {
+          "url": "http://litellm.izzy-bot.com/a2a/22932c7f-2ccb-4bf4-a54e-bbc27823485b",
+          "protocolBinding": "JSONRPC",
+          "protocolVersion": "1.0"
+        }
+      ]
+    },
+    "object_permission": {
+      "object_permission_id": "c314dbc1-834e-4205-8634-98cce73ca395",
+      "mcp_servers": [],
+      "mcp_access_groups": [],
+      "mcp_tool_permissions": {},
+      "vector_stores": [],
+      "agents": [],
+      "agent_access_groups": [],
+      "models": [],
+      "blocked_tools": [],
+      "mcp_toolsets": [],
+      "search_tools": [],
+      "mcp_tool_search_enabled": null,
+      "skills": [],
+      "teams": null,
+      "projects": null,
+      "verification_tokens": null,
+      "organizations": null,
+      "users": null,
+      "end_users": null,
+      "agents_table": null
+    },
+    "spend": 0.0,
+    "tpm_limit": null,
+    "rpm_limit": null,
+    "session_tpm_limit": null,
+    "session_rpm_limit": null,
+    "static_headers": null,
+    "extra_headers": null,
+    "access_group_ids": [],
+    "kill_switch": null,
+    "keys": null,
+    "search_score": null,
+    "created_at": "2026-10-22T16:42:11.942000Z",
+    "updated_at": "2026-10-22T19:02:39.570000Z",
+    "created_by": "default_user_id",
+    "updated_by": "default_user_id"
+  }
+]

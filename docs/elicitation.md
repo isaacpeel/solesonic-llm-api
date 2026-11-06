@@ -36,9 +36,11 @@ wakes the parked call in place.
   - `prepareElicitation` mints the id and adds it to `elicitation:pending:{chatId}`.
   - `emitElicitation` writes a `SYSTEM` chat message carrying the id (for history replay), stores
     the requested schema's `properties` — the full per-field definitions, not just their names — at
-    `elicitation:schema:{chatId}:{elicitationId}`, and publishes the request on the Redis pub/sub
-    channel `elicitation:events:{chatId}`. The properties are stored before the request is
-    published, so they are in place before any client can answer.
+    `elicitation:schema:{chatId}:{elicitationId}`, and publishes the request — an
+    `ElicitationEvent` (`model/chat/`) carrying both ids — on the chat's side channel. The
+    properties are stored before the request is published, so they are in place before any client
+    can answer. Both payloads are serialized before the `SYSTEM` message is saved, so a request
+    that cannot be written fails the tool call at once and leaves nothing behind in history.
   - `actionResult` reads the action, and the form values sent alongside it, out of the client's
     `ToolMessage`.
   - `completeFromFrontend` narrows the values to the stored property names (on `accept` only),
@@ -50,9 +52,39 @@ wakes the parked call in place.
     after a page refresh.
   - `awaitResultAsync` is what the provider is blocked on. It wakes on that result channel, or
     after the timeout, and resolves to the `ElicitResult` the provider returns to the MCP server.
+- **`SideChannelPublisher`** (`service/chat/events/`) is the one definition of a chat's side
+  channel — the Redis pub/sub channel `elicitation:events:{chatId}` and its `{event, data}`
+  envelope — shared by `ElicitationService` and `NotificationService`. A payload is serialized
+  once when published and parsed once on arrival; `data` then stays a JSON tree.
 - **`RedisStreamingChatService`** subscribes to `elicitation:events:{chatId}` once per turn, and
   `SideChannelEventTranslator` turns each event into AG-UI frames on the durable Redis stream. That
   is what gives an elicitation an SSE `id:` and makes it replayable through `Last-Event-ID`.
+
+## Elicitations from A2A agents
+
+An A2A agent can ask the same kind of question through the
+`urn:solesonic:a2a:extension:elicitation:v1` extension. The client sees no difference: the question
+reaches it as the same tool call and is answered with the same `ToolMessage`.
+
+- **The API asks for the extension on every A2A message**, in `Message.extensions` (which travels
+  through LiteLLM). An agent raises prompts only when it sees it.
+- **The agent raises a prompt** with a `TASK_STATE_INPUT_REQUIRED` status whose message holds one
+  `DataPart`: `{"elicitation": {"mode": "form", "message", "requestedSchema", "_meta"}}`.
+  `A2AElicitationExtension.prompt` accepts only a `form` with a non-blank message and an object schema
+  of `properties`, at most 16 KB. Anything else is treated as a status without a prompt, so the turn
+  ends as before and the user can type an answer.
+- **The turn stays open while the question waits.** `A2AAgentService` saves the reply streamed so far
+  as its own `ASSISTANT` row *before* the `SYSTEM` row of the question, so history reads in order, and
+  emits the question through `ElicitationService.emitElicitation(chatId, id, ElicitationEvent)`.
+- **On `accept`**, the narrowed content goes back on the same task and context as one `DataPart`,
+  `{"elicitationResponse": {"action": "accept", "content": {...}}}`. The agent's reply streams into
+  the same turn, and the text after the answer is saved as its own row when the turn finishes.
+- **Decline, timeout, cancel or a closed chat send nothing to the agent.** The turn ends and the task
+  stays `INPUT_REQUIRED` and sticky, so the user's next typed message continues it.
+- **`solesonic.a2a.timeout-seconds` is per exchange, and it is paused while a question waits**
+  (`ExchangeWatchdog`): it covers the agent going quiet, never a person deciding. The question
+  itself is bounded by `solesonic.elicitation.timeout-seconds`.
+- Prompt text and answers are never logged; only the elicitation, chat and task ids are.
 
 ## Wire format
 

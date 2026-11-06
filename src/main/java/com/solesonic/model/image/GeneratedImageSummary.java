@@ -1,6 +1,7 @@
 package com.solesonic.model.image;
 
 import java.time.ZonedDateTime;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -17,13 +18,19 @@ import java.util.UUID;
  * server reports is nullable: the tool returns its metadata as a human-readable text block, and a
  * field this API failed to parse is worth losing quietly rather than failing a generation over.
  *
+ * @param username      the owner's username, filled in only on the {@code image-admin} listing and
+ *                      null everywhere else
  * @param chatMessageId the assistant turn this image belongs to, or null for an explicit generation
  *                      or one whose turn has not been written yet
  * @param name          a display name the owner has set, distinct from {@code prompt}. Null until
  *                      renamed
+ * @param referenceAttachmentIds the chat attachments the image was guided by, in slot order; empty
+ *                      for a prompt-only generation. The attachments themselves may since have been
+ *                      deleted with their chat
  */
 public record GeneratedImageSummary(UUID imageId,
                                     UUID userId,
+                                    String username,
                                     UUID chatMessageId,
                                     String imageUrl,
                                     String name,
@@ -35,7 +42,35 @@ public record GeneratedImageSummary(UUID imageId,
                                     Integer steps,
                                     Double elapsedSeconds,
                                     long fileSizeBytes,
-                                    ZonedDateTime created) implements ImageGenerationEvent {
+                                    ZonedDateTime created,
+                                    List<UUID> referenceAttachmentIds) implements ImageGenerationEvent {
+
+    public GeneratedImageSummary {
+        referenceAttachmentIds = referenceAttachmentIds == null ? List.of() : List.copyOf(referenceAttachmentIds);
+    }
+
+    /**
+     * Without the owner's username, which comes from another table: the shape the JPQL constructor
+     * expressions select.
+     */
+    public GeneratedImageSummary(UUID imageId,
+                                 UUID userId,
+                                 UUID chatMessageId,
+                                 String imageUrl,
+                                 String name,
+                                 String prompt,
+                                 String model,
+                                 Long seed,
+                                 Integer width,
+                                 Integer height,
+                                 Integer steps,
+                                 Double elapsedSeconds,
+                                 long fileSizeBytes,
+                                 ZonedDateTime created,
+                                 List<UUID> referenceAttachmentIds) {
+        this(imageId, userId, null, chatMessageId, imageUrl, name, prompt, model, seed,
+                width, height, steps, elapsedSeconds, fileSizeBytes, created, referenceAttachmentIds);
+    }
 
     /**
      * Fills in the URL on a summary built by a JPQL constructor expression, which can select
@@ -43,8 +78,13 @@ public record GeneratedImageSummary(UUID imageId,
      * history query from loading every image's bytes.
      */
     public GeneratedImageSummary withImageUrl(String imageUrl) {
-        return new GeneratedImageSummary(imageId, userId, chatMessageId, imageUrl, name, prompt, model, seed,
-                width, height, steps, elapsedSeconds, fileSizeBytes, created);
+        return new GeneratedImageSummary(imageId, userId, username, chatMessageId, imageUrl, name, prompt, model, seed,
+                width, height, steps, elapsedSeconds, fileSizeBytes, created, referenceAttachmentIds);
+    }
+
+    public GeneratedImageSummary withUsername(String username) {
+        return new GeneratedImageSummary(imageId, userId, username, chatMessageId, imageUrl, name, prompt, model, seed,
+                width, height, steps, elapsedSeconds, fileSizeBytes, created, referenceAttachmentIds);
     }
 
     @Override

@@ -4,7 +4,6 @@ import com.solesonic.model.address.Address;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
-import com.solesonic.model.xero.auth.XeroAccessToken;
 import com.solesonic.repository.AddressRepository;
 import com.solesonic.repository.UserPreferencesRepository;
 import org.apache.commons.lang3.StringUtils;
@@ -79,7 +78,6 @@ public class UserPreferencesService {
     private static UserPreferences applyAuthenticationFlags(UserPreferences userPreferences) {
         userPreferences.setAtlassianAuthentication(userPreferences.getAtlassianAccessToken() != null);
         userPreferences.setGoogleAuthentication(userPreferences.getGoogleAccessToken() != null);
-        userPreferences.setXeroAuthentication(userPreferences.getXeroAccessToken() != null);
 
         return userPreferences;
     }
@@ -189,11 +187,6 @@ public class UserPreferencesService {
     private void preserveExistingTokens(UUID userId, UserPreferences userPreferences) {
         boolean missingAtlassianToken = userPreferences.getAtlassianAccessToken() == null;
         boolean missingGoogleToken = userPreferences.getGoogleAccessToken() == null;
-        boolean missingXeroToken = userPreferences.getXeroAccessToken() == null;
-
-        if (!missingAtlassianToken && !missingGoogleToken && !missingXeroToken) {
-            return;
-        }
 
         userPreferencesRepository.findByUserId(userId).ifPresent(existingPreferences -> {
             if (missingAtlassianToken) {
@@ -202,10 +195,6 @@ public class UserPreferencesService {
 
             if (missingGoogleToken) {
                 userPreferences.setGoogleAccessToken(existingPreferences.getGoogleAccessToken());
-            }
-
-            if (missingXeroToken) {
-                userPreferences.setXeroAccessToken(existingPreferences.getXeroAccessToken());
             }
         });
     }
@@ -272,67 +261,6 @@ public class UserPreferencesService {
         UserPreferences userPreferences = get(userId);
         userPreferences.setGoogleAccessToken(null);
         userPreferences.setGoogleAuthentication(false);
-        userPreferences.setUpdated(ZonedDateTime.now());
-
-        userPreferencesRepository.save(userPreferences);
-    }
-
-    /**
-     * Unlike the Google equivalent, this stamps {@code created} as well as {@code updated} rather
-     * than trusting the caller to have done it. {@link XeroAccessToken#isExpired()} reads a token
-     * with no {@code created} as expired, so an unstamped token would force a refresh on every
-     * single call — and Xero invalidates the old refresh token on each rotation, making that
-     * needless churn expensive rather than merely wasteful.
-     */
-    public void save(UUID userId, XeroAccessToken xeroAccessToken) {
-        log.info("Saving xero access token");
-
-        XeroAccessToken newToken = XeroAccessToken.from(xeroAccessToken)
-                .created(ZonedDateTime.now())
-                .updated(ZonedDateTime.now())
-                .build();
-
-        UserPreferences userPreferences = get(userId);
-        userPreferences.setXeroAccessToken(newToken);
-
-        save(userId, userPreferences);
-    }
-
-    /**
-     * Persists whatever the refresh returned, rotated refresh token included. Xero invalidates the
-     * previous refresh token the moment a new one is issued, so there is deliberately no
-     * carry-the-old-one-forward branch here — the Google equivalent needs one only because Google
-     * omits the refresh token from most responses.
-     */
-    public void update(UUID userId, XeroAccessToken xeroAccessToken) {
-        log.debug("Updating xero access token");
-
-        UserPreferences userPreferences = get(userId);
-
-        XeroAccessToken updatedToken = XeroAccessToken.from(xeroAccessToken)
-                .updated(ZonedDateTime.now())
-                .build();
-
-        userPreferences.setXeroAccessToken(updatedToken);
-
-        update(userId, userPreferences);
-    }
-
-    /**
-     * Forgets a user's Xero grant locally. Goes straight to the repository rather than through
-     * {@link #update(UUID, UserPreferences)}, whose null-token guard exists to stop an unrelated
-     * preferences update from wiping a token — and would therefore restore the very token this is
-     * trying to remove.
-     * <p>
-     * Local only: Xero publishes no app-level token revocation endpoint, so the grant itself stays
-     * live until the user removes the app from Xero's own "Connected apps" screen.
-     */
-    public void clearXeroAccessToken(UUID userId) {
-        log.info("Clearing xero access token");
-
-        UserPreferences userPreferences = get(userId);
-        userPreferences.setXeroAccessToken(null);
-        userPreferences.setXeroAuthentication(false);
         userPreferences.setUpdated(ZonedDateTime.now());
 
         userPreferencesRepository.save(userPreferences);

@@ -1,12 +1,16 @@
 package com.solesonic.repository.chat;
 
 import com.solesonic.model.chat.history.Chat;
+import jakarta.persistence.LockModeType;
+import org.springframework.ai.chat.messages.MessageType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -21,12 +25,20 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     // "nulls last" is what makes an unplaced chat keep its old behaviour: a conversation nobody has
     // arranged sorts by timestamp exactly as it did before ordering existed, and a brand new one
     // still arrives at the top of that section rather than at the bottom of the list.
+    //
+    //The history lists show the caller's own CONVERSATION chats plus the shared conversations they are still
+    //seated in. Those are passed in as ids (SharedSessionRepository.findVisibleConversationChatIds, which is
+    //an index lookup on session_participant) rather than tested with an exists() here: an "or exists" would
+    //leave Postgres no index to use for the second branch, whereas "user_id = ? or id in (...)" is a
+    //BitmapOr of chat_user_timestamp_idx and the primary key. An owner's hand-placed position means nothing
+    //to anyone else, so only the owner's rows are ordered by it.
     @Query("""
             from Chat chat
-            where chat.userId = :userId
-            order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
+            where (chat.userId = :userId and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION)
+               or chat.id in :sharedChatIds
+            order by case when chat.userId = :userId then chat.sortOrder end asc nulls last, chat.timestamp desc, chat.id desc
             """)
-    Page<Chat> findByUserId(UUID userId, Pageable pageable);
+    Page<Chat> findByUserId(UUID userId, Collection<UUID> sharedChatIds, Pageable pageable);
 
     // The same window and the same deterministic ordering as findByUserId, narrowed to one group
     // and read off that group's own position column. Still filtered by user rather than by group
@@ -36,9 +48,10 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.chatGroupId = :chatGroupId
+              and (chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION or chat.id in :sharedChatIds)
             order by chat.groupSortOrder asc nulls last, chat.timestamp desc, chat.id desc
             """)
-    Page<Chat> findByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Pageable pageable);
+    Page<Chat> findByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Collection<UUID> sharedChatIds, Pageable pageable);
 
     /**
      * The hand-placed prefix of the user's list, in the order it is rendered — the arrangement a
@@ -49,9 +62,10 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     @Query("""
             from Chat chat
             where chat.userId = :userId and chat.sortOrder is not null
+              and (chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION or chat.id in :sharedChatIds)
             order by chat.sortOrder asc, chat.id asc
             """)
-    List<Chat> findPlacedByUserId(UUID userId);
+    List<Chat> findPlacedByUserId(UUID userId, Collection<UUID> sharedChatIds);
 
     /**
      * The same arrangement, within one group.
@@ -61,9 +75,10 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
             where chat.userId = :userId
               and chat.chatGroupId = :chatGroupId
               and chat.groupSortOrder is not null
+              and (chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION or chat.id in :sharedChatIds)
             order by chat.groupSortOrder asc, chat.id asc
             """)
-    List<Chat> findPlacedByUserIdAndChatGroupId(UUID userId, UUID chatGroupId);
+    List<Chat> findPlacedByUserIdAndChatGroupId(UUID userId, UUID chatGroupId, Collection<UUID> sharedChatIds);
 
     /**
      * The same window and the same deterministic ordering as {@link #findByUserId}, narrowed to the
@@ -76,10 +91,50 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
      */
     @Query("""
             from Chat chat
-            where chat.userId = :userId and chat.chatGroupId is null
-            order by chat.sortOrder asc nulls last, chat.timestamp desc, chat.id desc
+            where (chat.userId = :userId and chat.chatGroupId is null
+                   and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION)
+               or (chat.id in :sharedChatIds and (chat.userId <> :userId or chat.chatGroupId is null))
+            order by case when chat.userId = :userId then chat.sortOrder end asc nulls last, chat.timestamp desc, chat.id desc
             """)
-    Page<Chat> findUngroupedByUserId(UUID userId, Pageable pageable);
+    Page<Chat> findUngroupedByUserId(UUID userId, Collection<UUID> sharedChatIds, Pageable pageable);
+
+    /**
+     * The user's conversations, grouped or not, whose name or any message of {@code messageTypes}
+     * matches {@code pattern} — an already lowercased and escaped {@code like} pattern.
+     * <p>
+     * Ordered by time rather than by hand-placed position: results are a timeline the client groups
+     * by day as pages arrive. The filter is in the query, never applied afterwards, so the page
+     * metadata counts exactly the rows returned.
+     */
+    @Query("""
+            from Chat chat
+            where ((chat.userId = :userId and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION)
+                   or chat.id in :sharedChatIds)
+              and (lower(chat.name) like :pattern escape '\\'
+                   or exists (select 1 from ChatMessage chatMessage
+                              where chatMessage.chatId = chat.id
+                                and chatMessage.messageType in :messageTypes
+                                and lower(chatMessage.message) like :pattern escape '\\'))
+            order by chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> searchByUserId(UUID userId, Collection<UUID> sharedChatIds, String pattern, Collection<MessageType> messageTypes, Pageable pageable);
+
+    /**
+     * {@link #searchByUserId}, narrowed to the conversations not filed under any group.
+     */
+    @Query("""
+            from Chat chat
+            where ((chat.userId = :userId and chat.chatGroupId is null
+                    and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION)
+                   or (chat.id in :sharedChatIds and (chat.userId <> :userId or chat.chatGroupId is null)))
+              and (lower(chat.name) like :pattern escape '\\'
+                   or exists (select 1 from ChatMessage chatMessage
+                              where chatMessage.chatId = chat.id
+                                and chatMessage.messageType in :messageTypes
+                                and lower(chatMessage.message) like :pattern escape '\\'))
+            order by chat.timestamp desc, chat.id desc
+            """)
+    Page<Chat> searchUngroupedByUserId(UUID userId, Collection<UUID> sharedChatIds, String pattern, Collection<MessageType> messageTypes, Pageable pageable);
 
     /**
      * Ungroups every conversation filed under one group, in one statement.
@@ -109,7 +164,55 @@ public interface ChatRepository extends JpaRepository<Chat, UUID> {
     /**
      * User-scoped for the same reason generated image lookups are: a caller must own the chat it
      * is modifying, and this is what lets a write be rejected at the query rather than trusted from
-     * an id alone.
+     * an id alone. A shared chat is never one: its owner reaches it only through {@code /shared-sessions}.
      */
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId and chat.userId = :userId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
+            """)
     Optional<Chat> findByIdAndUserId(UUID chatId, UUID userId);
+
+    /**
+     * {@link #findByIdAndUserId} holding the row for the rest of the transaction. Deleting a chat
+     * takes it before forgetting what was learned from it, and {@code /remember} takes it before
+     * writing a memory, so the two can never interleave: a memory is either written first and
+     * forgotten with the chat, or finds the chat already gone.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId and chat.userId = :userId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.CONVERSATION
+            """)
+    Optional<Chat> lockByIdAndUserId(UUID chatId, UUID userId);
+
+    /**
+     * A shared conversation as one of its seated participants sees it: the session is a conversation that
+     * still takes messages and the caller has not left it. Whoever else it belongs to is for the caller to
+     * check ({@code chat.userId} is the owner). Anyone who left, never joined, or whose session is an agent
+     * session or is over gets nothing, which is what keeps those chats out of history, rename and the model
+     * endpoints alike.
+     */
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId
+              and chat.kind = com.solesonic.model.chat.history.ChatKind.SHARED
+              and exists (select 1 from SharedSession sharedSession, SessionParticipant participant
+                          where sharedSession.chatId = chat.id
+                            and sharedSession.mode = com.solesonic.model.session.SessionMode.CONVERSATION
+                            and sharedSession.status in (com.solesonic.model.session.SessionStatus.ACTIVE,
+                                                         com.solesonic.model.session.SessionStatus.COMPLETED)
+                            and participant.sessionId = sharedSession.id
+                            and participant.userId = :userId
+                            and participant.leftAt is null)
+            """)
+    Optional<Chat> findVisibleSharedById(UUID chatId, UUID userId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("""
+            from Chat chat
+            where chat.id = :chatId
+            """)
+    Optional<Chat> lockById(UUID chatId);
 }

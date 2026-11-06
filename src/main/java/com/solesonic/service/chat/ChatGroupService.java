@@ -229,8 +229,15 @@ public class ChatGroupService {
                         "Chat group not found: " + chatGroupId));
     }
 
+    /**
+     * The caller's own private conversation, or a shared conversation they own and are seated in: the
+     * owner files a shared chat like any other. A participant who is not the owner gets a {@code 404},
+     * because the group and its place belong to the owner's row.
+     */
     private Chat chat(UUID chatId, UUID userId) {
         return chatRepository.findByIdAndUserId(chatId, userId)
+                .or(() -> chatRepository.findVisibleSharedById(chatId, userId)
+                        .filter(chat -> userId.equals(chat.getUserId())))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "Chat not found: " + chatId));
     }

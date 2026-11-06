@@ -23,6 +23,25 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
     Optional<GeneratedImage> findByIdAndUserId(UUID imageId, UUID userId);
 
     /**
+     * {@link #findByIdAndUserId} for reading: also the images of a shared conversation, to a participant
+     * still seated in the CONVERSATION session that owns the image's chat. The reply everyone reads can
+     * carry an image only its sender could otherwise fetch. Someone who left, an agent session, a private
+     * chat and an image with no chat all stay the owner's alone. Writing never uses this.
+     */
+    @Query("""
+            from GeneratedImage image
+            where image.id = :imageId
+              and (image.userId = :userId
+                   or exists (select 1 from SharedSession sharedSession, SessionParticipant participant
+                              where sharedSession.chatId = image.chatId
+                                and sharedSession.mode = com.solesonic.model.session.SessionMode.CONVERSATION
+                                and participant.sessionId = sharedSession.id
+                                and participant.userId = :userId
+                                and participant.leftAt is null))
+            """)
+    Optional<GeneratedImage> findReadableByIdAndUserId(UUID imageId, UUID userId);
+
+    /**
      * Summaries for a whole conversation, for hydrating history.
      * <p>
      * A constructor expression rather than the entity, because the entity carries the image bytes:
@@ -34,7 +53,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.chatId = :chatId
                and image.chatMessageId is not null
@@ -51,7 +70,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.chatId = :chatId
                and image.created >= :since
@@ -66,7 +85,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              where image.userId = :userId
              order by image.created desc
@@ -85,7 +104,7 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
             select new com.solesonic.model.image.GeneratedImageSummary(
                        image.id, image.userId, image.chatMessageId, null, image.name, image.prompt,
                        image.model, image.seed, image.width, image.height, image.steps,
-                       image.elapsedSeconds, image.fileSizeBytes, image.created)
+                       image.elapsedSeconds, image.fileSizeBytes, image.created, image.referenceAttachmentIds)
               from GeneratedImage image
              order by image.created desc
            """,

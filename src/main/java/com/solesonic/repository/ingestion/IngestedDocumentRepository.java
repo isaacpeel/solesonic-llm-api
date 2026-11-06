@@ -187,6 +187,58 @@ public interface IngestedDocumentRepository extends JpaRepository<IngestedDocume
                                                          Pageable pageable);
 
     /**
+     * Every document a conversation can retrieve from, whoever uploaded it: carrying a {@code RETRIEVE}
+     * grant to the chat and with {@code documentStatus} as its latest status. For a shared conversation,
+     * where {@link #findAllChatDocumentsManagedBy} would list only the sender's own uploads.
+     */
+    @Query(value = """
+            select ingestedDocument
+              from IngestedDocument ingestedDocument
+             where exists (
+                     select 1
+                       from DocumentEntitlement chatGrant
+                      where chatGrant.ingestedDocumentId = ingestedDocument.id
+                        and chatGrant.principalType = com.solesonic.model.rag.PrincipalType.CHAT
+                        and chatGrant.grantKind = com.solesonic.model.rag.GrantKind.RETRIEVE
+                        and chatGrant.principalId = :chatId)
+               and exists (
+                     select 1
+                       from StatusHistory statusHistory
+                      where statusHistory.documentId = ingestedDocument.id
+                        and statusHistory.documentStatus = :documentStatus
+                        and not exists (
+                              select 1
+                                from StatusHistory later
+                               where later.documentId = statusHistory.documentId
+                                 and later.timestamp > statusHistory.timestamp))
+             order by ingestedDocument.created desc
+            """,
+            countQuery = """
+                    select count(ingestedDocument)
+                      from IngestedDocument ingestedDocument
+                     where exists (
+                             select 1
+                               from DocumentEntitlement chatGrant
+                              where chatGrant.ingestedDocumentId = ingestedDocument.id
+                                and chatGrant.principalType = com.solesonic.model.rag.PrincipalType.CHAT
+                                and chatGrant.grantKind = com.solesonic.model.rag.GrantKind.RETRIEVE
+                                and chatGrant.principalId = :chatId)
+                       and exists (
+                             select 1
+                               from StatusHistory statusHistory
+                              where statusHistory.documentId = ingestedDocument.id
+                                and statusHistory.documentStatus = :documentStatus
+                                and not exists (
+                                      select 1
+                                        from StatusHistory later
+                                       where later.documentId = statusHistory.documentId
+                                         and later.timestamp > statusHistory.timestamp))
+                    """)
+    Page<IngestedDocument> findAllChatDocuments(@Param("chatId") String chatId,
+                                                @Param("documentStatus") DocumentStatus documentStatus,
+                                                Pageable pageable);
+
+    /**
      * De-duplication lookup for uploads, restricted to the shared corpus. Two users uploading
      * {@code notes.pdf} to their own libraries are two documents, and matching one against the other
      * would hand the second uploader the first one's — so the restriction is in the query, not in a

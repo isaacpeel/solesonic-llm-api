@@ -5,9 +5,13 @@ import com.solesonic.model.chat.attachment.ChatAttachment;
 import com.solesonic.model.document.DocumentSource;
 import com.solesonic.model.ingestion.DocumentStatus;
 import com.solesonic.model.ingestion.IngestedDocument;
+import com.solesonic.model.rag.GrantKind;
+import com.solesonic.model.rag.PrincipalType;
 import com.solesonic.repository.chat.ChatAttachmentRepository;
 import com.solesonic.service.ingestion.DocumentEntitlementService;
 import com.solesonic.service.ingestion.IngestedDocumentService;
+import com.solesonic.service.llm.LlmCredentialScope;
+import com.solesonic.service.llm.UserLlmKeyService;
 import com.solesonic.service.rag.VectorStoreService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +28,7 @@ import org.springframework.stereotype.Service;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 import static com.solesonic.model.rag.RetrievalMetadata.CHAT_ATTACHMENT_ID;
@@ -42,27 +47,54 @@ public class DocumentService {
     private final UriContentFetcher uriContentFetcher;
     private final ChatAttachmentRepository chatAttachmentRepository;
     private final DocumentEntitlementService documentEntitlementService;
+    private final UserLlmKeyService userLlmKeyService;
 
     public DocumentService(VectorStoreService vectorStoreService,
                            EtlService etlService,
                            IngestedDocumentService ingestedDocumentService,
                            UriContentFetcher uriContentFetcher,
                            ChatAttachmentRepository chatAttachmentRepository,
-                           DocumentEntitlementService documentEntitlementService) {
+                           DocumentEntitlementService documentEntitlementService,
+                           UserLlmKeyService userLlmKeyService) {
         this.vectorStoreService = vectorStoreService;
         this.etlService = etlService;
         this.ingestedDocumentService = ingestedDocumentService;
         this.uriContentFetcher = uriContentFetcher;
         this.chatAttachmentRepository = chatAttachmentRepository;
         this.documentEntitlementService = documentEntitlementService;
+        this.userLlmKeyService = userLlmKeyService;
     }
 
     /**
-     * Stores the given resource to the vector store
+     * Ingests a queued document on its owner's key. A global document has no owner and is the one
+     * ingestion that runs on the shared service key; a user's document whose owner has no key fails
+     * here, before any model call, and is marked failed by the caller.
      */
     public void resourceToVectorStore(UUID ingestedDocumentId) {
         log.info("Saving resource to the vector store.");
 
+        Optional<UUID> owner = owner(ingestedDocumentId);
+
+        if (owner.isEmpty()) {
+            LlmCredentialScope.runAsService(() -> ingestQueued(ingestedDocumentId));
+            return;
+        }
+
+        userLlmKeyService.runAsUser(owner.get(), () -> ingestQueued(ingestedDocumentId));
+    }
+
+    /**
+     * The user who manages the document. Every user and chat document is managed by the user it
+     * belongs to; a global one only by the {@code rag-admin} role.
+     */
+    private Optional<UUID> owner(UUID ingestedDocumentId) {
+        return documentEntitlementService.principals(ingestedDocumentId, GrantKind.MANAGE).stream()
+                .filter(principal -> principal.type() == PrincipalType.USER)
+                .map(principal -> UUID.fromString(principal.id()))
+                .findFirst();
+    }
+
+    private void ingestQueued(UUID ingestedDocumentId) {
         IngestedDocument ingestedDocument = ingestedDocumentService.get(ingestedDocumentId);
 
         byte[] fileContent = content(ingestedDocument);

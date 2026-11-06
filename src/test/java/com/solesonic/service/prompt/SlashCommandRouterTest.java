@@ -3,8 +3,10 @@ package com.solesonic.service.prompt;
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
+import com.solesonic.model.prompt.ModelSlashCommand;
 import com.solesonic.model.prompt.PromptSlashCommand;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
@@ -32,6 +34,7 @@ import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -46,6 +49,7 @@ import java.util.UUID;
 import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -92,6 +96,8 @@ class SlashCommandRouterTest {
 
     private static final Map<String, Object> CONTEXT_MAP = Map.of("userToken", "token-abc");
 
+    private static final LlmApiKey LLM_API_KEY = new LlmApiKey("sk-user-0000000001");
+
     @BeforeEach
     void setUp() {
         chatId = UUID.randomUUID();
@@ -108,11 +114,50 @@ class SlashCommandRouterTest {
                 chatMessageService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
                 "Izzy",
-                "qwen3-8b",
                 Duration.ofMinutes(30));
 
-        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class)))
+        lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
                 .thenReturn(mock(Advisor.class));
+    }
+
+    /**
+     * {@code /model} is a setting command: the streaming endpoints refuse it and routing never resolves
+     * it, so reaching this arm is a bug, and it must not release a sticky agent on its way out.
+     */
+    @Test
+    void route_model_isNeverRouted() {
+        assertThatThrownBy(() -> route(new ModelSlashCommand(), "openai/gpt-4o", NO_ATTACHMENTS).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aStickyAgentService, chatClient, mcpClient, toolCallService, a2aAgentService);
+    }
+
+    @Test
+    void route_promptSlashCommand_streamsWithTheModelItIsGiven() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+
+        McpSchema.TextContent userContent = new McpSchema.TextContent(null, "tell me something", null);
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER, userContent);
+        McpSchema.GetPromptResult getPromptResult =
+                new McpSchema.GetPromptResult(null, List.of(userMessage), null);
+
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptChain(Flux.just("answer"));
+
+        StepVerifier.create(slashCommandRouter.route(promptCommand, chatId, userId, "tell me something",
+                        NO_ATTACHMENTS, CONTEXT_MAP, "openai/gpt-4o", LLM_API_KEY))
+                .expectNext("answer")
+                .verifyComplete();
+
+        ArgumentCaptor<OpenAiChatOptions.Builder> optionsCaptor = ArgumentCaptor.captor();
+        verify(requestSpec).options(optionsCaptor.capture());
+
+        OpenAiChatOptions options = optionsCaptor.getValue().build();
+
+        assertThat(options.getModel()).isEqualTo("openai/gpt-4o");
+        assertThat(options.getCustomHeaders()).containsEntry("Authorization", "Bearer sk-user-0000000001");
+        verify(vectorStoreService).retrievalAugmentationAdvisor(userId, chatId, LLM_API_KEY);
     }
 
     private void stubPromptChain(Flux<String> emissions) {
@@ -202,7 +247,9 @@ class SlashCommandRouterTest {
 
         when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class))).thenReturn(getPromptResult);
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        stubPromptResponses(reportedTurn("answer"));
+        AdvisorCaptureFeed advisorCaptureFeed = new AdvisorCaptureFeed();
+        stubPromptResponses(advisorCaptureFeed.feeding(reportedTurn("answer")));
+        advisorCaptureFeed.readAdvisorParamsOf(requestSpec);
 
         StepVerifier.create(route(promptCommand, "tell me something", NO_ATTACHMENTS))
                 .expectNext("answer")
@@ -226,7 +273,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
@@ -274,7 +321,7 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", NO_ATTACHMENTS))
@@ -282,7 +329,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP);
+        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     @Test
@@ -291,7 +338,7 @@ class SlashCommandRouterTest {
                 new LocalToolSlashCommand("create_invoice", "create_invoice", "Create an invoice");
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(localToolCommand), any()))
+        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(localToolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("local-tool-result"));
 
         StepVerifier.create(route(localToolCommand, "invoice Acme for 200", NO_ATTACHMENTS))
@@ -299,7 +346,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", localToolCommand, CONTEXT_MAP);
+        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", localToolCommand, CONTEXT_MAP, LLM_API_KEY);
         verifyNoInteractions(mcpClient);
     }
 
@@ -308,7 +355,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
@@ -316,7 +363,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).activate(chatId, "weather-agent");
-        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?", "token-abc");
+        verify(a2aAgentService).delegate(chatId, "weather-agent", "what is the weather?");
     }
 
     /**
@@ -328,7 +375,7 @@ class SlashCommandRouterTest {
         AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
 
         when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
-        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString(), anyString()))
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("a2a-result"));
 
         StepVerifier.create(route(agentCommand, "what is this?", withImage("sky.png", "an overcast sky")))
@@ -336,7 +383,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         ArgumentCaptor<String> messageCaptor = ArgumentCaptor.forClass(String.class);
-        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture(), anyString());
+        verify(a2aAgentService).delegate(eq(chatId), eq("weather-agent"), messageCaptor.capture());
 
         assertThat(messageCaptor.getValue())
                 .contains("sky.png")
@@ -352,14 +399,14 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any()))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", withImage("cat.png", "a cat")))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP);
+        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     private Flux<String> route(SlashCommand slashCommand,
@@ -367,6 +414,91 @@ class SlashCommandRouterTest {
                                AttachmentResolution attachments) {
 
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
-                attachments, CONTEXT_MAP, "token-abc");
+                attachments, CONTEXT_MAP, "qwen3-8b", LLM_API_KEY);
+    }
+
+    // ---- shared conversation
+
+    private static final java.util.Set<String> SHARED_TOOLS = java.util.Set.of("search", "web_search");
+
+    private Flux<String> routeShared(SlashCommand slashCommand) {
+        return slashCommandRouter.routeShared(slashCommand, chatId, userId, "tell me something", NO_ATTACHMENTS, CONTEXT_MAP,
+                "openai/gpt-4o", LLM_API_KEY, SHARED_TOOLS);
+    }
+
+    @Test
+    void routeShared_aToolCommandRunsLikeAPrivateOneWhenItsToolIsAllowlisted() {
+        ToolSlashCommand toolCommand = toolSlashCommand();
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        when(toolCallService.stream(chatId, "tell me something", toolCommand, CONTEXT_MAP, LLM_API_KEY)).thenReturn(Flux.just("found"));
+
+        StepVerifier.create(routeShared(toolCommand)).expectNext("found").verifyComplete();
+    }
+
+    @Test
+    void routeShared_aToolCommandOutsideTheAllowlistIsNeverRun() {
+        McpSchema.Tool mcpTool = mock(McpSchema.Tool.class);
+        when(mcpTool.name()).thenReturn("gmail_send");
+        when(mcpTool.description()).thenReturn("Send mail");
+
+        assertThatThrownBy(() -> routeShared(new ToolSlashCommand(mcpTool)).blockLast()).isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(toolCallService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_aLocalToolCommandOutsideTheAllowlistIsNeverRun() {
+        assertThatThrownBy(() -> routeShared(new LocalToolSlashCommand("generate_image", "generate_image", "Draw")).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(toolCallService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_anAgentCommandIsNeverRunOrPinned() {
+        assertThatThrownBy(() -> routeShared(new AgentSlashCommand("feud", "feud", "Family feud")).blockLast())
+                .isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aAgentService, a2aStickyAgentService);
+    }
+
+    @Test
+    void routeShared_theModelCommandIsNeverRouted() {
+        assertThatThrownBy(() -> routeShared(new ModelSlashCommand()).blockLast()).isInstanceOf(IllegalStateException.class);
+
+        verifyNoInteractions(a2aStickyAgentService, chatClient, toolCallService);
+    }
+
+    /**
+     * A listed prompt runs for the whole room, so it retrieves from the conversation and the global corpus
+     * only and may call only the allowlisted tools, never the sender's library or every tool the server has.
+     */
+    @Test
+    void routeShared_aPromptCommandRetrievesSharedAndOffersOnlyTheAllowlistedTools() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER,
+                new McpSchema.TextContent(null, "tell me something", null));
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class)))
+                .thenReturn(new McpSchema.GetPromptResult(null, List.of(userMessage), null));
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        ToolCallback allowed = mock(ToolCallback.class);
+        when(mcpIdentityProvider.getToolCallbacks(SHARED_TOOLS)).thenReturn(List.of(allowed));
+        when(vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY)).thenReturn(mock(Advisor.class));
+        when(chatClient.prompt(any(Prompt.class))).thenReturn(requestSpec);
+        when(requestSpec.tools(any())).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Consumer<ChatClient.AdvisorSpec>>any())).thenReturn(requestSpec);
+        lenient().when(requestSpec.advisors(ArgumentMatchers.<Advisor>any())).thenReturn(requestSpec);
+        when(requestSpec.toolContext(any())).thenReturn(requestSpec);
+        when(requestSpec.options(any())).thenReturn(requestSpec);
+        when(requestSpec.stream()).thenReturn(streamResponseSpec);
+        when(streamResponseSpec.chatResponse()).thenReturn(
+                Flux.just(new ChatResponse(List.of(new Generation(new AssistantMessage("answer"))))));
+
+        StepVerifier.create(routeShared(promptCommand)).expectNext("answer").verifyComplete();
+
+        verify(vectorStoreService).sharedRetrievalAugmentationAdvisor(chatId, LLM_API_KEY);
+        verify(vectorStoreService, org.mockito.Mockito.never()).retrievalAugmentationAdvisor(any(), any(), any());
+        verify(mcpIdentityProvider, org.mockito.Mockito.never()).getToolCallbacks();
+        verify(requestSpec).tools((Object[]) new ToolCallback[]{allowed});
     }
 }
