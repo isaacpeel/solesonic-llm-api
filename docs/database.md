@@ -362,6 +362,30 @@ Backs the `q` search on `GET /chats/users/{userId}`, whose query is `lower(colum
 - No partial index on `message_type`: the query passes the types as a bind parameter, and Postgres
   cannot use a partial index whose condition depends on one.
 
+### Model memory — three session tables and one column (V3_47)
+
+The model's memory is a Spring AI session per chat, stored by its JDBC session repository. The DDL is
+copied from `spring-ai-session-jdbc`'s `schema-postgresql.sql` (2.1.0-RC2) into the migration, and
+`spring.ai.session.repository.jdbc.initialize-schema=never`, so Flyway owns it.
+
+- **`ai_session`**: one row per chat, `id` = the chat id as text, `metadata` holding the owner under
+  the principal name, `event_version` for the repository's compare-and-set. `expires_at` is set from
+  `spring.ai.session.time-to-live` but nothing deletes expired sessions.
+- **`ai_session_index`**: the indexed metadata (the owner), so sessions can be listed by user.
+- **`ai_session_event`**: the append-only log, ordered by `seq`. Messages, tool calls and tool results,
+  and compaction boundaries; a compaction never deletes, it only moves the view's start. `id` is a
+  table-wide primary key: a row copied from `chat_message` is always `chat-message:{rowId}`, so it can
+  never be copied twice.
+- **`chat_message.session_event_id`** (`varchar(255)`, nullable): what the session knows about a row —
+  null (not seen yet), an event id, `advisor-reply` or `outside-window`. Existing rows are all null,
+  so existing chats are copied in, to the window, on their next turn; there is no migration job.
+  **`chat_message_unlinked_idx`** on `(chat_id, timestamp) where session_event_id is null` backs that
+  per-turn query.
+- None of the session tables has a foreign key to `chat`: deleting a chat or a message deletes its
+  session in code (`ConversationSessionCleanup.forget`).
+- The migration is additive. Reverting the code leaves the tables and column unused and `chat_message`
+  untouched.
+
 ## Vector Storage with pgvector
 
 The project uses the pgvector extension for PostgreSQL to store and query vector embeddings efficiently. This is crucial for the Retrieval Augmented Generation (RAG) functionality.

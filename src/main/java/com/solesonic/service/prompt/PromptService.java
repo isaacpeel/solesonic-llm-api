@@ -15,7 +15,10 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.address.AddressService;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationSessionService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.etl.ChatDocumentHealer;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
@@ -39,6 +42,7 @@ import org.springframework.ai.chat.client.advisor.api.Advisor;
 import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.ai.chat.prompt.PromptTemplate;
+import org.springframework.ai.session.advisor.SessionAdvisors;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,12 +68,12 @@ import java.util.stream.Collectors;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
+import static com.solesonic.config.chat.SessionEventCorrelationAdvisor.SESSION_TURN_RECORD;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_ID;
 import static com.solesonic.mcp.client.IdentityToolCallback.USER_TOKEN;
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.tools.ImageGenerationTool.GENERATE_IMAGE;
-import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 /**
  * Where every incoming chat message is routed.
@@ -132,6 +136,7 @@ public class PromptService {
     private final LocalToolRegistry localToolRegistry;
     private final ChatDocumentHealer chatDocumentHealer;
     private final SharedSessionSettings sharedSessionSettings;
+    private final ConversationSessionService conversationSessionService;
 
     @Value("${solesonic.llm.bot.name}")
     private String agentName;
@@ -163,8 +168,10 @@ public class PromptService {
             LocalToolRegistry localToolRegistry,
             ChatDocumentHealer chatDocumentHealer,
             SharedSessionSettings sharedSessionSettings,
+            ConversationSessionService conversationSessionService,
             @Value("${spring.ai.openai.model}") String defaultChatModel,
             @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
+        this.conversationSessionService = conversationSessionService;
         this.chatClient = chatClient;
         this.slashCommandService = slashCommandService;
         this.slashCommandRouter = slashCommandRouter;
@@ -206,20 +213,27 @@ public class PromptService {
                                      String senderName,
                                      List<String> participantNames,
                                      ChatRequest chatRequest,
+                                     ChatMessage inFlightMessage,
                                      Authentication authentication) {
         log.info("Streaming shared prompt for chat id {}", chatId);
 
-        return turn(chatId, senderUserId, chatRequest, authentication,
+        return turn(chatId, senderUserId, chatRequest, inFlightMessage, authentication,
                 new SharedPromptOptions(participantNames == null ? List.of() : List.copyOf(participantNames), senderName));
     }
 
+    /**
+     * @param inFlightMessage the turn's user row, saved before the turn started. The routes that call
+     *                        the model hand it to the session, which never copies it: the advisor
+     *                        stores the live message itself
+     */
     public Flux<String> stream(UUID chatId,
                                UUID userId,
                                ChatRequest chatMessage,
+                               ChatMessage inFlightMessage,
                                Authentication authentication) {
         log.info("Streaming prompt for chat id {}", chatId);
 
-        return turn(chatId, userId, chatMessage, authentication, null);
+        return turn(chatId, userId, chatMessage, inFlightMessage, authentication, null);
     }
 
     /**
@@ -229,6 +243,7 @@ public class PromptService {
     private Flux<String> turn(UUID chatId,
                               UUID userId,
                               ChatRequest chatMessage,
+                              ChatMessage inFlightMessage,
                               Authentication authentication,
                               SharedPromptOptions shared) {
         String authToken = AuthenticationTokens.token(authentication);
@@ -282,10 +297,10 @@ public class PromptService {
 
         if (slashCommand != null) {
             return shared == null
-                    ? slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), attachments,
+                    ? slashCommandRouter.route(slashCommand, chatId, userId, chatMessage.chatMessage(), inFlightMessage, attachments,
                             contextMap, model, llmApiKey)
-                    : slashCommandRouter.routeShared(slashCommand, chatId, userId, SharedMessageText.orNoText(chatMessage.chatMessage()), attachments,
-                            contextMap, model, llmApiKey, sharedSessionSettings.conversation().tools());
+                    : slashCommandRouter.routeShared(slashCommand, chatId, userId, SharedMessageText.orNoText(chatMessage.chatMessage()),
+                            inFlightMessage, attachments, contextMap, model, llmApiKey, sharedSessionSettings.conversation().tools());
         }
 
         if (stickyAgent.isPresent()) {
@@ -305,7 +320,7 @@ public class PromptService {
 
         //Tools act as the sender in a shared chat, so generated images and tool progress belong to the
         //sender and the shared chat.
-        return streamDefaultSystemPrompt(chatId, userId, message,
+        return streamDefaultSystemPrompt(chatId, userId, message, inFlightMessage,
                 attachments.attachmentContext(), contextMap, model, llmApiKey, shared);
     }
 
@@ -384,10 +399,10 @@ public class PromptService {
      * once in the constructor from {@code basic-system-prompt.st} and the configured agent name,
      * not rebuilt on every call — plus the RAG retrieval advisor and the user's message.
      *
-     * @param chatId       identifies the conversation to the retrieval advisor, both directly and
-     *                     as the {@code CONVERSATION_ID} advisor param
+     * @param chatId       identifies the conversation to the retrieval advisor, and names its session
      * @param userId       resolves the retrieval advisor's per-user similarity threshold
      * @param message      the user's own words
+     * @param inFlightMessage the turn's saved user row
      * @param attachmentContext the attachment block — described images, named documents, or both —
      *                     or null when nothing was attached. Carried as a message of its own, which
      *                     {@code DefaultChatClientUtils} places between the system text and the user
@@ -402,15 +417,18 @@ public class PromptService {
     private Flux<String> streamDefaultSystemPrompt(UUID chatId,
                                                    UUID userId,
                                                    String message,
+                                                   ChatMessage inFlightMessage,
                                                    String attachmentContext,
                                                    Map<String, Object> contextMap,
                                                    String model,
                                                    LlmApiKey llmApiKey,
                                                    SharedPromptOptions shared) {
 
-        //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
-        //chat memory advisor is about to write rather than the previous turn's.
+        //Taken before the call, so the lookup that attaches the turn's accounting finds the row this
+        //turn's completion writes rather than the previous turn's.
         ZonedDateTime since = ZonedDateTime.now();
+
+        ConversationTurn conversationTurn = conversationSessionService.prepareTurn(chatId, inFlightMessage, attachmentContext);
 
         //Joins this turn to the x-litellm-* headers of the HTTP calls it is about to make; the two
         //reach the application on different threads and share nothing else.
@@ -431,8 +449,9 @@ public class PromptService {
                 .user(message)
                 .tools(toolCallbacks)
                 .advisors(retrievalAdvisor)
+                .advisors(SessionAdvisors.session(conversationTurn.sessionId()))
                 .advisors(advisorSpec -> advisorSpec
-                        .param(CONVERSATION_ID, chatId)
+                        .param(SESSION_TURN_RECORD, conversationTurn.record())
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture)
                 )
                 .toolContext(contextMap)
@@ -443,7 +462,7 @@ public class PromptService {
         }
 
         return capturingContentFlux(promptSpec.stream().chatResponse(), responseMetadataCapture, chatMessageService,
-                liteLlmHeaderRegistry, chatId, since, correlationId);
+                liteLlmHeaderRegistry, since, correlationId, conversationTurn);
     }
 
     private Prompt privateSystemPrompt(UUID userId, UUID chatId, String message) {

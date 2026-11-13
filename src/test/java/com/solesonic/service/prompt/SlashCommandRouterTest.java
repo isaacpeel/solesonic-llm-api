@@ -2,7 +2,9 @@ package com.solesonic.service.prompt;
 
 import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.SessionTurnRecord;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
@@ -13,6 +15,8 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationSessionService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -57,6 +61,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
@@ -85,9 +90,14 @@ class SlashCommandRouterTest {
     private ChatClient.ChatClientRequestSpec requestSpec;
     @Mock
     private ChatClient.StreamResponseSpec streamResponseSpec;
+    @Mock
+    private ConversationSessionService conversationSessionService;
+    @Mock
+    private ConversationTurn conversationTurn;
 
     private UUID chatId;
     private UUID userId;
+    private ChatMessage inFlightMessage;
 
     private SlashCommandRouter slashCommandRouter;
 
@@ -103,6 +113,10 @@ class SlashCommandRouterTest {
         chatId = UUID.randomUUID();
         userId = UUID.randomUUID();
 
+        inFlightMessage = new ChatMessage();
+        inFlightMessage.setId(UUID.randomUUID());
+        inFlightMessage.setChatId(chatId);
+
         slashCommandRouter = new SlashCommandRouter(
                 chatClient,
                 mcpClient,
@@ -113,11 +127,88 @@ class SlashCommandRouterTest {
                 vectorStoreService,
                 chatMessageService,
                 new LiteLlmHeaderRegistry(Clock.systemUTC()),
+                conversationSessionService,
                 "Izzy",
                 Duration.ofMinutes(30));
 
         lenient().when(vectorStoreService.retrievalAugmentationAdvisor(any(UUID.class), any(UUID.class), any(LlmApiKey.class)))
                 .thenReturn(mock(Advisor.class));
+        lenient().when(conversationSessionService.prepareTurn(any(), any(), any())).thenReturn(conversationTurn);
+        lenient().when(conversationTurn.chatId()).thenReturn(chatId);
+        lenient().when(conversationTurn.sessionId()).thenReturn(chatId.toString());
+        lenient().when(conversationTurn.record()).thenReturn(new SessionTurnRecord());
+    }
+
+    @Test
+    void route_promptSlashCommand_readiesTheSessionAndCompletesTheTurnWithTheReply() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+        stubSingleUserPrompt("tell me something");
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptChain(Flux.just("an ", "answer"));
+
+        StepVerifier.create(route(promptCommand, "tell me something", NO_ATTACHMENTS))
+                .expectNext("an ", "answer")
+                .verifyComplete();
+
+        verify(conversationSessionService).prepareTurn(chatId, inFlightMessage, null);
+        verify(conversationTurn).complete("an answer");
+        verify(conversationTurn, never()).abandon();
+    }
+
+    /**
+     * The MCP prompt opens with the attachment block, so the session ends with it and the request
+     * overlaps it by exactly that message.
+     */
+    @Test
+    void route_promptSlashCommand_readiesTheSessionWithTheAttachmentBlockItOpensWith() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+        stubSingleUserPrompt("what is this?");
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptChain(Flux.just("a login screen"));
+
+        AttachmentResolution attachments = withImage("screenshot.png", "a login screen");
+
+        StepVerifier.create(route(promptCommand, "what is this?", attachments))
+                .expectNext("a login screen")
+                .verifyComplete();
+
+        verify(conversationSessionService).prepareTurn(chatId, inFlightMessage, attachments.attachmentContext());
+    }
+
+    @Test
+    void route_promptSlashCommand_abandonsTheTurnWhenTheStreamFails() {
+        PromptSlashCommand promptCommand = new PromptSlashCommand("/ask", "ask", "Ask a question");
+        stubSingleUserPrompt("tell me something");
+        when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
+        stubPromptResponses(Flux.error(new IllegalStateException("the model is down")));
+
+        StepVerifier.create(route(promptCommand, "tell me something", NO_ATTACHMENTS))
+                .verifyError(IllegalStateException.class);
+
+        verify(conversationTurn).abandon();
+        verify(conversationTurn, never()).complete(any());
+    }
+
+    @Test
+    void route_agentSlashCommand_neverTouchesTheModelSession() {
+        AgentSlashCommand agentCommand = new AgentSlashCommand("weather-agent", "weather-agent", "Weather");
+
+        when(a2aStickyAgentService.activate(chatId, "weather-agent")).thenReturn(Mono.empty());
+        when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString())).thenReturn(Flux.just("a2a-result"));
+
+        StepVerifier.create(route(agentCommand, "what is the weather?", NO_ATTACHMENTS))
+                .expectNext("a2a-result")
+                .verifyComplete();
+
+        verifyNoInteractions(conversationSessionService);
+    }
+
+    private void stubSingleUserPrompt(String text) {
+        McpSchema.PromptMessage userMessage = new McpSchema.PromptMessage(McpSchema.Role.USER,
+                new McpSchema.TextContent(null, text, null));
+
+        when(mcpClient.getPrompt(any(McpSchema.GetPromptRequest.class)))
+                .thenReturn(new McpSchema.GetPromptResult(null, List.of(userMessage), null));
     }
 
     /**
@@ -146,7 +237,7 @@ class SlashCommandRouterTest {
         stubPromptChain(Flux.just("answer"));
 
         StepVerifier.create(slashCommandRouter.route(promptCommand, chatId, userId, "tell me something",
-                        NO_ATTACHMENTS, CONTEXT_MAP, "openai/gpt-4o", LLM_API_KEY))
+                        inFlightMessage, NO_ATTACHMENTS, CONTEXT_MAP, "openai/gpt-4o", LLM_API_KEY))
                 .expectNext("answer")
                 .verifyComplete();
 
@@ -321,7 +412,7 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(inFlightMessage), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", NO_ATTACHMENTS))
@@ -329,7 +420,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
+        verify(toolCallService).stream(chatId, "search for cats", inFlightMessage, toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     @Test
@@ -338,7 +429,7 @@ class SlashCommandRouterTest {
                 new LocalToolSlashCommand("create_invoice", "create_invoice", "Create an invoice");
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(localToolCommand), any(), eq(LLM_API_KEY)))
+        when(toolCallService.streamLocal(eq(chatId), anyString(), eq(inFlightMessage), eq(localToolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("local-tool-result"));
 
         StepVerifier.create(route(localToolCommand, "invoice Acme for 200", NO_ATTACHMENTS))
@@ -346,7 +437,7 @@ class SlashCommandRouterTest {
                 .verifyComplete();
 
         verify(a2aStickyAgentService).deactivate(chatId);
-        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", localToolCommand, CONTEXT_MAP, LLM_API_KEY);
+        verify(toolCallService).streamLocal(chatId, "invoice Acme for 200", inFlightMessage, localToolCommand, CONTEXT_MAP, LLM_API_KEY);
         verifyNoInteractions(mcpClient);
     }
 
@@ -399,14 +490,14 @@ class SlashCommandRouterTest {
         ToolSlashCommand toolCommand = toolSlashCommand();
 
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(eq(chatId), anyString(), eq(toolCommand), any(), eq(LLM_API_KEY)))
+        when(toolCallService.stream(eq(chatId), anyString(), eq(inFlightMessage), eq(toolCommand), any(), eq(LLM_API_KEY)))
                 .thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(route(toolCommand, "search for cats", withImage("cat.png", "a cat")))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(toolCallService).stream(chatId, "search for cats", toolCommand, CONTEXT_MAP, LLM_API_KEY);
+        verify(toolCallService).stream(chatId, "search for cats", inFlightMessage, toolCommand, CONTEXT_MAP, LLM_API_KEY);
     }
 
     private Flux<String> route(SlashCommand slashCommand,
@@ -414,7 +505,7 @@ class SlashCommandRouterTest {
                                AttachmentResolution attachments) {
 
         return slashCommandRouter.route(slashCommand, chatId, userId, message,
-                attachments, CONTEXT_MAP, "qwen3-8b", LLM_API_KEY);
+                inFlightMessage, attachments, CONTEXT_MAP, "qwen3-8b", LLM_API_KEY);
     }
 
     // ---- shared conversation
@@ -422,7 +513,7 @@ class SlashCommandRouterTest {
     private static final java.util.Set<String> SHARED_TOOLS = java.util.Set.of("search", "web_search");
 
     private Flux<String> routeShared(SlashCommand slashCommand) {
-        return slashCommandRouter.routeShared(slashCommand, chatId, userId, "tell me something", NO_ATTACHMENTS, CONTEXT_MAP,
+        return slashCommandRouter.routeShared(slashCommand, chatId, userId, "tell me something", inFlightMessage, NO_ATTACHMENTS, CONTEXT_MAP,
                 "openai/gpt-4o", LLM_API_KEY, SHARED_TOOLS);
     }
 
@@ -430,7 +521,7 @@ class SlashCommandRouterTest {
     void routeShared_aToolCommandRunsLikeAPrivateOneWhenItsToolIsAllowlisted() {
         ToolSlashCommand toolCommand = toolSlashCommand();
         when(a2aStickyAgentService.deactivate(chatId)).thenReturn(Mono.empty());
-        when(toolCallService.stream(chatId, "tell me something", toolCommand, CONTEXT_MAP, LLM_API_KEY)).thenReturn(Flux.just("found"));
+        when(toolCallService.stream(chatId, "tell me something", inFlightMessage, toolCommand, CONTEXT_MAP, LLM_API_KEY)).thenReturn(Flux.just("found"));
 
         StepVerifier.create(routeShared(toolCommand)).expectNext("found").verifyComplete();
     }

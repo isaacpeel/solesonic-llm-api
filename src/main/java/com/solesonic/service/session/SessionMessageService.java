@@ -5,6 +5,7 @@ import com.solesonic.config.session.SharedSessionSettings;
 import com.solesonic.exception.session.SessionException;
 import com.solesonic.model.a2a.A2AParticipantMessage;
 import com.solesonic.model.chat.ChatRequest;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.push.PushEvent;
 import com.solesonic.model.session.SessionErrorCode;
@@ -49,7 +50,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
+import java.util.function.Function;
 
 /**
  * Sends a message in a shared session: one short run that never parks. In a conversation the run is the
@@ -384,14 +385,15 @@ public class SessionMessageService {
         ChatRequest chatRequest = new ChatRequest(outgoing.displayText(), outgoing.commands(), outgoing.attachmentIds(), null);
         String senderName = sender.getName();
 
-        Supplier<Flux<String>> chunks;
+        Function<ChatMessage, Flux<String>> chunks;
 
         if (conversation) {
-            chunks = () -> promptService.streamShared(chatId, senderUserId, senderName, seatedNames, chatRequest, authentication);
+            chunks = inFlightMessage -> promptService.streamShared(chatId, senderUserId, senderName, seatedNames, chatRequest,
+                    inFlightMessage, authentication);
         } else {
             A2AParticipantMessage participantMessage = outgoing.message(senderName, names);
 
-            chunks = () -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, collector);
+            chunks = _ -> a2aAgentService.delegateShared(chatId, agentName, participantMessage, collector);
         }
 
         TurnPlan turnPlan = new TurnPlan(runId,

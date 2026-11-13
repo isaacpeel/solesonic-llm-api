@@ -24,8 +24,8 @@ import java.util.Map;
  * Image context is deliberately a user message of its own ahead of the user's words, so the
  * retrieval advisor rewrites only the question. Some chat templates (Mistral, Gemma) reject two
  * user messages in a row outright, so the two are joined here, after memory and retrieval have
- * done their work and before the request leaves. Nothing is persisted from the merged prompt: user
- * rows are saved before the turn starts, and {@code DatabaseChatMemory} never saves a user message.
+ * done their work and before the request leaves. Nothing is persisted from the merged prompt: it sits
+ * beneath the session memory advisor, which has already stored the user's own message.
  */
 public class UserMessageMergingAdvisor implements CallAdvisor, StreamAdvisor {
 

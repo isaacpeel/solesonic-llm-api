@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.config.a2a.A2AAgentRegistry;
+import com.solesonic.config.chat.ConversationAdvisors;
 import com.solesonic.exception.ChatException;
 import com.solesonic.mcp.client.IdentityToolCallback;
 import com.solesonic.model.llm.LlmApiKey;
@@ -19,9 +20,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -55,7 +54,7 @@ public class SlashCommandService {
     private final McpSyncClient mcpSyncClient;
     private final ReactiveStringRedisTemplate redisTemplate;
     private final JsonMapper jsonMapper;
-    private final ChatMemory chatMemory;
+    private final ConversationAdvisors conversationAdvisors;
     private final long cacheTtlSeconds;
     private final boolean warmupOnStartup;
     private final Optional<A2AAgentRegistry> a2aAgentRegistry;
@@ -70,7 +69,7 @@ public class SlashCommandService {
     public SlashCommandService(List<McpSyncClient> mcpSyncClients,
                                ReactiveStringRedisTemplate redisTemplate,
                                JsonMapper jsonMapper,
-                               ChatMemory chatMemory,
+                               ConversationAdvisors conversationAdvisors,
                                @Qualifier(TOOL_CALL_CHAT_MODEL) OpenAiChatModel taskChatModel,
                                Optional<A2AAgentRegistry> a2aAgentRegistry,
                                LocalToolRegistry localToolRegistry,
@@ -81,7 +80,7 @@ public class SlashCommandService {
                                @Value("${solesonic.llm.slash-commands.cache.warmup-on-startup:true}") boolean warmupOnStartup) {
         this.redisTemplate = redisTemplate;
         this.jsonMapper = jsonMapper;
-        this.chatMemory = chatMemory;
+        this.conversationAdvisors = conversationAdvisors;
         this.cacheTtlSeconds = cacheTtlSeconds;
         this.warmupOnStartup = warmupOnStartup;
         this.a2aAgentRegistry = a2aAgentRegistry;
@@ -114,10 +113,8 @@ public class SlashCommandService {
         return ChatClient.builder(taskChatModel)
                 .defaultOptions(OpenAiChatOptions.builder().customHeaders(llmApiKey.authorizationHeaders()))
                 .defaultTools(toolCallback)
-                .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(chatMemory).build(),
-                        simpleLoggerAdvisor
-                )
+                .defaultAdvisors(conversationAdvisors.advisors())
+                .defaultAdvisors(simpleLoggerAdvisor)
                 .build();
     }
 

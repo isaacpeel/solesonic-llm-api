@@ -185,7 +185,7 @@ public class GeneratedImageService {
      * Attaches every unbound image of this chat to the assistant turn that has just been written.
      * <p>
      * Transactional because it has to be: a bulk update needs an active transaction, and the caller
-     * — the chat memory advisor, saving the assistant message — does not run in one.
+     * — the turn's completion, saving the assistant message — does not run in one.
      */
     @Transactional
     public void bind(UUID chatId, UUID chatMessageId) {

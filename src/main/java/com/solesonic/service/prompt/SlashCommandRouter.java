@@ -11,7 +11,10 @@ import com.solesonic.model.prompt.SlashCommand;
 import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationSessionService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import com.solesonic.service.prompt.AttachmentContextResolver.AttachmentResolution;
 import com.solesonic.service.rag.VectorStoreService;
@@ -22,8 +25,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.api.Advisor;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.ai.session.advisor.SessionAdvisors;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -38,11 +44,11 @@ import java.util.UUID;
 
 import static com.solesonic.config.chat.ChatConfig.DEFAULT_CHAT_CLIENT;
 import static com.solesonic.config.chat.ResponseMetadataCaptureAdvisor.RESPONSE_METADATA_CAPTURE;
+import static com.solesonic.config.chat.SessionEventCorrelationAdvisor.SESSION_TURN_RECORD;
 import static com.solesonic.service.prompt.ChatStreamSupport.capturingContentFlux;
 import static com.solesonic.service.prompt.ChatStreamSupport.chatOptions;
 import static com.solesonic.service.prompt.PromptService.AGENT_NAME;
 import static com.solesonic.service.prompt.PromptService.USER_MESSAGE;
-import static org.springframework.ai.chat.client.advisor.api.MemoryAdvisor.CONVERSATION_ID;
 
 /**
  * Dispatches a resolved slash command to the one of four routes that handles it.
@@ -65,6 +71,7 @@ public class SlashCommandRouter {
     private final VectorStoreService vectorStoreService;
     private final ChatMessageService chatMessageService;
     private final LiteLlmHeaderRegistry liteLlmHeaderRegistry;
+    private final ConversationSessionService conversationSessionService;
     private final String agentName;
     private final Duration chatTimeout;
 
@@ -77,8 +84,10 @@ public class SlashCommandRouter {
                               VectorStoreService vectorStoreService,
                               ChatMessageService chatMessageService,
                               LiteLlmHeaderRegistry liteLlmHeaderRegistry,
+                              ConversationSessionService conversationSessionService,
                               @Value("${solesonic.llm.bot.name}") String agentName,
                               @Value("${spring.ai.openai.chat.timeout}") Duration chatTimeout) {
+        this.conversationSessionService = conversationSessionService;
         this.chatClient = chatClient;
         this.mcpClient = mcpClient;
         this.mcpIdentityProvider = mcpIdentityProvider;
@@ -95,6 +104,7 @@ public class SlashCommandRouter {
     /**
      * @param message     the user's own words. The tool routes are given nothing else — image prose
      *                    in a tool's arguments is a search for the wrong thing
+     * @param inFlightMessage the turn's saved user row, which the model routes hand to the session
      * @param attachments what this send's attachments amount to: a rendered block for the routes
      *                    with a message structure, the descriptions themselves for the A2A route,
      *                    which takes a single string
@@ -107,12 +117,13 @@ public class SlashCommandRouter {
                               UUID chatId,
                               UUID userId,
                               String message,
+                              ChatMessage inFlightMessage,
                               AttachmentResolution attachments,
                               Map<String, Object> contextMap,
                               String model,
                               LlmApiKey llmApiKey) {
 
-        return route(slashCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, null);
+        return route(slashCommand, chatId, userId, message, inFlightMessage, attachments, contextMap, model, llmApiKey, null);
     }
 
     /**
@@ -132,13 +143,15 @@ public class SlashCommandRouter {
                                     UUID chatId,
                                     UUID userId,
                                     String message,
+                                    ChatMessage inFlightMessage,
                                     AttachmentResolution attachments,
                                     Map<String, Object> contextMap,
                                     String model,
                                     LlmApiKey llmApiKey,
                                     Set<String> allowedTools) {
 
-        return route(slashCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, Set.copyOf(allowedTools));
+        return route(slashCommand, chatId, userId, message, inFlightMessage, attachments, contextMap, model, llmApiKey,
+                Set.copyOf(allowedTools));
     }
 
     /**
@@ -148,6 +161,7 @@ public class SlashCommandRouter {
                                UUID chatId,
                                UUID userId,
                                String message,
+                               ChatMessage inFlightMessage,
                                AttachmentResolution attachments,
                                Map<String, Object> contextMap,
                                String model,
@@ -156,18 +170,21 @@ public class SlashCommandRouter {
 
         return switch (slashCommand) {
             case PromptSlashCommand promptCommand -> releasingStickyAgent(chatId,
-                    streamMcpPrompt(promptCommand, chatId, userId, message, attachments, contextMap, model, llmApiKey, sharedTools));
+                    streamMcpPrompt(promptCommand, chatId, userId, message, inFlightMessage, attachments, contextMap, model,
+                            llmApiKey, sharedTools));
 
             case ToolSlashCommand toolCommand -> {
                 requireSharedTool(sharedTools, toolCommand.name());
 
-                yield releasingStickyAgent(chatId, toolCallService.stream(chatId, message, toolCommand, contextMap, llmApiKey));
+                yield releasingStickyAgent(chatId,
+                        toolCallService.stream(chatId, message, inFlightMessage, toolCommand, contextMap, llmApiKey));
             }
 
             case LocalToolSlashCommand localToolCommand -> {
                 requireSharedTool(sharedTools, localToolCommand.name());
 
-                yield releasingStickyAgent(chatId, toolCallService.streamLocal(chatId, message, localToolCommand, contextMap, llmApiKey));
+                yield releasingStickyAgent(chatId,
+                        toolCallService.streamLocal(chatId, message, inFlightMessage, localToolCommand, contextMap, llmApiKey));
             }
 
             case AgentSlashCommand agentCommand -> {
@@ -197,6 +214,7 @@ public class SlashCommandRouter {
                                          UUID chatId,
                                          UUID userId,
                                          String message,
+                                         ChatMessage inFlightMessage,
                                          AttachmentResolution attachments,
                                          Map<String, Object> contextMap,
                                          String model,
@@ -205,8 +223,8 @@ public class SlashCommandRouter {
 
         log.info("Prompt invoke: {}", promptCommand.name());
 
-        //Taken before the call, so the lookup that attaches the turn's accounting finds the row the
-        //chat memory advisor is about to write rather than the previous turn's.
+        //Taken before the call, so the lookup that attaches the turn's accounting finds the row this
+        //turn's completion writes rather than the previous turn's.
         ZonedDateTime since = ZonedDateTime.now();
 
         //Joins this turn to the x-litellm-* headers of the HTTP calls it is about to make; the two
@@ -230,11 +248,15 @@ public class SlashCommandRouter {
                 ? vectorStoreService.retrievalAugmentationAdvisor(userId, chatId, llmApiKey)
                 : vectorStoreService.sharedRetrievalAugmentationAdvisor(chatId, llmApiKey);
 
+        ConversationTurn conversationTurn = conversationSessionService.prepareTurn(chatId, inFlightMessage,
+                leadingContext(prompt, attachments.attachmentContext()));
+
         Flux<ChatResponse> promptChatResponse = chatClient.prompt(prompt)
                 .tools((Object[]) toolCallbacks)
                 .advisors(retrievalAdvisor)
+                .advisors(SessionAdvisors.session(conversationTurn.sessionId()))
                 .advisors(advisorSpec -> advisorSpec
-                        .param(CONVERSATION_ID, chatId)
+                        .param(SESSION_TURN_RECORD, conversationTurn.record())
                         .param(RESPONSE_METADATA_CAPTURE, responseMetadataCapture))
                 .toolContext(contextMap)
                 .options(chatOptions(model, chatTimeout, correlationId, llmApiKey))
@@ -242,7 +264,25 @@ public class SlashCommandRouter {
                 .chatResponse();
 
         return capturingContentFlux(promptChatResponse, responseMetadataCapture, chatMessageService,
-                liteLlmHeaderRegistry, chatId, since, correlationId);
+                liteLlmHeaderRegistry, since, correlationId, conversationTurn);
+    }
+
+    /**
+     * The attachment context the session must end with for the request to overlap it by exactly one
+     * message: only when the MCP prompt opens with it. A prompt that opens otherwise is sent as it is,
+     * and the context reaches the model from the request alone.
+     */
+    private static String leadingContext(Prompt prompt, String attachmentContext) {
+        if (attachmentContext == null) {
+            return null;
+        }
+
+        return prompt.getInstructions().stream()
+                .filter(instruction -> !(instruction instanceof SystemMessage))
+                .findFirst()
+                .filter(instruction -> instruction instanceof UserMessage && attachmentContext.equals(instruction.getText()))
+                .map(_ -> attachmentContext)
+                .orElse(null);
     }
 
     private static void requireSharedTool(Set<String> sharedTools, String tool) {

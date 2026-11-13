@@ -86,6 +86,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -110,6 +111,7 @@ class RedisStreamingChatServiceTest {
     private static final UUID CHAT_ID = UUID.randomUUID();
     private static final UUID USER_ID = UUID.randomUUID();
     private static final UUID RUN_ID = UUID.randomUUID();
+    private static final ChatMessage IN_FLIGHT_MESSAGE = new ChatMessage();
 
     private static final String TEXT_MESSAGE_START = "TEXT_MESSAGE_START";
     private static final String TEXT_MESSAGE_CONTENT = "TEXT_MESSAGE_CONTENT";
@@ -200,7 +202,7 @@ class RedisStreamingChatServiceTest {
     }
 
     private void errorTurn(Throwable throwable) {
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.error(throwable));
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(Flux.error(throwable));
 
         runTurn();
     }
@@ -215,12 +217,12 @@ class RedisStreamingChatServiceTest {
 
     private void runTurn() {
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                        .runTurn(CHAT_ID, USER_ID, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), IN_FLIGHT_MESSAGE, authentication))
                 .verifyComplete();
     }
 
     private void modelStreams(String... chunks) {
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.just(chunks));
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(Flux.just(chunks));
     }
 
     private static SideChannelMessage cancelEvent() {
@@ -643,7 +645,7 @@ class RedisStreamingChatServiceTest {
      */
     @Test
     void interruptedTurnPublishesNothingAndDoesNotNotify() {
-        when(promptService.stream(any(), any(), any(), any()))
+        when(promptService.stream(any(), any(), any(), any(), any()))
                 .thenReturn(Flux.error(new InterruptedException("shutting down")));
 
         runTurn();
@@ -699,7 +701,7 @@ class RedisStreamingChatServiceTest {
 
     @Test
     void anInterruptedTurnIsNotPushed() {
-        when(promptService.stream(any(), any(), any(), any()))
+        when(promptService.stream(any(), any(), any(), any(), any()))
                 .thenReturn(Flux.error(new InterruptedException("shutting down")));
 
         runTurn();
@@ -746,7 +748,7 @@ class RedisStreamingChatServiceTest {
         modelStreams("Hello");
 
         StepVerifier.create(redisStreamingChatService
-                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                        .runTurn(CHAT_ID, null, RUN_ID, new ChatRequest("hello", Set.of(), Set.of(), null), IN_FLIGHT_MESSAGE, authentication))
                 .verifyComplete();
 
         verify(activeStreamTracker, never()).put(any(), any());
@@ -782,7 +784,7 @@ class RedisStreamingChatServiceTest {
                 JSON_MAPPER.readTree("{\"message\":\"Play or pass?\",\"elicitationId\":\"%s\"}".formatted(UUID.randomUUID())));
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(
                 Flux.just("Dad, play or pass?")
                         .doOnComplete(() -> elicitationSink.tryEmitNext(elicitation))
                         .concatWith(Flux.just("Dad passes. ", "Penny has to play.")));
@@ -822,7 +824,7 @@ class RedisStreamingChatServiceTest {
         when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
         when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
         when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(Flux.never());
 
         StepVerifier.create(redisStreamingChatService
                         .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
@@ -840,6 +842,27 @@ class RedisStreamingChatServiceTest {
             assertThat(message.role()).isEqualTo(Role.USER);
             assertThat(message.content()).isEqualTo("hello");
         });
+    }
+
+    /**
+     * The route is handed the row the send saved, which is how the model's session knows which message
+     * the advisor is about to store live and must never copy.
+     */
+    @Test
+    void updateHandsTheSavedUserMessageToTheRoute() {
+        ChatMessage userMessage = new ChatMessage();
+        userMessage.setId(UUID.randomUUID());
+
+        when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
+        when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
+        when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(Flux.never());
+
+        StepVerifier.create(redisStreamingChatService
+                        .update(CHAT_ID, USER_ID, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+                .verifyComplete();
+
+        verify(promptService, timeout(5000)).stream(eq(CHAT_ID), eq(USER_ID), any(), same(userMessage), any());
     }
 
     /**
@@ -900,7 +923,7 @@ class RedisStreamingChatServiceTest {
         when(redisStreamService.getLatestOffset(CHAT_ID, USER_ID)).thenReturn(Mono.just("0"));
         when(chatMessageService.saveUserMessage(eq(CHAT_ID), eq(USER_ID), any())).thenReturn(userMessage);
         when(redisStreamService.subscribe(CHAT_ID, USER_ID, "0")).thenReturn(Flux.empty());
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(Flux.never());
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(Flux.never());
     }
 
     /**
@@ -981,14 +1004,14 @@ class RedisStreamingChatServiceTest {
 
     private TurnPlan sharedPlan(Flux<String> chunks, RecordedHooks hooks) {
         return new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
-                () -> chunks, hooks);
+                _ -> chunks, hooks);
     }
 
     @Test
     void aSharedRunWritesToTheOwnersStreamAndTracksItsSender() {
         RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
 
-        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks), IN_FLIGHT_MESSAGE))
                 .verifyComplete();
 
         verify(redisStreamService).publish(eq(CHAT_ID), eq(OWNER_ID), eq(RUN_FINISHED), any());
@@ -1022,7 +1045,7 @@ class RedisStreamingChatServiceTest {
 
         RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty());
 
-        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Look: ", "a lighthouse"), hooks)))
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Look: ", "a lighthouse"), hooks), IN_FLIGHT_MESSAGE))
                 .verifyComplete();
 
         assertThat(publishedTypes()).contains(CUSTOM, TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END);
@@ -1044,9 +1067,9 @@ class RedisStreamingChatServiceTest {
         TurnHooks hooks = mock(TurnHooks.class);
         when(hooks.beforeTerminal(RUN_ID, TurnOutcome.COMPLETED)).thenReturn(Mono.empty());
         TurnPlan turnPlan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam", new ChatRequest("towel", Set.of(), Set.of(), null),
-                () -> Flux.just("Good answer!"), hooks);
+                _ -> Flux.just("Good answer!"), hooks);
 
-        StepVerifier.create(redisStreamingChatService.runTurn(turnPlan)).verifyComplete();
+        StepVerifier.create(redisStreamingChatService.runTurn(turnPlan, IN_FLIGHT_MESSAGE)).verifyComplete();
 
         //finished runs in doFinally, after the completion the verifier waits on.
         verify(hooks, timeout(1000)).finished(RUN_ID);
@@ -1063,7 +1086,7 @@ class RedisStreamingChatServiceTest {
     void aHookThatFailsNeverFailsTheRun() {
         RecordedHooks hooks = new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.error(new IllegalStateException("database down")));
 
-        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks)))
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.just("Good answer!"), hooks), IN_FLIGHT_MESSAGE))
                 .verifyComplete();
 
         assertThat(publishedTypes()).containsExactly(TEXT_MESSAGE_START, TEXT_MESSAGE_CONTENT, TEXT_MESSAGE_END, RUN_FINISHED);
@@ -1074,7 +1097,7 @@ class RedisStreamingChatServiceTest {
         List<String> calls = new CopyOnWriteArrayList<>();
         RecordedHooks hooks = new RecordedHooks(calls, Mono.empty());
 
-        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.error(new TimeoutException("slow")), hooks)))
+        StepVerifier.create(redisStreamingChatService.runTurn(sharedPlan(Flux.error(new TimeoutException("slow")), hooks), IN_FLIGHT_MESSAGE))
                 .verifyComplete();
 
         assertThat(publishedTypes()).containsExactly(CUSTOM, RUN_ERROR);
@@ -1109,7 +1132,7 @@ class RedisStreamingChatServiceTest {
      * guess who sent it from a display name two people may share.
      */
     @Test
-    void aSharedRunsStartedFrameEchoesTheSendersAttachmentsCommandsAndId() throws Exception {
+    void aSharedRunsStartedFrameEchoesTheSendersAttachmentsCommandsAndId() {
         UUID userMessageId = UUID.randomUUID();
         UUID attachmentId = UUID.randomUUID();
         ChatMessage userMessage = new ChatMessage();
@@ -1123,7 +1146,7 @@ class RedisStreamingChatServiceTest {
 
         TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, OWNER_ID, USER_ID, "Sam",
                 new ChatRequest("look", Set.of("web_search"), Set.of(attachmentId), null),
-                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+                _ -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
 
         StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
 
@@ -1157,7 +1180,7 @@ class RedisStreamingChatServiceTest {
 
         TurnPlan plan = new TurnPlan(RUN_ID, CHAT_ID, USER_ID, USER_ID, null,
                 new ChatRequest("hello", Set.of(), Set.of(), null),
-                () -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
+                _ -> Flux.never(), new RecordedHooks(new CopyOnWriteArrayList<>(), Mono.empty()));
 
         StepVerifier.create(redisStreamingChatService.start(plan)).expectNextCount(1).verifyComplete();
 
@@ -1175,7 +1198,7 @@ class RedisStreamingChatServiceTest {
 
         when(elicitationService.registerChat(CHAT_ID)).thenReturn(elicitationSink.asFlux());
 
-        when(promptService.stream(any(), any(), any(), any())).thenReturn(
+        when(promptService.stream(any(), any(), any(), any(), any())).thenReturn(
                 Flux.just(chunks)
                         .doOnComplete(() -> elicitationSink.tryEmitNext(cancelEvent()))
                         .concatWith(Flux.never()));

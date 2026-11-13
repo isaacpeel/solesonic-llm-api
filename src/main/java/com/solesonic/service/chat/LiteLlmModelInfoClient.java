@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.llm.LlmApiKey;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -41,7 +42,7 @@ public class LiteLlmModelInfoClient {
     public LiteLlmModelInfoClient(RestClient.Builder restClientBuilder,
                                   @Value("${spring.ai.openai.base-url}") String baseUrl) {
         this.restClient = restClientBuilder.clone()
-                .baseUrl(StringUtils.removeEnd(baseUrl, "/"))
+                .baseUrl(Strings.CS.removeEnd(baseUrl, "/"))
                 .build();
     }
 

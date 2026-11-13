@@ -205,6 +205,18 @@ The variable is **required**: the application will not start without it.
 | `CHAT_OPENAI_HOST` | Base URL for the OpenAI-compatible chat endpoint | `http://izzy-bot-chat:8080/v1` | Yes | A **full base URL** including the `/v1` path, matching the shape `spring.ai.openai.base-url`/OpenAI itself expects |
 | `DEFAULT_CHAT_MODEL` | Model name the chat server was started with | `qwen2.5:32b` | Yes | Also backs the RAG task and tool-call routing models. A `llama-server`-style process serves whichever single model it was launched with regardless of what's requested, so this mainly seeds a new user's default model preference |
 
+### Model Memory Configuration
+
+The model remembers a chat through a Spring AI session, bounded twice: by turns, and by estimated tokens.
+The user's history (`chat_message`) is never bounded; this only decides what the model is shown. All three
+are **required** with no default, and startup fails on sizes that could not bound anything.
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `SESSION_COMPACTION_TRIGGER_TURNS` | Turns the model's view may hold before it is cut back | `20` | Yes | At least 1, and greater than `SESSION_COMPACTION_KEEP_TURNS`. The view grows turn by turn to this, then drops back, so the start of the prompt moves only occasionally and the model server's prompt cache keeps working |
+| `SESSION_COMPACTION_KEEP_TURNS` | Turns kept when the view is cut back | `10` | Yes | At least 1. Also how far back an existing chat is copied into its session on its first turn |
+| `SESSION_TOKEN_BUDGET` | Ceiling, in estimated tokens, on the history the model is shown | `16000` | Yes | A budget for *history*, not the context size: the system prompt, tool definitions, retrieved documents and the current turn's own tool rounds come on top. Start at roughly half the chat server's `--ctx-size`. Counted with JTokkit, not the served model's tokenizer. Earlier turns' tool results count against it, so large tool output drops older turns sooner. The newest turn is always kept, even alone over the budget |
+
 ### ETL Configuration
 
 Uploaded documents are split, then enriched with keywords and summary metadata before being embedded.

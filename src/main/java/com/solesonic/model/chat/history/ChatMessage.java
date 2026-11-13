@@ -1,5 +1,6 @@
 package com.solesonic.model.chat.history;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
@@ -58,9 +59,7 @@ public class ChatMessage {
 
     /**
      * What the model server reported about this turn, including which model answered it — set only on
-     * {@code ASSISTANT} messages, and only after the chat memory advisor has already written the row.
-     * That ordering is forced: the token counts arrive on the final, generation-less chunk of the
-     * stream, which is long after the advisor saves. Stays null for a turn no chat model answered, an
+     * {@code ASSISTANT} messages, and only after the turn's completion has written the row. Stays null for a turn no chat model answered, an
      * A2A delegation above all. Persisted, unlike {@link #generatedImages}, because there is no other
      * table to reconstruct it from.
      * <p>
@@ -100,6 +99,9 @@ public class ChatMessage {
     @JdbcTypeCode(SqlTypes.JSON)
     @JsonProperty(access = JsonProperty.Access.READ_ONLY)
     private List<ToolCallSummary> toolCalls;
+
+    @JsonIgnore
+    private String sessionEventId;
 
     @Transient
     private List<ChatAttachmentSummary> attachments;
@@ -215,6 +217,14 @@ public class ChatMessage {
 
     public void setResponseMetadataCalls(List<ModelCallMetadata> responseMetadataCalls) {
         this.responseMetadataCalls = responseMetadataCalls;
+    }
+
+    public String getSessionEventId() {
+        return sessionEventId;
+    }
+
+    public void setSessionEventId(String sessionEventId) {
+        this.sessionEventId = sessionEventId;
     }
 
     public List<ChatAttachmentSummary> getAttachments() {

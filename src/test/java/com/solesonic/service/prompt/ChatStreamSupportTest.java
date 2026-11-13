@@ -3,12 +3,15 @@ package com.solesonic.service.prompt;
 import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.chat.SessionTurnRecord;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.ai.chat.messages.AssistantMessage;
@@ -17,6 +20,7 @@ import org.springframework.ai.chat.metadata.ChatResponseMetadata;
 import org.springframework.ai.chat.metadata.DefaultUsage;
 import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.chat.model.Generation;
+import org.springframework.ai.model.tool.ToolExecutionResult;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
@@ -31,6 +35,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
@@ -54,6 +61,11 @@ class ChatStreamSupportTest {
     @Mock
     private ChatMessageService chatMessageService;
 
+    @Mock
+    private ConversationTurn conversationTurn;
+
+    private final SessionTurnRecord sessionTurnRecord = new SessionTurnRecord();
+
     private UUID chatId;
     private ZonedDateTime since;
 
@@ -61,6 +73,9 @@ class ChatStreamSupportTest {
     void setUp() {
         chatId = UUID.randomUUID();
         since = ZonedDateTime.now();
+
+        lenient().when(conversationTurn.chatId()).thenReturn(chatId);
+        lenient().when(conversationTurn.record()).thenReturn(sessionTurnRecord);
     }
 
     private static ChatResponseMetadata.Builder baseMetadata() {
@@ -99,7 +114,53 @@ class ChatStreamSupportTest {
 
         return ChatStreamSupport.capturingContentFlux(chatResponseFlux.doOnNext(responseMetadataCapture::accept),
                 responseMetadataCapture, chatMessageService, new LiteLlmHeaderRegistry(Clock.systemUTC()),
-                chatId, since, UUID.randomUUID());
+                since, UUID.randomUUID(), conversationTurn);
+    }
+
+    /**
+     * The turn's assistant row is written from the text the client was shown, and only then is the
+     * accounting attached to it: the other way round there would be no row to attach to.
+     */
+    @Test
+    void completesTheTurnWithTheStreamedTextBeforeRecordingItsAccounting() {
+        StepVerifier.create(capturing(Flux.just(
+                        textChunk("hel"),
+                        textChunk("lo"),
+                        finishReasonChunk("STOP"),
+                        usageChunk(1042, 259))))
+                .expectNext("hel", "lo")
+                .verifyComplete();
+
+        InOrder inOrder = inOrder(conversationTurn, chatMessageService);
+        inOrder.verify(conversationTurn).complete("hello");
+        inOrder.verify(chatMessageService).updateResponseMetadata(eq(chatId), eq(since), any(), anyList());
+        verify(conversationTurn, never()).abandon();
+    }
+
+    @Test
+    void notesALoopThatEndedWithoutAModelRound() {
+        StepVerifier.create(capturing(Flux.just(
+                        textChunk("invoice created"),
+                        finishReasonChunk(ToolExecutionResult.FINISH_REASON))))
+                .expectNext("invoice created")
+                .verifyComplete();
+
+        assertThat(sessionTurnRecord.endedWithoutModelRound()).isTrue();
+    }
+
+    /**
+     * A completion that fails errors the turn — the reply has no row — but must not also abandon it: the
+     * user row was already linked by then.
+     */
+    @Test
+    void aFailedCompletionErrorsTheTurnWithoutAbandoningIt() {
+        doThrow(new IllegalStateException("the database is down")).when(conversationTurn).complete("hello");
+
+        StepVerifier.create(capturing(Flux.just(textChunk("hello"))))
+                .expectNext("hello")
+                .verifyError(IllegalStateException.class);
+
+        verify(conversationTurn, never()).abandon();
     }
 
     /**
@@ -172,8 +233,8 @@ class ChatStreamSupportTest {
     }
 
     /**
-     * A failed turn has no assistant row to attach anything to — the chat memory advisor never saved
-     * one — so the error path must not write a partial accounting.
+     * A failed turn has no assistant row to attach anything to — none is saved — so the error path must
+     * not write a partial accounting. It abandons the turn instead.
      */
     @Test
     void persistsNothingWhenTheStreamFails() {
@@ -184,6 +245,8 @@ class ChatStreamSupportTest {
                 .verifyError(IllegalStateException.class);
 
         verifyNoInteractions(chatMessageService);
+        verify(conversationTurn).abandon();
+        verify(conversationTurn, never()).complete(any());
     }
 
     /**
@@ -201,6 +264,8 @@ class ChatStreamSupportTest {
                 .verify();
 
         verifyNoInteractions(chatMessageService);
+        verify(conversationTurn).abandon();
+        verify(conversationTurn, never()).complete(any());
     }
 
     /**

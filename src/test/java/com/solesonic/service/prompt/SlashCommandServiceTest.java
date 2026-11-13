@@ -1,6 +1,7 @@
 package com.solesonic.service.prompt;
 
 import com.solesonic.config.a2a.A2AAgentRegistry;
+import com.solesonic.config.chat.ConversationAdvisors;
 import com.solesonic.exception.ChatException;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.service.chat.events.ToolActivityReporter;
@@ -17,7 +18,6 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.ReactiveValueOperations;
@@ -62,8 +62,7 @@ class SlashCommandServiceTest {
     private JsonMapper jsonMapper;
     @Mock
     private ObjectWriter objectWriter;
-    @Mock
-    private ChatMemory chatMemory;
+    private final ConversationAdvisors conversationAdvisors = new ConversationAdvisors(List.of(), null, null);
     @Mock
     private OpenAiChatModel taskChatModel;
     @Mock
@@ -83,7 +82,7 @@ class SlashCommandServiceTest {
                 List.of(mcpSyncClient),
                 redisTemplate,
                 jsonMapper,
-                chatMemory,
+                conversationAdvisors,
                 taskChatModel,
                 Optional.empty(),
                 localToolRegistry,
@@ -276,7 +275,7 @@ class SlashCommandServiceTest {
     void agentCommandsFollowTheRegistryRatherThanTheCache() {
         A2AAgentRegistry a2aAgentRegistry = mock(A2AAgentRegistry.class);
         SlashCommandService service = new SlashCommandService(List.of(mcpSyncClient), redisTemplate, jsonMapper,
-                chatMemory, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
+                conversationAdvisors, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
                 jwtAuthenticationConverter, toolActivityReporter, 3600L, false);
 
         stubCachedCatalog(List.of(promptCommand("ask")));
@@ -296,7 +295,7 @@ class SlashCommandServiceTest {
     void theCachedCatalogHoldsNoAgentOrLocalToolCommands() {
         A2AAgentRegistry a2aAgentRegistry = mock(A2AAgentRegistry.class);
         SlashCommandService service = new SlashCommandService(List.of(mcpSyncClient), redisTemplate, jsonMapper,
-                chatMemory, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
+                conversationAdvisors, taskChatModel, Optional.of(a2aAgentRegistry), localToolRegistry, jwtDecoder,
                 jwtAuthenticationConverter, toolActivityReporter, 3600L, false);
 
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);

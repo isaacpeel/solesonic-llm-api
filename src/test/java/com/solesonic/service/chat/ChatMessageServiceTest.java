@@ -7,6 +7,8 @@ import com.solesonic.model.chat.ModelCallMetadata;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.chat.history.HistoryEntry;
+import com.solesonic.model.chat.history.SessionLinks;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
@@ -42,15 +44,14 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * Guards the trailing-USER rule in {@link ChatMessageService#findByChatId(UUID)}.
- * <p>
- * The in-flight user message is persisted before the stream starts, and the chat memory advisor
- * supplies it again as the live user message. If this rule regresses the model sees the current
- * turn twice on every turn — which produces no error, just quietly worse output. That silence is
- * why it gets a dedicated test.
+ * The user's history as {@code chat_message} holds it, and the rows of it the model's session is
+ * given: {@link ChatMessageService#historyEntries} turns rows into one model message each, and is all
+ * the session copy ever reads.
  */
 @ExtendWith(MockitoExtension.class)
 class ChatMessageServiceTest {
+
+    private static final String CONTEXT_SEPARATOR = System.lineSeparator() + System.lineSeparator();
 
     @Mock
     private ChatMessageRepository chatMessageRepository;
@@ -72,6 +73,9 @@ class ChatMessageServiceTest {
 
     @Mock
     private UserMemoryService userMemoryService;
+
+    @Mock
+    private ConversationSessionCleanup conversationSessionCleanup;
 
     @InjectMocks
     private ChatMessageService chatMessageService;
@@ -105,7 +109,7 @@ class ChatMessageServiceTest {
         UUID sam = UUID.randomUUID();
         UUID unknown = UUID.randomUUID();
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId, List.of(
                 sentBy(alex, "hello"),
                 chatMessage(MessageType.ASSISTANT, "hi Alex"),
                 sentBy(sam, "and me?"),
@@ -113,13 +117,14 @@ class ChatMessageServiceTest {
                 sentBy(unknown, "who am I"),
                 chatMessage(MessageType.ASSISTANT, "someone"),
                 sentBy(null, "no sender"),
-                chatMessage(MessageType.ASSISTANT, "ok"),
-                sentBy(alex, "in flight")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+                chatMessage(MessageType.ASSISTANT, "ok")), Map.of(alex, "Alex", sam, "Sam")));
 
         assertThat(messages).extracting(Message::getText).containsExactly(
                 "Alex: hello", "hi Alex", "Sam: and me?", "hi Sam", "Someone: who am I", "someone", "Someone: no sender", "ok");
+    }
+
+    private static List<Message> messages(List<HistoryEntry> historyEntries) {
+        return historyEntries.stream().map(HistoryEntry::message).toList();
     }
 
     @Test
@@ -170,34 +175,31 @@ class ChatMessageServiceTest {
     }
 
     @Test
-    void sharedHistoryKeepsEachSendersImageDescriptionsAheadOfTheirNamedMessage() {
+    void sharedHistoryJoinsEachSendersImageDescriptionsAheadOfTheirNamedMessage() {
         UUID alex = UUID.randomUUID();
         UUID sam = UUID.randomUUID();
         ChatMessage fromAlex = sentBy(alex, "what is this?");
         ChatMessage fromSam = sentBy(sam, "and this?");
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                fromAlex, chatMessage(MessageType.ASSISTANT, "a login screen"), fromSam,
-                chatMessage(MessageType.ASSISTANT, "a chart"), sentBy(alex, "in flight")));
         when(chatAttachmentService.descriptions(chatId)).thenReturn(List.of(
                 description(fromAlex.getId(), "a login screen"), description(fromSam.getId(), "a bar chart")));
 
-        List<Message> messages = chatMessageService.findByChatId(chatId, Map.of(alex, "Alex", sam, "Sam"));
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId, List.of(
+                fromAlex, chatMessage(MessageType.ASSISTANT, "a login screen"), fromSam,
+                chatMessage(MessageType.ASSISTANT, "a chart")), Map.of(alex, "Alex", sam, "Sam")));
 
-        assertThat(messages).extracting(Message::getText).hasSize(6);
-        assertThat(messages.get(0).getText()).contains("a login screen");
-        assertThat(messages.get(1).getText()).isEqualTo("Alex: what is this?");
-        assertThat(messages.get(3).getText()).contains("a bar chart");
-        assertThat(messages.get(4).getText()).isEqualTo("Sam: and this?");
+        assertThat(messages).hasSize(4);
+        assertThat(messages.get(0).getText()).contains("a login screen").endsWith(CONTEXT_SEPARATOR + "Alex: what is this?");
+        assertThat(messages.get(2).getText()).contains("a bar chart").endsWith(CONTEXT_SEPARATOR + "Sam: and this?");
     }
 
     @Test
     void sharedHistoryNamesAMessageSentWithoutText() {
         UUID alex = UUID.randomUUID();
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                sentBy(alex, ""), chatMessage(MessageType.ASSISTANT, "nice picture"), sentBy(alex, "in flight")));
 
-        assertThat(chatMessageService.findByChatId(chatId, Map.of(alex, "Alex"))).extracting(Message::getText)
+        assertThat(messages(chatMessageService.historyEntries(chatId,
+                List.of(sentBy(alex, ""), chatMessage(MessageType.ASSISTANT, "nice picture")), Map.of(alex, "Alex"))))
+                .extracting(Message::getText)
                 .containsExactly("Alex: (sent without any text)", "nice picture");
     }
 
@@ -223,119 +225,64 @@ class ChatMessageServiceTest {
 
     @Test
     void historyWithoutNamesIsUnattributed() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+        assertThat(messages(chatMessageService.historyEntries(chatId, List.of(
                 sentBy(UUID.randomUUID(), "hello"),
-                chatMessage(MessageType.ASSISTANT, "hi")));
-
-        assertThat(chatMessageService.findByChatId(chatId)).extracting(Message::getText).containsExactly("hello", "hi");
-    }
-
-    @Test
-    void findByChatIdDropsTrailingUserMessage() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                chatMessage(MessageType.USER, "first question"),
-                chatMessage(MessageType.ASSISTANT, "first answer"),
-                chatMessage(MessageType.USER, "in-flight question")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).hasSize(2);
-        assertThat(messages.getFirst()).isInstanceOf(UserMessage.class);
-        assertThat(messages.getFirst().getText()).isEqualTo("first question");
-        assertThat(messages.getLast()).isInstanceOf(AssistantMessage.class);
-        assertThat(messages.getLast().getText()).isEqualTo("first answer");
-    }
-
-    @Test
-    void findByChatIdKeepsTrailingAssistantMessage() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                chatMessage(MessageType.USER, "question"),
-                chatMessage(MessageType.ASSISTANT, "answer")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).hasSize(2);
-        assertThat(messages.getLast()).isInstanceOf(AssistantMessage.class);
-    }
-
-    @Test
-    void findByChatIdReturnsEmptyForSingleUserMessage() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                chatMessage(MessageType.USER, "the only turn so far")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).isEmpty();
+                chatMessage(MessageType.ASSISTANT, "hi")), null)))
+                .extracting(Message::getText)
+                .containsExactly("hello", "hi");
     }
 
     /**
-     * The description is replayed as its own message ahead of the turn it belongs to — the same
-     * shape PromptService builds for the live turn, and the shape that keeps the retrieval advisor
-     * from folding image context into a user message and burying it under retrieved documents.
+     * One entry per row, in the order given, each carrying the row it came from: the session copy
+     * links every row to the event it became by that row's id.
      */
     @Test
-    void findByChatIdReplaysImageDescriptionsAsTheirOwnMessage() {
+    void historyEntriesKeepEveryRowInOrderWithTheRowItCameFrom() {
+        ChatMessage question = chatMessage(MessageType.USER, "question");
+        ChatMessage answer = chatMessage(MessageType.ASSISTANT, "answer");
+        ChatMessage trailing = chatMessage(MessageType.USER, "a failed turn's question");
+
+        List<HistoryEntry> historyEntries = chatMessageService.historyEntries(chatId, List.of(question, answer, trailing), null);
+
+        assertThat(historyEntries).extracting(HistoryEntry::chatMessage).containsExactly(question, answer, trailing);
+        assertThat(historyEntries.get(0).message()).isInstanceOf(UserMessage.class);
+        assertThat(historyEntries.get(1).message()).isInstanceOf(AssistantMessage.class);
+        assertThat(historyEntries.get(2).message().getText()).isEqualTo("a failed turn's question");
+    }
+
+    /**
+     * The description is joined into the user message it belongs to, ahead of the user's words: one
+     * message per row keeps a context and its question on the same side of any window cut, and is what
+     * the merging advisor sends for a live turn anyway.
+     */
+    @Test
+    void historyEntriesJoinImageDescriptionsAheadOfTheUsersWords() {
         ChatMessage withImage = chatMessage(MessageType.USER, "what is this?");
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                withImage,
-                chatMessage(MessageType.ASSISTANT, "a login screen")));
         when(chatAttachmentService.descriptions(chatId))
                 .thenReturn(List.of(description(withImage.getId(), "a login form with two fields")));
 
-        List<Message> messages = chatMessageService.findByChatId(chatId);
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId,
+                List.of(withImage, chatMessage(MessageType.ASSISTANT, "a login screen")), null));
 
-        assertThat(messages).hasSize(3);
-
+        assertThat(messages).hasSize(2);
         assertThat(messages.getFirst().getText())
                 .contains("a login form with two fields")
-                .doesNotContain("what is this?");
-
-        assertThat(messages.get(1).getText()).isEqualTo("what is this?");
+                .endsWith(CONTEXT_SEPARATOR + "what is this?");
     }
 
     @Test
-    void findByChatIdLeavesUserTurnsWithoutAttachmentsAlone() {
+    void historyEntriesLeaveUserTurnsWithoutAttachmentsAlone() {
         ChatMessage withImage = chatMessage(MessageType.USER, "what is this?");
         ChatMessage withoutImage = chatMessage(MessageType.USER, "and this?");
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                withImage,
-                withoutImage,
-                chatMessage(MessageType.ASSISTANT, "two screens")));
         when(chatAttachmentService.descriptions(chatId))
                 .thenReturn(List.of(description(withImage.getId(), "a login form")));
 
-        List<Message> messages = chatMessageService.findByChatId(chatId);
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId,
+                List.of(withImage, withoutImage, chatMessage(MessageType.ASSISTANT, "two screens")), null));
 
-        //Context message, the turn it describes, the turn without an image, then the answer.
-        assertThat(messages).extracting(Message::getText)
-                .containsSubsequence("what is this?", "and this?");
-
-        assertThat(messages).extracting(Message::getText)
-                .noneMatch(_ -> false);
-    }
-
-    /**
-     * The in-flight turn's descriptions are injected by the prompt path, not here. If this row were
-     * kept, the current turn's image context would reach the model twice.
-     */
-    @Test
-    void findByChatIdDoesNotReplayDescriptionsForTheInFlightTurn() {
-        ChatMessage inFlight = chatMessage(MessageType.USER, "in-flight question");
-
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                chatMessage(MessageType.USER, "first question"),
-                chatMessage(MessageType.ASSISTANT, "first answer"),
-                inFlight));
-        when(chatAttachmentService.descriptions(chatId))
-                .thenReturn(List.of(description(inFlight.getId(), "a login form")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).hasSize(2);
-        assertThat(messages).extracting(Message::getText)
-                .noneMatch(text -> text != null && text.contains("a login form"));
+        assertThat(messages.get(1).getText()).isEqualTo("and this?");
     }
 
     /**
@@ -345,34 +292,54 @@ class ChatMessageServiceTest {
      * elicitation prompt) is UI-only and must never reach the model.
      */
     @Test
-    void findByChatIdExcludesSystemMessagesFromReplay() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
+    void historyEntriesNeverIncludeSystemRows() {
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId, List.of(
                 chatMessage(MessageType.USER, "first question"),
                 chatMessage(MessageType.ASSISTANT, "first answer"),
                 chatMessage(MessageType.SYSTEM, "Chat canceled."),
                 chatMessage(MessageType.USER, "second question"),
-                chatMessage(MessageType.ASSISTANT, "second answer")));
+                chatMessage(MessageType.ASSISTANT, "second answer")), null));
 
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).hasSize(4);
         assertThat(messages).extracting(Message::getMessageType)
                 .containsExactly(MessageType.USER, MessageType.ASSISTANT, MessageType.USER, MessageType.ASSISTANT);
     }
 
     @Test
-    void findByChatIdKeepsTurnsFromOtherCommands() {
+    void historyEntriesKeepTurnsFromOtherCommands() {
         ChatMessage toolRequest = chatMessage(MessageType.USER, "search for cats");
         toolRequest.setCommands(Set.of("search"));
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                toolRequest,
-                chatMessage(MessageType.ASSISTANT, "cats found")));
-
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).extracting(Message::getText)
+        assertThat(messages(chatMessageService.historyEntries(chatId,
+                List.of(toolRequest, chatMessage(MessageType.ASSISTANT, "cats found")), null)))
+                .extracting(Message::getText)
                 .containsExactly("search for cats", "cats found");
+    }
+
+    @Test
+    void saveAssistantReplySavesTheTrimmedTextWithItsSessionLink() {
+        Chat chat = new Chat();
+        chat.setId(chatId);
+        chat.setUserId(UUID.randomUUID());
+
+        when(chatRepository.findById(chatId)).thenReturn(Optional.of(chat));
+        when(chatMessageRepository.save(any(ChatMessage.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        Optional<ChatMessage> saved = chatMessageService.saveAssistantReply(chatId, "  the answer \n", SessionLinks.ADVISOR_REPLY);
+
+        assertThat(saved).hasValueSatisfying(reply -> {
+            assertThat(reply.getMessage()).isEqualTo("the answer");
+            assertThat(reply.getMessageType()).isEqualTo(MessageType.ASSISTANT);
+            assertThat(reply.getSessionEventId()).isEqualTo(SessionLinks.ADVISOR_REPLY);
+            assertThat(reply.getTimestamp()).isNotNull();
+        });
+    }
+
+    @Test
+    void saveAssistantReplySavesNothingForABlankReply() {
+        assertThat(chatMessageService.saveAssistantReply(chatId, "  ", SessionLinks.ADVISOR_REPLY)).isEmpty();
+        assertThat(chatMessageService.saveAssistantReply(chatId, null, null)).isEmpty();
+
+        verify(chatMessageRepository, never()).save(any(ChatMessage.class));
     }
 
     @Test
@@ -407,12 +374,10 @@ class ChatMessageServiceTest {
     }
 
     @Test
-    void findByChatIdReturnsEmptyForEmptyHistory() {
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of());
+    void historyEntriesOfNoRowsAreEmptyWithoutReadingAttachments() {
+        assertThat(chatMessageService.historyEntries(chatId, List.of(), null)).isEmpty();
 
-        List<Message> messages = chatMessageService.findByChatId(chatId);
-
-        assertThat(messages).isEmpty();
+        verify(chatAttachmentService, never()).descriptions(any());
     }
 
     /**
@@ -646,23 +611,50 @@ class ChatMessageServiceTest {
      * later turn would reach a model with no idea a photo was ever sent.
      */
     @Test
-    void findByChatIdNamesAnImageThatWasNeverDescribed() {
+    void historyEntriesNameAnImageThatWasNeverDescribed() {
         ChatMessage withImage = chatMessage(MessageType.USER, "make the sky purple");
         UUID attachmentId = UUID.randomUUID();
 
-        when(chatMessageRepository.findByChatId(chatId)).thenReturn(List.of(
-                withImage,
-                chatMessage(MessageType.ASSISTANT, "here it is")));
         when(chatAttachmentService.undescribedImages(chatId)).thenReturn(List.of(new ChatAttachmentSummary(
                 attachmentId, withImage.getId(), "beach.png", null, "image/png", 10L, false, null, false, null)));
 
-        List<Message> messages = chatMessageService.findByChatId(chatId);
+        List<Message> messages = messages(chatMessageService.historyEntries(chatId,
+                List.of(withImage, chatMessage(MessageType.ASSISTANT, "here it is")), null));
 
-        assertThat(messages).hasSize(3);
+        assertThat(messages).hasSize(2);
         assertThat(messages.getFirst()).isInstanceOf(UserMessage.class);
         assertThat(messages.getFirst().getText())
                 .contains("beach.png")
-                .contains("never described");
-        assertThat(messages.get(1).getText()).isEqualTo("make the sky purple");
+                .contains("never described")
+                .endsWith(CONTEXT_SEPARATOR + "make the sky purple");
+    }
+
+    /**
+     * The session's log is append-only, so one message leaves the model's memory only by dropping the
+     * chat's session; its next turn rebuilds it without the message.
+     */
+    @Test
+    void deleteMakesTheModelForgetTheChatsSession() {
+        ChatMessage message = chatMessage(MessageType.USER, "forget this");
+
+        when(chatService.requireOwned(chatId)).thenReturn(UUID.randomUUID());
+        when(chatMessageRepository.findById(message.getId())).thenReturn(Optional.of(message));
+
+        chatMessageService.delete(chatId, message.getId());
+
+        verify(conversationSessionCleanup).forget(chatId);
+    }
+
+    @Test
+    void deleteOfAMessageFromAnotherChatLeavesTheSessionAlone() {
+        ChatMessage messageFromAnotherChat = chatMessage(MessageType.USER, "not this chat's question");
+        messageFromAnotherChat.setChatId(UUID.randomUUID());
+
+        when(chatMessageRepository.findById(messageFromAnotherChat.getId())).thenReturn(Optional.of(messageFromAnotherChat));
+
+        assertThatThrownBy(() -> chatMessageService.delete(chatId, messageFromAnotherChat.getId()))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(conversationSessionCleanup, never()).forget(any());
     }
 }

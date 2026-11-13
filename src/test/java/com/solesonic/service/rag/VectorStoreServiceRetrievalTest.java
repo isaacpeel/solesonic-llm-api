@@ -93,7 +93,6 @@ class VectorStoreServiceRetrievalTest {
 
         when(userPreferencesService.get(userId)).thenReturn(new UserPreferences());
         when(vectorStore.similaritySearch(any(SearchRequest.class))).thenReturn(List.of());
-        when(taskChatModel.getDefaultOptions()).thenReturn(OpenAiChatOptions.builder().build());
         when(taskChatModel.getOptions()).thenReturn(OpenAiChatOptions.builder().build());
         when(taskChatModel.call(any(Prompt.class))).thenReturn(
                 new ChatResponse(List.of(new Generation(new AssistantMessage("Does the warranty cover labor?")))));
@@ -121,6 +120,7 @@ class VectorStoreServiceRetrievalTest {
     /**
      * Sends {@code message} after one earlier exchange, through the advisor under test.
      */
+    @SuppressWarnings("all")
     private String askFollowUp(String message) {
         ChatModel chatModel = new ChatModel() {
             @Override
@@ -165,6 +165,7 @@ class VectorStoreServiceRetrievalTest {
                 any(Pageable.class))).thenReturn(new PageImpl<>(documents));
     }
 
+    @SuppressWarnings("all")
     private String askShared(String message) {
         ChatModel chatModel = new ChatModel() {
             @Override
@@ -188,6 +189,7 @@ class VectorStoreServiceRetrievalTest {
      * personal documents: the conversation's own, which every participant added to, then the global corpus.
      */
     @Test
+    @SuppressWarnings("all")
     void theSharedAdvisorSearchesExactlyTheChatAndGlobalTiers() {
         configure(false, 0);
         sharedChatHasDocuments();
@@ -240,6 +242,7 @@ class VectorStoreServiceRetrievalTest {
     }
 
     @Test
+    @SuppressWarnings("all")
     void aSharedChatWithDocumentsGetsTheFloorOnItsChatTierWhenConfigured() {
         configure(false, 3);
         sharedChatHasDocuments("warranty.pdf");

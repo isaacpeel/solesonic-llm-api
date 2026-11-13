@@ -84,6 +84,9 @@ class ChatServiceTest {
     @Mock
     private com.solesonic.repository.session.SessionParticipantRepository sessionParticipantRepository;
 
+    @Mock
+    private ConversationSessionCleanup conversationSessionCleanup;
+
     @BeforeEach
     void setUp() {
         userRequestContext.setUserId(USER_ID);
@@ -100,7 +103,8 @@ class ChatServiceTest {
                 interestUpdateService,
                 userRequestContext,
                 sharedSessionRepository,
-                sessionParticipantRepository);
+                sessionParticipantRepository,
+                conversationSessionCleanup);
     }
 
     /**
@@ -123,6 +127,7 @@ class ChatServiceTest {
 
         verify(userMemoryService).forgetChat(CHAT_ID, USER_ID);
         verify(interestUpdateService).deleteForChat(CHAT_ID, USER_ID);
+        verify(conversationSessionCleanup).forget(CHAT_ID);
     }
 
     @Test
@@ -131,6 +136,7 @@ class ChatServiceTest {
 
         assertThatThrownBy(() -> chatService.delete(CHAT_ID)).isInstanceOf(ResponseStatusException.class);
 
+        verify(conversationSessionCleanup, never()).forget(any());
         verify(userMemoryService, never()).forgetChat(any(), any());
         verify(interestUpdateService, never()).deleteForChat(any(), any());
     }
@@ -316,6 +322,20 @@ class ChatServiceTest {
         verify(redisStreamService).deleteStream(CHAT_ID, USER_ID);
     }
 
+    /**
+     * A shared conversation runs the default route, so it has a model session, which has no foreign key
+     * to the chat either.
+     */
+    @Test
+    void deletingASharedChatDropsItsModelSession() {
+        when(chatRepository.lockById(CHAT_ID)).thenReturn(Optional.of(sharedChat(com.solesonic.model.chat.history.ChatKind.SHARED)));
+        stubTransientState();
+
+        chatService.deleteSharedChat(CHAT_ID);
+
+        verify(conversationSessionCleanup).forget(CHAT_ID);
+    }
+
     @Test
     void deletingASharedChatLeavesNoPersonalMemoryOrInterestCleanupToRun() {
         when(chatRepository.lockById(CHAT_ID)).thenReturn(Optional.of(sharedChat(com.solesonic.model.chat.history.ChatKind.SHARED)));
@@ -332,7 +352,7 @@ class ChatServiceTest {
 
         chatService.deleteSharedChat(CHAT_ID);
 
-        verifyNoInteractions(chatAttachmentService, generatedImageService);
+        verifyNoInteractions(chatAttachmentService, generatedImageService, conversationSessionCleanup);
         verify(chatRepository, never()).delete(any());
     }
 

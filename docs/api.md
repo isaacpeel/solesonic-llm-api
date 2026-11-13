@@ -165,7 +165,7 @@ A turn ends with exactly one of `RUN_FINISHED` or `RUN_ERROR`. `CUSTOM` values a
 documented below, unchanged — only the envelope moved.
 
 `messageId` on the `TEXT_MESSAGE_*` frames is a wire id for the streamed reply. It is **not** the
-id of the persisted assistant row, which the chat memory writes on its own; read that from history.
+id of the persisted assistant row, which is written when the turn completes; read that from history.
 
 **One deliberate departure from AG-UI.** AG-UI's native human-in-the-loop mechanism is an
 interrupt: the run finishes with an interrupt outcome, and the client starts a new run to resume.

@@ -3,6 +3,7 @@ package com.solesonic.service.session;
 import com.solesonic.config.a2a.A2AAgentRegistry;
 import com.solesonic.exception.session.SessionException;
 import com.solesonic.model.a2a.A2AAgentSource;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.a2a.A2AParticipantMessage;
 import com.solesonic.model.a2a.RegisteredAgent;
 import com.solesonic.model.push.PushEvent;
@@ -62,6 +63,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.same;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -74,6 +76,7 @@ class SessionMessageServiceTest {
     private static final UUID MESSAGE_ID = UUID.randomUUID();
     private static final UUID ELICITATION_ID = UUID.randomUUID();
     private static final Authentication NO_AUTHENTICATION = null;
+    private static final ChatMessage IN_FLIGHT_MESSAGE = new ChatMessage();
 
     @Mock
     private SharedSessionService sharedSessionService;
@@ -142,7 +145,7 @@ class SessionMessageServiceTest {
     }
 
     private A2AParticipantMessage sentToTheAgent(TurnPlan turnPlan) {
-        turnPlan.chunks().get().blockLast();
+        turnPlan.chunks().apply(IN_FLIGHT_MESSAGE).blockLast();
 
         ArgumentCaptor<A2AParticipantMessage> participantMessage = ArgumentCaptor.forClass(A2AParticipantMessage.class);
         verify(a2aAgentService).delegateShared(eq(CHAT_ID), eq(AGENT), participantMessage.capture(), any());
@@ -359,7 +362,7 @@ class SessionMessageServiceTest {
         when(sharedSessionService.requireSeated(SESSION_ID, SAM)).thenReturn(sharedSession);
         when(sharedSessionService.requireSeated(SESSION_ID, ALEX)).thenReturn(sharedSession);
         when(sharedSessionService.participants(SESSION_ID)).thenReturn(seated);
-        when(promptService.streamShared(any(), any(), any(), any(), any(), any())).thenReturn(Flux.just("hi"));
+        when(promptService.streamShared(any(), any(), any(), any(), any(), any(), any())).thenReturn(Flux.just("hi"));
     }
 
     @Test
@@ -417,10 +420,11 @@ class SessionMessageServiceTest {
         assertThat(turnPlan.senderName()).isEqualTo("Sam");
         assertThat(turnPlan.chatRequest().chatMessage()).isEqualTo("hello all");
 
-        turnPlan.chunks().get().blockLast();
+        turnPlan.chunks().apply(IN_FLIGHT_MESSAGE).blockLast();
 
         ArgumentCaptor<com.solesonic.model.chat.ChatRequest> chatRequest = ArgumentCaptor.forClass(com.solesonic.model.chat.ChatRequest.class);
-        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam", "Kim")), chatRequest.capture(), eq(authentication));
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam", "Kim")), chatRequest.capture(),
+                same(IN_FLIGHT_MESSAGE), eq(authentication));
         assertThat(chatRequest.getValue().chatMessage()).isEqualTo("hello all");
         assertThat(chatRequest.getValue().commands()).isEmpty();
         assertThat(chatRequest.getValue().attachmentIds()).isEmpty();
@@ -469,9 +473,9 @@ class SessionMessageServiceTest {
         assertThat(turnPlan.chatRequest().chatMessage()).isEmpty();
         assertThat(turnPlan.chatRequest().attachmentIds()).containsExactlyInAnyOrder(image, document);
 
-        turnPlan.chunks().get().blockLast();
+        turnPlan.chunks().apply(IN_FLIGHT_MESSAGE).blockLast();
         ArgumentCaptor<com.solesonic.model.chat.ChatRequest> chatRequest = ArgumentCaptor.forClass(com.solesonic.model.chat.ChatRequest.class);
-        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), any(), chatRequest.capture(), any());
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), any(), chatRequest.capture(), same(IN_FLIGHT_MESSAGE), any());
         assertThat(chatRequest.getValue().attachmentIds()).containsExactlyInAnyOrder(image, document);
     }
 
@@ -697,9 +701,9 @@ class SessionMessageServiceTest {
                 .thenReturn(List.of(participant(ALEX, 0, "Alex"), participant(SAM, 1, "Sam"), kim));
 
         sessionMessageService.send(SESSION_ID, SAM, typed("hello"), NO_AUTHENTICATION);
-        startedPlan().chunks().get().blockLast();
+        startedPlan().chunks().apply(IN_FLIGHT_MESSAGE).blockLast();
 
-        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam")), any(), any());
+        verify(promptService).streamShared(eq(CHAT_ID), eq(SAM), eq("Sam"), eq(List.of("Alex", "Sam")), any(), same(IN_FLIGHT_MESSAGE), any());
     }
 
     @Test

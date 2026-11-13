@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
 import java.time.ZonedDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,9 +41,8 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
     List<ChatMessage> findByChatIdAndMessageTypeOrderByTimestampDesc(UUID chatId, MessageType messageType, Limit limit);
 
     /**
-     * The row the chat memory advisor just wrote for this turn — found by timing, not id, because
-     * {@link com.solesonic.config.chat.DatabaseChatMemory} never hands the id back to the caller
-     * that knows the turn's {@code responseMetadata}. Mirrors how
+     * The assistant row this turn's completion just wrote — found by timing, not id, because the
+     * caller that knows the turn's {@code responseMetadata} is not the one that saved it. Mirrors how
      * {@link com.solesonic.service.image.GeneratedImageService#forChatSince} locates this turn's
      * images.
      */
@@ -62,6 +62,48 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessage, UUID> 
              where chatMessage.chatId = :chatId
            """)
     int deleteByChatId(UUID chatId);
+
+    /**
+     * The rows of a chat the model's session has not seen, of the given types, written before the
+     * in-flight row and not the in-flight row itself, oldest first. Bounding by the in-flight row keeps
+     * a concurrent send to the same chat from copying the other turn's message, which that turn's
+     * advisor is about to store.
+     */
+    @Query("""
+            from ChatMessage chatMessage
+             where chatMessage.chatId = :chatId
+               and chatMessage.sessionEventId is null
+               and chatMessage.messageType in :messageTypes
+               and chatMessage.timestamp < :before
+               and chatMessage.id <> :inFlightId
+             order by chatMessage.timestamp asc, chatMessage.id asc
+           """)
+    List<ChatMessage> findUnlinked(UUID chatId, Collection<MessageType> messageTypes, ZonedDateTime before, UUID inFlightId);
+
+    /**
+     * Links rows to the session, only those it has not seen: a row is linked once.
+     */
+    @Modifying
+    @Query("""
+            update ChatMessage chatMessage
+               set chatMessage.sessionEventId = :sessionEventId
+             where chatMessage.chatId = :chatId
+               and chatMessage.id in :chatMessageIds
+               and chatMessage.sessionEventId is null
+           """)
+    int linkSessionEvent(UUID chatId, Collection<UUID> chatMessageIds, String sessionEventId);
+
+    /**
+     * Forgets every link of a chat, so its next turn copies the history into a new session.
+     */
+    @Modifying
+    @Query("""
+            update ChatMessage chatMessage
+               set chatMessage.sessionEventId = null
+             where chatMessage.chatId = :chatId
+               and chatMessage.sessionEventId is not null
+           """)
+    int unlinkSession(UUID chatId);
 
     /**
      * Copies the most recent {@code limit} {@code USER} and {@code ASSISTANT} messages of one chat into

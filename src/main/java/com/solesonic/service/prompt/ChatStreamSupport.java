@@ -3,8 +3,10 @@ package com.solesonic.service.prompt;
 import com.solesonic.config.chat.ResponseMetadataCaptureAdvisor;
 import com.solesonic.model.chat.ResponseMetadata;
 import com.solesonic.model.chat.ResponseMetadataCapture;
+import com.solesonic.model.chat.SessionTurnRecord;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
@@ -20,6 +22,7 @@ import java.time.ZonedDateTime;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.solesonic.service.litellm.LiteLlmHeaderInterceptor.METADATA;
 import static com.solesonic.service.litellm.LiteLlmHeaderInterceptor.TURN_ID;
@@ -101,8 +104,8 @@ public final class ChatStreamSupport {
     }
 
     /**
-     * {@link #contentFlux} plus recording what the server reported about the turn, once the stream
-     * completes.
+     * {@link #contentFlux} plus ending the turn: saving its reply and recording what the server
+     * reported about it, once the stream completes.
      * <p>
      * {@code responseMetadataCapture} is not fed from this flux. It has to be the one the call was
      * given as its {@link ResponseMetadataCaptureAdvisor#RESPONSE_METADATA_CAPTURE} advisor param,
@@ -110,28 +113,52 @@ public final class ChatStreamSupport {
      * reaches this flux, every tool-call round has been filtered out and the last round's usage has
      * lost its native usage, and {@code tokens_per_second} with it.
      * <p>
-     * {@code since} has to be taken before the call is made: the assistant row this attaches to is
-     * written by the chat memory advisor partway through, and the timestamp is the only handle the
-     * caller has on it — the advisor never hands its id back. The ordering that makes the lookup
-     * find that row rather than miss it is not incidental: {@code MessageChatMemoryAdvisor} saves
-     * from inside {@code MessageAggregator}'s own {@code doOnComplete}, registered upstream of this
-     * one, and Reactor fires completion callbacks upstream first.
+     * On completion the turn's assistant row is written first, from the text the client was shown,
+     * and the metadata attached to it after, found by {@code since}. A completed stream means the
+     * session advisor has already stored the reply: it stores it inside {@code MessageAggregator}'s own
+     * {@code doOnComplete}, registered upstream of this one, and Reactor fires completion callbacks
+     * upstream first.
      * <p>
-     * Deliberately {@code doOnComplete} rather than {@code doFinally}. A cancelled turn cancels this
-     * flux and a failed one errors it, and neither leaves an assistant row to attach anything to —
-     * so both skip the write for free rather than recording half a turn.
+     * A failed or cancelled turn saves nothing and only links the user row, if the advisor stored it.
+     * A completion that fails errors the turn without also abandoning it.
      */
     public static Flux<String> capturingContentFlux(Flux<ChatResponse> chatResponseFlux,
                                                     ResponseMetadataCapture responseMetadataCapture,
                                                     ChatMessageService chatMessageService,
                                                     LiteLlmHeaderRegistry liteLlmHeaderRegistry,
-                                                    UUID chatId,
                                                     ZonedDateTime since,
-                                                    UUID correlationId) {
+                                                    UUID correlationId,
+                                                    ConversationTurn conversationTurn) {
 
-        return contentFlux(chatResponseFlux)
-                .doOnComplete(() -> persist(responseMetadataCapture, chatMessageService, liteLlmHeaderRegistry,
-                        chatId, since, correlationId));
+        StringBuilder reply = new StringBuilder();
+        AtomicBoolean completed = new AtomicBoolean();
+
+        return chatResponseFlux
+                .doOnNext(chatResponse -> recordFinishReasons(chatResponse, conversationTurn.record()))
+                .transform(ChatStreamSupport::contentFlux)
+                .doOnNext(reply::append)
+                .doOnComplete(() -> {
+                    completed.set(true);
+                    conversationTurn.complete(reply.toString());
+                    persist(responseMetadataCapture, chatMessageService, liteLlmHeaderRegistry,
+                            conversationTurn.chatId(), since, correlationId);
+                })
+                .doOnError(_ -> {
+                    if (!completed.get()) {
+                        conversationTurn.abandon();
+                    }
+                })
+                .doOnCancel(() -> {
+                    if (!completed.get()) {
+                        conversationTurn.abandon();
+                    }
+                });
+    }
+
+    static void recordFinishReasons(ChatResponse chatResponse, SessionTurnRecord sessionTurnRecord) {
+        for (Generation generation : chatResponse.getResults()) {
+            sessionTurnRecord.recordFinishReason(generation.getMetadata().getFinishReason());
+        }
     }
 
     /**
@@ -140,7 +167,7 @@ public final class ChatStreamSupport {
      * rather than "the server never said".
      * <p>
      * Bookkeeping, and bookkeeping must not cost the user their answer — the same stance
-     * {@code DatabaseChatMemory.bindGeneratedImages} takes, for the same reason. Every chunk has
+     * {@code ConversationSessionService} takes on binding images, for the same reason. Every chunk has
      * already reached the client by the time this runs, and an exception escaping a
      * {@code doOnComplete} turns that flux's completion into an error for everything downstream:
      * a delivered turn would be republished as an error frame over a failed write of token counts.

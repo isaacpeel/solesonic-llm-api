@@ -63,8 +63,8 @@ public interface GeneratedImageRepository extends JpaRepository<GeneratedImage, 
 
     /**
      * Images produced during one turn, for the {@code RUN_FINISHED} payload. Bounded by time rather than by
-     * message id because the assistant message is written by the chat memory advisor, which does
-     * not hand its id back to the stream that is about to finish.
+     * message id because the assistant message is written when the route's model stream completes,
+     * which does not hand its id back to the stream that is about to finish.
      */
     @Query("""
             select new com.solesonic.model.image.GeneratedImageSummary(

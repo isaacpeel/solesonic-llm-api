@@ -2,9 +2,10 @@ package com.solesonic.service.rag;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
-import org.springframework.ai.chat.memory.MessageWindowChatMemory;
+import org.springframework.ai.session.DefaultSessionService;
+import org.springframework.ai.session.InMemorySessionRepository;
+import org.springframework.ai.session.SessionService;
+import org.springframework.ai.session.advisor.SessionAdvisors;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.MessageType;
@@ -104,12 +105,13 @@ class ChatDocumentQueryAugmenterTest {
     }
 
     /**
-     * Step 0.7 of the plan, pinned. Chat memory runs before retrieval, so it stores what the user
-     * typed; the manifest and passages reach the model for this call only and never enter history.
-     * If the advisor order ever flipped, every turn would persist the augmented text.
+     * Step 0.7 of the plan, pinned. The session memory advisor runs before retrieval, so it stores what
+     * the user typed; the manifest and passages reach the model for this call only and never enter the
+     * session. If the advisor order ever flipped, every turn would persist the augmented text.
      */
     @Test
-    void chatMemoryStoresTheOriginalMessageNotTheAugmentedOne() {
+    @SuppressWarnings("all")
+    void sessionMemoryStoresTheOriginalMessageNotTheAugmentedOne() {
         List<Prompt> seenByModel = new ArrayList<>();
 
         ChatModel chatModel = new ChatModel() {
@@ -120,7 +122,9 @@ class ChatDocumentQueryAugmenterTest {
             }
         };
 
-        ChatMemory chatMemory = MessageWindowChatMemory.builder().build();
+        SessionService sessionService = DefaultSessionService.builder()
+                .sessionRepository(InMemorySessionRepository.builder().build())
+                .build();
 
         RetrievalAugmentationAdvisor retrievalAugmentationAdvisor = RetrievalAugmentationAdvisor.builder()
                 .documentRetriever(query -> PASSAGES)
@@ -128,13 +132,13 @@ class ChatDocumentQueryAugmenterTest {
                 .build();
 
         ChatClient chatClient = ChatClient.builder(chatModel)
-                .defaultAdvisors(MessageChatMemoryAdvisor.builder(chatMemory).build())
+                .defaultAdvisors(SessionAdvisors.builder(sessionService).build())
                 .build();
 
         chatClient.prompt()
                 .user("Does it cover labor?")
                 .advisors(retrievalAugmentationAdvisor)
-                .advisors(advisorSpec -> advisorSpec.param(ChatMemory.CONVERSATION_ID, "chat-1"))
+                .advisors(SessionAdvisors.session("chat-1"))
                 .call()
                 .content();
 
@@ -144,7 +148,7 @@ class ChatDocumentQueryAugmenterTest {
                 .contains("warranty.pdf")
                 .contains("Labor is covered for the first year.");
 
-        List<Message> remembered = chatMemory.get("chat-1");
+        List<Message> remembered = sessionService.getMessages("chat-1");
 
         assertThat(remembered)
                 .filteredOn(message -> message.getMessageType() == MessageType.USER)

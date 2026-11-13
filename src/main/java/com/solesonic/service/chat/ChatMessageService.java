@@ -8,6 +8,7 @@ import com.solesonic.model.chat.attachment.ChatAttachmentSummary;
 import com.solesonic.model.chat.history.Chat;
 import com.solesonic.model.chat.history.ChatKind;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.model.chat.history.HistoryEntry;
 import com.solesonic.model.image.GeneratedImageSummary;
 import com.solesonic.repository.chat.ChatMessageRepository;
 import com.solesonic.repository.chat.ChatRepository;
@@ -46,6 +47,7 @@ public class ChatMessageService {
     private static final Logger log =  LoggerFactory.getLogger(ChatMessageService.class);
 
     private static final String UNKNOWN_SENDER = "Someone";
+    private static final String CONTEXT_SEPARATOR = System.lineSeparator() + System.lineSeparator();
     private final ChatMessageRepository chatMessageRepository;
     private final ChatRepository chatRepository;
     private final UserPreferencesService userPreferencesService;
@@ -53,6 +55,7 @@ public class ChatMessageService {
     private final ChatService chatService;
     private final GeneratedImageService generatedImageService;
     private final UserMemoryService userMemoryService;
+    private final ConversationSessionCleanup conversationSessionCleanup;
 
     public ChatMessageService(ChatMessageRepository chatMessageRepository,
                               ChatRepository chatRepository,
@@ -60,7 +63,8 @@ public class ChatMessageService {
                               ChatAttachmentService chatAttachmentService,
                               ChatService chatService,
                               GeneratedImageService generatedImageService,
-                              UserMemoryService userMemoryService) {
+                              UserMemoryService userMemoryService,
+                              ConversationSessionCleanup conversationSessionCleanup) {
         this.chatMessageRepository = chatMessageRepository;
         this.chatRepository = chatRepository;
         this.userPreferencesService = userPreferencesService;
@@ -68,6 +72,7 @@ public class ChatMessageService {
         this.chatService = chatService;
         this.generatedImageService = generatedImageService;
         this.userMemoryService = userMemoryService;
+        this.conversationSessionCleanup = conversationSessionCleanup;
     }
 
     public ChatMessage save(ChatMessage message) {
@@ -106,10 +111,8 @@ public class ChatMessageService {
      * Persists the in-flight user message before the stream starts, so its id is known and can be
      * published on the {@code RUN_STARTED} event.
      * <p>
-     * This is deliberately the caller's job rather than the chat memory advisor's: the advisor never
-     * runs on the A2A route, so user messages were previously not persisted there at all.
-     * {@link com.solesonic.config.chat.DatabaseChatMemory} skips {@code USER} messages to avoid
-     * saving them twice.
+     * This is deliberately the caller's job rather than the session advisors': they never run on the
+     * A2A route. They store the live message in the model's session, never here.
      */
     @Transactional
     public ChatMessage saveUserMessage(UUID chatId, UUID userId, ChatRequest chatRequest) {
@@ -133,7 +136,8 @@ public class ChatMessageService {
 
     /**
      * Deletes one message and everything stored under it: its attachments, the images generated on
-     * its turn, and whatever was learned from it alone.
+     * its turn, and whatever was learned from it alone. The model forgets it too: the session's log
+     * is append-only, so the chat's session is dropped and its next turn rebuilds it.
      * <p>
      * Scoped exactly as {@link ChatService#requireOwned(UUID)} is: a chat owned by someone else must
      * be indistinguishable from one that does not exist, and a message id from another chat must be
@@ -156,6 +160,8 @@ public class ChatMessageService {
         userMemoryService.forgetChatMessage(chatId, messageId, userId);
 
         chatMessageRepository.delete(chatMessage);
+
+        conversationSessionCleanup.forget(chatId);
     }
 
     public void updateElicitationResponse(UUID chatId, UUID elicitationId, Map<String, Object> elicitationResponse) {
@@ -167,11 +173,8 @@ public class ChatMessageService {
     }
 
     /**
-     * Attaches token usage and timing to the assistant message {@link com.solesonic.config.chat.DatabaseChatMemory}
-     * already wrote for this turn. This has to be an update rather than something the advisor sets
-     * directly: {@code responseMetadata} isn't final until the whole stream completes, which is after
-     * that row is saved. {@code since} is the turn's start time, not the message's — the caller has
-     * no other way to name the row it wants, because the advisor never hands the id back.
+     * Attaches token usage and timing to the assistant message {@link #saveAssistantReply} already
+     * wrote for this turn. {@code since} is the turn's start time, not the message's.
      * <p>
      * The totals and the per-call breakdown are two columns and are written together, in the one
      * transaction, so a reader can never see a total without the calls that produced it.
@@ -304,94 +307,108 @@ public class ChatMessageService {
                 .findFirst();
     }
 
-    public List<Message> findByChatId(UUID chatId) {
-        return findByChatId(chatId, null);
+    /**
+     * Saves the reply of a turn the session advisors ran. This is the only place such a row is
+     * written: the user's history is written by this code, never by a session write.
+     *
+     * @param sessionEventId what the session knows about the reply, see
+     *                       {@link com.solesonic.model.chat.history.SessionLinks}, or null when it
+     *                       holds no assistant message for it and the next turn must copy it
+     * @return the saved row, or empty when the reply had no text
+     */
+    @Transactional
+    public Optional<ChatMessage> saveAssistantReply(UUID chatId, String text, String sessionEventId) {
+        String sanitizedText = sanitize(text);
+
+        if (sanitizedText == null) {
+            return Optional.empty();
+        }
+
+        ChatMessage chatMessage = new ChatMessage();
+        chatMessage.setChatId(chatId);
+        chatMessage.setMessageType(MessageType.ASSISTANT);
+        chatMessage.setMessage(sanitizedText);
+        chatMessage.setSessionEventId(sessionEventId);
+
+        return Optional.of(save(chatMessage));
+    }
+
+    private static String sanitize(String text) {
+        if (text == null) {
+            return null;
+        }
+
+        String trimmed = text.trim();
+
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+
+        return trimmed;
     }
 
     /**
-     * {@link #findByChatId(UUID)} for a shared conversation, where each user message reaches the model
-     * as {@code "<name>: <text>"}. The name comes from {@code participantNames} by the message's sender,
-     * or is "Someone" for a sender not in it. The prefix is for the model only: no stored row has it.
+     * Turns {@code USER} and {@code ASSISTANT} rows of one chat into the messages the model reads, one
+     * message per row, in the order given. {@code SYSTEM} rows are UI-only notifications and are
+     * skipped: replaying one puts a system-role message outside position zero, which some chat
+     * templates reject.
+     * <p>
+     * A user row's image context — its described images, then the ones only named — is joined into the
+     * same message ahead of the user's words, with a blank line between, exactly as
+     * {@code UserMessageMergingAdvisor} sends a live turn. One message per row keeps a context and its
+     * question on the same side of any window cut, and keeps the session's turn count honest. The
+     * descriptions are read in one query per chat and were generated when the image was first sent, so
+     * this never calls the vision model.
+     * <p>
+     * In a shared conversation each user message reaches the model as {@code "<name>: <text>"}, the
+     * name by the message's sender, or "Someone" for a sender not in {@code participantNames}. The
+     * prefix is for the model only: no stored row has it.
      *
      * @param participantNames names by user id, or null for a chat whose messages are not attributed
      */
-    public List<Message> findByChatId(UUID chatId, Map<UUID, String> participantNames) {
-        List<ChatMessage> chatMessages = chatMessageRepository.findByChatId(chatId);
-
-        // The in-flight user message is persisted before the stream starts, and the chat memory
-        // advisor supplies it again as the live user message. Without dropping it here the model
-        // would see the current turn twice, every turn.
-        if (CollectionUtils.isNotEmpty(chatMessages)
-                && chatMessages.getLast().getMessageType() == MessageType.USER) {
-            chatMessages = chatMessages.subList(0, chatMessages.size() - 1);
+    @Transactional(readOnly = true)
+    public List<HistoryEntry> historyEntries(UUID chatId, List<ChatMessage> chatMessages, Map<UUID, String> participantNames) {
+        if (CollectionUtils.isEmpty(chatMessages)) {
+            return List.of();
         }
 
-        if(CollectionUtils.isNotEmpty(chatMessages)) {
-            List<Message> messages = new ArrayList<>(chatMessages.size());
+        Map<UUID, List<ChatAttachmentDescription>> descriptionsByMessageId = chatAttachmentService
+                .descriptions(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
 
-            // Image context has to be replayed, or a follow-up question about an attached image
-            // reaches the model with no idea an image was ever involved. One query per chat, not
-            // per message; the descriptions were generated when the image was first sent, so this
-            // never calls the vision model.
-            Map<UUID, List<ChatAttachmentDescription>> descriptionsByMessageId = chatAttachmentService
-                    .descriptions(chatId)
-                    .stream()
-                    .collect(Collectors.groupingBy(ChatAttachmentDescription::chatMessageId));
+        Map<UUID, List<ChatAttachmentSummary>> undescribedByMessageId = chatAttachmentService
+                .undescribedImages(chatId)
+                .stream()
+                .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
 
-            //An image used only as a reference has no description to replay, so it is named instead:
-            //otherwise a later turn would not know an image was ever sent.
-            Map<UUID, List<ChatAttachmentSummary>> undescribedByMessageId = chatAttachmentService
-                    .undescribedImages(chatId)
-                    .stream()
-                    .collect(Collectors.groupingBy(ChatAttachmentSummary::chatMessageId));
+        List<HistoryEntry> historyEntries = new ArrayList<>(chatMessages.size());
 
-            for(ChatMessage chatMessage : chatMessages) {
-                // Every persisted SYSTEM row is a UI-only notification (cancellation, progress,
-                // failure, elicitation prompt) rather than a real conversation turn — the actual
-                // system prompt is rebuilt fresh per turn in PromptService and never stored as a
-                // row. Replaying one back to the model puts a system-role message outside position
-                // zero, which some chat templates (via litellm) reject outright.
-                if (chatMessage.getMessageType() == MessageType.SYSTEM) {
-                    continue;
+        for (ChatMessage chatMessage : chatMessages) {
+            String messageText = Objects.requireNonNullElse(chatMessage.getMessage(), "");
+
+            Message message = switch (chatMessage.getMessageType()) {
+                case USER -> {
+                    String text = participantNames == null
+                            ? messageText
+                            : SharedMessageText.forModel(senderName(participantNames, chatMessage.getSenderUserId()), messageText);
+
+                    String imageContext = imageContext(
+                            descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()),
+                            undescribedByMessageId.getOrDefault(chatMessage.getId(), List.of()));
+
+                    yield new UserMessage(imageContext == null ? text : imageContext + CONTEXT_SEPARATOR + text);
                 }
+                case ASSISTANT -> new AssistantMessage(messageText);
+                default -> null;
+            };
 
-                String messageText = chatMessage.getMessage();
-
-                Message message;
-                switch (chatMessage.getMessageType()) {
-                    case USER -> {
-                        assert messageText != null;
-
-                        // Adjacent to the user message it describes, not merged into it — the same
-                        // shape the live turn builds in PromptService, so a replayed turn and the
-                        // turn that produced it look identical to the model.
-                        String imageContext = imageContext(
-                                descriptionsByMessageId.getOrDefault(chatMessage.getId(), List.of()),
-                                undescribedByMessageId.getOrDefault(chatMessage.getId(), List.of()));
-
-                        if (imageContext != null) {
-                            messages.add(new UserMessage(imageContext));
-                        }
-
-                        message = new UserMessage(participantNames == null
-                                ? messageText
-                                : SharedMessageText.forModel(senderName(participantNames, chatMessage.getSenderUserId()), messageText));
-                    }
-                    case ASSISTANT -> {
-                        assert messageText != null;
-                        message = new AssistantMessage(messageText);
-                    }
-                    default -> throw new IllegalStateException(
-                            "Unexpected message type in chat history: " + chatMessage.getMessageType());
-                }
-
-                messages.add(message);
+            if (message != null) {
+                historyEntries.add(new HistoryEntry(chatMessage, message));
             }
-
-            return messages;
         }
 
-        return List.of();
+        return historyEntries;
     }
 
     private static String senderName(Map<UUID, String> participantNames, UUID senderUserId) {

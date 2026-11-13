@@ -603,6 +603,32 @@ Agents such as `/network` are reached through LiteLLM's agent gateway.
 - **Every participant needs a model key.** The A2A call uses the gateway key, but a user without a key gets
   nothing, here as elsewhere.
 - **Pushes carry fixed text and ids only.** They never name another participant or anything said in the session.
+- **In a shared conversation, one participant's tool results stay in the model's context for the others' turns.**
+  Tools run as the sender, and the model's session replays earlier turns' tool calls and results (see Model
+  Memory). The allowlist is web search and image generation, so what is replayed is public pages; a personal tool
+  added to `SHARED_CONVERSATION_TOOLS` would expose its raw output to the room, not only the reply.
+
+## Model Memory
+
+- **The session holds what `chat_message` never did: tool calls and tool results.** Mail, Jira issues and web
+  pages a tool returned are persisted in `ai_session_event` and replayed to the model for as long as they are in
+  the window. They follow the same rule as conversation content: never logged above DEBUG, never in the
+  security log.
+- **Only the model reads the session.** No endpoint returns it. Memory reflection and interest discovery read
+  `chat_message` and must never read the session: reflection's prompt-injection defence rests on evidence being
+  `USER` rows, and tool output must never become evidence of what the user said.
+- **The session goes with its chat.** Deleting a chat, a shared chat or one message drops the chat's session
+  (there is no foreign key); the next turn rebuilds it from `chat_message`, without the deleted message and
+  without earlier tool traffic.
+- **The owner is the chat's owner**, recorded as the session's principal (indexed in `ai_session_index`), so a
+  user's sessions can be found. Nothing purges them by user yet: the user lifecycle purge does not touch
+  sessions. The session id is the chat id, and every route reaches it only after the chat's ownership check.
+- **Stored tool output is a standing prompt-injection channel.** A tool result from a slash tool route (mail,
+  Jira) stays in the window and is replayed on later plain-chat turns, which offer web tools. Text inside a mail
+  or issue can therefore steer a later turn's tool calls until it leaves the window.
+- **Failures are logged by exception type only**, never message: a database error can echo row content.
+- **Storage is not bounded.** Compaction bounds what the model reads, not what is stored; a stale session can be
+  deleted and is rebuilt on its next turn.
 
 ## Security Monitoring
 

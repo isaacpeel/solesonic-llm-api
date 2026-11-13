@@ -70,6 +70,7 @@ public class ChatService {
     private final UserRequestContext userRequestContext;
     private final SharedSessionRepository sharedSessionRepository;
     private final SessionParticipantRepository sessionParticipantRepository;
+    private final ConversationSessionCleanup conversationSessionCleanup;
 
     /**
      * Stands in for "no shared chats" in an {@code id in (...)} list, which an empty collection would
@@ -95,7 +96,9 @@ public class ChatService {
             InterestUpdateService interestUpdateService,
             UserRequestContext userRequestContext,
             SharedSessionRepository sharedSessionRepository,
-            SessionParticipantRepository sessionParticipantRepository) {
+            SessionParticipantRepository sessionParticipantRepository,
+            ConversationSessionCleanup conversationSessionCleanup) {
+        this.conversationSessionCleanup = conversationSessionCleanup;
         this.sharedSessionRepository = sharedSessionRepository;
         this.sessionParticipantRepository = sessionParticipantRepository;
         this.chatRepository = chatRepository;
@@ -272,7 +275,7 @@ public class ChatService {
 
     /**
      * Deletes a conversation and everything stored under it: its messages, the images attached to
-     * them, the images generated inside it, and everything learned from it.
+     * them, the images generated inside it, everything learned from it, and the model's session.
      * <p>
      * The cascade is written out here because the database will not do it — none of those tables
      * carries a foreign key to {@code chat}, so deleting the row alone would leave a transcript and
@@ -295,6 +298,7 @@ public class ChatService {
         generatedImageService.deleteForChat(chatId);
         userMemoryService.forgetChat(chatId, userId);
         interestUpdateService.deleteForChat(chatId, userId);
+        conversationSessionCleanup.forget(chatId);
 
         int messages = chatMessageRepository.deleteByChatId(chatId);
 
@@ -312,7 +316,7 @@ public class ChatService {
      * none of those tables has a foreign key to {@code chat}: the attachments (with their ingested documents
      * and vector chunks, which belong to the chat itself) and the generated images. A shared chat has no
      * memories or news, so there is nothing of those to forget. The session rows follow the chat by
-     * {@code on delete cascade}.
+     * {@code on delete cascade}; the model's session has no foreign key to it and is dropped here.
      */
     @Transactional
     public void deleteSharedChat(UUID chatId) {
@@ -321,6 +325,7 @@ public class ChatService {
                 .ifPresent(chat -> {
                     chatAttachmentService.deleteForChat(chatId);
                     generatedImageService.deleteForChat(chatId);
+                    conversationSessionCleanup.forget(chatId);
 
                     int messages = chatMessageRepository.deleteByChatId(chatId);
 

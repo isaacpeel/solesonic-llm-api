@@ -246,7 +246,7 @@ public class RedisStreamingChatService {
                         runStarted(turnPlan, savedTurn.chatMessage(), savedTurn.attachments()))
                         .thenReturn(savedTurn.chatMessage()))
                 .map(chatMessage -> {
-                    runTurn(turnPlan).contextWrite(TurnMdc.into(turnMdc)).subscribe();
+                    runTurn(turnPlan, chatMessage).contextWrite(TurnMdc.into(turnMdc)).subscribe();
 
                     return new StartedRun(turnPlan.runId(), chatMessage.getId());
                 });
@@ -258,7 +258,7 @@ public class RedisStreamingChatService {
                                       ChatRequest chatRequest,
                                       Authentication authentication) {
         return new TurnPlan(runId, chatId, userId, userId, null, chatRequest,
-                () -> promptService.stream(chatId, userId, chatRequest, authentication),
+                inFlightMessage -> promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication),
                 new ConversationHooks(chatId, userId));
     }
 
@@ -343,18 +343,22 @@ public class RedisStreamingChatService {
                        UUID userId,
                        UUID runId,
                        ChatRequest chatRequest,
+                       ChatMessage inFlightMessage,
                        Authentication authentication) {
-        return runTurn(conversationPlan(runId, chatId, userId, chatRequest, authentication));
+        return runTurn(conversationPlan(runId, chatId, userId, chatRequest, authentication), inFlightMessage);
     }
 
-    Mono<Void> runTurn(TurnPlan turnPlan) {
+    /**
+     * @param inFlightMessage the user message saved before the run started
+     */
+    Mono<Void> runTurn(TurnPlan turnPlan, ChatMessage inFlightMessage) {
         UUID chatId = turnPlan.chatId();
 
         trackActiveStream(turnPlan.senderUserId(), chatId);
 
         //Marks the start of this turn, so the finished payload can name the images the turn produced.
-        //Time rather than message id because the assistant message is written by the chat memory
-        //advisor, which does not hand its id back here.
+        //Time rather than message id because the assistant message is written by the route, which
+        //does not hand its id back here.
         ZonedDateTime turnStarted = ZonedDateTime.now();
 
         turnToolCalls.clear(chatId);
@@ -375,15 +379,15 @@ public class RedisStreamingChatService {
         Turn turn = new Turn(chatId, turnPlan.streamUserId(), turnPlan.senderUserId(), turnPlan.runId(),
                 UUID.randomUUID().toString(), turnStarted, turnPlan.hooks());
 
-        return streamTurn(turn, turnPlan.chunks(), cancelEvents, promptEvents)
+        return streamTurn(turn, () -> turnPlan.chunks().apply(inFlightMessage), cancelEvents, promptEvents)
                 .onErrorResume(error -> handleStreamError(turn, error))
                 .doFinally(_ -> cleanup(turn));
     }
 
     /**
      * The identifiers one turn's frames carry. {@code messageId} is a wire id for the assistant's
-     * text message only: the persisted assistant row is written by the chat memory advisor, which
-     * assigns its own id and never hands it back here. Frames go to {@code streamUserId}'s stream;
+     * text message only: the persisted assistant row is written when the route's model stream
+     * completes, with an id of its own that never reaches here. Frames go to {@code streamUserId}'s stream;
      * {@code senderUserId} is who sent the message.
      */
     private record Turn(UUID chatId,
@@ -485,9 +489,9 @@ public class RedisStreamingChatService {
                     //a late subscribe — still finalises the turn with the image on it.
                     responseMessage.setGeneratedImages(completedTurn.generatedImages());
 
-                    //Read back rather than carried down from the model call: the row is written by the
-                    //chat memory advisor mid-turn and the accounting is attached to it once the stream
-                    //completes, both of which are behind us by here. Null for a turn no chat model
+                    //Read back rather than carried down from the model call: the row is written and the
+                    //accounting attached to it once the model stream completes, both of which are behind
+                    //us by here. Null for a turn no chat model
                     //answered.
                     responseMessage.setResponseMetadata(completedTurn.responseMetadata());
                     responseMessage.setResponseMetadataCalls(completedTurn.responseMetadataCalls());

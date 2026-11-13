@@ -6,6 +6,8 @@ import com.solesonic.mcp.client.McpIdentityProvider;
 import com.solesonic.model.chat.ChatRequest;
 import com.solesonic.model.chat.attachment.ChatAttachmentDescription;
 import com.solesonic.model.chat.ResponseMetadata;
+import com.solesonic.model.chat.SessionTurnRecord;
+import com.solesonic.model.chat.history.ChatMessage;
 import com.solesonic.model.llm.LlmApiKey;
 import com.solesonic.model.prompt.AgentSlashCommand;
 import com.solesonic.model.prompt.LocalToolSlashCommand;
@@ -13,6 +15,8 @@ import com.solesonic.model.prompt.ToolSlashCommand;
 import com.solesonic.service.a2a.A2AAgentService;
 import com.solesonic.service.a2a.A2AStickyAgentService;
 import com.solesonic.service.chat.ChatMessageService;
+import com.solesonic.service.chat.ConversationSessionService;
+import com.solesonic.service.chat.ConversationTurn;
 import com.solesonic.service.etl.ChatDocumentHealer;
 import com.solesonic.service.chat.ChatModelSelection;
 import com.solesonic.service.litellm.LiteLlmHeaderRegistry;
@@ -74,6 +78,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -140,8 +145,15 @@ class PromptServiceTest {
     @Mock
     private ChatDocumentHealer chatDocumentHealer;
 
+    @Mock
+    private ConversationSessionService conversationSessionService;
+
+    @Mock
+    private ConversationTurn conversationTurn;
+
     private UUID chatId;
     private UUID userId;
+    private ChatMessage inFlightMessage;
 
     private PromptService promptService;
 
@@ -149,6 +161,15 @@ class PromptServiceTest {
     void setUp() {
         chatId = UUID.randomUUID();
         userId = UUID.randomUUID();
+
+        inFlightMessage = new ChatMessage();
+        inFlightMessage.setId(UUID.randomUUID());
+        inFlightMessage.setChatId(chatId);
+
+        lenient().when(conversationSessionService.prepareTurn(any(), any(), any())).thenReturn(conversationTurn);
+        lenient().when(conversationTurn.chatId()).thenReturn(chatId);
+        lenient().when(conversationTurn.sessionId()).thenReturn(chatId.toString());
+        lenient().when(conversationTurn.record()).thenReturn(new SessionTurnRecord());
 
         promptService = new PromptService(
                 chatClient,
@@ -168,6 +189,7 @@ class PromptServiceTest {
                 localToolRegistry,
                 chatDocumentHealer,
                 SHARED_SETTINGS,
+                conversationSessionService,
                 "qwen3-8b",
                 Duration.ofMinutes(30));
 
@@ -212,7 +234,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -236,7 +258,7 @@ class PromptServiceTest {
         stubBasicPromptChain(Flux.just("hello"));
 
         StepVerifier.create(promptService.stream(chatId, userId,
-                        new ChatRequest("hello", Set.of(), Set.of(documentId), null), authentication))
+                        new ChatRequest("hello", Set.of(), Set.of(documentId), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -254,10 +276,10 @@ class PromptServiceTest {
         ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"), eq(inFlightMessage),
                 any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -269,7 +291,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("research-agent")));
         when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString())).thenReturn(Flux.just("agent reply"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("agent reply")
                 .verifyComplete();
 
@@ -287,10 +309,10 @@ class PromptServiceTest {
         ToolSlashCommand toolCommand = new ToolSlashCommand(mcpTool);
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"), eq(inFlightMessage),
                 any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("search for cats", Set.of("search"), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -305,7 +327,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("research-agent")));
         when(a2aAgentService.delegate(eq(chatId), eq("research-agent"), anyString())).thenReturn(Flux.just("agent reply"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("agent reply")
                 .verifyComplete();
 
@@ -319,7 +341,7 @@ class PromptServiceTest {
 
     private Flux<String> sharedStream(String text) {
         return promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                new ChatRequest(text, Set.of(), Set.of(), null), authentication);
+                new ChatRequest(text, Set.of(), Set.of(), null), inFlightMessage, authentication);
     }
 
     @Test
@@ -416,7 +438,7 @@ class PromptServiceTest {
         when(mcpIdentityProvider.getToolCallbacks(Set.of("web_search"))).thenReturn(List.of(webSearch));
 
         StepVerifier.create(withoutImages.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                new ChatRequest("hi", Set.of(), Set.of(), null), authentication)).expectNext("hello").verifyComplete();
+                new ChatRequest("hi", Set.of(), Set.of(), null), inFlightMessage, authentication)).expectNext("hello").verifyComplete();
 
         ArgumentCaptor<List<ToolCallback>> tools = ArgumentCaptor.captor();
         verify(requestSpec).tools(tools.capture());
@@ -470,7 +492,7 @@ class PromptServiceTest {
         stubBasicPromptChain(Flux.just("that is a login screen"));
 
         StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                        new ChatRequest("what is this?", Set.of(), Set.of(attachmentId), null), authentication))
+                        new ChatRequest("what is this?", Set.of(), Set.of(attachmentId), null), inFlightMessage, authentication))
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
@@ -494,7 +516,7 @@ class PromptServiceTest {
         stubBasicPromptChain(Flux.just("done"));
 
         StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                        new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null), authentication))
+                        new ChatRequest("make it a watercolor", Set.of(), Set.of(imageId), null), inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -511,7 +533,7 @@ class PromptServiceTest {
         stubBasicPromptChain(Flux.just("an overcast sky"));
 
         StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                        new ChatRequest("", Set.of(), Set.of(attachmentId), null), authentication))
+                        new ChatRequest("", Set.of(), Set.of(attachmentId), null), inFlightMessage, authentication))
                 .expectNext("an overcast sky")
                 .verifyComplete();
 
@@ -524,16 +546,16 @@ class PromptServiceTest {
         LocalToolSlashCommand generateImage = new LocalToolSlashCommand(
                 ImageGenerationTool.GENERATE_IMAGE, ImageGenerationTool.GENERATE_IMAGE, "Generates an image");
         when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
-        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("a lighthouse"), any(),
+        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("a lighthouse"), eq(inFlightMessage), any(),
                 any(), anyString(), eq(LLM_API_KEY), eq(SHARED_SETTINGS.conversation().tools()))).thenReturn(Flux.just("drawn"));
 
         StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                        new ChatRequest("a lighthouse", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(imageId), null), authentication))
+                        new ChatRequest("a lighthouse", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(imageId), null), inFlightMessage, authentication))
                 .expectNext("drawn")
                 .verifyComplete();
 
         verify(attachmentContextResolver).resolve(chatId, userId, "a lighthouse", Set.of(imageId), REFERENCE_ONLY);
-        verify(slashCommandRouter, never()).route(any(), any(), any(), any(), any(), any(), any(), any());
+        verify(slashCommandRouter, never()).route(any(), any(), any(), any(), any(), any(), any(), any(), any());
         verifyNoInteractions(chatDocumentHealer, userMemoryService, a2aStickyAgentService);
     }
 
@@ -543,13 +565,14 @@ class PromptServiceTest {
         when(slashCommandService.commands(Set.of("feud"))).thenReturn(List.of(agentCommand));
 
         assertThatThrownBy(() -> promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                new ChatRequest("play", Set.of("feud"), Set.of(), null), authentication).blockFirst())
+                new ChatRequest("play", Set.of("feud"), Set.of(), null), inFlightMessage, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
 
         verifyNoInteractions(slashCommandRouter, a2aAgentService, a2aStickyAgentService, attachmentContextResolver);
     }
 
     @Test
+    @SuppressWarnings("all")
     void streamShared_withoutAKeyIsRefusedBeforeAnythingElse() {
         when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
 
@@ -567,7 +590,7 @@ class PromptServiceTest {
         when(mcpIdentityProvider.getToolCallbacks(Set.of("web_search", "web_search_advanced", "web_search_news", "web_extract_content")))
                 .thenReturn(List.of(webSearch));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -595,7 +618,7 @@ class PromptServiceTest {
                 userLlmKeyService, localToolRegistry, chatDocumentHealer,
                 new SharedSessionSettings(Set.of("feud"), Duration.ofHours(24), 5, 500, 40, Duration.ofSeconds(600), Duration.ofDays(7),
                         new SharedSessionSettings.Conversation(true, 8, 8000, Duration.ofSeconds(2100), tools, 500)),
-                "qwen3-8b", Duration.ofMinutes(30));
+                conversationSessionService, "qwen3-8b", Duration.ofMinutes(30));
 
         ReflectionTestUtils.setField(service, "agentName", "Izzy");
         ReflectionTestUtils.setField(service, "defaultSystemPromptResource", new ClassPathResource("prompts/basic-system-prompt.st"));
@@ -617,7 +640,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -629,7 +652,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -647,7 +670,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -663,15 +686,15 @@ class PromptServiceTest {
 
         when(chatModelSelection.get(chatId)).thenReturn(Mono.just("openai/gpt-4o"));
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(), eq(inFlightMessage),
                 any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
         StepVerifier.create(promptService.stream(chatId, userId,
-                        new ChatRequest("search for cats", Set.of("search"), Set.of(), null), authentication))
+                        new ChatRequest("search for cats", Set.of("search"), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+        verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"), eq(inFlightMessage),
                 any(AttachmentResolution.class), any(), eq("openai/gpt-4o"), eq(LLM_API_KEY));
     }
 
@@ -737,7 +760,7 @@ class PromptServiceTest {
         when(authentication.getPrincipal()).thenReturn("not-a-jwt");
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
 
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
 
         verifyNoInteractions(attachmentContextResolver);
@@ -752,7 +775,7 @@ class PromptServiceTest {
         when(userLlmKeyService.requireKey(userId)).thenThrow(new LlmKeyMissingException());
         ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
 
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication).blockFirst())
                 .isInstanceOf(LlmKeyMissingException.class);
 
         verifyNoInteractions(attachmentContextResolver, chatClient, slashCommandRouter);
@@ -773,7 +796,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -789,7 +812,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -809,7 +832,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -819,6 +842,57 @@ class PromptServiceTest {
         //A remote agent has no token accounting to report, so this turn must leave the column null
         //rather than write an empty record over it.
         verifyNoInteractions(chatMessageService);
+
+        //The agent's turn never reaches the model, so it never touches the session; the next model turn
+        //copies its rows in instead.
+        verifyNoInteractions(conversationSessionService);
+    }
+
+    /**
+     * The default route readies the chat's session before the call, names that session on the call,
+     * and ends the turn with the text the client was shown.
+     */
+    @Test
+    void stream_onTheDefaultRoute_readiesTheSessionAndCompletesTheTurnWithTheReply() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
+        stubBasicPromptChain(Flux.just("hi ", "there"));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
+                .expectNext("hi ", "there")
+                .verifyComplete();
+
+        verify(conversationSessionService).prepareTurn(chatId, inFlightMessage, null);
+        verify(conversationTurn).complete("hi there");
+        verify(conversationTurn, never()).abandon();
+    }
+
+    @Test
+    void stream_onTheDefaultRoute_abandonsTheTurnWhenTheStreamFails() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
+        stubBasicPromptResponses(Flux.error(new IllegalStateException("the model is down")));
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
+                .verifyError(IllegalStateException.class);
+
+        verify(conversationTurn).abandon();
+        verify(conversationTurn, never()).complete(any());
+    }
+
+    /**
+     * A completion that fails — its assistant row could not be saved — errors the turn, and must not
+     * also abandon it: the user row is already linked by then.
+     */
+    @Test
+    void stream_onTheDefaultRoute_aFailedCompletionErrorsTheTurnWithoutAbandoningIt() {
+        ChatRequest chatRequest = new ChatRequest("hello", Set.of(), Set.of(), null);
+        stubBasicPromptChain(Flux.just("hi"));
+        doThrow(new IllegalStateException("the database is down")).when(conversationTurn).complete("hi");
+
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
+                .expectNext("hi")
+                .verifyError(IllegalStateException.class);
+
+        verify(conversationTurn, never()).abandon();
     }
 
     /**
@@ -834,7 +908,7 @@ class PromptServiceTest {
         stubBasicPromptResponses(advisorCaptureFeed.feeding(reportedTurn("hi there")));
         advisorCaptureFeed.readAdvisorParamsOf(requestSpec);
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("hi there")
                 .verifyComplete();
 
@@ -858,7 +932,7 @@ class PromptServiceTest {
                 .thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -882,14 +956,14 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("search for cats", Set.of("search"), Set.of(), null);
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(), eq(inFlightMessage),
                 any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
-        verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"),
+        verify(slashCommandRouter).route(eq(toolCommand), eq(chatId), eq(userId), eq("search for cats"), eq(inFlightMessage),
                 any(AttachmentResolution.class), any(), eq("qwen3-8b"), eq(LLM_API_KEY));
 
         //A slash command never reaches the sticky-agent lookup: the router owns that bookkeeping.
@@ -907,7 +981,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("hello"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -933,7 +1007,7 @@ class PromptServiceTest {
         stubBasicPromptChain(Flux.just("hello"));
         when(mcpIdentityProvider.getToolCallbacks(ArgumentMatchers.anySet())).thenReturn(List.of(webSearch));
 
-        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, new ChatRequest("hello", Set.of(), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("hello")
                 .verifyComplete();
 
@@ -963,7 +1037,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("done"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -989,7 +1063,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("that is a login screen"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("that is a login screen")
                 .verifyComplete();
 
@@ -1005,9 +1079,12 @@ class PromptServiceTest {
                 .contains("screenshot.png")
                 .contains("a login screen");
 
-        //A user message, not a system one: MessageChatMemoryAdvisor hoists system messages to the
-        //front of the prompt, which would strand this behind the whole conversation history.
+        //A user message, not a system one: the session memory advisor puts every system message first,
+        //which would strand this behind the whole conversation history.
         assertThat(imageContextMessage).isInstanceOf(UserMessage.class);
+
+        //The session ends with the same block, so the request overlaps it by exactly that message.
+        verify(conversationSessionService).prepareTurn(chatId, inFlightMessage, imageContextMessage.getText());
 
         //The system prompt is rendered from a classpath template, so the description block reaches the
         //model only as its own message -- never folded into the user's words.
@@ -1021,7 +1098,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.empty()));
         stubBasicPromptChain(Flux.just("an answer"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("an answer")
                 .verifyComplete();
 
@@ -1044,7 +1121,7 @@ class PromptServiceTest {
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString()))
                 .thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -1065,7 +1142,7 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("do the thing", Set.of("/unknown"), Set.of(), null);
         when(slashCommandService.commands(Set.of("/unknown"))).thenReturn(List.of());
 
-        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, authentication).blockFirst())
+        assertThatThrownBy(() -> promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication).blockFirst())
                 .isInstanceOf(IllegalStateException.class);
 
         verifyNoInteractions(attachmentContextResolver);
@@ -1084,10 +1161,10 @@ class PromptServiceTest {
                 Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(imageId), null);
 
         when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
-        when(slashCommandRouter.route(eq(generateImage), eq(chatId), eq(userId), anyString(),
+        when(slashCommandRouter.route(eq(generateImage), eq(chatId), eq(userId), anyString(), eq(inFlightMessage),
                 any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("done"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -1107,10 +1184,10 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("search for this", Set.of("search"), Set.of(imageId), null);
 
         when(slashCommandService.commands(Set.of("search"))).thenReturn(List.of(toolCommand));
-        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(),
+        when(slashCommandRouter.route(eq(toolCommand), eq(chatId), eq(userId), anyString(), eq(inFlightMessage),
                 any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("tool-result"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("tool-result")
                 .verifyComplete();
 
@@ -1128,10 +1205,10 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("what is this?", Set.of("weather-agent"), Set.of(imageId), null);
 
         when(slashCommandService.commands(Set.of("weather-agent"))).thenReturn(List.of(agentCommand));
-        when(slashCommandRouter.route(eq(agentCommand), eq(chatId), eq(userId), anyString(),
+        when(slashCommandRouter.route(eq(agentCommand), eq(chatId), eq(userId), anyString(), eq(inFlightMessage),
                 any(), any(), anyString(), eq(LLM_API_KEY))).thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -1150,7 +1227,7 @@ class PromptServiceTest {
         when(a2aStickyAgentService.getActiveAgent(chatId)).thenReturn(Mono.just(Optional.of("weather-agent")));
         when(a2aAgentService.delegate(eq(chatId), eq("weather-agent"), anyString())).thenReturn(Flux.just("forecast"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("forecast")
                 .verifyComplete();
 
@@ -1167,7 +1244,7 @@ class PromptServiceTest {
         ChatRequest chatRequest = new ChatRequest("create a picture of this person relaxing on a beach", Set.of(), Set.of(imageId), null);
         stubBasicPromptChain(Flux.just("done"));
 
-        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, authentication))
+        StepVerifier.create(promptService.stream(chatId, userId, chatRequest, inFlightMessage, authentication))
                 .expectNext("done")
                 .verifyComplete();
 
@@ -1184,11 +1261,11 @@ class PromptServiceTest {
         LocalToolSlashCommand generateImage = new LocalToolSlashCommand(
                 ImageGenerationTool.GENERATE_IMAGE, ImageGenerationTool.GENERATE_IMAGE, "Generates an image");
         when(slashCommandService.commands(Set.of(ImageGenerationTool.GENERATE_IMAGE))).thenReturn(List.of(generateImage));
-        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("(sent without any text)"), any(),
+        when(slashCommandRouter.routeShared(eq(generateImage), eq(chatId), eq(userId), eq("(sent without any text)"), eq(inFlightMessage), any(),
                 any(), anyString(), eq(LLM_API_KEY), eq(SHARED_SETTINGS.conversation().tools()))).thenReturn(Flux.just("drawn"));
 
         StepVerifier.create(promptService.streamShared(chatId, userId, SENDER_NAME, PARTICIPANTS,
-                        new ChatRequest("  ", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(), null), authentication))
+                        new ChatRequest("  ", Set.of(ImageGenerationTool.GENERATE_IMAGE), Set.of(), null), inFlightMessage, authentication))
                 .expectNext("drawn")
                 .verifyComplete();
     }

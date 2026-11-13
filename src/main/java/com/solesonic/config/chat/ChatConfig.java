@@ -3,9 +3,7 @@ package com.solesonic.config.chat;
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.ChatClientRequest;
-import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.SimpleLoggerAdvisor;
-import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.model.tool.ToolCallingChatOptions;
 import org.springframework.ai.tool.ToolCallback;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -22,27 +20,23 @@ public class ChatConfig {
             .requestToString(ChatConfig::requestWithToolDetails)
             .build();
 
-    @Bean
-    public ChatMemory chatMemory(DatabaseChatMemory databaseChatMemory) {
-        return databaseChatMemory;
-    }
-
     /**
      * Carries no default tools: {@code ChatClient} only ever adds request-level tools on top of a
      * builder's defaults, never replaces them, so a shared bean with every MCP tool baked in here
      * would make it impossible for any one call site to offer a narrower set. Every caller registers
      * exactly the tools it wants per request instead.
+     * <p>
+     * The session advisors give the model its memory; every call through this client must name its
+     * session, or the advisors refuse it.
      */
     @Bean
     @Qualifier(DEFAULT_CHAT_CLIENT)
-    public ChatClient defaultChatClient(ChatMemory chatMemory,
+    public ChatClient defaultChatClient(ConversationAdvisors conversationAdvisors,
                                         ChatClient.Builder chatClientBuilder) {
 
-        MessageChatMemoryAdvisor messageChatMemoryAdvisor = MessageChatMemoryAdvisor.builder(chatMemory)
-                .build();
-
         return chatClientBuilder
-                .defaultAdvisors(messageChatMemoryAdvisor, simpleLoggerAdvisor, new UserMessageMergingAdvisor(),
+                .defaultAdvisors(conversationAdvisors.advisors())
+                .defaultAdvisors(simpleLoggerAdvisor, new UserMessageMergingAdvisor(),
                         new ModelExchangeLoggingAdvisor(), new ResponseMetadataCaptureAdvisor())
                 .build();
     }
