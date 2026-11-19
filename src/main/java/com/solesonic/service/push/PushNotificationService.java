@@ -171,6 +171,7 @@ public class PushNotificationService {
             case PushEvent.ElicitationWaiting _ -> preferences.elicitation();
             case PushEvent.InterestOffered _ -> preferences.interestOffers();
             case PushEvent.InterestUpdated _ -> preferences.interestUpdates();
+            case PushEvent.AgentUpdated _ -> preferences.jobUpdates();
             case PushEvent.SessionInvited _ -> preferences.sessionInvites();
             case PushEvent.SessionTurn _, PushEvent.SessionStarted _, PushEvent.SharedChatMessage _ -> preferences.sessionTurns();
         };
@@ -187,7 +188,8 @@ public class PushNotificationService {
             case PushEvent.ElicitationWaiting elicitationWaiting -> elicitationWaiting.reminder()
                     ? Mono.just(false)
                     : pushPresenceService.isWatching(userId, elicitationWaiting.chatId());
-            case PushEvent.InterestOffered _, PushEvent.InterestUpdated _, PushEvent.SessionInvited _ -> Mono.just(false);
+            case PushEvent.InterestOffered _, PushEvent.InterestUpdated _, PushEvent.AgentUpdated _, PushEvent.SessionInvited _ ->
+                    Mono.just(false);
             case PushEvent.SessionTurn sessionTurn -> pushPresenceService.isWatching(userId, sessionTurn.chatId());
             case PushEvent.SessionStarted sessionStarted -> pushPresenceService.isWatching(userId, sessionStarted.chatId());
             case PushEvent.SharedChatMessage sharedChatMessage -> pushPresenceService.isWatching(userId, sharedChatMessage.chatId());
@@ -209,6 +211,8 @@ public class PushNotificationService {
                     new PushDeliveryOptions(interestSettings.offerTimeToLive(), PushUrgency.NORMAL, topic(interestOffered.offerId()));
             case PushEvent.InterestUpdated interestUpdated ->
                     new PushDeliveryOptions(INTEREST_UPDATE_TIME_TO_LIVE, PushUrgency.NORMAL, topic(interestUpdated.agentId()));
+            case PushEvent.AgentUpdated agentUpdated ->
+                    new PushDeliveryOptions(INTEREST_UPDATE_TIME_TO_LIVE, PushUrgency.NORMAL, topic(agentUpdated.chatId()));
             case PushEvent.SessionInvited sessionInvited ->
                     new PushDeliveryOptions(SESSION_TIME_TO_LIVE, PushUrgency.NORMAL, topic(sessionInvited.inviteId()));
             case PushEvent.SessionTurn sessionTurn ->

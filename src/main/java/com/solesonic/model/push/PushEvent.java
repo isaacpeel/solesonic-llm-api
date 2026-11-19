@@ -14,6 +14,7 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         PushEvent.ElicitationWaiting,
         PushEvent.InterestOffered,
         PushEvent.InterestUpdated,
+        PushEvent.AgentUpdated,
         PushEvent.SessionInvited,
         PushEvent.SessionTurn,
         PushEvent.SessionStarted,
@@ -92,6 +93,23 @@ public sealed interface PushEvent permits PushEvent.TurnFinished,
         @Override
         public String dedupeKey() {
             return "interest-update:" + updateId;
+        }
+    }
+
+    /**
+     * An A2A agent (the jobs agent) created {@code chatId} through {@code POST /agent-updates}.
+     * {@code updateId} is the delivery's id, so it is pushed once.
+     */
+    record AgentUpdated(UUID chatId, String agent, UUID updateId) implements PushEvent {
+
+        @Override
+        public UUID subjectId() {
+            return chatId;
+        }
+
+        @Override
+        public String dedupeKey() {
+            return "agent-update:" + updateId;
         }
     }
 

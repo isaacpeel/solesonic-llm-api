@@ -116,14 +116,27 @@ public final class A2AElicitationExtension {
      * one {@link DataPart} carrying only the narrowed content.
      */
     public static Message answer(UUID chatId, String taskId, Map<String, Object> content) {
-        return Message.builder()
+        return answer(chatId, taskId, content, Map.of());
+    }
+
+    /**
+     * As {@link #answer(UUID, String, Map)}, with the caller's metadata (user id, time zone) the
+     * first message of the task carried.
+     */
+    public static Message answer(UUID chatId, String taskId, Map<String, Object> content, Map<String, Object> metadata) {
+        Message.Builder builder = Message.builder()
                 .role(Message.Role.ROLE_USER)
                 .contextId(chatId.toString())
                 .taskId(taskId)
                 .messageId(UUID.randomUUID().toString())
                 .extensions(List.of(URI))
-                .parts(answerPart(content))
-                .build();
+                .parts(answerPart(content));
+
+        if (!metadata.isEmpty()) {
+            builder.metadata(metadata);
+        }
+
+        return builder.build();
     }
 
     /**

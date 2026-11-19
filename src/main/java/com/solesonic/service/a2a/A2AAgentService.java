@@ -14,6 +14,9 @@ import com.solesonic.model.a2a.RegisteredAgent;
 import com.solesonic.model.chat.ElicitationEvent;
 import com.solesonic.model.chat.SoundCue;
 import com.solesonic.model.chat.history.ChatMessage;
+import com.solesonic.repository.chat.ChatRepository;
+import com.solesonic.service.user.UserPreferencesService;
+import com.solesonic.model.chat.history.Chat;
 import com.solesonic.service.chat.ChatMessageService;
 import com.solesonic.service.chat.PendingMessageMetadata;
 import com.solesonic.service.chat.events.ElicitationService;
@@ -50,6 +53,7 @@ import reactor.core.publisher.Mono;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -66,7 +70,19 @@ import java.util.stream.Collectors;
 public class A2AAgentService {
     private static final Logger log = LoggerFactory.getLogger(A2AAgentService.class);
 
+    /** The asking user's IANA time zone, so an agent can show times the way the user reads them. */
+    public static final String TIME_ZONE_METADATA_KEY = "solesonic/timeZone";
+
+    /**
+     * The chat owner's user id, so an agent that keeps per-user state (the jobs agent) knows whose it
+     * is. Only LiteLLM holds an agent's key, and only izzybot's keys are granted agents, so the agent
+     * can trust it as far as it trusts that gateway.
+     */
+    public static final String USER_ID_METADATA_KEY = "solesonic/userId";
+
     private final A2AAgentRegistry agentRegistry;
+    private final ChatRepository chatRepository;
+    private final UserPreferencesService userPreferencesService;
     private final NotificationService notificationService;
     private final A2AStickyAgentService a2aStickyAgentService;
     private final ChatMessageService chatMessageService;
@@ -86,8 +102,12 @@ public class A2AAgentService {
                            JsonMapper jsonMapper,
                            A2AClientProperties properties,
                            A2ASoundService soundService,
-                           PendingMessageMetadata pendingMessageMetadata) {
+                           PendingMessageMetadata pendingMessageMetadata,
+                           ChatRepository chatRepository,
+                           UserPreferencesService userPreferencesService) {
         this.agentRegistry = agentRegistry;
+        this.chatRepository = chatRepository;
+        this.userPreferencesService = userPreferencesService;
         this.notificationService = notificationService;
         this.a2aStickyAgentService = a2aStickyAgentService;
         this.chatMessageService = chatMessageService;
@@ -104,9 +124,11 @@ public class A2AAgentService {
      * A LiteLLM agent is called with the virtual key alone, so the user's token never reaches the gateway.
      */
     public Flux<String> delegate(UUID chatId, String agentName, String message) {
+        //Resolved here, on the caller's thread, not inside the reactive chain.
+        Map<String, Object> callerMetadata = callerMetadata(chatId);
         return Flux.defer(() -> agentRegistry.agent(agentName)
                 .map(registeredAgent -> delegate(chatId, registeredAgent,
-                        activeTaskId -> firstMessage(chatId, message, activeTaskId), null))
+                        activeTaskId -> firstMessage(chatId, message, activeTaskId, callerMetadata), null, callerMetadata))
                 .orElseGet(() -> releaseUnavailableAgent(chatId, agentName)));
     }
 
@@ -124,17 +146,19 @@ public class A2AAgentService {
         return Flux.defer(() -> agentRegistry.agent(agentName)
                 .map(registeredAgent -> delegate(chatId, registeredAgent,
                         activeTaskId -> sharedMessage(chatId, participantMessage, activeTaskId),
-                        new SharedMode(participantMessage.participants(), listener)))
+                        new SharedMode(participantMessage.participants(), listener), Map.of()))
                 .orElseGet(() -> Flux.error(new A2AAgentUnavailableException(agentName))));
     }
 
     private Flux<String> delegate(UUID chatId,
                                   RegisteredAgent registeredAgent,
                                   Function<String, Message> firstMessage,
-                                  @Nullable SharedMode sharedMode) {
+                                  @Nullable SharedMode sharedMode,
+                                  Map<String, Object> callerMetadata) {
         return a2aStickyAgentService.getActiveTaskId(chatId)
                 .flatMapMany(activeTaskId -> Flux.create(sink -> {
                     DelegatedTurn turn = turn(chatId, sink, sharedMode);
+                    turn.callerMetadata(callerMetadata);
                     BiConsumer<ClientEvent, AgentCard> consumer = (event, _) -> handleEvent(turn, event);
 
                     JSONRPCTransportConfigBuilder jsonrpcTransportConfigBuilder = new JSONRPCTransportConfigBuilder()
@@ -159,14 +183,62 @@ public class A2AAgentService {
     }
 
     Message firstMessage(UUID chatId, String message, @Nullable String activeTaskId) {
-        return Message.builder()
+        return firstMessage(chatId, message, activeTaskId, Map.of());
+    }
+
+    Message firstMessage(UUID chatId, String message, @Nullable String activeTaskId, Map<String, Object> callerMetadata) {
+        Message.Builder builder = Message.builder()
                 .role(Message.Role.ROLE_USER)
                 .contextId(chatId.toString())
                 .taskId(activeTaskId)
                 .messageId(UUID.randomUUID().toString())
                 .extensions(List.of(A2AElicitationExtension.URI, A2ASoundExtension.URI))
-                .parts(new TextPart(message))
-                .build();
+                .parts(new TextPart(message));
+        if (!callerMetadata.isEmpty()) {
+            builder.metadata(callerMetadata);
+        }
+        return builder.build();
+    }
+
+    /**
+     * What a one-user conversation's messages tell the agent about the caller: the chat owner's id
+     * ({@link #USER_ID_METADATA_KEY}) and time zone ({@link #TIME_ZONE_METADATA_KEY}). Each is left
+     * out when it cannot be resolved; an agent that needs the id refuses the turn without it.
+     */
+    Map<String, Object> callerMetadata(UUID chatId) {
+        Map<String, Object> metadata = new java.util.LinkedHashMap<>();
+
+        try {
+            chatRepository.findById(chatId)
+                    .map(Chat::getUserId)
+                    .ifPresent(userId -> metadata.put(USER_ID_METADATA_KEY, userId.toString()));
+        } catch (RuntimeException e) {
+            log.debug("No owner for chat {}: {}", chatId, e.getMessage());
+        }
+
+        ZoneId zone = timeZone(chatId);
+
+        if (zone != null) {
+            metadata.put(TIME_ZONE_METADATA_KEY, zone.getId());
+        }
+
+        return Map.copyOf(metadata);
+    }
+
+    /**
+     * The chat owner's preferred time zone, or null when it can't be resolved (the agent then uses its default).
+     */
+    @Nullable
+    ZoneId timeZone(UUID chatId) {
+        try {
+            return chatRepository.findById(chatId)
+                    .map(Chat::getUserId)
+                    .map(userPreferencesService::getZone)
+                    .orElse(null);
+        } catch (RuntimeException e) {
+            log.debug("No time zone for chat {}: {}", chatId, e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -443,12 +515,21 @@ public class A2AAgentService {
         private final @Nullable SharedMode sharedMode;
         private volatile Consumer<Message> sender = _ -> {
         };
+        private volatile Map<String, Object> callerMetadata = Map.of();
 
         private DelegatedTurn(UUID chatId, FluxSink<String> sink, @Nullable SharedMode sharedMode) {
             this.chatId = chatId;
             this.sink = sink;
             this.sharedMode = sharedMode;
             this.watchdog = new ExchangeWatchdog(timeout, this::fail);
+        }
+
+        /**
+         * Sent again with every answer to a prompt, so the agent knows the caller on each message of
+         * the task, not only the first.
+         */
+        void callerMetadata(Map<String, Object> callerMetadata) {
+            this.callerMetadata = callerMetadata;
         }
 
         /**
@@ -588,7 +669,7 @@ public class A2AAgentService {
 
             if (result.action() == McpSchema.ElicitResult.Action.ACCEPT && result.content() != null) {
                 log.debug("Sending the accepted A2A prompt answer on task '{}' for chat {}", taskId, chatId);
-                send(A2AElicitationExtension.answer(chatId, taskId, result.content()));
+                send(A2AElicitationExtension.answer(chatId, taskId, result.content(), callerMetadata));
                 return;
             }
 

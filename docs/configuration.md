@@ -12,6 +12,18 @@ This document serves as the single source of truth for all environment variables
 | `BOT_NAME` | Bot name identifier | `solesonic-llm-api` | No | Default: solesonic-llm-api |
 | `SOLESONIC_ELICITATION_TIMEOUT_SECONDS` | Max seconds to wait for elicitation response | `600` | No | Maps to `solesonic.elicitation.timeout-seconds`; default 600 |
 
+### Telemetry (HyperDX, `prod-nginx` profile)
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `HYPERDX_INGESTION_KEY` | HyperDX team ingestion key, sent as `authorization` with OTLP traces and metrics | — | No | Without it the collector rejects the exports; the API itself is unaffected |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP/HTTP base URL | `http://localhost:4318` | No | Default `http://localhost:4318` (the container uses host networking). `/v1/traces` and `/v1/metrics` are appended |
+
+`spring-boot-starter-opentelemetry` gives every request a trace id (in the ECS log's `trace.id` and as an outbound
+`traceparent` to mcp-server and LiteLLM). Export is off in `application.properties` and on in `prod-nginx`
+(sampling 100 %, metrics every 60 s); logs stay in the ECS file, which solesonic-log-agent ships. Spring AI
+observations never carry prompt, completion or tool content.
+
 ### Database Configuration
 
 | Variable | Description | Example | Required | Notes |
@@ -476,6 +488,17 @@ Sounds an agent sends with its reply are governed by two fixed properties, not e
 variables: `solesonic.a2a.sound.max-bytes=5MB` (a larger clip is ignored) and
 `solesonic.a2a.sound.ttl=P7D` (how long a clip stays fetchable from `/sounds/{soundId}` after it was
 last cued). Both are required; neither has a default.
+
+The asking user's id (`solesonic/userId`) and time zone (`solesonic/timeZone`) travel in the metadata of
+every message of a one-user conversation's task, including elicitation answers; shared sessions send
+participants instead (see `docs/api.md`).
+
+### Agent Updates Configuration
+
+| Variable | Description | Example | Required | Notes |
+|----------|-------------|---------|----------|--------|
+| `AGENT_UPDATES_AGENTS` | Agents allowed to deliver chats through `POST /agent-updates` | `jobs` | No | Comma-separated; default `jobs`. The caller also needs the `agent-notifier` role |
+| `AGENT_UPDATES_MAX_PER_DAY` | Updates per user in any 24 hours | `10` | No | Default 10; beyond it `429 RATE_LIMITED` |
 
 ### CORS Configuration
 

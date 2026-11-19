@@ -82,6 +82,15 @@ class PushPayloadFactoryTest {
     }
 
     @Test
+    void aJobUpdateSaysOnlyThatThereAreMatchesAndOpensTheNewChat() {
+        assertPayload(pushPayloadFactory.forEvent(new PushEvent.AgentUpdated(CHAT_ID, "jobs", UPDATE_ID)), """
+                {"version":1,"type":"AGENT_UPDATE","title":"Izzy","body":"There are new job matches",
+                 "url":"/chat/0f8fad5b-d9cb-469f-a165-70867728950e","tag":"chat:0f8fad5b-d9cb-469f-a165-70867728950e",
+                 "timestamp":"2026-10-20T12:00:00Z"}
+                """);
+    }
+
+    @Test
     void aPayloadWithoutActionsCarriesNoActionsKey() {
         assertThat(jsonMapper.readTree(pushPayloadFactory.forEvent(new PushEvent.TurnFinished(CHAT_ID, RUN_ID))).has("actions")).isFalse();
     }

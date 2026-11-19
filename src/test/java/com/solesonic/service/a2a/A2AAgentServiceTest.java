@@ -87,6 +87,12 @@ class A2AAgentServiceTest {
     private NotificationService notificationService;
 
     @Mock
+    private com.solesonic.repository.chat.ChatRepository chatRepository;
+
+    @Mock
+    private com.solesonic.service.user.UserPreferencesService userPreferencesService;
+
+    @Mock
     private A2AStickyAgentService stickyAgentService;
 
     @Mock
@@ -111,7 +117,7 @@ class A2AAgentServiceTest {
                 new A2AClientProperties.Sound(MAX_SOUND, Duration.ofDays(7)));
 
         agentService = new A2AAgentService(agentRegistry, notificationService, stickyAgentService, chatMessageService, elicitationService, jsonMapper, properties,
-                soundService, pendingMessageMetadata);
+                soundService, pendingMessageMetadata, chatRepository, userPreferencesService);
     }
 
     private static Artifact soundArtifact() {
@@ -841,5 +847,78 @@ class A2AAgentServiceTest {
                 .verify();
 
         verifyNoInteractions(chatMessageService);
+    }
+
+    @Test
+    void theFirstMessageCarriesTheCallersMetadata() {
+        Message withZone = agentService.firstMessage(CHAT_ID, "errors?", null,
+                Map.of(A2AAgentService.TIME_ZONE_METADATA_KEY, "America/Chicago"));
+        Message withoutZone = agentService.firstMessage(CHAT_ID, "errors?", null);
+
+        assertThat(withZone.metadata()).containsEntry(A2AAgentService.TIME_ZONE_METADATA_KEY, "America/Chicago");
+        assertThat(withoutZone.metadata() == null || withoutZone.metadata().isEmpty()).isTrue();
+    }
+
+    @Test
+    void theCallersMetadataNamesTheChatOwnerAndTheirTimeZone() {
+        UUID ownerId = UUID.randomUUID();
+        com.solesonic.model.chat.history.Chat chat = new com.solesonic.model.chat.history.Chat();
+        chat.setUserId(ownerId);
+        when(chatRepository.findById(CHAT_ID)).thenReturn(java.util.Optional.of(chat));
+        when(userPreferencesService.getZone(ownerId)).thenReturn(java.time.ZoneId.of("America/Denver"));
+
+        assertThat(agentService.callerMetadata(CHAT_ID)).isEqualTo(Map.of(
+                A2AAgentService.USER_ID_METADATA_KEY, ownerId.toString(),
+                A2AAgentService.TIME_ZONE_METADATA_KEY, "America/Denver"));
+    }
+
+    @Test
+    void anUnknownChatHasNoCallerMetadata() {
+        when(chatRepository.findById(CHAT_ID)).thenReturn(java.util.Optional.empty());
+
+        assertThat(agentService.callerMetadata(CHAT_ID)).isEmpty();
+    }
+
+    @Test
+    void anAcceptedAnswerCarriesTheCallersMetadataAgain() {
+        promptIsRaised(Mono.just(new McpSchema.ElicitResult(McpSchema.ElicitResult.Action.ACCEPT, Map.of("choice", "play"))));
+        when(stickyAgentService.deactivateTask(CHAT_ID)).thenReturn(Mono.empty());
+
+        Map<String, Object> callerMetadata = Map.of(A2AAgentService.USER_ID_METADATA_KEY, UUID.randomUUID().toString());
+        List<Message> sent = new ArrayList<>();
+
+        StepVerifier.create(turnOf(turn -> {
+                    turn.callerMetadata(callerMetadata);
+                    turn.start(outgoing -> {
+                        sent.add(outgoing);
+
+                        if (sent.size() == 2) {
+                            agentService.handleEvent(turn, text("task-3", "Saved."));
+                            agentService.handleEvent(turn, status("task-3", TaskState.TASK_STATE_COMPLETED));
+                        }
+                    }, agentService.firstMessage(CHAT_ID, "jobs", "task-3", callerMetadata));
+
+                    agentService.handleEvent(turn, prompt("task-3"));
+                }))
+                .expectNext("Saved.")
+                .verifyComplete();
+
+        assertThat(sent).hasSize(2);
+        assertThat(sent.get(0).metadata()).isEqualTo(callerMetadata);
+        assertThat(sent.get(1).metadata()).isEqualTo(callerMetadata);
+    }
+
+    @Test
+    void theTimeZoneIsTheChatOwnersAndAFailedLookupSendsNone() {
+        UUID ownerId = UUID.randomUUID();
+        com.solesonic.model.chat.history.Chat chat = new com.solesonic.model.chat.history.Chat();
+        chat.setUserId(ownerId);
+        org.mockito.Mockito.when(chatRepository.findById(CHAT_ID)).thenReturn(java.util.Optional.of(chat));
+        org.mockito.Mockito.when(userPreferencesService.getZone(ownerId)).thenReturn(java.time.ZoneId.of("America/New_York"));
+
+        assertThat(agentService.timeZone(CHAT_ID)).isEqualTo(java.time.ZoneId.of("America/New_York"));
+
+        org.mockito.Mockito.when(chatRepository.findById(CHAT_ID)).thenThrow(new IllegalStateException("db down"));
+        assertThat(agentService.timeZone(CHAT_ID)).isNull();
     }
 }

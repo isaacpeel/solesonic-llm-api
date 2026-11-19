@@ -50,14 +50,14 @@ class PushPreferenceServiceTest {
     void aUserWithNoStoredPreferencesHasEverythingOn() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
 
-        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(true, true, true, true, true, true));
+        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(true, true, true, true, true, true, true));
     }
 
     @Test
     void returnsTheStoredPreferences() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(false, true, true, false)));
 
-        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(false, true, true, false, true, false));
+        assertThat(pushPreferenceService.get(USER_ID)).isEqualTo(new PushPreferenceSummary(false, true, true, false, true, false, true));
     }
 
     /**
@@ -68,25 +68,25 @@ class PushPreferenceServiceTest {
     void aPutWithoutTheInterestFieldsLeavesThemUnchanged() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(true, true, false, false)));
 
-        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, false, null, null, null, null));
+        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, false, null, null, null, null, null));
 
-        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, false, false, false, true, false));
+        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, false, false, false, true, false, true));
     }
 
     @Test
     void aPutWithoutTheInterestFieldsForAUserWithNoRowLeavesThemOn() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
 
-        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, false, null, null, null, null)))
-                .isEqualTo(new PushPreferenceSummary(true, false, true, true, true, true));
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, false, null, null, null, null, null)))
+                .isEqualTo(new PushPreferenceSummary(true, false, true, true, true, true, true));
     }
 
     @Test
     void storesTheInterestFieldsWhenGiven() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.empty());
 
-        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, false, true, null, null)))
-                .isEqualTo(new PushPreferenceSummary(true, true, false, true, true, true));
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, false, true, null, null, null)))
+                .isEqualTo(new PushPreferenceSummary(true, true, false, true, true, true, true));
     }
 
     /**
@@ -97,15 +97,25 @@ class PushPreferenceServiceTest {
     void storesTheSessionFieldsWhenGivenAndKeepsThemWhenNot() {
         when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(true, true, true, true)));
 
-        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, true, true, false, null)))
-                .isEqualTo(new PushPreferenceSummary(true, true, true, true, false, false));
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, true, true, false, null, null)))
+                .isEqualTo(new PushPreferenceSummary(true, true, true, true, false, false, true));
+    }
+
+    @Test
+    void storesJobUpdatesWhenGivenAndKeepsThemWhenNot() {
+        when(pushPreferenceRepository.findById(USER_ID)).thenReturn(Optional.of(stored(true, true, true, true)));
+
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, null, null, null, null, false)))
+                .isEqualTo(new PushPreferenceSummary(true, true, true, true, true, false, false));
+        assertThat(pushPreferenceService.update(USER_ID, new PushPreferenceRequest(true, true, null, null, null, null, null)))
+                .isEqualTo(new PushPreferenceSummary(true, true, true, true, true, false, true));
     }
 
     @Test
     void storesBothPreferences() {
-        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, true, null, null, null, null));
+        PushPreferenceSummary summary = pushPreferenceService.update(USER_ID, new PushPreferenceRequest(false, true, null, null, null, null, null));
 
-        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, true, true, true, true, true));
+        assertThat(summary).isEqualTo(new PushPreferenceSummary(false, true, true, true, true, true, true));
 
         ArgumentCaptor<PushPreference> saved = ArgumentCaptor.forClass(PushPreference.class);
         verify(pushPreferenceRepository).save(saved.capture());
@@ -121,12 +131,12 @@ class PushPreferenceServiceTest {
      */
     @Test
     void refusesAMissingTurnComplete() {
-        assertInvalid(new PushPreferenceRequest(null, true, true, true, true, true));
+        assertInvalid(new PushPreferenceRequest(null, true, true, true, true, true, null));
     }
 
     @Test
     void refusesAMissingElicitation() {
-        assertInvalid(new PushPreferenceRequest(true, null, true, true, true, true));
+        assertInvalid(new PushPreferenceRequest(true, null, true, true, true, true, null));
     }
 
     @SuppressWarnings("all")
@@ -138,6 +148,7 @@ class PushPreferenceServiceTest {
         pushPreference.setInterestOffers(interestOffers);
         pushPreference.setInterestUpdates(interestUpdates);
         pushPreference.setSessionInvites(true);
+        pushPreference.setJobUpdates(true);
         return pushPreference;
     }
 

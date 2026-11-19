@@ -10,5 +10,6 @@ public record PushPreferenceRequest(Boolean turnComplete,
                                     Boolean interestOffers,
                                     Boolean interestUpdates,
                                     Boolean sessionInvites,
-                                    Boolean sessionTurns) {
+                                    Boolean sessionTurns,
+                                    Boolean jobUpdates) {
 }

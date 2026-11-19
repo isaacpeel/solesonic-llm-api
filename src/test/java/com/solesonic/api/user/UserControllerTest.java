@@ -218,4 +218,31 @@ public class UserControllerTest {
 
         verify(userPreferencesService, never()).linkAddress(any(), any());
     }
+
+    @Test
+    void testPatchTimeZone() throws Exception {
+        userPreferences.setTimeZone("America/Chicago");
+        when(userPreferencesService.patch(eq(userId), any())).thenReturn(userPreferences);
+
+        mockMvc.perform(patch("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"timeZone\":\"America/Chicago\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.timeZone").value("America/Chicago"))
+                .andExpect(jsonPath("$.chatSimilarityThreshold").value(0.5));
+
+        verify(userPreferencesService).patch(userId, new com.solesonic.model.user.UserPreferencesPatch("America/Chicago"));
+    }
+
+    @Test
+    void deniesPatchingAnotherUsersPreferences() throws Exception {
+        when(resourceOwnershipService.isOwner(eq(userId), any())).thenReturn(false);
+
+        mockMvc.perform(patch("/users/{userId}/preferences", userId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"timeZone\":\"America/Chicago\"}"))
+                .andExpect(status().isForbidden());
+
+        verify(userPreferencesService, never()).patch(any(), any());
+    }
 }

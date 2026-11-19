@@ -17,6 +17,8 @@ import com.agui.community.core.message.UserMessage;
 import com.openai.errors.OpenAIIoException;
 import com.openai.errors.OpenAIServiceException;
 import com.solesonic.config.logging.TurnMdc;
+import com.solesonic.config.logging.TurnTrace;
+import io.micrometer.observation.Observation;
 import com.solesonic.exception.ChatException;
 import com.solesonic.exception.a2a.A2AAgentUnavailableException;
 import com.solesonic.exception.google.GoogleApiException;
@@ -176,7 +178,8 @@ public class RedisStreamingChatService {
 
         return selectModel(chatId, model)
                 .thenMany(update(chatId, userId, chatRequest, authentication))
-                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)));
+                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)))
+                .contextWrite(TurnTrace.into(TurnTrace.capture()));
     }
 
     /**
@@ -217,7 +220,8 @@ public class RedisStreamingChatService {
         return redisStreamService.getLatestOffset(chatId, userId)
                 .flatMap(offset -> start(turnPlan).thenReturn(offset))
                 .flatMapMany(offset -> redisStreamService.subscribe(chatId, userId, offset))
-                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)));
+                .contextWrite(TurnMdc.into(TurnMdc.capture(chatId)))
+                .contextWrite(TurnTrace.into(TurnTrace.capture()));
     }
 
     /**
@@ -229,8 +233,13 @@ public class RedisStreamingChatService {
         //Taken now, on the caller's thread: the run below is subscribed detached and would otherwise log
         //with no request ids and no chat id at all.
         Map<String, String> turnMdc = TurnMdc.capture(turnPlan.chatId());
+        //Likewise the request's trace, so the model call, its tool calls and LiteLLM stay in it.
+        Observation callerObservation = TurnTrace.capture();
 
-        return Mono.fromCallable(() -> {
+        return Mono.deferContextual(context -> {
+            Observation parent = TurnTrace.parent(context, callerObservation);
+
+            return Mono.fromCallable(() -> {
                     ChatMessage saved = chatMessageService.saveUserMessage(turnPlan.chatId(), turnPlan.senderUserId(), turnPlan.chatRequest());
 
                     // A shared run's frame is read by people who did not send it, so it carries what was
@@ -246,10 +255,14 @@ public class RedisStreamingChatService {
                         runStarted(turnPlan, savedTurn.chatMessage(), savedTurn.attachments()))
                         .thenReturn(savedTurn.chatMessage()))
                 .map(chatMessage -> {
-                    runTurn(turnPlan).contextWrite(TurnMdc.into(turnMdc)).subscribe();
+                    runTurn(turnPlan)
+                            .contextWrite(TurnMdc.into(turnMdc))
+                            .contextWrite(TurnTrace.into(parent))
+                            .subscribe();
 
                     return new StartedRun(turnPlan.runId(), chatMessage.getId());
                 });
+        });
     }
 
     private TurnPlan conversationPlan(UUID runId,

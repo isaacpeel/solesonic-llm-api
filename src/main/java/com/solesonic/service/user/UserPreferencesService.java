@@ -4,6 +4,7 @@ import com.solesonic.model.address.Address;
 import com.solesonic.model.atlassian.auth.AtlassianAccessToken;
 import com.solesonic.model.google.auth.GoogleAccessToken;
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.user.UserPreferencesPatch;
 import com.solesonic.repository.AddressRepository;
 import com.solesonic.repository.UserPreferencesRepository;
 import org.apache.commons.lang3.StringUtils;
@@ -106,6 +107,35 @@ public class UserPreferencesService {
         preserveExistingTokens(userId, userPreferences);
 
         return applyAuthenticationFlags(userPreferencesRepository.save(userPreferences));
+    }
+
+    /**
+     * Backs {@code PATCH /users/{userId}/preferences}. Unlike {@link #update}, which replaces the
+     * whole row, only the non-null fields of the patch are applied. A {@code 400} for a patch that
+     * carries no recognised field (a misspelled or stale client field name would otherwise save
+     * nothing yet answer {@code 200}) and for an unknown IANA time zone id, so a bad value never
+     * reaches the column.
+     */
+    public UserPreferences patch(UUID userId, UserPreferencesPatch patch) {
+        log.info("Patching user preferences");
+
+        if (patch.timeZone() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No recognised preference fields in patch");
+        }
+
+        UserPreferences userPreferences = get(userId);
+        userPreferences.setTimeZone(validTimeZone(patch.timeZone()));
+        userPreferences.setUpdated(ZonedDateTime.now());
+
+        return applyAuthenticationFlags(userPreferencesRepository.save(userPreferences));
+    }
+
+    private static String validTimeZone(String timeZone) {
+        try {
+            return ZoneId.of(timeZone).getId();
+        } catch (DateTimeException exception) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid time zone: " + timeZone);
+        }
     }
 
     /**

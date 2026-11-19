@@ -1,12 +1,14 @@
 package com.solesonic.api.user;
 
 import com.solesonic.model.user.UserPreferences;
+import com.solesonic.model.user.UserPreferencesPatch;
 import com.solesonic.service.security.ResourceOwnershipService;
 import com.solesonic.service.user.UserPreferencesService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -66,6 +68,17 @@ public class UserController {
 
         UserPreferences update = userPreferencesService.update(userId, userPreferences);
         return ResponseEntity.ok(update);
+    }
+
+    @PatchMapping("/{userId}/preferences")
+    public ResponseEntity<UserPreferences> patch(@PathVariable UUID userId,
+                                                 @RequestBody UserPreferencesPatch patch,
+                                                 HttpServletRequest request) {
+        if (!resourceOwnershipService.isOwner(userId, request)) {
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+
+        return ResponseEntity.ok(userPreferencesService.patch(userId, patch));
     }
 
     @PutMapping("/{userId}/preferences/{addressId}")

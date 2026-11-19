@@ -5,8 +5,10 @@ public record PushPreferenceSummary(boolean turnComplete,
                                     boolean interestOffers,
                                     boolean interestUpdates,
                                     boolean sessionInvites,
-                                    boolean sessionTurns) {
-    public static final PushPreferenceSummary DEFAULT = new PushPreferenceSummary(true, true, true, true, true, true);
+                                    boolean sessionTurns,
+                                    boolean jobUpdates) {
+    public static final PushPreferenceSummary DEFAULT = new PushPreferenceSummary(true, true, true, true, true, true, true);
+
 
     public static PushPreferenceSummary of(PushPreference pushPreference) {
         return new PushPreferenceSummary(pushPreference.isTurnComplete(),
@@ -14,6 +16,7 @@ public record PushPreferenceSummary(boolean turnComplete,
                 pushPreference.isInterestOffers(),
                 pushPreference.isInterestUpdates(),
                 pushPreference.isSessionInvites(),
-                pushPreference.isSessionTurns());
+                pushPreference.isSessionTurns(),
+                pushPreference.isJobUpdates());
     }
 }

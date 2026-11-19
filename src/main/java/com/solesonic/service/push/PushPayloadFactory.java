@@ -27,6 +27,8 @@ public class PushPayloadFactory {
     private static final String ELICITATION_WAITING_BODY = "A tool is waiting for your answer";
     private static final String INTEREST_OFFER_BODY = "I can keep you posted on something you're interested in";
     private static final String INTEREST_UPDATE_BODY = "There's news on one of your interests";
+    private static final String JOB_UPDATE_BODY = "There are new job matches";
+    private static final String AGENT_UPDATE_BODY = "An agent has an update for you";
     private static final String SESSION_INVITE_BODY = "You've been invited to a shared session";
     private static final String SESSION_TURN_BODY = "It's your turn";
     private static final String SESSION_STARTED_BODY = "Your shared session has started";
@@ -64,6 +66,9 @@ public class PushPayloadFactory {
             case PushEvent.InterestUpdated interestUpdated ->
                     payload(PushPayloadType.INTEREST_UPDATE, INTEREST_UPDATE_BODY, chatUrl(interestUpdated.chatId()),
                             "interest:" + interestUpdated.agentId());
+            case PushEvent.AgentUpdated agentUpdated ->
+                    payload(PushPayloadType.AGENT_UPDATE, "jobs".equals(agentUpdated.agent()) ? JOB_UPDATE_BODY : AGENT_UPDATE_BODY,
+                            chatUrl(agentUpdated.chatId()), chatTag(agentUpdated.chatId()));
             case PushEvent.SessionInvited sessionInvited ->
                     payload(PushPayloadType.SESSION_INVITE, SESSION_INVITE_BODY, "/shared-sessions/invites/" + sessionInvited.inviteId(),
                             "session-invite:" + sessionInvited.inviteId());

@@ -68,6 +68,21 @@ Used by the MCP token broker and other service integrations:
 2. OAuth2 provider issues access token
 3. Service includes access token in API requests
 
+**Agent updates.** `POST /agent-updates` is called only by an A2A agent's own confidential client
+(`jobs-agent`, client credentials, client role `agent-notifier` mapped into the `roles` claim). The
+endpoint requires that role; `JwtUserRequestFilter` skips user-profile recording for it, since the
+token's subject is a service account. Because the caller names the user in the body, the endpoint
+also limits what it can do: only allowlisted agents, only users who have signed in, at most
+`AGENT_UPDATES_MAX_PER_DAY` per user, a 16 KB body field cap, markdown sanitized to https inline links
+only, and an idempotency key so a retry never double-writes or double-pushes. Pushes carry ids only.
+The client secret lives only in the agent's `.env`.
+
+**Who the agent is talking to.** In a one-user conversation llm-api adds the chat owner's id as
+`solesonic/userId` to every A2A message's metadata (first message and elicitation answers). The agent
+trusts it because only LiteLLM holds the agent's bearer key and only izzybot's virtual keys are granted
+the agent; an agent holding per-user data must refuse a message without it, and must refuse shared
+sessions (participants extension), which carry no single owner.
+
 ### Token Broker Architecture
 
 The Solesonic API includes a sophisticated token broker for secure 3-legged OAuth2 scenarios, particularly for Atlassian API access.

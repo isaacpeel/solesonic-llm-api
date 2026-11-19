@@ -26,6 +26,8 @@ public class PushPreference {
 
     private boolean sessionTurns;
 
+    private boolean jobUpdates;
+
     private ZonedDateTime updated;
 
     public UUID getUserId() {
@@ -82,6 +84,14 @@ public class PushPreference {
 
     public void setSessionTurns(boolean sessionTurns) {
         this.sessionTurns = sessionTurns;
+    }
+
+    public boolean isJobUpdates() {
+        return jobUpdates;
+    }
+
+    public void setJobUpdates(boolean jobUpdates) {
+        this.jobUpdates = jobUpdates;
     }
 
     public ZonedDateTime getUpdated() {

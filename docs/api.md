@@ -2410,6 +2410,8 @@ preferences and presence.
 - `interestOffers` and `interestUpdates` are **optional on `PUT`: absent means unchanged**. They came after
   clients that send only the first two, and a client that does not know about them must not switch
   them off by leaving them out.
+- `jobUpdates` (job alerts from the jobs agent, `AGENT_UPDATE` pushes) follows the same rule: optional,
+  absent means unchanged, `true` when nothing is stored.
 - Deliberately not part of `UserPreferences`: that endpoint is a full replace, and a client that does
   not send these fields would silently switch notifications off.
 
@@ -2436,6 +2438,7 @@ What the service worker receives after decryption:
 | `ELICITATION_WAITING` | `A tool is waiting for your answer` | `/chat/<chatId>` | `elicitation:<elicitationId>` |
 | `INTEREST_OFFER` | `I can keep you posted on something you're interested in` | `/interests/offers/<offerId>` | `interest-offer:<offerId>` |
 | `INTEREST_UPDATE` | `There's news on one of your interests` | `/chat/<chatId>` | `interest:<agentId>` |
+| `AGENT_UPDATE` | `There are new job matches` (agent `jobs`), else `An agent has an update for you` | `/chat/<chatId>` | `chat:<chatId>` |
 | `TEST` | `Notifications are working` | `/settings/notifications` | `test` |
 
 - `url` is always a same-origin path.
@@ -2463,6 +2466,49 @@ What the service worker receives after decryption:
 | `NOT_FOUND` | `404` | No such subscription, or the path names another user |
 | `SUBSCRIPTION_GONE` | `410` | The browser is no longer subscribed; its row is gone |
 | `DELIVERY_FAILED` | `502` | The push service did not accept a test push |
+
+---
+
+## Agent Updates (service to service)
+
+`POST /agent-updates` lets an A2A agent (today only the jobs agent, `/jobs`) write a chat for a user and
+have it pushed, the way a news interest does. It is never called with a user's token.
+
+- **Auth:** a Keycloak client-credentials token whose `roles` claim holds `agent-notifier` (the
+  `jobs-agent` client). Anything else is `403`.
+- **Body** (`Content-Type: application/json`):
+
+```json
+{
+  "userId": "<uuid>",
+  "agent": "jobs",
+  "title": "3 new jobs for you",
+  "markdown": "## Startups\n- [Data Engineer at Acme](https://acme.example/careers/42) ...",
+  "idempotencyKey": "jobs:alert:<alert id>",
+  "groupName": "Jobs",
+  "pinAgent": true
+}
+```
+
+| Field | Rules |
+|---|---|
+| `userId` | Required. A user who has signed in at least once, else `404 USER_NOT_FOUND` |
+| `agent` | Required. Must be in `AGENT_UPDATES_AGENTS` (default `jobs`), else `403 UNKNOWN_AGENT` |
+| `title` | Required. Plain text; markup is stripped and it is cut to 120 characters |
+| `markdown` | Required, at most 16 KB. Kept: plain markdown and inline `[text](https://...)` links. Removed: images, HTML, reference links, bare URLs, non-https links (only their label stays), email addresses |
+| `idempotencyKey` | Required, 8 to 128 of `A-Z a-z 0-9 : . _ -`. Unique per agent |
+| `groupName` | Optional. The user's chat group to file it in, created the first time; default `Jobs` for `jobs` |
+| `pinAgent` | Optional. `true` attaches the new chat to the agent (the 24 h sticky key), so the user's reply goes to the agent with `contextId` = the chat id |
+
+- **`201`** `{"chatId": "<uuid>", "updateId": "<uuid>", "duplicate": false}`: one chat holding one
+  `ASSISTANT` message was written, and an `AGENT_UPDATE` push sent (if the user's `jobUpdates` is on).
+- **`200`** `{..., "duplicate": true}`: the key was delivered before; this is that first chat, nothing
+  new is written or pushed. A key first used for another user is `400`.
+- **`429 RATE_LIMITED`**: more than `AGENT_UPDATES_MAX_PER_DAY` (default 10) updates for this user in
+  the last 24 hours.
+- **`400 INVALID_UPDATE`**: a missing or malformed field.
+
+Errors are `{"errorCode": "...", "message": "..."}`; messages never repeat the update's content.
 
 ---
 

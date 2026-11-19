@@ -1,5 +1,6 @@
 package com.solesonic.security;
 
+import com.solesonic.api.agentupdate.AgentUpdateController;
 import com.solesonic.config.logging.MdcRequestFilter;
 import com.solesonic.scope.UserRequestContext;
 import com.solesonic.service.user.UserProfileService;
@@ -49,6 +50,14 @@ public class JwtUserRequestFilter extends OncePerRequestFilter {
         String requestPath = request.getRequestURI();
 
         if(requestPath.endsWith(BROKER_ATLASSIAN_TOKEN)) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        //An agent's service client, not a user: its subject is a Keycloak service account, which
+        //must not be recorded as a user profile. The chain still requires a valid token, and the
+        //endpoint its role.
+        if (requestPath.endsWith(AgentUpdateController.PATH)) {
             filterChain.doFilter(request, response);
             return;
         }

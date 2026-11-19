@@ -191,4 +191,38 @@ public class UserPreferencesServiceTest {
 
         verify(userPreferencesRepository, never()).save(any(UserPreferences.class));
     }
+
+    @Test
+    void testPatchTimeZoneLeavesOtherFieldsAlone() {
+        when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
+        when(userPreferencesRepository.save(any(UserPreferences.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        UserPreferences result = userPreferencesService.patch(userId,
+                new com.solesonic.model.user.UserPreferencesPatch("America/Chicago"));
+
+        assertThat(result.getTimeZone()).isEqualTo("America/Chicago");
+        assertThat(result.getChatSimilarityThreshold()).isEqualTo(defaultChatSimilarityThreshold);
+        assertThat(result.getAtlassianAccessToken()).isNotNull();
+    }
+
+    @Test
+    void testPatchRejectsInvalidTimeZone() {
+        when(userPreferencesRepository.findByUserId(userId)).thenReturn(Optional.of(userPreferences));
+
+        assertThatThrownBy(() -> userPreferencesService.patch(userId,
+                new com.solesonic.model.user.UserPreferencesPatch("Not/AZone")))
+                .isInstanceOf(ResponseStatusException.class);
+
+        verify(userPreferencesRepository, never()).save(any(UserPreferences.class));
+    }
+
+    @Test
+    void testPatchRejectsEmptyPatch() {
+        assertThatThrownBy(() -> userPreferencesService.patch(userId,
+                new com.solesonic.model.user.UserPreferencesPatch(null)))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("400");
+
+        verify(userPreferencesRepository, never()).save(any(UserPreferences.class));
+    }
 }

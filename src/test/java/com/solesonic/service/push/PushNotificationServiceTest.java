@@ -231,7 +231,7 @@ class PushNotificationServiceTest {
 
     @Test
     void aTurnIsNotSentWhenTurnNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true, true, true, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(false, true, true, true, true, true, true));
 
         deliver(TURN_FINISHED);
         deliver(new PushEvent.TurnFailed(CHAT_ID, UUID.randomUUID()));
@@ -241,7 +241,7 @@ class PushNotificationServiceTest {
 
     @Test
     void anElicitationIsNotSentWhenElicitationNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false, true, true, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, false, true, true, true, true, true));
 
         deliver(ELICITATION_WAITING);
         deliver(ELICITATION_REMINDER);
@@ -303,7 +303,7 @@ class PushNotificationServiceTest {
 
     @Test
     void anOfferIsNotSentWhenOfferNotificationsAreOff() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, false, true, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, false, true, true, true, true));
 
         deliver(INTEREST_OFFERED);
 
@@ -311,8 +311,19 @@ class PushNotificationServiceTest {
     }
 
     @Test
+    void aJobUpdateIsNotSentWhenJobNotificationsAreOffButANewsUpdateStillIs() {
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, true, true, false));
+
+        deliver(new PushEvent.AgentUpdated(CHAT_ID, "jobs", UPDATE_ID));
+        verify(webPushSender, never()).send(any(), any(), any());
+
+        deliver(INTEREST_UPDATED);
+        verify(webPushSender).send(any(), any(), any());
+    }
+
+    @Test
     void anUpdateIsNotSentWhenUpdateNotificationsAreOffButAnOfferStillIs() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, false, true, true));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, false, true, true, true));
 
         deliver(INTEREST_UPDATED);
         verify(webPushSender, never()).send(any(), any(), any());
@@ -351,7 +362,7 @@ class PushNotificationServiceTest {
 
     @Test
     void sessionPushesFollowTheirOwnPreferences() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, false, false));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, false, false, true));
 
         deliver(SESSION_INVITED);
         deliver(SESSION_TURN);
@@ -404,7 +415,7 @@ class PushNotificationServiceTest {
 
     @Test
     void aSharedChatMessageFollowsTheSessionTurnsPreference() {
-        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, true, false));
+        when(pushPreferenceService.get(USER_ID)).thenReturn(new PushPreferenceSummary(true, true, true, true, true, false, true));
 
         deliver(SHARED_CHAT_MESSAGE);
 

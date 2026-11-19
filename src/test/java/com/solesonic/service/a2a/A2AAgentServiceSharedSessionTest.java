@@ -105,7 +105,9 @@ class A2AAgentServiceSharedSessionTest {
                 new A2AClientProperties.Sound(DataSize.ofKilobytes(1), Duration.ofDays(7)));
 
         agentService = new A2AAgentService(agentRegistry, notificationService, stickyAgentService, chatMessageService, elicitationService,
-                new JacksonConfig().jsonMapper(), properties, soundService, new PendingMessageMetadata());
+                new JacksonConfig().jsonMapper(), properties, soundService, new PendingMessageMetadata(),
+                org.mockito.Mockito.mock(com.solesonic.repository.chat.ChatRepository.class),
+                org.mockito.Mockito.mock(com.solesonic.service.user.UserPreferencesService.class));
     }
 
     private Flux<String> sharedTurnOf(Consumer<A2AAgentService.DelegatedTurn> script) {

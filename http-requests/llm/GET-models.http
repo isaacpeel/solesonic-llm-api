@@ -14,7 +14,7 @@ Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
 ###
-GET {{llm-uri}}/model_group/info?model_group=nemotron-3.5
+GET {{llm-uri}}/model_group/info?model_group=gemma-4-26b-a4b
 Content-Type: application/json
 x-litellm-api-key: {{lite-llm-key}}
 
